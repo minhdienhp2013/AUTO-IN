@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildIntegratedApp, identityResolver } from '../../../backend/composition/runtime.js';
+import { assertIsolatedSimulationDatabase } from '../../../backend/composition/postgres.js';
 import type { SqlPool } from '../../../backend/storage/database.js';
 const unavailable: SqlPool = {
   query: async () => { throw new Error('DB must not be accessed without authentication'); },
@@ -31,4 +32,18 @@ test('configured agent cannot send against production shop settings', async () =
 test('identity requires server configuration', async () => {
   assert.throws(()=>identityResolver([{token:'short',principal:{id:'x',shop_id:'s',role:'owner',verified:true}}]));
   await assert.rejects(identityResolver([])({headers:{authorization:'Bearer forged'}}));
+});
+
+test('simulation server accepts only isolated localhost PostgreSQL databases', () => {
+  for (const url of [
+    'postgresql://test:test@127.0.0.1:5432/autoin_test_305',
+    'postgres://test:test@localhost:5432/auto_in_test',
+    'postgresql://test:test@[::1]:5432/autoin_test_ci',
+  ]) assert.doesNotThrow(() => assertIsolatedSimulationDatabase(url));
+  for (const url of [
+    'postgresql://test:test@db.example.com:5432/autoin_test_305',
+    'postgresql://test:test@127.0.0.1:5432/production',
+    'postgresql://test:test@127.0.0.1:5432/my_autoin_test',
+    'mysql://test:test@localhost:3306/autoin_test',
+  ]) assert.throws(() => assertIsolatedSimulationDatabase(url));
 });

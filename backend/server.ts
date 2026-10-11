@@ -1,10 +1,11 @@
 import pg from 'pg';
 import { readFile } from 'node:fs/promises';
 import { buildIntegratedApp, type ServiceIdentity } from './composition/runtime.js';
-import { asSqlPool } from './composition/postgres.js';
+import { asSqlPool, assertIsolatedSimulationDatabase } from './composition/postgres.js';
 if ((process.env.AUTO_IN_MODE ?? 'simulation') !== 'simulation') throw new Error('Only simulation is available');
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL required; run db:migrate and db:bootstrap first');
+assertIsolatedSimulationDatabase(url);
 const port = Number(process.env.PORT ?? '3000');
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
 const host = process.env.HOST ?? '127.0.0.1';
