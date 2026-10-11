@@ -31,7 +31,7 @@ export interface LeasedBatch extends Batch { batch_id:string; lease_token:string
  */
 export class PostgresConversationQueue {
   private readonly db:PgTransactions;
-  private readonly oa_id?:string;
+  private readonly oa_id:string | undefined;
   constructor(db:PgTransactions,oa_id?:string){this.db=db;this.oa_id=oa_id;}
   async ingest_pending(limit=100):Promise<number> {
     positiveInt(limit,1000);
@@ -136,7 +136,7 @@ export interface AuthoritativeGateLock {
 export class PostgresOutboundRepository implements OutboundPort {
   private readonly db:PgTransactions;
   private readonly control:AuthoritativeGateLock;
-  private readonly scope?:{shop_id:string;oa_id:string};
+  private readonly scope:{shop_id:string;oa_id:string} | undefined;
   constructor(db:PgTransactions,control:AuthoritativeGateLock,scope?:{shop_id:string;oa_id:string}){
     this.db=db;this.control=control;this.scope=scope;
     if(scope&&(!scope.shop_id||!scope.oa_id))throw new Error('INVALID_OUTBOUND_SCOPE');
