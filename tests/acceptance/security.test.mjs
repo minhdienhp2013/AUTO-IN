@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-const skip=!(process.env.AUTOIN_RUN_PRODUCT_ACCEPTANCE==='1'&&process.env.AUTOIN_ACCEPTANCE_ADAPTER)&&'Product adapter missing: NOT RUN';
+const skip=!(process.env.AUTOIN_RUN_LEGACY_P0==='1'&&process.env.AUTOIN_ACCEPTANCE_ADAPTER)&&'Product adapter missing: NOT RUN';
 async function run(seed,fn){
  const mod=await import(pathToFileURL(resolve(process.env.AUTOIN_ACCEPTANCE_ADAPTER)).href);
  const a=await mod.createAcceptanceAdapter({databaseUrl:process.env.AUTOIN_TEST_DATABASE_URL,mode:'simulation',printer:'DryRunDriver'});
