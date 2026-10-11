@@ -7,7 +7,7 @@ export interface DocumentFact { kind: "pdf" | "word" | "image" | "excel" | "unkn
   count_inside?: number; preview_trusted?: boolean }
 export interface RulesResult { intent: Intent; handover_reason?: HandoverReason;
   reply?: string; needs_deepseek: boolean; requires_confirmation: boolean }
-const RE_PRICE = /\b(giá|bao nhiêu tiền|báo giá|đặt cọc)\b/i;
+const RE_PRICE = /(giá|bao nhiêu tiền|báo giá|đặt cọc)/iu;
 const RE_COLOR = /\b(in màu|màu sắc|đen trắng kết hợp|xen kẽ màu)\b/i;
 const RE_PRINT = /\b(in|photo|photocopy|in ấn|bản|tờ|trang|a4|a3|hai mặt|một mặt)\b/i;
 const RE_MIXED = /in\s*(trang|page).*(màu|đen)|trang.*(màu|đen).*(trang|page)/i;
