@@ -29,10 +29,10 @@ test('REAL PostgreSQL + REAL AI1 createAiOrderPort: new conversation, 2 workers,
   const ids=[0,1,2,3].map(n=>'event-'+n+'-'+unique);
   let createdShop=false;
   const run=(sql,args=[])=>poolA.query(sql,args);
-  const bytes=id=>new TextEncoder().encode(JSON.stringify({
+  const bytes=(id,text='In A4')=>new TextEncoder().encode(JSON.stringify({
     synthetic_fixture:true,event_id:id,oa_id:oa,customer_id:customer,
     conversation_id:conv,occurred_at:'2026-10-12T03:00:00Z',
-    kind:'text',text:'In A4'
+    kind:'text',text
   }));
   const key={'x-test-fixture-key':pass};
   const common={trusted_shop_id:shop,trusted_oa_id:oa,
@@ -123,6 +123,28 @@ test('REAL PostgreSQL + REAL AI1 createAiOrderPort: new conversation, 2 workers,
     assert.equal((await restarted.tick_outbound()).disabled,true);
     assert.equal((await run('SELECT status FROM zalo_outbound WHERE outbound_id=$1',[current.outbound_id])).rows[0].status,'UNKNOWN');
     assert.equal((await run('SELECT count(*)::int AS n FROM core_ai_draft_proposals WHERE shop_id=$1',[shop])).rows[0].n,2);
+
+    // AI1 route_human Port is separate from suggest_draft: it must move
+    // the conversation to unclaimed HUMAN, never impersonate a staff member.
+    assert.equal((await one.receive_webhook(bytes(ids[3],'in màu'),key)).body.status,'accepted');
+    await one.tick_inbound();
+    await run("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' WHERE oa_id=$1 AND status='OPEN'",[oa]);
+    const handoff=await two.tick_inbound();
+    assert.equal(handoff.held,1); // generation changed by real AI1 Port
+    const afterRoute=(await run(
+      'SELECT generation::text AS generation,status,claimed_by FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',
+      [shop,conv])).rows[0];
+    assert.deepEqual(afterRoute,{generation:'3',status:'HUMAN',claimed_by:null});
+    assert.deepEqual(await ordersA.route_human({
+      conversation_id:conv,reason:'COLOR_PRINT',event_ids:[ids[3]],expected_generation:2
+    }),{status:'already_routed',generation:3});
+    assert.deepEqual(await ordersB.route_human({
+      conversation_id:conv,reason:'COLOR_PRINT',event_ids:[ids[3]],expected_generation:0
+    }),{status:'stale_generation'});
+    assert.equal((await run('SELECT count(*)::int AS n FROM core_ai_draft_proposals WHERE shop_id=$1',[shop])).rows[0].n,2);
+    assert.equal((await one.receive_webhook(bytes(ids[3],'in màu'),key)).body.status,'duplicate');
+    assert.equal((await one.tick_inbound()).claimed,0);
+
   } finally {
     if(createdShop) {
       // Disposable CI/test DB only, isolated shop and OA.
