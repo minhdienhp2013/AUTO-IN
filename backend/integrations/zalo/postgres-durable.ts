@@ -153,6 +153,20 @@ export class PostgresOutboundRepository implements OutboundPort {
       // Keep SENT/UNKNOWN/CANCELLED/RESERVED unchanged; never resurrect a reply.
     });
   }
+  /** Read-only polling: concurrent dispatchers compete through reserve_if_current; only one wins. */
+  async list_queued(limit=20):Promise<Array<{outbound_id:string;conversation_id:string;generation:number;text:string}>> {
+    positiveInt(limit,100);
+    return this.db.transaction(async tx=>{
+      const waiting=await tx.query<{outbound_id:string;conversation_id:string;generation:string;body_text:string}>(
+        `SELECT outbound_id,conversation_id,generation::text AS generation,body_text
+         FROM zalo_outbound WHERE status='QUEUED' ORDER BY created_at,outbound_id LIMIT $1`,[limit]);
+      return waiting.rows.map(row=>{
+        const generation=Number(row.generation);
+        if(!Number.isSafeInteger(generation)||generation<0)throw new Error('INVALID_OUTBOUND_GENERATION');
+        return {outbound_id:row.outbound_id,conversation_id:row.conversation_id,generation,text:row.body_text};
+      });
+    });
+  }
   async reserve_if_current(outbound_id:string,conversation_id:string,generation:number):Promise<boolean> {
     return this.db.transaction(async tx=>{
       if(!await this.control.lock_if_current(tx,conversation_id,generation)) return false;
