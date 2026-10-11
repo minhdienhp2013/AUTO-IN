@@ -327,7 +327,9 @@ export class OrderService {
    const c=await this.conversation(db,p,conversation_id);
    checkRevision(input.expected_generation,c.generation);
    if(c.status==='HUMAN'){
-    if(c.claimed_by!==p.id&&p.role!=='owner')throw new DomainError('CONVERSATION_TAKEN','Nhân viên khác đang tiếp quản',409);
+    // An AI route leaves HUMAN unclaimed; the first real staff member may accept it.
+    // Never manufacture a staff actor to mark an AI-initiated handover.
+    if(c.claimed_by!==null&&c.claimed_by!==p.id&&p.role!=='owner')throw new DomainError('CONVERSATION_TAKEN','Nhân viên khác đang tiếp quản',409);
     if(c.claimed_by===p.id)return {conversation_id,generation:c.generation,status:'HUMAN' as const,claimed_by:p.id};
    }
    const generation=c.generation+1;
