@@ -17,7 +17,7 @@
     "check": "npm run contracts:check && npm run typecheck && npm test && npm run build && npm run test:core && npm run test:zalo && npm run test:composition",
     "test:core": "node scripts/run-core.mjs",
     "test:zalo": "node --experimental-strip-types --test tests/unit/zalo/*.test.mjs",
-    "test:composition": "node --import tsx --test tests/integration/composition/*.test.ts",
+    "test:composition": "node --import tsx --test tests/integration/composition/*.test.ts tests/integration/composition/*.test.mjs",
     "db:migrate": "node --import tsx scripts/database.ts migrate",
     "db:bootstrap": "node --import tsx scripts/database.ts bootstrap",
     "process:order": "node --import tsx scripts/process-order.ts"
