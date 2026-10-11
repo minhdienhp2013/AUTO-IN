@@ -141,8 +141,47 @@ No OA or Ricoh device was contacted. Local environment lacks PostgreSQL server a
 
 - Entry **internal only**: \`createAiOrderPort({store:new PgStore(pool),trusted:{shop_id,oa_id}})\` từ \`backend/core/ai-order-port.ts\`. Hai giá trị trusted phải được AI0 lấy từ mapping OA/shop cấu hình server đã xác thực; **không** lấy shop, role, customer hoặc OA từ HTTP body do người gửi khai. Không tạo route HTTP mới.
 - \`suggest_draft({conversation_id,customer_id,event_ids,text,idempotency_key,expected_generation})\` trả \`{status:'created'|'existing'|'stale_generation',order_id?}\`. Port kiểm bằng cùng transaction: shop tồn tại; tất cả \`event_ids\` đã ở \`zalo_inbound_events\` đúng trusted \`oa_id\`, cùng conversation và customer; không có đơn của khách khác gắn conversation; khóa \`core_conversation_controls\` shop/conversation \`FOR UPDATE\`; generation và status=AI. Chỉ khi hợp lệ mới INSERT order DRAFT và revision 1 \`request_data={source:'zalo_ai_suggestion',conversation_id,event_ids,text}\`, \`plan=NULL\`; không quote, confirmation, approval hay print job. \`core_ai_draft_proposals\` có PRIMARY KEY fingerprint của event_ids và UNIQUE idempotency key theo shop/OA, nên retry hai PostgreSQL pools vẫn chỉ một order, kể cả thay idempotency key nhưng không đổi payload/sự kiện. Cùng sự kiện/khóa nhưng text/khách khác thì 409; lỗi scope thì 403, stale generation trả enum.
-- \`route_human({conversation_id,reason,event_ids,expected_generation})\` trả \`{status:'routed'|'already_routed'|'stale_generation',generation?}\`. Sau xác minh Zalo event và \`FOR UPDATE\`, chuyển status \`HUMAN\`, tăng generation và \`claimed_by=NULL\`, giữ \`ai_route_fingerprint/ai_route_reason\`; khách này vào **hàng đợi chờ nhân viên thật**, không giả staff ID. Cùng batch retry trả \`already_routed\`, generation quá cũ/đã trả AI trả \`stale_generation\`. \`OrderService.handover\` cho phép nhân viên thật nhận HUMAN chưa có người nhận, và giữ chống hai nhân viên cùng nhận; trả lại AI vẫn bắt buộc nhân viên/chủ làm chủ động.
+- \`route_human({conversation_id,reason,event_ids,expected_generation})\` trả \`{status:'routed'|'already_routed'|'stale_generation',generation?}\`. Sau xác minh Zalo event và \`FOR UPDATE\`, chuyển status \`HUMAN\`, tăng generation và \`claimed_by=NULL\`, giữ \`ai_route_fingerprint/ai_route_reason\`; khách này vào **hàng đợi chờ nhân viên thật**, không giả staff ID. Retry với generation cũ trả \`stale_generation\` kể cả cùng batch. \`already_routed\` chỉ có thể trả khi request mang đúng generation hiện hành và hội thoại đã HUMAN. \`OrderService.handover\` cho phép nhân viên thật nhận HUMAN chưa có người nhận, và giữ chống hai nhân viên cùng nhận; trả lại AI vẫn bắt buộc nhân viên/chủ làm chủ động.
 - Migration AI1 mới: \`backend/storage/migrations/005_ai_order_port.sql\`, bổ sung vào \`CORE_MIGRATIONS\` sau 001–004. Schema 005 thay table CHECK cũ yêu cầu claimed_by không null khi HUMAN, để biểu diễn routed-but-unclaimed. Runner AI0 \`scripts/database.ts\` đã duyệt danh sách \`CORE_MIGRATIONS\`, nên không cần sửa file root. Cần AI2 001/002 migration \`zalo_inbound_events\` trước khi sử dụng Port (không đụng dữ liệu/tables AI2). Script production migration phải do AI0 chốt.
 - **Boundary**: không gọi \`OrderService.createDraft(staff)\`, không mạo danh staff/customer/processor, không cấp quyền duyệt/gửi in/Zalo. Audit \`ai.draft_suggested\` do service actor định danh OA và chỉ ghi fingerprint + số sự kiện, không chép text khách vào audit. \`route_human\` dùng transaction row lock ngay khi AI đang soạn/trước gửi; AI2 vẫn phải kiểm outbound generation bằng \`CoreConversationGate\`.
 - AI2 cần gọi Port trong backend sau bước verify/persist Zalo; xử lý \`stale_generation\` như HOLD/không hành động, \`existing\` không tạo lại order, \`already_routed\` không trả AI lại. AI0 cung cấp connection Pool và trusted OA/shop; không tự gắn public endpoint. AI4 dùng \`conversation_control.status='HUMAN',claimed_by=null\` làm “chờ nhân viên nhận”; không tự coi có nhân viên đang tiếp quản.
 - Kiểm thử: \`node --test tests/unit/core/ai-order-port.test.cjs\`, \`TEST_DATABASE_URL=postgresql://.../autoin_test_305 npm run test:core\`. PG test dùng **hai pg.Pool độc lập**, xác minh concurrent retry chỉ một draft và còn 0 confirmation/quote/approval/print job; mismatched OA/customer/shop fail closed; đồng thời route HUMAN, stale generation, staff claim và return AI. CI validation riêng trên bản tích hợp: PR #28, không thay PR #23 đã làm chứng cứ đợt trước. Không merge/deploy/in hay gửi tin thật.
+
+## AI2 → AI1: Hợp đồng Port nội bộ (12/10/2026)
+
+Khởi tạo phía AI0 từ server-verified OA/shop mapping, tuyệt đối không nhận shop/OA từ body webhook:
+
+```ts
+import { createAiOrderPort } from './backend/core/ai-order-port.js';
+const port = createAiOrderPort({store: core.store, trusted: {shop_id: verifiedShopId, oa_id: verifiedOaId}});
+```
+
+**1. suggest_draft**
+
+```ts
+suggest_draft({conversation_id, customer_id, event_ids, text, idempotency_key, expected_generation})
+// {status:'created',order_id} | {status:'existing',order_id} | {status:'stale_generation'}
+```
+
+**2. route_human**
+
+```ts
+route_human({conversation_id, reason, event_ids, expected_generation})
+// {status:'routed',generation} | {status:'already_routed',generation} | {status:'stale_generation'}
+```
+
+**Ràng buộc kiểu:** `conversation_id` 1–256 ký tự, `event_ids` từ 1 đến 100 ID duy nhất (mỗi ID 1–256 ký tự), `customer_id` 1–256, `text` 1–4000, `idempotency_key` 1–128, `reason` 1–500, `expected_generation` số nguyên an toàn không âm. Phần input giữ nguyên tên/snake_case; `route_human` không có trường idempotency_key trong contract.
+
+**Bất biến transaction:** Port kiểm tra shop tồn tại, tất cả events đã nằm trong `zalo_inbound_events` của đúng server `oa_id`, cùng hội thoại/khách, sau đó `SELECT ... FOR UPDATE` dòng `(shop_id,conversation_id)` trước mọi quyết định. Kiểm `expected_generation` và unique idempotency của `core_ai_draft_proposals` **trong cùng transaction** với INSERT order/revision. Concurrency từ hai pg.Pool phải bị tuần tự hóa. Chỉ cho phép tạo control row mới ở generation 0; request khác generation trên hội thoại chưa có control phải trả stale mà không tạo dòng.
+
+**Kết quả:**
+- `suggest_draft`: đúng generation + AI => `created`; cùng tập `event_ids` (không phụ thuộc thứ tự), cùng text/khách/generation => `existing` bất kể retry key; cùng event/key nhưng payload khác => `AI_DRAFT_IDEMPOTENCY_CONFLICT` 409. Không tạo quote/confirmation/approval/print job.
+- `route_human`: đúng generation + AI => `routed`, tăng generation 1, trạng thái HUMAN và `claimed_by=NULL`; đúng generation hiện hành + HUMAN => `already_routed` không thay đổi DB.
+- **Generation không đúng luôn trả `stale_generation`**, kể cả retry cùng batch vừa chuyển HUMAN. Không tạo đơn, không chuyển trạng thái, không tạo control row khi unlinked. AI2 HOLD mọi tác động và không gửi outbound khi stale.
+- Port không giả làm staff; nhân viên đăng nhập thật tiếp nhận HUMAN chưa gán qua `OrderService.handover` và chỉ nhân viên/chủ trả AI chủ động. Fingerprint của `event_ids` được lưu nhưng không được dùng để bỏ qua kiểm generation.
+
+**Lỗi:** `UNVERIFIED_AI_EVENTS`, `AI_SHOP_NOT_FOUND`, `AI_CUSTOMER_MISMATCH`, `AI_EVENT_BINDING_MISMATCH`: 403; `AI_DRAFT_IDEMPOTENCY_CONFLICT` hoặc `AI_CONVERSATION_CUSTOMER_CONFLICT`: 409; input không hợp lệ: 422; thiếu cấu hình server: 503.
+
+**Migrations:** core `001` → `005`, tiếp theo AI2 `001_zalo_durable.sql` và `002_zalo_oa_scope.sql` trước khi dùng Port; AI0 sở hữu runner/runtime. Port là module nội bộ, không đăng ký HTTP mới, giữ nguyên read model AI0/AI4.
+
+**Bằng chứng:** Unit `tests/unit/core/ai-order-port.test.cjs` và PostgreSQL thật hai kết nối `tests/integration/core/ai-order-port-pg.test.cjs`. Ca thực thi gồm retry đồng thời, idempotency conflict, stale trước khi control tồn tại, stale sau HUMAN, cạnh tranh `suggest_draft` vs `route_human`. Xem PR #28 cho CI trên base tích hợp; PR #23 giữ nguyên lịch sử kiểm thử trước đó. Không merge/deploy/gửi OA hay in thật.
