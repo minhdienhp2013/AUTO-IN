@@ -6,6 +6,7 @@ import {fileURLToPath} from "node:url";
 import {PostgresInboundEventRepository} from "../../../backend/integrations/zalo/postgres-events.ts";
 import {PostgresConversationQueue,PostgresOutboundRepository} from "../../../backend/integrations/zalo/postgres-durable.ts";
 import {OutboundDispatcher} from "../../../backend/conversation/gate.ts";
+import {CoreConversationGate} from "../../../backend/integrations/zalo/core-gate.ts";
 
 const databaseUrl=process.env.AUTOIN_TEST_DATABASE_URL;
 let pg;
@@ -23,10 +24,12 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
     await admin.query('SET search_path TO "'+schema+'"');
     const migration=await readFile(fileURLToPath(new URL("../../../backend/integrations/zalo/migrations/001_zalo_durable.sql",import.meta.url)),"utf8");
     await admin.query(migration);
-    await admin.query(`CREATE TABLE gate_controls (
-      conversation_id text PRIMARY KEY,generation integer NOT NULL,
-      mode text NOT NULL CHECK(mode IN ('AI','HUMAN','PAUSED')))`);
-    await admin.query("INSERT INTO gate_controls VALUES ('c1',1,'AI')");
+    // Mirrors the AI1 migration 004 control row layout; isolated disposable schema.
+    await admin.query(`CREATE TABLE core_conversation_controls (
+      shop_id text NOT NULL,conversation_id text NOT NULL,generation bigint NOT NULL,
+      status text NOT NULL CHECK(status IN ('AI','HUMAN')),
+      PRIMARY KEY(shop_id,conversation_id))`);
+    await admin.query("INSERT INTO core_conversation_controls VALUES ('trusted-shop','c1',1,'AI')");
     const db={
       async transaction(body){
         const cx=await pool.connect();
@@ -64,18 +67,13 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
     assert.equal(await durable.complete(recovered[0]),true);
     assert.equal((await durable.claim_due()).length,0);
 
-    const authority={
-      async lock_if_current(tx,conversation_id,generation){
-        const found=await tx.query("SELECT generation,mode FROM gate_controls WHERE conversation_id=$1 FOR UPDATE",[conversation_id]);
-        return found.rows[0]?.generation===generation && found.rows[0]?.mode==="AI";
-      }
-    };
-    const outbox=new PostgresOutboundRepository(db,authority);
+    const gate=new CoreConversationGate(db,"trusted-shop");
+    const outbox=new PostgresOutboundRepository(db,gate);
     const data={outbound_id:"r1",conversation_id:"c1",generation:1,text:"Vui lòng xác nhận"};
     await outbox.enqueue(data);await outbox.enqueue(data);
     let sent=0;
     const dispatcher=new OutboundDispatcher(
-      {async read(cid){return (await run("SELECT conversation_id,generation,mode FROM gate_controls WHERE conversation_id=$1",[cid])).rows[0];}},
+      gate,
       outbox,{async send_text(){sent++;throw Error("ambiguous provider timeout")}},
       {now:()=>new Date("2026-10-11T03:00:00Z")},{allowed:()=>true});
     assert.equal(await dispatcher.deliver(data),"unknown");
@@ -83,11 +81,11 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
     assert.equal(sent,1);
     await outbox.enqueue(data);
     assert.equal((await run("SELECT status FROM zalo_outbound WHERE outbound_id='r1'")).rows[0].status,"UNKNOWN");
-    await run("UPDATE gate_controls SET generation=2,mode='HUMAN' WHERE conversation_id='c1'");
+    await run("UPDATE core_conversation_controls SET generation=2,status='HUMAN' WHERE shop_id='trusted-shop' AND conversation_id='c1'");
     await outbox.enqueue({...data,outbound_id:"stale"});
     assert.equal(await outbox.reserve_if_current("stale","c1",1),false);
     assert.equal((await run("SELECT status FROM zalo_outbound WHERE outbound_id='stale'")).rows[0].status,"QUEUED");
-    await run("UPDATE gate_controls SET generation=3,mode='AI' WHERE conversation_id='c1'");
+    await run("UPDATE core_conversation_controls SET generation=3,status='AI' WHERE shop_id='trusted-shop' AND conversation_id='c1'");
     assert.equal(await outbox.reserve_if_current("stale","c1",1),false);
 
     // RESERVED after crash is uncertain, never automatically sent again.
@@ -96,6 +94,34 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
     await run("UPDATE zalo_outbound SET reserved_at=now()-interval '5 minutes' WHERE outbound_id='reserved'");
     assert.equal(await outbox.reconcile_stale_reserved(),1);
     assert.equal(await outbox.reserve_if_current("reserved","c1",3),false);
+
+    // Two independent pool connections must not claim the same due batch.
+    await Promise.all([incoming.insert_once(event("e3")),incoming.insert_once(event("e4"))]);
+    const secondWorker=new PostgresConversationQueue(db);
+    const moved=await Promise.all([durable.ingest_pending(),secondWorker.ingest_pending()]);
+    assert.equal(moved.reduce((a,b)=>a+b,0),2);
+    await run("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' WHERE status='OPEN'");
+    const claims=await Promise.all([durable.claim_due(1),secondWorker.claim_due(1)]);
+    assert.equal(claims[0].length+claims[1].length,1);
+    const only=claims[0][0]??claims[1][0];
+    assert.deepEqual(only.events.map(e=>e.event_id),["e3","e4"]);
+    assert.equal(await secondWorker.complete(only),true);
+
+    // AI1 handover owns the row lock; reservation must see its NEW generation.
+    await outbox.enqueue({...data,outbound_id:"race",generation:3});
+    const controller=await pool.connect();
+    try {
+      await controller.query('BEGIN');
+      await controller.query('SET LOCAL search_path TO "'+schema+'"');
+      await controller.query("SELECT generation FROM core_conversation_controls WHERE shop_id='trusted-shop' AND conversation_id='c1' FOR UPDATE");
+      const pending=outbox.reserve_if_current("race","c1",3);
+      await controller.query("UPDATE core_conversation_controls SET generation=4,status='HUMAN' WHERE shop_id='trusted-shop' AND conversation_id='c1'");
+      await controller.query('COMMIT');
+      assert.equal(await pending,false);
+    } catch(error) {await controller.query('ROLLBACK');throw error;}
+    finally {controller.release();}
+    assert.equal((await run("SELECT status FROM zalo_outbound WHERE outbound_id='race'")).rows[0].status,'QUEUED');
+
   } finally {
     try{await admin.query('DROP SCHEMA IF EXISTS "'+schema+'" CASCADE')}finally{admin.release();await pool.end();}
   }
