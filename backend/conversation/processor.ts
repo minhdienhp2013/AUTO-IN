@@ -9,8 +9,8 @@ import type { AiInterpretation } from "../ai/deepseek.ts";
  * Returned stale_generation is a normal concurrent handover, not a retryable error.
  * All other errors propagate so the durable worker keeps the batch for retry.
  */
-export type DraftResult = {order_id:string;revision:number} | {status:"stale_generation"};
-export type HumanRouteResult = void | {status:"stale_generation"};
+export type DraftResult = {order_id:string;revision:number} | {status:"stale_generation"} | "stale_generation";
+export type HumanRouteResult = void | {status:"stale_generation"} | "stale_generation";
 export interface OrderDraftPort {
   suggest_draft(data:{conversation_id:string;customer_id:string;expected_generation:number;
     event_ids:string[];text:string;idempotency_key:string}):Promise<DraftResult>;
@@ -37,7 +37,8 @@ function batchIdentity(batch:Batch):{event_ids:string[];key:string} {
   return {event_ids,key:"zalo:"+digest};
 }
 function isStale(result:DraftResult|HumanRouteResult):boolean {
-  return result!==undefined && "status" in result && result.status==="stale_generation";
+  return result==="stale_generation" ||
+    (result!==undefined && typeof result==="object" && "status" in result && result.status==="stale_generation");
 }
 export class ConversationProcessor {
   private readonly gate:GatePort;
@@ -60,7 +61,11 @@ export class ConversationProcessor {
     const snap=await this.gate.read(first.conversation_id);
     if(snap.mode!=="AI")return "held";
     const {event_ids,key}=batchIdentity(batch);
-    const text=batch.events.filter(e=>e.kind==="text").map(e=>e.text??"").join("\n");
+    // Processing payload is canonical even if a retry reconstructs a batch in a
+    // different insertion order. AI1 once() rejects same key with different text.
+    const ordered=[...batch.events].sort((a,b)=>
+      Date.parse(a.occurred_at)-Date.parse(b.occurred_at)||a.event_id.localeCompare(b.event_id));
+    const text=ordered.filter(e=>e.kind==="text").map(e=>e.text??"").join("\n");
     const routeHuman=async(reason:string):Promise<"human"|"held">=>{
       if(!await this.current(snap))return "held";
       const result=await this.orders.route_human({
