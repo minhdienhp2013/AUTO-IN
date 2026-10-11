@@ -52,3 +52,31 @@ Signature/raw-body + event payload thật; OAuth/permission/renew token; text/PD
 - **SKIP:** real PostgreSQL test `tests/unit/zalo/postgres-integration.test.mjs` needs an isolated database `AUTOIN_TEST_DATABASE_URL` and package `pg`. Run this with migrated disposable schema and verify independent sessions. Do not call mock tests a PostgreSQL PASS.
 - **NOT RUN:** live OA provider verification/messages, external DeepSeek network, Fastify/AI1 full integration, actual production DB, 100/day load, TN-022/037 and 210 orders/7 days. No real customer message, print instruction, merge or deploy.
 
+
+
+## CODE-302 — simulation factory, AI1 generation and PostgreSQL scope
+
+- **BASE/module:** `9b431352de19a7f9ad5f7814e200ecbc6ca5bf0e`. New branch: `ai2/dot3-zalo-core-gate`. AI1 reference `ebdd740`, table `core_conversation_controls` / migration `backend/storage/migrations/004_conversation_generation.sql` (read-only from AI2).
+- **Factory:** `backend/integrations/zalo/pipeline.ts` exports `createZaloPipeline({db,trusted_shop_id,trusted_oa_id,orders,documents,schedule,clock,...})`. It constructs `CoreConversationGate`, `PostgresInboundEventRepository`, tenant-scoped `PostgresConversationQueue`, `PostgresOutboundRepository`, `ConversationProcessor`, `DurableConversationWorker`, `ZaloIngress` and optional simulated outbound dispatcher. `receive_webhook(rawUint8Array,headers)`, `tick_inbound()`, `tick_outbound()`, `reconcile_uncertain_outbound()` are callable by AI0. **It deliberately refuses production, controlled_test and safe mode with `ZALO_LIVE_DISABLED`.** No synthetic provider by default: webhook returns 403, outbound dispatch disabled.
+- **Trusted scope:** AI0 MUST resolve `trusted_oa_id` and `trusted_shop_id` from a verified server-side OA mapping, not incoming text/header. The raw-byte normalizer checks matching OA ID before persistence. Queue SELECT/claim filters `oa_id`; outbound write/read/reserve/mark/reconcile filters `shop_id` and `oa_id`. New additive AI2 migration `backend/integrations/zalo/migrations/002_zalo_oa_scope.sql` must run AFTER `001_zalo_durable.sql`; unscoped legacy outbound remains NULL and is not dispatched by a scoped factory.
+- **Generation:** `CoreConversationGate.lock_if_current` reads the AI1 authoritative row by shop/conversation `FOR UPDATE` in the same PG transaction used by `reserve_if_current`. The dispatcher also rechecks gate/schedule before calling only an explicitly injected synthetic sender. Human takeover or return-to-AI increases generation and old replies cannot be reserved. Reservations that could have reached the sender become `UNKNOWN`, never automatically retry. Once external I/O begins, a concurrent takeover cannot retroactively retract an accepted provider message.
+- **Wiring example (SIMULATION ONLY, no token/secrets)**:
+  ```ts
+  import {createZaloPipeline} from './backend/integrations/zalo/pipeline.ts';
+  // db.transaction(fn) MUST execute fn with one PG client between BEGIN/COMMIT.
+  // Trusted shop/OA mapping is resolved by AI0; AI1/AI3 Ports must be authenticated.
+  const pipeline=createZaloPipeline({
+    db, trusted_shop_id: trustedShop.id, trusted_oa_id: trustedOa.id,
+    orders: ai1DraftPort, documents: ai3DocumentFactsPort,
+    schedule: effectiveReplySchedule, clock:{now:()=>new Date()},
+    mode:'simulation'
+  });
+  // AI0 Fastify route must pass UNMODIFIED request.rawBody Uint8Array.
+  // Without explicit synthetic fixture provider the result intentionally is 403.
+  const result=await pipeline.receive_webhook(rawBody,verifiedTransportHeaders);
+  // A scheduler may call tick_inbound(); no real OA send is enabled.
+  const progress=await pipeline.tick_inbound();
+  ```
+- **Mock-labelled tests:** `tests/unit/zalo/pipeline.test.mjs` asserts unsigned webhook refused, synthetic signed event deduped, wrong OA rejected, lack of provider blocks outbound, handover/return prevents stale reply, ambiguous simulated outbound becomes UNKNOWN. Existing `gate-processor.test.mjs` tests takeover during DeepSeek and just before send. `tests/unit/zalo/postgres-integration.test.mjs` adds real-PG isolated-schema exercises: duplicate events, synthetic ingress-to-draft/outbox with mock Ports, two workers ingest/claim, crash/lease recovery, AI1-schema control lock competition, no auto retry after UNKNOWN. Real PG test only runs when `AUTOIN_TEST_DATABASE_URL` points to an isolated test database and `pg` is installed.
+- **Commands:** `node --experimental-strip-types --test tests/unit/zalo/*.test.mjs` and strict `tsc --noEmit --allowImportingTsExtensions --module NodeNext --moduleResolution NodeNext` on AI2 files. Apply AI2 migrations 001 then 002 inside an isolated test database before PostgreSQL tests; AI1 migrations 001–004 are owned and applied by AI0/AI1 in integration.
+- **Remaining AI0 integration:** actual transaction bridge to AI1 PgStore, authenticated draft Port with event-id idempotency, verified OA/shop resolver, raw Fastify body wiring, worker scheduling, operational NEEDS_HUMAN/UNKNOWN view, AI3 document Port and real PostgreSQL tests. Neither an arbitrary `synthetic_provider` nor a successful simulation test authorizes live OA. No live provider, customer messages, printing, merge or deploy were performed.
