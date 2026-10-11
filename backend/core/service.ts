@@ -150,6 +150,7 @@ export class OrderService {
   checkRevision(expected_revision,o.active_revision);
   const rev=await this.revision(db,o);const approved=await db.query('SELECT id FROM core_approvals WHERE id=$1 AND revision=$2 AND request_hash=$3 AND order_id=$4',[j.approval_id,o.active_revision,rev.request_hash,o.id]);
   if(!approved.rows.length||j.revision!==o.active_revision||j.request_hash!==rev.request_hash||j.cancelled_at)throw new DomainError('STALE_APPROVAL','Duyệt không còn hiệu lực',409);
+  if(!p.printer_ids?.includes(j.printer_id))throw new DomainError('PRINTER_SCOPE_DENIED','Agent không có quyền máy in này',403);
   if(!lease_token||sha(lease_token)!==j.lease_secret_hash||j.claimed_by!==p.id)throw new DomainError('BAD_LEASE','Lease không hợp lệ',403);
   return {o,j,rev};
  }
@@ -163,6 +164,7 @@ export class OrderService {
  }
  async claim(p:Principal,input:{printer_id:string;idempotency_key:string}){
   assertAgent(p);if(!input.printer_id)throw new DomainError('PRINTER_REQUIRED','Thiếu máy in');
+  if(!p.printer_ids?.includes(input.printer_id))throw new DomainError('PRINTER_SCOPE_DENIED','Agent không có quyền máy in này',403);
   return this.store.tx(db=>this.store.once(db,p,'jobs.claim',input.idempotency_key,input,async()=>{
    // Lock order first for consistent lock ordering with revise/approve/manual/mark-sending.
    const candidates=await db.query<{id:string}>(`SELECT o.id FROM core_orders o JOIN core_print_jobs j ON j.order_id=o.id
@@ -303,7 +305,7 @@ export class OrderService {
    const original=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 AND order_id=$2 FOR UPDATE',[input.original_job_id,id]);
    if(original.state==='NOT_SENT'||original.state==='SENDING'||original.state==='SIMULATED_DONE')throw new DomainError('NOT_REPRINTABLE','Không được in lại lệnh chưa gửi/mô phỏng',409);
    const rev=await this.revision(db,o);if(original.revision!==o.active_revision||original.request_hash!==rev.request_hash)throw new DomainError('STALE_REVISION','In lại bản cũ cần đối soát thủ công',409);
-   const job_id=newId();await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,original_job_id,authorized_reprint_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[job_id,id,rev.revision,rev.request_hash,original.approval_id,original.printer_id,original.id,p.id]);
+   const job_id=newId();await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,original_job_id,authorized_reprint_by,confirmed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[job_id,id,rev.revision,rev.request_hash,original.approval_id,original.printer_id,original.id,p.id,original.confirmed_at??null]);
    await this.audit(db,p,'job.reprint_owner_approved',id,{job_id,original_job_id:original.id,reason:input.reason});
    return {job_id,order_id:id,requires_agent_claim:true};
   }));
@@ -368,9 +370,64 @@ export class OrderService {
   assertStaff(p);return this.store.tx(async db=>{
    const o=await this.order(db,id,p);
    const revisions=await db.query<RevisionRow>('SELECT * FROM core_revisions WHERE order_id=$1 ORDER BY revision',[id]);
-   const jobs=await db.query('SELECT id,revision,state,printer_id,created_at,evidence_kind,verified_sheets FROM core_print_jobs WHERE order_id=$1 ORDER BY created_at',[id]);
-   const quote=await this.quote(db,id);const received=await this.received(db,id);
-   return {order:o,revisions:revisions.rows,jobs:jobs.rows,quote,received_vnd:received,receivable_vnd:Math.max(0,(quote?.amount_vnd??0)-received),refundable_vnd:Math.max(0,received-(quote?.amount_vnd??0))};
+   const current=revisions.rows.find(r=>r.revision===o.active_revision);
+   if(!current)throw new DomainError('REVISION_NOT_FOUND','Không có phiên bản hiện hành',500);
+   const jobs=await db.query<JobRow & {created_at:Date;evidence_kind:string|null;verified_sheets:number|string;cancelled_at:Date|null}>(
+    'SELECT id,order_id,revision,request_hash,approval_id,state,printer_id,confirmed_at,created_at,mode_at_send,evidence_kind,verified_sheets,cancelled_at FROM core_print_jobs WHERE order_id=$1 ORDER BY created_at',[id]);
+   const quote=await this.quote(db,id),received=await this.received(db,id);
+   const confirmations=await db.query<{id:string;revision:number;request_hash:string;quote_revision:number|null;kind:'request'|'quote';created_at:Date;customer_id:string}>(
+    'SELECT id,revision,request_hash,quote_revision,kind,created_at,customer_id FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 ORDER BY created_at,id',[id,current.revision,current.request_hash]);
+   const approvals=await db.query<{id:string;revision:number;request_hash:string;quote_revision:number|null;actor_id:string;created_at:Date;deposit_short_vnd:string|number}>(
+    'SELECT id,revision,request_hash,quote_revision,actor_id,created_at,deposit_short_vnd FROM core_approvals WHERE order_id=$1 AND revision=$2 AND request_hash=$3 ORDER BY created_at DESC',[id,current.revision,current.request_hash]);
+   let verifiedPlan:PrintPlan|null=null;
+   if(current.plan){try{assertPlan(current.plan,current.request_hash);verifiedPlan=current.plan;}catch{verifiedPlan=null;}}
+   const needsPrice=Boolean(verifiedPlan && (verifiedPlan.physical_sheets>150 || quote?.significant_cost));
+   const requestConfirmation=confirmations.rows.find(c=>c.kind==='request')??null;
+   const priceConfirmation=quote?confirmations.rows.find(c=>c.kind==='quote'&&c.quote_revision===quote.quote_revision)??null:null;
+   // Readiness facts are backend-derived for THIS revision, not any earlier request/quote.
+   const existingActiveJob=jobs.rows.find(j=>j.revision===current.revision&&j.request_hash===current.request_hash&&!j.cancelled_at);
+   const matchedApproval=existingActiveJob?approvals.rows.find(a=>a.id===existingActiveJob.approval_id&&( !needsPrice||a.quote_revision===quote?.quote_revision))??null:null;
+   const approval=requestConfirmation&&(!needsPrice||priceConfirmation)?matchedApproval:null;
+   const jobRows=jobs.rows.map(j=>{
+    const rev=revisions.rows.find(x=>x.revision===j.revision);
+    const planned=rev?.plan && rev.plan.ready && rev.plan.request_hash===j.request_hash ? rev.plan.physical_sheets : null;
+    const sheets=dbSafeInteger(j.verified_sheets,'job.verified_sheets');
+    return {...j,verified_sheets:sheets,planned_sheets:planned,
+     missing_sheets:planned===null?null:Math.max(0,planned-sheets),
+     paper_complete:planned!==null&&j.state==='VERIFIED_DONE'&&j.mode_at_send!=='simulation'&&sheets===planned};
+   });
+   const realVerified=jobRows.filter(j=>j.state==='VERIFIED_DONE'||(j.state==='UNKNOWN'&&j.evidence_kind==='staff_inspected'&&j.verified_sheets>0))
+    .reduce((sum,j)=>sum+j.verified_sheets,0);
+   if(!Number.isSafeInteger(realVerified))throw new DomainError('DB_INTEGER_OVERFLOW','Số giấy vượt giới hạn',500);
+   const planned=verifiedPlan?.physical_sheets??null;
+   const safelyVerified=planned!==null?Math.min(planned,realVerified):realVerified;
+   const previewRef=verifiedPlan?.preview_verified===true && typeof verifiedPlan.preview_ref==='string' && verifiedPlan.preview_ref.trim()
+    ?verifiedPlan.preview_ref:null;
+   const conversation=o.conversation_id
+    ? (await db.query<{status:'AI'|'HUMAN';generation:string|number;claimed_by:string|null}>(
+      'SELECT status,generation,claimed_by FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',[p.shop_id,o.conversation_id])).rows[0]??null
+    :null;
+   return {order:o,revisions:revisions.rows,jobs:jobRows,quote,received_vnd:received,
+    receivable_vnd:Math.max(0,(quote?.amount_vnd??0)-received),
+    refundable_vnd:Math.max(0,received-(quote?.amount_vnd??0)),
+    current:{
+     revision:current.revision,request_hash:current.request_hash,
+     verified_plan:verifiedPlan,preview_ref:previewRef,
+     request_confirmation:requestConfirmation,price_confirmation:priceConfirmation,
+     requires_price_confirmation:needsPrice,approval:approval?{...approval,deposit_short_vnd:dbSafeInteger(approval.deposit_short_vnd,'approval.deposit_short_vnd')}:null,
+     queue_confirmed_at:existingActiveJob?.confirmed_at??null,
+     request_confirmed:Boolean(requestConfirmation),price_confirmed:!needsPrice||Boolean(priceConfirmation),
+     staff_approved:Boolean(approval)
+    },
+    print_progress:{
+     planned_sheets:planned,verified_sheets:safelyVerified,
+     missing_sheets:planned===null?null:Math.max(0,planned-safelyVerified),
+     delivered_sheets:o.delivered_sheets,
+     fully_verified:planned!==null&&planned>0&&safelyVerified>=planned,
+     requires_manual_reconciliation:jobRows.some(j=>j.state==='UNKNOWN'||j.state==='SENT_UNVERIFIED'||(j.verified_sheets>0&&j.paper_complete===false))
+    },
+    conversation_control:conversation?{...conversation,generation:dbSafeInteger(conversation.generation,'conversation.generation')}:null
+   };
   });
  }
  async listOrders(p:Principal){assertStaff(p);const res=await this.store.pool.query('SELECT id,customer_id,active_revision,manual_lock,print_closed,delivered_sheets,created_at FROM core_orders WHERE shop_id=$1 ORDER BY created_at DESC LIMIT 100',[p.shop_id]);return res.rows;}
