@@ -73,6 +73,17 @@ test('REAL PostgreSQL (two independent pools): FIFO, double approve, claim, send
     const nextClaim=await svcA.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('claim-2')});
     assert.equal(nextClaim.job.order_id,second,'leased job cannot be claimed twice');
     assert.notEqual(firstClaim.job.job_id,nextClaim.job.job_id);
+    await assert.rejects(svcA.revise(staff,second,{expected_revision:1,request_data:request(3),idempotency_key:key('old-revision')}),e=>e.code==='STALE_REVISION');
+    // Two independent PostgreSQL pools race for one additional eligible NOT_SENT job.
+    const third=await prepare(svcA,staff,processor,customer,shop,1);
+    await svcA.approve(staff,third,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('approve-third')});
+    const [thirdA,thirdB]=await Promise.all([
+      svcA.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('parallel-claim-a')}),
+      svcB.claim(agent2,{printer_id:'RMP7000',idempotency_key:key('parallel-claim-b')})
+    ]);
+    const acquired=[thirdA.job,thirdB.job].filter(Boolean);
+    assert.equal(acquired.length,1,'two physical database connections cannot claim same NOT_SENT job');
+    assert.equal(acquired[0].order_id,third);
     const [send1,send2]=await Promise.allSettled([
       svcA.markSending(agent2,firstClaim.job.job_id,{expected_revision:2,lease_token:firstClaim.job.lease_token,idempotency_key:key('send-A')}),
       svcB.markSending(agent2,firstClaim.job.job_id,{expected_revision:2,lease_token:firstClaim.job.lease_token,idempotency_key:key('send-B')})
