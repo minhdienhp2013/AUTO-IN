@@ -44,8 +44,6 @@ export class CoreConversationGate implements GatePort,AuthoritativeGateLock {
     const ids=[...new Set(batch.events.map(e=>e.event_id))].sort();
     if(ids.length!==batch.events.length)throw new Error("DUPLICATE_BATCH_EVENT");
     return this.db.transaction(async tx=>{
-      const current=await this.fetch(tx,first.conversation_id,false);
-      if(current)return {conversation_id:first.conversation_id,...current};
       const shop=await tx.query(
         "SELECT shop_id FROM core_shop_settings WHERE shop_id=$1 FOR SHARE",[this.shop_id]);
       if(shop.rows.length!==1)throw new Error("UNVERIFIED_SHOP");
@@ -60,6 +58,8 @@ export class CoreConversationGate implements GatePort,AuthoritativeGateLock {
           AND customer_id<>$3 LIMIT 1 FOR SHARE`,
         [this.shop_id,first.conversation_id,first.customer_id]);
       if(other.rows.length)throw new Error("VERIFIED_CUSTOMER_MISMATCH");
+      const current=await this.fetch(tx,first.conversation_id,false);
+      if(current)return {conversation_id:first.conversation_id,...current};
       return {conversation_id:first.conversation_id,generation:0,mode:"AI" as const};
     });
   }
