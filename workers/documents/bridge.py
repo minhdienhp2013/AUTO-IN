@@ -226,7 +226,16 @@ def process_request(value: dict[str, Any], *, input_root: str | Path,
             "paper_plan": final["files"],
             "evidence_kind": "local_render_verified_artifacts",
         }
-        manifest["content_settings_sha256"] = _sha(_canonical(manifest).encode("utf-8"))
+        # Identity must not depend on the random storage directory/ref.
+        stable_evidence = {
+            "request_hash": request_hash,
+            "renderer_versions": manifest["renderer_versions"],
+            "files": evidence_files,
+            "preview_sha256": [p["sha256"] for p in preview_records],
+            "counts": manifest["counts"],
+            "paper_plan": final["files"],
+        }
+        manifest["content_settings_sha256"] = _sha(_canonical(stable_evidence).encode("utf-8"))
         manifest_path = output_dir / "manifest.json"
         with manifest_path.open("x", encoding="utf-8") as out:
             json.dump(manifest, out, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
@@ -248,7 +257,7 @@ def process_request(value: dict[str, Any], *, input_root: str | Path,
                 "renderer_versions": manifest["renderer_versions"],
                 "preview_artifacts": preview_records,
                 "requires_price_confirmation": final["requires_price_confirmation"]}
-    except (ValueError, TypeError, OSError, UnicodeError, KeyError, OverflowError) as exc:
+    except Exception as exc:  # fail closed on malformed settings/renderer exceptions
         if output_dir:
             shutil.rmtree(output_dir)
         reason = str(exc)
