@@ -4,7 +4,7 @@ import {createZaloPipeline} from '../../../backend/integrations/zalo/pipeline.ts
 import {SyntheticFixtureNormalizer,SyntheticTestVerifier} from '../../../backend/integrations/zalo/protocol.ts';
 
 const requirements={
-  trusted_shop_id:'shop-from-authenticated-config',
+  trusted_shop_id:'shop-from-authenticated-config',trusted_oa_id:'oa1',
   documents:{async inspect(){return []}},
   orders:{async suggest_draft(){throw Error('unexpected draft')},async route_human(){throw Error('unexpected route')}},
   schedule:{allowed:()=>true},clock:{now:()=>new Date('2026-10-11T03:00:00Z')}
@@ -62,6 +62,9 @@ test('synthetic webhook uses raw-byte verifier before durable insert and dedupe'
   const headers={'x-test-fixture-key':'fixture-key'};
   assert.equal((await pipeline.receive_webhook(event,headers)).body.status,'accepted');
   assert.equal((await pipeline.receive_webhook(event,headers)).body.status,'duplicate');
+  assert.equal(x.inbound.size,1);
+  const otherOa=new TextEncoder().encode(new TextDecoder().decode(event).replace('"oa_id":"oa1"','"oa_id":"wrong-oa"'));
+  assert.equal((await pipeline.receive_webhook(otherOa,headers)).status_code,422);
   assert.equal(x.inbound.size,1);
 });
 test('simulation sender blocked on AI1 takeover and return does not resurrect old generation',async()=>{
