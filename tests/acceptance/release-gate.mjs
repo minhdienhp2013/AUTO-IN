@@ -14,6 +14,15 @@ export function releaseGate(r){
  for(const name of ['postgres_concurrency','oa_verified','ricoh_verified','iphone_verified','all_p0_rechecked','reviewed_by_owner']){
   if(r?.evidence?.[name]!==true)blockers.push('Missing evidence: '+name);
  }
+
+ const sha=r?.evidence?.integration_sha;
+ if(!/^[a-f0-9]{40}$/.test(sha??''))blockers.push('Missing precise 40-character integrated CODE-006 SHA');
+ for(const type of ['pg','http','dryrun','browser']){
+  const proof=r?.evidence?.product_runs?.[type];
+  if(!proof || proof.status!=='PASS' || proof.fail!==0 || proof.skip!==0 ||
+     !Number.isInteger(proof.pass) || proof.pass<1 || proof.integration_sha!==sha)
+   blockers.push('Missing fully passing product evidence: '+type);
+ }
  if(r?.synthetic_dataset!==false)blockers.push('Synthetic or unidentified test dataset');
  return {allowed:blockers.length===0,blockers};
 }
