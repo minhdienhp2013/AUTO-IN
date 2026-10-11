@@ -15,6 +15,8 @@ import tempfile
 import zipfile
 from typing import Any
 
+from .content_profile import summarize_pdf_content
+
 MAX_FILE = 25 * 1024 * 1024
 MAX_ARCHIVE = 60 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 100
@@ -44,6 +46,7 @@ def _render_pdf(data: bytes, preview_dir: Path | None, stem: str) -> dict[str, A
                 return _human('INVALID_PAGE_COUNT')
             sizes = [{'width_mm': round(page.rect.width * 25.4 / 72, 1),
                       'height_mm': round(page.rect.height * 25.4 / 72, 1)} for page in pdf]
+            content_signals = summarize_pdf_content(pdf)
             previews: list[str] = []
             if preview_dir:
                 preview_dir.mkdir(parents=True, exist_ok=True)
@@ -57,7 +60,9 @@ def _render_pdf(data: bytes, preview_dir: Path | None, stem: str) -> dict[str, A
                     previews.append(filename)
             return {'status': 'READY', 'evidence_kind': 'local_render',
                     'render_method': f'pymupdf-{fitz.VersionBind}', 'document_pages': n,
-                    'page_sizes': sizes, 'preview_files': previews}
+                    'page_sizes': sizes, 'preview_files': previews, **content_signals,
+                    **({'warnings': ['PDF_CONTENT_VISUAL_REVIEW_RECOMMENDED']} if
+                       content_signals['content_review_recommended'] else {})}
     except Exception:
         return _human('PDF_RENDER_FAILED')
 
