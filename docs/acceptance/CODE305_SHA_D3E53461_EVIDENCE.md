@@ -26,3 +26,12 @@
 **TN-037 = BLOCKED, release gate vẫn khóa.** Không in thật, không gửi khách, không mở production. Kết quả từ CI cũ `15c1ac7` lưu lại làm lịch sử nhưng **không thay thế** run push của `d3e53461a5cc71d0b96b24b069b5240ca9dcd71e`.
 
 **AI5 HEAD sau SHA trên:** Bộ test mới yêu cầu fixture HTTPS riêng từng job, sổ chống tái dùng, truy vấn PostgreSQL xác minh kế hoạch đã được xác nhận/duyệt và đúng một job đang chờ trong shop; bổ sung 5 bài browser desktop/mobile. Thay đổi test AI5 này **chưa được CI chạy trên bản tích hợp mới**, phải được AI0 import và chạy lại theo SHA mới.
+
+## Xác minh lại ngày 2026-10-12 (HEAD PR #25 không đổi)
+
+- HEAD vẫn `d3e53461a5cc71d0b96b24b069b5240ca9dcd71e`; workflow push #38165256655 và #38165256659 đều SUCCESS, đã đọc lại log job 114546378165 đúng SHA; **không có lượt chạy PostgreSQL mới trong container AI5**.
+- AI1 core PostgreSQL **16 PASS/0 FAIL/0 SKIP**; AI2 **36 PASS/0 FAIL/0 SKIP**; composition **9 PASS/0 FAIL/0 SKIP** (có 1 test synthetic webhook Fastify/PG), AI3 pytest **100 PASS/0 FAIL/1 SKIP**.
+- AI5 product PostgreSQL/DryRun **20 PASS/0 FAIL/0 SKIP**; full --integration **50 PASS/0 FAIL/19 SKIP**. HTTP anonymous+readiness **6 PASS/0 FAIL/0 SKIP**; full --http **36 PASS/0 FAIL/40 SKIP**.
+- AI5 selftest cục bộ `node --test tests/acceptance/https-agent-fixture.test.mjs tests/acceptance/browser-build-guard.test.mjs`: **6 PASS/0 FAIL/0 SKIP**; `node --check tests/acceptance/https-agent-run.mjs` PASS. Chỉ chốt an toàn, không phải product E2E.
+- AI4 PR #15 HEAD `dbf4986` báo 48/48 UI unit PASS, nhưng `web/package-lock.json` vẫn thiếu; npm ci, typecheck, build BLOCKED/FAIL ở môi trường AI4: browser **NOT RUN**. HTTPS agent fixture mất ACK/crash/restart **NOT RUN** vì thiếu TLS/token/job mới.
+- Zalo OA thật, Ricoh, iPhone và TN-037 **NOT RUN/BLOCKED**. CI push là bằng chứng phiên trước đã xác minh lại; thay đổi test trên PR #18 **chưa** chạy trên chính HEAD AI5.

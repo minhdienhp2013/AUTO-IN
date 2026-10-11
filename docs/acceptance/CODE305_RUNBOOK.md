@@ -104,3 +104,7 @@ Chạy **từng scenario với fixture/job MỚI**; tám tên hợp lệ: `norma
 **Selftests AI5:** `node --test tests/acceptance/https-agent-fixture.test.mjs` để kiểm guard trước khi cấp fixture. Chỉ selftest mới có thể chạy độc lập; không được ghi HTTPS CLI PASS nếu chưa có fixture thật. Các ca mới này chưa có CI trên tích hợp `d3e53461a5cc71d0b96b24b069b5240ca9dcd71e`, nên AI0 phải đưa vào SHA tích hợp tiếp theo và chạy lại.
 
 **Phân công:** AI0 cấp SHA tích hợp + HTTPS fixture/CI, AI3 xác minh logic HTTPS/ACK/restart, AI4 cung cấp npm lock/build/browser. AI5 chỉ nghiệm thu và báo lỗi. Giữ **TN-037 BLOCKED** cho đến khi đủ toàn bộ điều kiện thực tế.
+
+## Recheck 2026-10-12
+
+SHA PR #25 mới nhất vẫn `d3e53461a5cc71d0b96b24b069b5240ca9dcd71e`. Chỉ đối chiếu CI **push** run #38165256655 và #38165256659 đúng SHA. Nếu AI0 cấp commit mới phải xác minh run **push của SHA mới**; không kế thừa số đếm PASS. AI4 HEAD `dbf4986` thiếu web/package-lock.json nên Playwright desktop/mobile **NOT RUN**. HTTPS agent cần fixture DB test, TLS, token scoped và job đã duyệt riêng cho từng scenario; chưa có nên **NOT RUN**. AI3 1 SKIP và các runner 19/40 SKIP phải báo riêng. TN-037 tiếp tục **BLOCKED**.

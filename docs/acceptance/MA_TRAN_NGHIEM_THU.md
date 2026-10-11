@@ -1,4 +1,35 @@
-# AUTO-IN — ma trận nghiệm thu CODE-105
+# AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305
+
+## Trạng thái hiện hành — xác minh lại 2026-10-12
+
+**HEAD mới nhất PR AI0 #25:** `d3e53461a5cc71d0b96b24b069b5240ca9dcd71e` (Draft, chưa merge). **Không có SHA tích hợp mới hơn** ở thời điểm kiểm tra. Bằng chứng dưới đây lấy từ GitHub Actions **PUSH đúng SHA**; AI5 đọc lại job log, không tự nhận đã chạy PostgreSQL mới trong container.
+
+- [Simulation integration — PUSH #38165256655](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38165256655), job `114546378165`: SUCCESS.
+- [CODE checks — PUSH #38165256659](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38165256659): SUCCESS.
+- Không dùng SHA cũ `15c1ac7` hoặc PR-triggered merge ref để thay thế.
+
+| Hạng mục kiểm thử | PASS | FAIL | SKIP / NOT RUN | Mức kết luận |
+|---|---:|---:|---|---|
+| AI1 PostgreSQL/core | 16 | 0 | 0 | CI trên PostgreSQL 18.3 thật |
+| AI2 Zalo unit/integration | 36 | 0 | 0 | Simulation, không phải OA live |
+| Composition Fastify/PostgreSQL | 9 | 0 | 0 | Có 1 bài synthetic raw webhook → PG (signature/scope/dedupe) |
+| AI3 Python documents/printing | 100 | 0 | 1 SKIP | Không tính SKIP thành PASS |
+| AI5 PG/DryRun product | 20 | 0 | 0 | Simulation; không phải Ricoh |
+| HTTP auth (5) + readiness (1) | 6 | 0 | 0 | Anonymous, không chứng minh auth E2E |
+| Full runner --integration | 50 | 0 | 19 SKIP | Legacy/không nối |
+| Full runner --http | 36 | 0 | 40 SKIP | PG tắt, legacy và HTTP-ZALO-01 chưa nối runtime mặc định |
+| AI5 selftest guard Node local | 6 | 0 | 0 | Chỉ fixture/browser preflight, không kết nối sản phẩm |
+| Browser AI4 desktop/mobile | — | — | NOT RUN | AI4 HEAD `dbf4986`: chưa package-lock.json / build |
+| HTTPS agent CLI, ACK mất, crash/restart | — | — | NOT RUN | Thiếu test TLS/token/job riêng từng scenario |
+| OA thật, Ricoh, iPhone, 100 đơn/ngày, 210 đơn/≥7 ngày | — | — | NOT RUN | Chưa có dữ liệu thực địa |
+
+**TN-037: BLOCKED**, chưa đủ tỷ lệ nhận diện ≥90%, tự xử lý ≥80%, tải 100 đơn/ngày, 210 đơn/ít nhất 7 ngày, thiết bị thật và duyệt chủ. Không đánh dấu toàn hệ thống DONE.
+
+AI4 HEAD `dbf4986da7c7786afbaf6e2a5f9871136867cbad` có báo cáo 48/48 UI unit PASS nhưng lockfile/npm ci/typecheck/build chưa đạt; không đổi thành browser PASS. Bộ test mới trên AI5 PR #18 chưa có CI riêng ở HEAD; phải tích hợp và chạy lại khi có SHA mới.
+
+**Các bảng bên dưới là lịch sử tại thời điểm viết trước; phần này là trạng thái mới nhất.**
+
+---
 
 **Mặc định tất cả ca nghiệm thu sản phẩm CHƯA CHẠY.** Fixture PASS không phải bằng chứng phần mềm đúng. Chỉ dùng giấy tờ tổng hợp, không dùng file khách.
 
