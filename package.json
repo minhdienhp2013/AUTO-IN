@@ -19,7 +19,8 @@
     "test:zalo": "node --experimental-strip-types --test tests/unit/zalo/*.test.mjs",
     "test:composition": "node --import tsx --test tests/integration/composition/*.test.ts",
     "db:migrate": "node --import tsx scripts/database.ts migrate",
-    "db:bootstrap": "node --import tsx scripts/database.ts bootstrap"
+    "db:bootstrap": "node --import tsx scripts/database.ts bootstrap",
+    "process:order": "node --import tsx scripts/process-order.ts"
   },
   "dependencies": {
     "@sinclair/typebox": "0.34.52",
