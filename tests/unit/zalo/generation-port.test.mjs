@@ -95,3 +95,20 @@ test("Port outage AFTER commit is safely retried with stable idempotency key",as
   assert.deepEqual(calls[0].event_ids,["evtA","evtB"]);
   assert.deepEqual(calls[1].event_ids,["evtA","evtB"]);
 });
+
+
+test("invalid AI1 acknowledgement never emits outbound and retains batch for retry",async()=>{
+  let emitted=0;
+  const p=new ConversationProcessor(aiGate(3),docs,{
+    async suggest_draft(){return undefined},
+    async route_human(){throw Error("unexpected")}
+  },{async enqueue(){emitted++}});
+  await assert.rejects(p.consume(makeBatch()),/AI1_DRAFT_PORT_INVALID_RESULT/);
+  assert.equal(emitted,0);
+  const routed=new ConversationProcessor(aiGate(3),docs,{
+    async suggest_draft(){throw Error("unexpected")},
+    async route_human(){return undefined}
+  },{async enqueue(){emitted++}});
+  await assert.rejects(routed.consume(makeBatch([ev("color","in màu")])) ,/AI1_ROUTE_PORT_INVALID_RESULT/);
+  assert.equal(emitted,0);
+});
