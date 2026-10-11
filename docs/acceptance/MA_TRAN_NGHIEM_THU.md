@@ -69,3 +69,7 @@
 ## Cập nhật xác minh 2026-10-12
 
 Xem [Bằng chứng SHA 15c1ac7](CODE305_SHA_15c1ac7_EVIDENCE.md). Các bảng NOT RUN ở trên là trạng thái lịch sử trước khi AI0 cấp SHA. Kết quả mới của GitHub Actions **push trực tiếp SHA**: 20 PG/DryRun PASS/0 FAIL/0 SKIP; HTTP auth/readiness 6 PASS/0 FAIL/0 SKIP; 1 bài webhook synthetic Fastify/PostgreSQL PASS. Toàn runner --integration 50 PASS/19 SKIP; --http 36 PASS/40 SKIP (các SKIP không phải kết quả PASS sản phẩm). Browser BLOCKED vì AI4 chưa có package-lock.json. Zalo OA thật, Ricoh thật, iPhone thật và TN-037 vẫn NOT RUN/BLOCKED. Không nâng trạng thái TN-037 dựa trên CI simulation.
+
+## Trạng thái mới trên SHA CODE-006 `d3e53461`
+
+Bảng phía trên và báo cáo `15c1ac7` là lịch sử. Bằng chứng đang có trên [SHA push mới](CODE305_SHA_D3E53461_EVIDENCE.md): AI5 PG/DryRun **20 PASS/0 FAIL/0 SKIP**; HTTP auth/readiness **6 PASS/0 FAIL/0 SKIP**; synthetic raw Fastify→PostgreSQL **PASS** trong 9 ca composition. Toàn runner integration 50 PASS/19 SKIP; HTTP 36 PASS/40 SKIP. Browser desktop/mobile và agent HTTPS fixture mới **NOT RUN**. Zalo OA thật, Ricoh thật, iPhone thật và TN-037 **BLOCKED**. Không lấy kết quả SHA cũ hoặc selftest làm nghiệm thu thực tế.
