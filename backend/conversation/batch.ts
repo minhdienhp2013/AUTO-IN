@@ -17,7 +17,9 @@ export function batchKey(event: InboundEvent): string {
   return JSON.stringify([event.oa_id, event.customer_id, event.conversation_id]);
 }
 export class MessageBatcher {
-  constructor(private readonly store: BatchStore, private readonly clock: Clock) {}
+  private readonly store:BatchStore;
+  private readonly clock:Clock;
+  constructor(store:BatchStore,clock:Clock) { this.store=store;this.clock=clock; }
   async add(event: InboundEvent): Promise<Batch> {
     const key = batchKey(event);
     const now = this.clock.now();
