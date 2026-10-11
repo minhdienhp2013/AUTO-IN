@@ -1,0 +1,107 @@
+{
+  "fixture_version": "wire-v0.1-synthetic",
+  "origin": "SYNTHETIC_PUBLIC_NO_CUSTOMER_DATA",
+  "cases": [
+    {
+      "id": "P01",
+      "name": "unapproved_order",
+      "order_id": "synthetic-o1",
+      "revision": 1,
+      "approved_revision": null,
+      "print_state": "NOT_SENT",
+      "mode": "simulation"
+    },
+    {
+      "id": "P02",
+      "name": "stale_revision",
+      "order_id": "synthetic-o2",
+      "revision": 2,
+      "approved_revision": 1,
+      "print_state": "NOT_SENT",
+      "mode": "simulation"
+    },
+    {
+      "id": "P03",
+      "name": "approved_unsent",
+      "order_id": "synthetic-o3",
+      "revision": 3,
+      "approved_revision": 3,
+      "print_state": "NOT_SENT",
+      "mode": "simulation"
+    },
+    {
+      "id": "P04",
+      "name": "unknown_after_crash",
+      "order_id": "synthetic-o4",
+      "revision": 1,
+      "approved_revision": 1,
+      "print_state": "UNKNOWN",
+      "mode": "simulation"
+    },
+    {
+      "id": "P05",
+      "name": "large_quote_unconfirmed",
+      "order_id": "synthetic-o5",
+      "physical_sheets": 151,
+      "quote_revision": 2,
+      "confirmed_quote_revision": 1,
+      "mode": "simulation"
+    },
+    {
+      "id": "P06",
+      "name": "deposit_short",
+      "order_id": "synthetic-o6",
+      "deposit_required_vnd": 200000,
+      "paid_vnd": 100000,
+      "receivable_vnd": 100000,
+      "mode": "simulation"
+    },
+    {
+      "id": "P07",
+      "name": "partial_delivery_exception",
+      "order_id": "synthetic-o7",
+      "physical_sheets": 40,
+      "delivered_sheets": 12,
+      "undelivered_sheets": 28,
+      "receivable_vnd": 70000,
+      "mode": "simulation"
+    },
+    {
+      "id": "P08",
+      "name": "holiday",
+      "order_id": "synthetic-o8",
+      "print_state": "NOT_SENT",
+      "holiday": true,
+      "mode": "simulation"
+    },
+    {
+      "id": "P09",
+      "name": "manual_lock",
+      "order_id": "synthetic-o9",
+      "print_state": "NOT_SENT",
+      "manual_processing": true,
+      "mode": "simulation"
+    },
+    {
+      "id": "P10",
+      "name": "spooler",
+      "order_id": "synthetic-o10",
+      "print_state": "SENT_UNVERIFIED",
+      "evidence_kind": "spooler",
+      "mode": "simulation"
+    }
+  ],
+  "incoming_events": [
+    {
+      "event_id": "event-synthetic-1",
+      "conversation_id": "conv-A",
+      "text": "In hai bản A4"
+    },
+    {
+      "event_id": "event-synthetic-1",
+      "conversation_id": "conv-A",
+      "text": "In hai bản A4",
+      "duplicate": true
+    }
+  ]
+}

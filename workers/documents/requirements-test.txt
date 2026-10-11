@@ -1,0 +1,3 @@
+# CODE-203 local Python unit tests; no production print dependencies
+-r requirements.txt
+pytest==8.4.2

@@ -9,12 +9,17 @@
   "scripts": {
     "dev": "node --import tsx --watch backend/server.ts",
     "start": "node dist/backend/server.js",
-    "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.ai2.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.ai2.json",
     "test": "node --import tsx --test tests/unit/contracts/*.test.ts",
     "contracts:generate": "node --import tsx contracts/export.ts",
     "contracts:check": "node --import tsx contracts/export.ts --check",
-    "check": "npm run contracts:check && npm run typecheck && npm test && npm run build"
+    "check": "npm run contracts:check && npm run typecheck && npm test && npm run build && npm run test:core && npm run test:zalo && npm run test:composition",
+    "test:core": "node scripts/run-core.mjs",
+    "test:zalo": "node --experimental-strip-types --test tests/unit/zalo/*.test.mjs",
+    "test:composition": "node --import tsx --test tests/integration/composition/*.test.ts",
+    "db:migrate": "node --import tsx scripts/database.ts migrate",
+    "db:bootstrap": "node --import tsx scripts/database.ts bootstrap"
   },
   "dependencies": {
     "@sinclair/typebox": "0.34.52",
