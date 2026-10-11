@@ -26,13 +26,16 @@ export class DisabledLiveSender implements ZaloSender {
 }
 export interface ReplySchedule { allowed(now: Date): boolean }
 export class OutboundDispatcher {
-  constructor(
-    private readonly gate: GatePort,
-    private readonly outbox: OutboundPort,
-    private readonly sender: ZaloSender,
-    private readonly clock: { now(): Date },
-    private readonly schedule: ReplySchedule,
-  ) {}
+  private readonly gate:GatePort;
+  private readonly outbox:OutboundPort;
+  private readonly sender:ZaloSender;
+  private readonly clock:{ now(): Date };
+  private readonly schedule:ReplySchedule;
+  constructor(gate:GatePort,outbox:OutboundPort,sender:ZaloSender,
+    clock:{now():Date},schedule:ReplySchedule) {
+    this.gate=gate;this.outbox=outbox;this.sender=sender;
+    this.clock=clock;this.schedule=schedule;
+  }
   async deliver(input: {
     outbound_id: string; conversation_id: string;
     generation: number; text: string;
