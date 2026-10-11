@@ -31,6 +31,7 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
     // Verified first-message preflight requires a trusted shop in AI1 schema.
     await admin.query('CREATE TABLE core_shop_settings(shop_id text PRIMARY KEY)');
     await admin.query("INSERT INTO core_shop_settings VALUES ('trusted-shop')");
+    await admin.query('CREATE TABLE core_orders(id uuid,shop_id text,conversation_id text,customer_id text)');
     // Mirrors the AI1 migration 004 control row layout; isolated disposable schema.
     await admin.query(`CREATE TABLE core_conversation_controls (
       shop_id text NOT NULL,conversation_id text NOT NULL,generation bigint NOT NULL,
