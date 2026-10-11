@@ -23,7 +23,10 @@ export function vietnamClock(at: Date): { date: string; minute: number } {
 }
 function parseMinute(hhmm: string): number {
   if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(hhmm)) throw new Error("INVALID_SCHEDULE_TIME");
-  const [hour, minute] = hhmm.split(":").map(Number);
+  // Regex above guarantees a five-character HH:mm; fixed positions stay defined
+  // under noUncheckedIndexedAccess without relying on array destructuring.
+  const hour = Number(hhmm.slice(0, 2));
+  const minute = Number(hhmm.slice(3, 5));
   return hour * 60 + minute;
 }
 export function scheduleDecision(at: Date, setting: Schedule): {

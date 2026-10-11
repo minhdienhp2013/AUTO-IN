@@ -20,9 +20,15 @@ export class DurableConversationWorker {
     for(const batch of claimed) {
       try {
         const result=await this.processor.consume(batch);
-        if(!await this.queue.complete(batch)) throw new Error("BATCH_LEASE_LOST");
-        if(result==="held") held++;
-        else processed++; // includes a legitimate route_human via AI1
+        if(result==="held") {
+          // Handover/stale generation is NOT success: retain original batch and
+          // source event rows for staff, never replay when AI mode returns.
+          if(!await this.queue.hold(batch))throw new Error("BATCH_LEASE_LOST");
+          held++;
+        } else {
+          if(!await this.queue.complete(batch))throw new Error("BATCH_LEASE_LOST");
+          processed++; // includes a legitimate route_human via AI1
+        }
       } catch(error) {
         // Do not put side-effecting calls on an in-memory retry loop.
         const code=error instanceof Error && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.message)

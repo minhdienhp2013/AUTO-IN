@@ -36,7 +36,7 @@ export interface ZaloPipelineOptions {
 export function createZaloPipeline(options:ZaloPipelineOptions) {
   if((options.mode ?? 'simulation')!=='simulation')throw new Error('ZALO_LIVE_DISABLED');
   if(!options.trusted_oa_id||options.trusted_oa_id.length>128)throw new Error('INVALID_TRUSTED_OA');
-  const gate=new CoreConversationGate(options.db,options.trusted_shop_id);
+  const gate=new CoreConversationGate(options.db,options.trusted_shop_id,options.trusted_oa_id);
   const queue=new PostgresConversationQueue(options.db,options.trusted_oa_id);
   const outbox=new PostgresOutboundRepository(options.db,gate,{shop_id:options.trusted_shop_id,oa_id:options.trusted_oa_id});
   const provider=options.synthetic_provider;
