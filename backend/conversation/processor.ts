@@ -38,6 +38,8 @@ export class ConversationProcessor {
     try {
       decision=interpretByRules(batch.events,await this.documents.inspect(batch));
     } catch {
+      const gateAfterError=await this.gate.read(first.conversation_id);
+      if (gateAfterError.mode!=="AI" || gateAfterError.generation!==snap.generation) return "held";
       await this.orders.route_human({conversation_id:first.conversation_id,
         reason:"DOCUMENT_INSPECTION_FAILED",event_ids:batch.events.map(e=>e.event_id)});
       return "human";
@@ -54,11 +56,14 @@ export class ConversationProcessor {
           decision={...decision,intent:"HUMAN" as const,handover_reason:"NEEDS_CLARIFICATION" as const,
             reply:"Tôi đã chuyển nhân viên hỗ trợ bạn.",needs_deepseek:false};
         } else if (ai.result.requires_clarification) {
-          decision={...decision,intent:"QUESTION" as const,reply:ai.result.question ?? "Bạn có thể nói rõ yêu cầu in không?",needs_deepseek:false};
+          // Never echo arbitrary model prose; DeepSeek only classifies intent.
+          decision={...decision,intent:"QUESTION" as const,reply:"Bạn có thể nói rõ yêu cầu in và thông số bạn muốn không?",needs_deepseek:false};
         } else if (ai.result.intent === "PRINT") {
           decision={...decision,intent:"PRINT" as const,reply:"Tôi đã nhận yêu cầu. Cửa hàng sẽ chuẩn bị bản xem trước để bạn xác nhận.",needs_deepseek:false};
         }
       } catch {
+        const gateAfterError=await this.gate.read(first.conversation_id);
+        if (gateAfterError.mode!=="AI" || gateAfterError.generation!==snap.generation) return "held";
         await this.orders.route_human({conversation_id:first.conversation_id,reason:"AI_UNAVAILABLE",
           event_ids:batch.events.map(e=>e.event_id)});
         return "human";
@@ -72,7 +77,7 @@ export class ConversationProcessor {
         event_ids:batch.events.map(e=>e.event_id)});
       return "human";
     }
-    if (decision.intent === "HUMAN") {
+    if (decision.intent === "HUMAN" || decision.handover_reason === "PRICE_QUOTE") {
       await this.orders.route_human({conversation_id:first.conversation_id,
         reason:decision.handover_reason??"NEEDS_CLARIFICATION",event_ids:batch.events.map(e=>e.event_id)});
     }
@@ -90,6 +95,6 @@ export class ConversationProcessor {
       await this.reply.enqueue({outbound_id:`reply:${first.oa_id}:${batch.events.map(e=>e.event_id).sort().join(":")}`,
         conversation_id:first.conversation_id,generation:snap.generation,text:decision.reply});
     }
-    return decision.intent==="HUMAN"?"human":"processed";
+    return (decision.intent==="HUMAN" || decision.handover_reason==="PRICE_QUOTE")?"human":"processed";
   }
 }
