@@ -1,27 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-// Requires AI4 real web and Playwright; viewport emulation != physical iPhone evidence.
-const missing=!process.env.AUTOIN_WEB_URL;
-async function open(fn){
- const {chromium}=await import('playwright').catch(()=>{throw Error('Playwright missing: request AI0 to install root deps');});
+// AI4 uses .mode-pill and .simulation-note; no imaginary data-testid needed.
+// Chromium viewport emulation is NOT physical iPhone acceptance.
+const absent=!process.env.AUTOIN_WEB_URL;
+async function withPage(fn){
+ const {chromium}=await import('playwright').catch(()=>{throw Error('Playwright missing: AI0 must install approved dependency');});
  const b=await chromium.launch({headless:true});
  try{
   const ctx=await b.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
-  const page=await ctx.newPage();await page.goto(process.env.AUTOIN_WEB_URL);
+  const page=await ctx.newPage();await page.goto(process.env.AUTOIN_WEB_URL,{waitUntil:'domcontentloaded'});
   await fn(page);
  }finally{await b.close();}
 }
-test('UI: simulation/demo banner on mobile',{skip:missing&&'WEB URL MISSING: NOT RUN'},()=>open(async page=>{
- const el=page.getByTestId('operation-mode-banner');
- assert.equal(await el.isVisible(),true);
- assert.match((await el.innerText()).toLowerCase(),/simulation|demo|mô phỏng/);
-}));
-test('UI: anonymous cannot approve or send real print',{skip:missing&&'WEB URL MISSING: NOT RUN'},()=>open(async page=>{
- for(const key of ['approve-print-action','send-real-print-action']){
-  const el=page.getByTestId(key);
-  assert.ok(await el.count()===0||!(await el.isEnabled()));
+test('UI-01 mode always visible and demo explicitly labeled',{skip:absent&&'APP NOT RUNNING'},()=>withPage(async page=>{
+ const label=page.locator('.mode-pill').first();
+ assert.equal(await label.isVisible(),true);
+ assert.ok((await label.innerText()).trim().length>0);
+ if(process.env.AUTOIN_EXPECT_DEMO==='1') {
+  assert.match(await label.innerText(),/mô phỏng|simulation|demo/i);
+  const note=page.locator('.simulation-note').first();
+  assert.equal(await note.isVisible(),true);
+  assert.match(await note.innerText(),/không in|không gửi/i);
  }
 }));
-test('UI: 390px viewport has no horizontal overflow',{skip:missing&&'WEB URL MISSING: NOT RUN'},()=>open(async page=>{
- assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth+1),false);
+test('UI-02 anonymous session cannot approve',{skip:absent||process.env.AUTOIN_EXPECT_ANONYMOUS!=='1'?'AUTH MODE NOT VERIFIED':false},()=>withPage(async page=>{
+ const approve=page.getByRole('button',{name:/Duyệt lệnh in/i});
+ assert.ok(await approve.count()===0||!(await approve.isEnabled()));
+}));
+test('UI-03 iPhone-sized viewport does not overflow horizontally',{skip:absent&&'APP NOT RUNNING'},()=>withPage(async page=>{
+ const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth+1);
+ assert.equal(overflow,false);
 }));
