@@ -305,6 +305,7 @@ export class OrderService {
    const original=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 AND order_id=$2 FOR UPDATE',[input.original_job_id,id]);
    if(original.state==='NOT_SENT'||original.state==='SENDING'||original.state==='SIMULATED_DONE')throw new DomainError('NOT_REPRINTABLE','Không được in lại lệnh chưa gửi/mô phỏng',409);
    const rev=await this.revision(db,o);if(original.revision!==o.active_revision||original.request_hash!==rev.request_hash)throw new DomainError('STALE_REVISION','In lại bản cũ cần đối soát thủ công',409);
+   if(!original.confirmed_at)throw new DomainError('QUEUE_CONFIRMATION_MISSING','Lệnh cũ thiếu xác nhận khách để xếp hàng; phải đối soát',409);
    const job_id=newId();await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,original_job_id,authorized_reprint_by,confirmed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[job_id,id,rev.revision,rev.request_hash,original.approval_id,original.printer_id,original.id,p.id,original.confirmed_at??null]);
    await this.audit(db,p,'job.reprint_owner_approved',id,{job_id,original_job_id:original.id,reason:input.reason});
    return {job_id,order_id:id,requires_agent_claim:true};
@@ -387,7 +388,7 @@ export class OrderService {
    // Readiness facts are backend-derived for THIS revision, not any earlier request/quote.
    const existingActiveJob=jobs.rows.find(j=>j.revision===current.revision&&j.request_hash===current.request_hash&&!j.cancelled_at);
    const matchedApproval=existingActiveJob?approvals.rows.find(a=>a.id===existingActiveJob.approval_id&&( !needsPrice||a.quote_revision===quote?.quote_revision))??null:null;
-   const approval=requestConfirmation&&(!needsPrice||priceConfirmation)?matchedApproval:null;
+   const approval=verifiedPlan&&requestConfirmation&&(!needsPrice||priceConfirmation)?matchedApproval:null;
    const jobRows=jobs.rows.map(j=>{
     const rev=revisions.rows.find(x=>x.revision===j.revision);
     const planned=rev?.plan && rev.plan.ready && rev.plan.request_hash===j.request_hash ? rev.plan.physical_sheets : null;
@@ -416,14 +417,14 @@ export class OrderService {
      request_confirmation:requestConfirmation,price_confirmation:priceConfirmation,
      requires_price_confirmation:needsPrice,approval:approval?{...approval,deposit_short_vnd:dbSafeInteger(approval.deposit_short_vnd,'approval.deposit_short_vnd')}:null,
      queue_confirmed_at:existingActiveJob?.confirmed_at??null,
-     request_confirmed:Boolean(requestConfirmation),price_confirmed:!needsPrice||Boolean(priceConfirmation),
+     request_confirmed:Boolean(requestConfirmation),price_confirmed:verifiedPlan!==null&&(!needsPrice||Boolean(priceConfirmation)),
      staff_approved:Boolean(approval)
     },
     print_progress:{
      planned_sheets:planned,verified_sheets:safelyVerified,
      missing_sheets:planned===null?null:Math.max(0,planned-safelyVerified),
      delivered_sheets:o.delivered_sheets,
-     fully_verified:planned!==null&&planned>0&&safelyVerified>=planned,
+     fully_verified:planned!==null&&planned>0&&safelyVerified>=planned&&!jobRows.some(j=>j.state==='UNKNOWN'||j.state==='SENT_UNVERIFIED'),
      requires_manual_reconciliation:jobRows.some(j=>j.state==='UNKNOWN'||j.state==='SENT_UNVERIFIED'||(j.verified_sheets>0&&j.paper_complete===false))
     },
     conversation_control:conversation?{...conversation,generation:dbSafeInteger(conversation.generation,'conversation.generation')}:null
