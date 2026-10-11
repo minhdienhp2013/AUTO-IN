@@ -395,9 +395,11 @@ export class OrderService {
     const sheets=dbSafeInteger(j.verified_sheets,'job.verified_sheets');
     return {...j,verified_sheets:sheets,planned_sheets:planned,
      missing_sheets:planned===null?null:Math.max(0,planned-sheets),
-     paper_complete:planned!==null&&j.state==='VERIFIED_DONE'&&j.mode_at_send!=='simulation'&&sheets===planned};
+     paper_complete:planned!==null&&j.state==='VERIFIED_DONE'&&
+     (j.mode_at_send==='controlled_test'||j.mode_at_send==='production')&&sheets===planned};
    });
-   const realVerified=jobRows.filter(j=>j.state==='VERIFIED_DONE'||(j.state==='UNKNOWN'&&j.evidence_kind==='staff_inspected'&&j.verified_sheets>0))
+   const realVerified=jobRows.filter(j=>(j.mode_at_send==='controlled_test'||j.mode_at_send==='production')&&
+      (j.state==='VERIFIED_DONE'||(j.state==='UNKNOWN'&&j.evidence_kind==='staff_inspected'&&j.verified_sheets>0)))
     .reduce((sum,j)=>sum+j.verified_sheets,0);
    if(!Number.isSafeInteger(realVerified))throw new DomainError('DB_INTEGER_OVERFLOW','Số giấy vượt giới hạn',500);
    const planned=verifiedPlan?.physical_sheets??null;

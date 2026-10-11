@@ -41,6 +41,7 @@ class _SimulatedApi(ThreadingHTTPServer):
         self.state = "NOT_SENT"
         self.calls: list[str] = []
         self.drop_mark_ack = False
+        self.drop_report_ack = False
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -92,6 +93,12 @@ class _Handler(BaseHTTPRequestHandler):
                     else "agent_uncertain"
                 )
                 server.state = "SIMULATED_DONE" if payload["result"] == "simulated_done" else "UNKNOWN"
+                if server.drop_report_ack:
+                    server.drop_report_ack = False
+                    self.close_connection = True
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    self.connection.close()
+                    return
                 answer = {"job_id": _job()["job_id"], "state": server.state}
             else:
                 self.send_error(404)
@@ -177,3 +184,49 @@ def test_real_tls_loss_of_mark_ack_unknown_never_reprints(tmp_path, monkeypatch)
 def test_no_http_transport_bypass_even_on_loopback():
     with pytest.raises(ValueError, match="HTTPS"):
         HttpBackendClient("http://localhost:3000", "S"*24)
+
+
+def test_real_tls_lost_report_ack_then_restart_no_second_dryrun(tmp_path, monkeypatch):
+    with tls_backend(tmp_path, monkeypatch) as (server, url):
+        server.drop_report_ack = True
+        driver = DryRunDriver()
+        journal = tmp_path / "lost-report.sqlite"
+        first = _agent(url, journal, driver)
+        result = first.run_once()
+        assert result["status"] == "SIMULATED_DONE"
+        assert result["report_pending"] is True
+        assert driver.calls == 1
+        assert server.state == "SIMULATED_DONE"
+        first.journal.close()
+        recovered = _agent(url, journal, driver)
+        assert recovered.recover() == []
+        assert recovered.run_once()["status"] in ("NO_JOB", "SIMULATED_DONE")
+        assert driver.calls == 1
+        assert server.calls.count("mark-sending") == 1
+        recovered.journal.close()
+
+
+@pytest.mark.parametrize("fault,expected_calls", [
+    ("before_mark_sending", 0),
+    ("after_mark_sending", 0),
+    ("after_journal_before_driver", 0),
+    ("after_driver", 1),
+])
+def test_real_tls_crash_restart_reports_unknown_once_no_repeat(tmp_path, monkeypatch, fault, expected_calls):
+    from agents.windows.agent import SimulatedCrash
+    with tls_backend(tmp_path, monkeypatch) as (server, url):
+        driver = DryRunDriver()
+        journal = tmp_path / "crash.sqlite"
+        first = _agent(url, journal, driver)
+        with pytest.raises(SimulatedCrash):
+            first.run_once(fault_at=fault)
+        assert driver.calls == expected_calls
+        first.journal.close()
+        restarted = _agent(url, journal, driver)
+        assert restarted.recover() == ["CODE303_TLS_JOB"]
+        assert restarted.journal.get("CODE303_TLS_JOB")["state"] == "UNKNOWN"
+        again = restarted.run_once()
+        assert again["status"] in ("UNKNOWN", "NO_JOB")
+        assert driver.calls == expected_calls
+        assert server.calls.count("mark-sending") <= 1
+        restarted.journal.close()
