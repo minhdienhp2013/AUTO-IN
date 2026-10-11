@@ -56,18 +56,44 @@ test('REAL PostgreSQL: AI2 Port draft dedupe, generation and HUMAN routing via i
   assert.equal((await poolA.query('SELECT count(*)::int AS n FROM core_confirmations WHERE order_id=$1',[id])).rows[0].n,0);
   assert.equal((await poolA.query('SELECT count(*)::int AS n FROM core_quotes WHERE order_id=$1',[id])).rows[0].n,0);
   await assert.rejects(portA.suggest_draft({...input,text:'changed',idempotency_key:'new-'+key()}),e=>e.code==='AI_DRAFT_IDEMPOTENCY_CONFLICT');
+  await assert.rejects(portB.suggest_draft({...input,text:'changed'}),e=>e.code==='AI_DRAFT_IDEMPOTENCY_CONFLICT');
+  assert.equal((await poolB.query('SELECT count(*)::int AS n FROM core_ai_draft_proposals WHERE shop_id=$1',
+    [shop])).rows[0].n,1,'conflicting idempotency cannot create a second draft');
   await assert.rejects(portA.suggest_draft({...input,event_ids:['not-same'],idempotency_key:input.idempotency_key}),e=>e.code==='UNVERIFIED_AI_EVENTS');
   assert.deepEqual(await portA.suggest_draft({...input,expected_generation:1}),{status:'stale_generation'});
+  // Missing control + future generation must not insert a control row or proposal.
+  const isolatedConv='conv-no-control-'+key(),isolatedEvent='evt-'+key();
+  await inserts(poolA,oa,isolatedConv,customer,[isolatedEvent]);
+  const missingDraft=await portB.suggest_draft({conversation_id:isolatedConv,customer_id:customer,event_ids:[isolatedEvent],
+    text:'Unlinked stale',idempotency_key:'stale-'+key(),expected_generation:8});
+  assert.deepEqual(missingDraft,{status:'stale_generation'});
+  const missingRoute=await portA.route_human({conversation_id:isolatedConv,
+    reason:'Unlinked stale routing',event_ids:[isolatedEvent],expected_generation:9});
+  assert.deepEqual(missingRoute,{status:'stale_generation'});
+  assert.equal((await poolA.query('SELECT count(*)::int AS n FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',
+    [shop,isolatedConv])).rows[0].n,0,'stale request cannot create a control row');
+  assert.equal((await poolA.query('SELECT count(*)::int AS n FROM core_orders WHERE shop_id=$1 AND conversation_id=$2',
+    [shop,isolatedConv])).rows[0].n,0,'stale request cannot create an order');
+
   const request={conversation_id:conv,reason:'Cần người đọc ảnh',event_ids:ids,expected_generation:0};
   const [routeA,routeB]=await Promise.all([portA.route_human(request),portB.route_human(request)]);
-  assert.deepEqual([routeA.status,routeB.status].sort(),['already_routed','routed']);
-  assert.equal(routeA.generation,1);assert.equal(routeB.generation,1);
+  assert.deepEqual([routeA.status,routeB.status].sort(),['routed','stale_generation']);
+  assert.equal([routeA,routeB].filter(r=>r.status==='routed').length,1);
+  assert.equal([routeA,routeB].find(r=>r.status==='routed').generation,1);
+  assert.deepEqual(await portA.route_human(request),{status:'stale_generation'},
+    'identical retry with old generation must be stale, not already_routed');
   const row=(await poolA.query('SELECT status,claimed_by,generation::text AS generation,ai_route_reason FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',[shop,conv])).rows[0];
   assert.equal(row.status,'HUMAN');assert.equal(row.claimed_by,null);assert.equal(row.generation,'1');
   assert.equal(row.ai_route_reason,'Cần người đọc ảnh');
   assert.deepEqual(await portA.suggest_draft(input),{status:'stale_generation'});
   assert.deepEqual(await portB.suggest_draft({...input,expected_generation:1}),{status:'stale_generation'});
   assert.deepEqual(await portA.route_human({...request,expected_generation:99}),{status:'stale_generation'});
+  assert.deepEqual(await portA.route_human({...request,expected_generation:0}),{status:'stale_generation'});
+  const currentHuman=await portA.route_human({...request,expected_generation:1});
+  assert.equal(currentHuman.status,'already_routed');
+  assert.equal(currentHuman.generation,1);
+  assert.equal((await poolA.query('SELECT generation::text AS generation FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',
+    [shop,conv])).rows[0].generation,'1','already_routed must not increment generation');
   const staffId=randomUUID();
   await poolA.query("INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,'staff',$3,'staff')",[staffId,shop,'test-hash-never-used']);
   const staff={id:staffId,role:'staff',shop_id:shop,verified:true};
