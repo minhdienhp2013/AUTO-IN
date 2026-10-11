@@ -7,6 +7,8 @@ import {PostgresInboundEventRepository} from "../../../backend/integrations/zalo
 import {PostgresConversationQueue,PostgresOutboundRepository} from "../../../backend/integrations/zalo/postgres-durable.ts";
 import {OutboundDispatcher} from "../../../backend/conversation/gate.ts";
 import {CoreConversationGate} from "../../../backend/integrations/zalo/core-gate.ts";
+import {createZaloPipeline} from "../../../backend/integrations/zalo/pipeline.ts";
+import {SyntheticFixtureNormalizer,SyntheticTestVerifier} from "../../../backend/integrations/zalo/protocol.ts";
 
 const databaseUrl=process.env.AUTOIN_TEST_DATABASE_URL;
 let pg;
@@ -66,6 +68,36 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
     assert.equal(await durable.complete(claimed[0]),false);
     assert.equal(await durable.complete(recovered[0]),true);
     assert.equal((await durable.claim_due()).length,0);
+
+    // Whole synthetic ingress -> SQL dedupe -> conversation draft -> guarded SQL outbound.
+    // It never reaches Zalo/DeepSeek/print: all external Ports are labelled mocks.
+    let drafts=0,syntheticSends=0;
+    const pipeline=createZaloPipeline({
+      db,trusted_shop_id:"trusted-shop",trusted_oa_id:"oa",
+      documents:{async inspect(){return []}},
+      orders:{async suggest_draft(){drafts++;return {order_id:"simulated",revision:1}},
+              async route_human(){throw Error("unexpected human")}},
+      clock:{now:()=>new Date("2026-10-11T03:00:00Z")},
+      schedule:{allowed:()=>true},
+      synthetic_provider:{kind:"synthetic_fixture",
+        verifier:new SyntheticTestVerifier("pg-synthetic-key"),
+        normalizer:new SyntheticFixtureNormalizer(),
+        sender:{async send_text(){syntheticSends++}}}
+    });
+    const raw=new TextEncoder().encode(JSON.stringify({
+      ...event("e5"),synthetic_fixture:true
+    }));
+    const headers={"x-test-fixture-key":"pg-synthetic-key"};
+    assert.equal((await pipeline.receive_webhook(raw,headers)).status_code,200);
+    assert.equal((await pipeline.receive_webhook(raw,headers)).body.status,"duplicate");
+    assert.equal((await pipeline.tick_inbound()).ingested,1);
+    await run("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' WHERE status='OPEN'");
+    assert.equal((await pipeline.tick_inbound()).processed,1);
+    assert.equal(drafts,1);
+    assert.equal((await pipeline.tick_outbound()).sent,1);
+    assert.equal((await pipeline.tick_outbound()).attempted,0);
+    assert.equal(syntheticSends,1);
+
 
     const gate=new CoreConversationGate(db,"trusted-shop");
     const outbox=new PostgresOutboundRepository(db,gate);
