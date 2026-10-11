@@ -10,7 +10,8 @@ export interface TransactionRunner {
   transaction<T>(body:(client:SqlClient)=>Promise<T>):Promise<T>;
 }
 export class PostgresInboundEventRepository implements InboundEventRepository {
-  constructor(private readonly db:TransactionRunner) {}
+  private readonly db:TransactionRunner;
+  constructor(db:TransactionRunner) { this.db=db; }
   async insert_once(event:InboundEvent):Promise<"inserted"|"duplicate"> {
     return this.db.transaction(async tx=>{
       const written=await tx.query(
