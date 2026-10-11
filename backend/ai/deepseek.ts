@@ -38,7 +38,11 @@ export interface DeepSeekOptions {
   transport?: typeof fetch;
 }
 export class DeepSeekIntentAdapter {
-  constructor(private readonly options: DeepSeekOptions,private readonly budget: BudgetPort) {}
+  private readonly options:DeepSeekOptions;
+  private readonly budget:BudgetPort;
+  constructor(options:DeepSeekOptions,budget:BudgetPort) {
+    this.options=options;this.budget=budget;
+  }
   async classify(text: string): Promise<AiCall> {
     if (!await this.budget.can_spend()) throw new Error("AI_BUDGET_EXHAUSTED");
     if (typeof text !== "string" || !text.trim() || text.length > 4000)
@@ -71,8 +75,9 @@ export class DeepSeekIntentAdapter {
       if (!answer) throw new Error("AI_EMPTY_OUTPUT");
       const result=validateAiOutput(JSON.parse(answer));
       const input=payload.usage?.prompt_tokens, output=payload.usage?.completion_tokens;
-      if (!Number.isSafeInteger(input) || !Number.isSafeInteger(output) ||
-        (input as number)<0 || (output as number)<0) throw new Error("AI_USAGE_MISSING");
+      if (typeof input !== "number" || typeof output !== "number" ||
+          !Number.isSafeInteger(input) || !Number.isSafeInteger(output) ||
+          input < 0 || output < 0) throw new Error("AI_USAGE_MISSING");
       const usage:AiUsage={
         input_tokens:input as number,output_tokens:output as number,
         cost_micro_usd:Math.ceil(((input as number)*this.options.rate_micro_usd_per_million_input+
