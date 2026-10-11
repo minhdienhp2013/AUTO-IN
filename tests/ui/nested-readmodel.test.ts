@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiFault, mapCoreOrderDetail } from '../../web/src/api.ts';
-import { hasValidApprovalInputs, depositShortfall } from '../../web/src/domain.ts';
+import { availableVerifiedSheets, hasValidApprovalInputs, depositShortfall } from '../../web/src/domain.ts';
 import { coreDetail } from './core-fixtures.ts';
 
 const detail = () => {
@@ -125,4 +125,19 @@ test('job status VERIFIED_DONE with spooler evidence is not proof of real paper'
  const v=mapCoreOrderDetail(d);
  assert.equal(v.print_state,'UNKNOWN');assert.equal(v.verified_sheets,null);
  assert.notEqual(v.delivery_state,'delivered');
+});
+
+test('nested AI1 UNKNOWN with real staff-inspected partial sheets is deliverable only for the verified remainder',()=>{
+ const d=detail();
+ d.jobs=[{id:'job-partial',order_id:'order-ai1',revision:3,request_hash:'req-hash',state:'UNKNOWN',
+   mode_at_send:'production',evidence_kind:'staff_inspected',verified_sheets:28,printer_id:'RMP7000'}] as typeof d.jobs;
+ d.print_progress={planned_sheets:180,verified_sheets:28,missing_sheets:152,delivered_sheets:0,
+   fully_verified:false,requires_manual_reconciliation:true};
+ const v=mapCoreOrderDetail(d);
+ assert.equal(v.print_state,'UNKNOWN');
+ assert.equal(v.verified_sheets,28);
+ assert.equal(availableVerifiedSheets(v),28);
+ assert.notEqual(v.delivery_state,'delivered');
+ assert.equal(v.documents.length,0);
+ assert.equal(hasValidApprovalInputs(v),false);
 });

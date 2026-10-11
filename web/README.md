@@ -118,3 +118,12 @@ sau đó `npm ci && npm test && npm run typecheck && npm run build` và browser
 1440×900/390×844. AI4 không chạm CI/root config. `[AI0/AI1/AI3]` Cấp
 preview per-file có phân quyền nếu muốn mở duyệt live; internal `preview_ref`
 không đủ điều kiện. Không merge/deploy, không bật in hoặc OA thật.
+
+## CODE-304 — continuation on AI4 PR #15 (2026-10-12)
+
+- Source branch before change: `ai4/dot3-web-contract-lock` at `8859d8639fb88345e0ef145856c28222fd245f00`, integration reference PR #21 at `15c1ac75859914b2cc07d5a98bf57c18973cbbb2`. No merge/deployment.
+- Delivery axis matches AI1 `OrderService.deliver`: real **staff-inspected partial paper** of an `UNKNOWN` job can be handed over up to the **server-evidenced** remaining count, while the print axis remains `UNKNOWN` and still needs reconciliation. `SIMULATED_DONE`, `SENDING`, `SENT_UNVERIFIED`, missing evidence, and exhausted verified quantity **cannot** enable delivery. The backend remains the authority on delivery; this UI helper does not report successful printing.
+- Preview remains locked: AI1 GET current `preview_ref` is an internal artifact reference, not an authenticated per-document preview URL. `mapCoreOrderDetail` therefore deliberately returns `documents: []`; client approval stays disabled.
+- Commands attempted in this environment: `npm install --package-lock-only --ignore-scripts --no-audit --no-fund --fetch-retries=0 --fetch-timeout=4000` => **FAIL EAI_AGAIN** (`getaddrinfo registry.npmjs.org`, metadata `@types/react`); `npm ci --offline --ignore-scripts --no-audit --no-fund` => **FAIL EUSAGE** (no lockfile); `npm test` => **48/48 PASS**; `npm run typecheck` and `npm run build` => **FAIL TS2688** (`vite/client` package unavailable). Because `npm install` did not succeed, `web/package-lock.json` does **not** exist. Do not generate it manually. See local logs from this session when provided as handoff artifact.
+- Chromium desktop **1440 x 900** and mobile **390 x 844**: **NOT RUN**, since required React/Vite packages and successful build are absent. Backend simulation was not launched. No real iPhone, Zalo, or printer test was performed.
+- Next action when npm registry is reachable: from `web/`, run `npm install --package-lock-only --ignore-scripts && npm ci && npm test && npm run typecheck && npm run build`, commit real `web/package-lock.json`, run Chromium at the above viewports against simulation, capture screenshots/console/network, and verify `UNKNOWN`, partial evidence, simulated output and untrusted preview.
