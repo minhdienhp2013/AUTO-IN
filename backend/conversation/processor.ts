@@ -9,13 +9,14 @@ import type { AiInterpretation } from "../ai/deepseek.ts";
  * Returned stale_generation is a normal concurrent handover, not a retryable error.
  * All other errors propagate so the durable worker keeps the batch for retry.
  */
-export type DraftResult = {order_id:string;revision:number} | {status:"stale_generation"} | "stale_generation";
-export type HumanRouteResult = void | {status:"stale_generation"} | "stale_generation";
+/** Exact AI1 createAiOrderPort() contract, CODE-301 PR #16 / #28. */
+export type DraftResult = {status:"created"|"existing";order_id:string} | {status:"stale_generation"};
+export type HumanRouteResult = {status:"routed"|"already_routed";generation:number} | {status:"stale_generation"};
 export interface OrderDraftPort {
   suggest_draft(data:{conversation_id:string;customer_id:string;expected_generation:number;
     event_ids:string[];text:string;idempotency_key:string}):Promise<DraftResult>;
   route_human(data:{conversation_id:string;expected_generation:number;reason:string;
-    event_ids:string[];idempotency_key:string}):Promise<HumanRouteResult>;
+    event_ids:string[]}):Promise<HumanRouteResult>;
 }
 export interface ClassifierPort { classify(text:string):Promise<{result:AiInterpretation}> }
 export interface DocumentFactsPort {
@@ -37,8 +38,7 @@ function batchIdentity(batch:Batch):{event_ids:string[];key:string} {
   return {event_ids,key:"zalo:"+digest};
 }
 function isStale(result:DraftResult|HumanRouteResult):boolean {
-  return result==="stale_generation" ||
-    (result!==undefined && typeof result==="object" && "status" in result && result.status==="stale_generation");
+  return result.status==="stale_generation";
 }
 export class ConversationProcessor {
   private readonly gate:GatePort;
@@ -70,7 +70,7 @@ export class ConversationProcessor {
       if(!await this.current(snap))return "held";
       const result=await this.orders.route_human({
         conversation_id:first.conversation_id,expected_generation:snap.generation,
-        reason,event_ids,idempotency_key:key+":human:"+createHash("sha256").update(reason).digest("hex").slice(0,16)
+        reason,event_ids
       });
       return isStale(result)?"held":"human";
     };
