@@ -1,15 +1,15 @@
 import { randomBytes } from 'node:crypto';
-import { assertAgent, assertOwner, assertPlan, assertProcessor, assertStaff, canAccessShop, canonical, checkRevision, DomainError, newId, nonNegativeVnd, printingAllowed, sha, shortage, type JobRow, type OrderRow, type Principal, type PrintPlan, type QuoteRow, type RevisionRow, type SettingsRow } from './model.js';
+import { assertAgent, assertOwner, assertPlan, assertProcessor, assertStaff, canAccessShop, canonical, checkRevision, dbSafeInteger, DomainError, newId, nonNegativeVnd, printingAllowed, sha, shortage, type JobRow, type OrderRow, type Principal, type PrintPlan, type QuoteRow, type RevisionRow, type SettingsRow } from './model.js';
 import { PgStore, type SqlConnection } from '../storage/database.js';
 
 export class OrderService {
  constructor(private readonly store:PgStore, private readonly now:()=>Date=()=>new Date()){}
  private async order(db:SqlConnection,id:string,p:Principal):Promise<OrderRow>{
-  const o=await this.store.one<OrderRow>(db,'SELECT * FROM core_orders WHERE id=$1 FOR UPDATE',[id]);canAccessShop(p,o.shop_id);return o;
+  const o=await this.store.one<Omit<OrderRow,'delivered_sheets'> & {delivered_sheets:string}>(db,'SELECT * FROM core_orders WHERE id=$1 FOR UPDATE',[id]);canAccessShop(p,o.shop_id);return {...o,delivered_sheets:dbSafeInteger(o.delivered_sheets,'delivered_sheets')};
  }
  private async revision(db:SqlConnection,o:OrderRow):Promise<RevisionRow>{return this.store.one(db,'SELECT * FROM core_revisions WHERE order_id=$1 AND revision=$2',[o.id,o.active_revision]);}
- private async quote(db:SqlConnection,id:string):Promise<QuoteRow|null>{return (await db.query<QuoteRow>('SELECT * FROM core_quotes WHERE order_id=$1 ORDER BY quote_revision DESC LIMIT 1',[id])).rows[0]??null;}
- private async received(db:SqlConnection,id:string):Promise<number>{const x=await this.store.one<{amount:string}>(db,"SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_vnd WHEN direction='refunded' THEN -amount_vnd ELSE 0 END),0)::text AS amount FROM core_payments WHERE order_id=$1",[id]);return Number(x.amount);}
+ private async quote(db:SqlConnection,id:string):Promise<QuoteRow|null>{const q=(await db.query<Omit<QuoteRow,'amount_vnd'|'deposit_required_vnd'> & {amount_vnd:string;deposit_required_vnd:string}>('SELECT * FROM core_quotes WHERE order_id=$1 ORDER BY quote_revision DESC LIMIT 1',[id])).rows[0];return q?{...q,amount_vnd:dbSafeInteger(q.amount_vnd,'quote.amount_vnd'),deposit_required_vnd:dbSafeInteger(q.deposit_required_vnd,'quote.deposit_required_vnd')}:null;}
+ private async received(db:SqlConnection,id:string):Promise<number>{const x=await this.store.one<{amount:string}>(db,"SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_vnd WHEN direction='refunded' THEN -amount_vnd ELSE 0 END),0)::text AS amount FROM core_payments WHERE order_id=$1",[id]);return dbSafeInteger(x.amount,'payment.received_vnd');}
  private async requireUnsent(db:SqlConnection,o:OrderRow):Promise<void>{
   const jobs=await db.query<JobRow>('SELECT * FROM core_print_jobs WHERE order_id=$1 AND cancelled_at IS NULL FOR UPDATE',[o.id]);
   if(jobs.rows.some(j=>j.state!=='NOT_SENT')) throw new DomainError('PRINT_ALREADY_ATTEMPTED','Lệnh đã gửi hoặc không rõ, phải đối soát trước khi sửa',409);
@@ -174,7 +174,7 @@ export class OrderService {
    const {o,j,rev}=await this.validateJob(db,p,job_id,input.lease_token,input.expected_revision);
    if(j.state!=='NOT_SENT'||!j.lease_until||j.lease_until<this.now())throw new DomainError('NOT_SENDABLE','Lệnh không còn chắc chắn chưa gửi',409);
    const settings=await this.checkGates(db,o,j,rev);
-   await db.query("UPDATE core_print_jobs SET state='SENDING',sent_at=now(),lease_until=NULL WHERE id=$1 AND state='NOT_SENT'",[job_id]);
+   await db.query("UPDATE core_print_jobs SET state='SENDING',mode_at_send=$2,sent_at=now(),lease_until=NULL WHERE id=$1 AND state='NOT_SENT'",[job_id,settings.mode]);
    await this.audit(db,p,'job.mark_sending',o.id,{job_id,mode:settings.mode});
    return {job_id,state:'SENDING' as const,mode:settings.mode};
   }));
@@ -183,9 +183,10 @@ export class OrderService {
   assertAgent(p);return this.store.tx(db=>this.store.once(db,p,`jobs.${job_id}.report`,input.idempotency_key,input,async()=>{
    const {o,j}=await this.validateJob(db,p,job_id,input.lease_token,input.expected_revision);
    if(j.state!=='SENDING')throw new DomainError('INVALID_JOB_STATE','Chỉ có thể report SENDING',409);
-   const settings=await this.store.one<SettingsRow>(db,'SELECT * FROM core_shop_settings WHERE shop_id=$1',[o.shop_id]);
+   // Evidence must match the immutable send-time mode, not a mutable shop setting.
+   const sendMode=j.mode_at_send;
    const map={sent_unverified:'SENT_UNVERIFIED',unknown:'UNKNOWN',simulated_done:'SIMULATED_DONE'} as const;
-   if((settings.mode==='simulation' && input.result==='sent_unverified')||(settings.mode!=='simulation' && input.result==='simulated_done')||(input.result==='sent_unverified'&&input.evidence_kind!=='spooler')||(input.result==='unknown'&&input.evidence_kind!=='agent_uncertain')||(input.result==='simulated_done'&&input.evidence_kind!=='simulated'))throw new DomainError('INVALID_EVIDENCE','Bằng chứng/trạng thái không phù hợp');
+   if((!sendMode && input.result!=='unknown')||(sendMode==='simulation' && input.result==='sent_unverified')||(sendMode!=='simulation' && input.result==='simulated_done')||(input.result==='sent_unverified'&&input.evidence_kind!=='spooler')||(input.result==='unknown'&&input.evidence_kind!=='agent_uncertain')||(input.result==='simulated_done'&&input.evidence_kind!=='simulated'))throw new DomainError('INVALID_EVIDENCE','Bằng chứng/trạng thái không phù hợp');
    await db.query('UPDATE core_print_jobs SET state=$2,evidence_kind=$3,reported_at=now() WHERE id=$1',[job_id,map[input.result],input.evidence_kind]);
    await this.audit(db,p,'job.report',o.id,{job_id,state:map[input.result],evidence_kind:input.evidence_kind});
    return {job_id,state:map[input.result]};
@@ -203,11 +204,15 @@ export class OrderService {
   }));
  }
  async verifyPaper(p:Principal,job_id:string,input:{evidence_kind:'staff_inspected'|'device_verified';physical_sheets:number;note:string;idempotency_key:string}){
-  assertStaff(p);if(!Number.isSafeInteger(input.physical_sheets)||input.physical_sheets<1||!input.note.trim())throw new DomainError('INVALID_EVIDENCE','Cần số giấy và ghi chú kiểm chứng');
+  assertStaff(p);if(!Number.isSafeInteger(input.physical_sheets)||input.physical_sheets<1||typeof input.note!=='string'||!input.note.trim())throw new DomainError('INVALID_EVIDENCE','Cần số giấy và ghi chú kiểm chứng');
+  // A browser/staff request cannot attest device telemetry. AI3 must wire a trusted proof Port first.
+  if(input.evidence_kind==='device_verified')throw new DomainError('DEVICE_PROOF_NOT_CONNECTED','Chưa có adapter xác minh thiết bị tin cậy',503);
   return this.store.tx(db=>this.store.once(db,p,`jobs.${job_id}.verify`,input.idempotency_key,input,async()=>{
    const ref=await this.store.one<{order_id:string}>(db,'SELECT order_id FROM core_print_jobs WHERE id=$1',[job_id]);
    const o=await this.order(db,ref.order_id,p);const j=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 FOR UPDATE',[job_id]);
    if(j.state!=='SENT_UNVERIFIED'&&j.state!=='UNKNOWN')throw new DomainError('VERIFY_STATE','Chỉ kiểm chứng lệnh thực đã gửi/chưa rõ',409);
+   if(j.mode_at_send==='simulation'||!j.mode_at_send)throw new DomainError('SIMULATION_NOT_PAPER','Lệnh mô phỏng/không rõ chế độ không được xác nhận giấy thật',409);
+   const rev=await this.revision(db,o);if(!rev.plan||input.physical_sheets>rev.plan.physical_sheets)throw new DomainError('PAPER_COUNT_EXCEEDS_PLAN','Số tờ kiểm chứng vượt kế hoạch in',422);
    await db.query("UPDATE core_print_jobs SET state='VERIFIED_DONE',evidence_kind=$2,verified_sheets=$3,verified_by=$4,reported_at=now() WHERE id=$1",[job_id,input.evidence_kind,input.physical_sheets,p.id]);
    await this.audit(db,p,'job.paper_verified',o.id,{job_id,physical_sheets:input.physical_sheets,evidence_kind:input.evidence_kind});
    return {job_id,state:'VERIFIED_DONE' as const};
@@ -231,13 +236,15 @@ export class OrderService {
    const rev=await this.revision(db,o);
    if(!rev.plan)throw new DomainError('NO_PRINT_PLAN','Thiếu kế hoạch in');
    const printed=await this.store.one<{sum:string}>(db,"SELECT COALESCE(SUM(verified_sheets),0)::text AS sum FROM core_print_jobs WHERE order_id=$1 AND state='VERIFIED_DONE'",[id]);
-   const available=Number(printed.sum)-o.delivered_sheets;
+   const printedSheets=dbSafeInteger(printed.sum,'printed.verified_sheets');
+   const available=printedSheets-dbSafeInteger(o.delivered_sheets,'delivered_sheets');
    if(input.physical_sheets>available)throw new DomainError('PAPER_NOT_VERIFIED','Không thể ghi giao giấy chưa kiểm chứng');
    await db.query('INSERT INTO core_deliveries(id,order_id,physical_sheets,actor_id,note) VALUES($1,$2,$3,$4,$5)',[newId(),id,input.physical_sheets,p.id,input.note??null]);
-   const total=o.delivered_sheets+input.physical_sheets;
+   const total=dbSafeInteger(o.delivered_sheets,'delivered_sheets')+input.physical_sheets;
+   if(!Number.isSafeInteger(total))throw new DomainError('DB_INTEGER_OVERFLOW','Tổng số tờ giao vượt giới hạn an toàn',500);
    await db.query('UPDATE core_orders SET delivered_sheets=$2 WHERE id=$1',[id,total]);
    await this.audit(db,p,'order.delivered',id,{delivered_sheets:input.physical_sheets,total_delivered:total});
-   return {order_id:id,delivered_sheets:total,remaining_sheets:Math.max(0,Number(printed.sum)-total)};
+   return {order_id:id,delivered_sheets:total,remaining_sheets:Math.max(0,printedSheets-total)};
   }));
  }
  async closePrintException(p:Principal,id:string,input:{expected_revision:number;reason:string;idempotency_key:string}){

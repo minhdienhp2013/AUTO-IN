@@ -23,6 +23,7 @@ const run=async()=>{
   if(!dbName.includes('test'))throw Error('Refuse migration outside a database with "test" in its name');
   const sql=fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/001_core.sql'),'utf8');
   await pool.query(sql);
+  await pool.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/002_send_mode.sql'),'utf8'));
   const store=new PgStore(pool),auth=new AuthService(store),svc=new OrderService(store,()=>new Date('2026-10-12T04:00:00.000Z'));
   const shop='test-shop-'+uuid();
   await auth.bootstrapOwner({shop_id:shop,username:'owner',password:'long-owner-password-2026',bootstrap_enabled:true});
@@ -58,6 +59,8 @@ const run=async()=>{
   await svc.markSending(current,claimed.job_id,{expected_revision:2,lease_token:claimed.lease_token,idempotency_key:key('sending')});
   await assert.rejects(svc.revise(staff,initial.order_id,{expected_revision:2,request_data:req(100),idempotency_key:key('revise')}),e=>e.status===409);
   await svc.markUnknownForReconciliation(staff,claimed.job_id,{reason:'mất mạng agent',idempotency_key:key('unknown')});
+  await assert.rejects(svc.verifyPaper(staff,claimed.job_id,{evidence_kind:'staff_inspected',physical_sheets:151,note:'must reject simulation',idempotency_key:key('fakepaper')}),e=>e.code==='SIMULATION_NOT_PAPER');
+  await assert.rejects(svc.verifyPaper(staff,claimed.job_id,{evidence_kind:'device_verified',physical_sheets:151,note:'fake driver verification',idempotency_key:key('fakedevice')}),e=>e.code==='DEVICE_PROOF_NOT_CONNECTED');
   const second=await svc.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('noclaim')});assert.equal(second.job,null);
   await assert.rejects(svc.closePrintException(staff,initial.order_id,{expected_revision:2,reason:'khách bỏ',idempotency_key:key('staffclose')}),e=>e.status===403);
   const closed=await svc.closePrintException(owner,initial.order_id,{expected_revision:2,reason:'khách bỏ sau in',idempotency_key:key('ownerclose')});
@@ -70,6 +73,34 @@ const run=async()=>{
   await svc.approve(staff,order2.order_id,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('app2')});
   await pool.query('UPDATE core_shop_settings SET holiday_dates=$2 WHERE shop_id=$1',[shop,['2026-10-12']]);
   await assert.rejects(svc.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('holiday')}),e=>e.code==='PRINT_CLOSED');
+  // A genuine pg BIGINT is a STRING. Split deliveries must add numerically, never concatenate.
+  await pool.query("UPDATE core_shop_settings SET holiday_dates='{}', mode='controlled_test', printing_enabled=true WHERE shop_id=$1",[shop]);
+  const order3=await svc.createDraft(staff,{customer_id:customerId,request_data:req(5),idempotency_key:key('c3')});
+  await svc.publishVerifiedPlan(processor,order3.order_id,{expected_revision:1,plan:{...plan,request_hash:order3.request_hash,physical_sheets:5,document_pages:5,printed_faces:5},idempotency_key:key('p3')});
+  await svc.confirm(customer,order3.order_id,{expected_revision:2,kind:'request',idempotency_key:key('req3')});
+  await svc.approve(staff,order3.order_id,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('app3')});
+  const newClaim=await svc.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('claim3')});
+  // order2 is still waiting, so its earlier approved job may be claimed first.
+  const pendingJob=newClaim.job;assert.ok(pendingJob);
+  if(pendingJob.order_id===order2.order_id){
+    await svc.markSending(agent1,pendingJob.job_id,{expected_revision:2,lease_token:pendingJob.lease_token,idempotency_key:key('send2')});
+    await svc.report(agent1,pendingJob.job_id,{expected_revision:2,lease_token:pendingJob.lease_token,result:'sent_unverified',evidence_kind:'spooler',idempotency_key:key('rep2')});
+  }
+  const deliveryClaim=pendingJob.order_id===order3.order_id?pendingJob:(await svc.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('claim3again')})).job;
+  assert.ok(deliveryClaim);assert.equal(deliveryClaim.order_id,order3.order_id);
+  await svc.markSending(agent1,deliveryClaim.job_id,{expected_revision:2,lease_token:deliveryClaim.lease_token,idempotency_key:key('send3')});
+  // Changing the shop mode after SENDING must NOT rewrite the job's historical evidence mode.
+  await pool.query("UPDATE core_shop_settings SET mode='simulation' WHERE shop_id=$1",[shop]);
+  await svc.report(agent1,deliveryClaim.job_id,{expected_revision:2,lease_token:deliveryClaim.lease_token,result:'sent_unverified',evidence_kind:'spooler',idempotency_key:key('rep3')});
+  await pool.query("UPDATE core_shop_settings SET mode='controlled_test' WHERE shop_id=$1",[shop]);
+  await assert.rejects(svc.verifyPaper(staff,deliveryClaim.job_id,{evidence_kind:'staff_inspected',physical_sheets:6,note:'bad count',idempotency_key:key('badpaper')}),e=>e.code==='PAPER_COUNT_EXCEEDS_PLAN');
+  await svc.verifyPaper(staff,deliveryClaim.job_id,{evidence_kind:'staff_inspected',physical_sheets:5,note:'counted 5 sheets',idempotency_key:key('paper3')});
+  const first=await svc.deliver(staff,order3.order_id,{expected_revision:2,physical_sheets:2,note:'first batch',idempotency_key:key('d1')});
+  const secondDelivery=await svc.deliver(staff,order3.order_id,{expected_revision:2,physical_sheets:3,note:'second batch',idempotency_key:key('d2')});
+  assert.equal(first.delivered_sheets,2);assert.equal(secondDelivery.delivered_sheets,5);assert.equal(secondDelivery.remaining_sheets,0);
+  await assert.rejects(svc.deliver(staff,order3.order_id,{expected_revision:2,physical_sheets:1,idempotency_key:key('overdeliver')}),e=>e.code==='PAPER_NOT_VERIFIED');
+  const actual=(await pool.query('SELECT delivered_sheets::text AS count FROM core_orders WHERE id=$1',[order3.order_id])).rows[0].count;
+  assert.equal(actual,'5');
   return {shop,passed:true};
  }finally{await pool.end();}
 };

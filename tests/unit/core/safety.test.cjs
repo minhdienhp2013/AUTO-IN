@@ -3,8 +3,9 @@ const assert = require('node:assert/strict');
 const path=require('node:path');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../../.ai1-build/backend');
 const load=(m)=>require(path.join(root,m+'.js'));
-const {assertStaff,assertOwner,assertPlan,checkRevision,printingAllowed,canonical,sha,shortage,DomainError}=load('core/model');
+const {assertStaff,assertOwner,assertPlan,checkRevision,printingAllowed,canonical,sha,shortage,dbSafeInteger,DomainError}=load('core/model');
 const {passwordHash,passwordVerify}=load('core/auth');
+const {OrderService}=load('core/service');
 const owner={id:'user1',shop_id:'shop1',role:'owner',verified:true};
 const staff={...owner,id:'user2',role:'staff'};
 const agent={...owner,id:'print1',role:'print_agent'};
@@ -40,4 +41,28 @@ test('password hashing creates unique salts and validates credentials',async()=>
  assert.notEqual(x,y);assert.equal(await passwordVerify('an-exceptional-password-2026',x),true);
  assert.equal(await passwordVerify('wrong-password',x),false);
  await assert.rejects(passwordHash('short'),DomainError);
+});
+
+test('BIGINT values returned as text cannot corrupt partial-delivery arithmetic',()=>{
+ assert.equal(dbSafeInteger('0','delivered_sheets')+2,2);
+ assert.equal(dbSafeInteger('2','delivered_sheets')+3,5);
+ assert.equal(dbSafeInteger(5,'delivered_sheets')+1,6);
+ assert.throws(()=>dbSafeInteger('9007199254740993','delivered_sheets'),e=>e.code==='DB_INTEGER_OVERFLOW');
+ assert.throws(()=>dbSafeInteger('2.1','delivered_sheets'),e=>e.code==='INVALID_DB_INTEGER');
+});
+
+test('mock-only: no paper verification of simulation, and fake device proof is rejected',async()=>{
+ const stubStore={
+  tx:async fn=>fn({query:async()=>({rows:[],rowCount:0})}),
+  once:async(_db,_p,_action,_key,_payload,fn)=>fn(),
+  one:async(_db,sql)=>{
+    if(sql.startsWith('SELECT order_id FROM core_print_jobs'))return {order_id:'order1'};
+    if(sql.startsWith('SELECT * FROM core_orders'))return {id:'order1',shop_id:'shop1',active_revision:1,delivered_sheets:'0',manual_lock:false,print_closed:false};
+    if(sql.startsWith('SELECT * FROM core_print_jobs'))return {id:'job1',state:'UNKNOWN',mode_at_send:'simulation'};
+    throw Error('unexpected SQL '+sql);
+  }
+ };
+ const svc=new OrderService(stubStore);
+ await assert.rejects(svc.verifyPaper(staff,'job1',{evidence_kind:'staff_inspected',physical_sheets:1,note:'inspection',idempotency_key:'no-real-paper'}),e=>e.code==='SIMULATION_NOT_PAPER');
+ await assert.rejects(svc.verifyPaper(staff,'job1',{evidence_kind:'device_verified',physical_sheets:1,note:'fake telemetry',idempotency_key:'fake-device'}),e=>e.code==='DEVICE_PROOF_NOT_CONNECTED'&&e.status===503);
 });
