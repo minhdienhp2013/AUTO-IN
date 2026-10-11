@@ -85,3 +85,28 @@ test('PG-15 owner-only refund approval and over-refund guard',{skip},()=>run('pa
  const paid=await a.act('payment',{direction:'refunded',amount_vnd:30000,idempotency_key:'refund-paid-205'},{actor:'owner'});
  assert.equal(paid.ok,true,JSON.stringify(paid));
 }));
+
+test('PG-16 two PostgreSQL connections cannot approve same revision twice',{skip},()=>run('deposit_short',async a=>{
+ const [staff,owner]=await Promise.all([a.newAgent('staff'),a.newAgent('owner')]);
+ assert.notEqual(staff.connection_id,owner.connection_id);
+ const body={expected_revision:2,acknowledge_deposit_shortage:true};
+ const rs=await Promise.all([
+  staff.act('approve',{...body,idempotency_key:'double-approve-staff-205'}),
+  owner.act('approve',{...body,idempotency_key:'double-approve-owner-205'})
+ ]);
+ assert.equal(rs.filter(r=>r.ok).length,1,JSON.stringify(rs));
+ assert.equal(rs.filter(r=>!r.ok&&r.error?.code==='ALREADY_APPROVED').length,1,JSON.stringify(rs));
+}));
+test('PG-17 same job has at most one successful mark-sending',{skip},()=>run('approved_unsent',async a=>{
+ const [p,q]=await Promise.all([a.newAgent('agent-1'),a.newAgent('agent-1')]);
+ assert.notEqual(p.connection_id,q.connection_id);
+ const c=await p.act('claim',claim());assert.ok(c.job);
+ const body=send(c.job);
+ const rs=await Promise.all([
+  p.act('mark_sending',{...body,idempotency_key:'double-mark-1-205'}),
+  q.act('mark_sending',{...body,idempotency_key:'double-mark-2-205'})
+ ]);
+ assert.equal(rs.filter(r=>r.ok&&r.state==='SENDING').length,1,JSON.stringify(rs));
+ assert.equal(rs.filter(r=>!r.ok&&r.error?.code==='NOT_SENDABLE').length,1,JSON.stringify(rs));
+ assert.equal((await a.snapshot()).driver_calls,0);
+}));
