@@ -4,49 +4,34 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { buildIntegratedApp } from '../../../backend/composition/runtime.ts';
 import { asSqlPool } from '../../../backend/composition/postgres.ts';
-import { createZaloRawWebhook } from '../../../backend/composition/zalo-http.ts';
-import { createZaloPipeline } from '../../../backend/integrations/zalo/pipeline.ts';
-import { SyntheticFixtureNormalizer, SyntheticTestVerifier } from '../../../backend/integrations/zalo/protocol.ts';
+import { createSyntheticZaloIngress } from '../../../backend/composition/zalo-simulation.ts';
+
+test('synthetic Zalo ingress requires a server-owned OA, shop and long fixture key', () => {
+  for (const input of [null, {}, {kind:'synthetic_fixture', shop_id:'shop', oa_id:'oa', fixture_key:'short'},
+    {kind:'production', shop_id:'shop', oa_id:'oa', fixture_key:'x'.repeat(32)}]) {
+    assert.throws(() => createSyntheticZaloIngress({}, input), /Invalid synthetic Zalo registry/);
+  }
+});
 
 const url = process.env.TEST_DATABASE_URL;
 test('Fastify raw Zalo fixture verifies signature then commits/deduplicates in PostgreSQL', {
   skip: !url ? 'TEST_DATABASE_URL unset: HTTP/PG webhook composition NOT VERIFIED' : false
 }, async () => {
   const pool = new pg.Pool({ connectionString: url, max: 4 });
-  const db = {
-    async transaction(action) {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        const result = await action({ async query(sql, params = []) {
-          const value = await client.query(sql, [...params]);
-          return { rows: value.rows, rowCount: value.rowCount };
-        } });
-        await client.query('COMMIT');
-        return result;
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      } finally { client.release(); }
-    }
-  };
   const oa = `synthetic-oa-${randomUUID()}`;
+  const shop = `synthetic-shop-${randomUUID()}`;
   const eventId = randomUUID();
-  const key = `fixture-${randomUUID()}`;
-  const pipeline = createZaloPipeline({
-    db, trusted_shop_id: `synthetic-shop-${randomUUID()}`, trusted_oa_id: oa,
-    orders: { async suggest_draft() { throw new Error('NOT_CALLED'); }, async route_human() { throw new Error('NOT_CALLED'); } },
-    documents: { async inspect() { return []; } },
-    schedule: { allowed() { return false; } }, clock: { now: () => new Date() },
-    synthetic_provider: { kind: 'synthetic_fixture', verifier: new SyntheticTestVerifier(key),
-      normalizer: new SyntheticFixtureNormalizer() }
+  const key = `${randomUUID()}${randomUUID()}`;
+  const zaloWebhook = createSyntheticZaloIngress(pool, {
+    kind: 'synthetic_fixture', shop_id: shop, oa_id: oa, fixture_key: key
   });
-  const app = buildIntegratedApp({ pool: asSqlPool(pool), zaloWebhook: createZaloRawWebhook(pipeline) });
+  const app = buildIntegratedApp({ pool: asSqlPool(pool), zaloWebhook });
   const raw = `{ "synthetic_fixture": true, "event_id": "${eventId}", "oa_id": "${oa}", "customer_id": "fixture-customer", "conversation_id": "fixture-conversation", "occurred_at": "2026-10-12T00:00:00Z", "kind": "text", "text": "Xin chào" }\n`;
   const send = fixtureKey => app.inject({ method: 'POST', url: '/webhooks/zalo',
     headers: { 'content-type': 'application/json', 'x-test-fixture-key': fixtureKey }, payload: raw });
   try {
     await app.ready();
+    assert.equal((await app.inject({method:'GET',url:'/health'})).json().zalo_worker_configured, false);
     assert.equal((await send('wrong-key')).statusCode, 403);
     const wrongScope = await app.inject({ method: 'POST', url: '/webhooks/zalo',
       headers: { 'content-type': 'application/json', 'x-test-fixture-key': key },

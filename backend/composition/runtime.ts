@@ -71,6 +71,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
   app.get('/health', async () => ({ status: 'ok', mode: 'simulation', live_enabled: false,
     auth_configured: true, configured_operations: ['me', 'listOrders', 'approveOrder', 'claimJob', 'markSending', 'reportJob'],
     registered_routes: registered, zalo_webhook_configured: !!options.zaloWebhook,
+    zalo_worker_configured: false,
     processor_configured: false, integration_stage: 'core-http' }));
   if (options.zaloWebhook) app.register(options.zaloWebhook);
   else app.post('/webhooks/zalo', async (_request, reply) => reply.code(503).send({ error: {

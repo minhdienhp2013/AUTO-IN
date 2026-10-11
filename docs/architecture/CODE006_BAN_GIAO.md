@@ -49,8 +49,8 @@ npm run check: PASS; contracts 18, core 11 (2 PG SKIP), Zalo 31 (1 PG SKIP), com
 
 - AI0: đồng bộ OpenAPI/schema runtime theo wire AI1. contracts/generated hiện là scaffold, CHƯA là OpenAPI runtime tích hợp; consumer bám backend/api/routes.ts và tài liệu AI1.
 - AI0: đã nối processor CLI nội bộ vào AI1 qua PostgreSQL; còn thiếu upload/preview/artifact theo quyền từ web. Phải giữ snapshot nguồn AI3, không đọc lại inbound lúc gửi.
-- AI0 + AI2: nối raw webhook, transaction, trusted OA/shop và Port đơn/tài liệu. /webhooks/zalo hiện 503 rõ ràng; không dựng receipt giả hoặc bật worker chưa nối.
-- AI2: xử lý 6 lỗi stricter TS ở batch.ts:44, processor.ts:28, schedule.ts:27, postgres-durable.ts:35,141. Strict cơ bản PASS.
+- AI0 + AI2: nối raw webhook, transaction, trusted OA/shop và Port đơn/tài liệu. Mặc định /webhooks/zalo trả 503; chỉ khi cấu hình test synthetic tại server mới nhận event. Chưa bật worker.
+- AI2: 6 lỗi TypeScript strict đã sửa tại overlay `82a0e5d`; thiếu Port AI1/AI3 để xử lý batch sản phẩm.
 - AI4: lockfile/npm ci và UI live; AI5: PG/HTTP/DryRun/browser thực. Bộ test hiện không thay TN-037.
 
 ## Xác minh CI và processor sau commit đầu
@@ -60,3 +60,22 @@ GitHub Actions cho SHA 6d9bdf6882bdc8d3d557978b0e71e7785402fdbd: CODE checks và
 AI0 tiếp tục thêm `backend/composition/processor.ts`: gọi subprocess AI3 bằng JSON, giới hạn 256 KiB, timeout và stdout, kiểm manifest/hash, giữ snapshot nguồn trong artifact root. `npm run process:order -- <shop_id> <order_uuid>` là CLI nội bộ; cần DATABASE_URL, AUTOIN_INPUT_ROOT, AUTOIN_ARTIFACT_ROOT, AUTOIN_PROCESSOR_ID, Python có PyMuPDF/Pillow. Lấy request_data/hash của revision hiện hành trong PostgreSQL, chỉ cho shop simulation rồi gọi AI1 publishVerifiedPlan. AI1 tăng revision, yêu cầu xác nhận/duyệt lại. Không đi qua HTTP công khai, không gửi máy in. Nên sử dụng trên DB test và file synthetic cho tới khi có endpoint upload/preview được xác thực. Không gán `preview_verified=true` vì preview chưa có route phục vụ theo quyền.
 
 Ca `tests/integration/composition/processor-pg.test.mjs` kiểm riêng đường processor → AI1 trên PostgreSQL thật: tạo ảnh/đơn tổng hợp, gọi CLI nội bộ, xác nhận revision mới và snapshot SHA giữ nguyên sau khi file inbound thay đổi. Khi thiếu TEST_DATABASE_URL ca này SKIP rõ ràng. Ca HTTP/PG AI5 vẫn không phải đường upload/processor trên web; trạng thái processor_configured trên /health tiếp tục false cho đến khi có route theo quyền và artifact resolver.
+
+## AI2 CODE-302 overlay và synthetic ingress
+
+AI2 integration overlay `82a0e5d` is based directly on AI0 `15c1ac7` and supplies
+`createZaloComposition()` with one PostgreSQL client per transaction. The AI0
+simulation server accepts an optional private `AUTOIN_ZALO_SYNTHETIC_REGISTRY`
+JSON file containing `{"kind":"synthetic_fixture","shop_id":"...","oa_id":"...","fixture_key":"at-least-32-characters"}`.
+These IDs and the test key come from the server file, never from a webhook. The
+server listens only on localhost with an isolated test database. Without this
+file, the webhook endpoint remains unavailable. With it, synthetic signed
+events can be stored and deduplicated through Fastify and PostgreSQL; the health
+response reports `zalo_worker_configured: false`.
+
+This is **inbound only**. AI1 `createDraft()` requires a verified staff actor and
+must not be called by an impersonated AI worker. AI1 still needs to export a
+server-authorized, event-idempotent draft Port for AI2's `suggest_draft()` and
+`route_human()`; AI3 needs a trusted document inspection Port. Do not schedule
+`tick_inbound()` until both are connected and tested. No actual OA verifier,
+outbound sender, or live printing is configured.
