@@ -47,7 +47,7 @@ export class SyntheticFixtureNormalizer implements EventNormalizer {
     const kind = required(o.kind, 16);
     if (!["text", "file", "image", "unsupported"].includes(kind)) throw new Error("INVALID_KIND");
     const occurred_at = required(o.occurred_at, 40);
-    if (!Number.isFinite(Date.parse(occurred_at))) throw new Error("INVALID_TIME");
+    if (!/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(occurred_at) || !Number.isFinite(Date.parse(occurred_at))) throw new Error("INVALID_TIME");
     const evt: InboundEvent = {
       event_id: required(o.event_id, 128),
       oa_id: required(o.oa_id, 128),
@@ -56,10 +56,11 @@ export class SyntheticFixtureNormalizer implements EventNormalizer {
       occurred_at,
       kind: kind as InboundKind,
     };
-    if (typeof o.text === "string") evt.text = o.text.slice(0, 12000);
+    // Never silently truncate source text (TN-018). Preserve the exact payload.
+    if (typeof o.text === "string") evt.text = required(o.text, 800000);
     if (typeof o.file_ref === "string") evt.file_ref = required(o.file_ref, 2048);
-    if (typeof o.mime_type === "string") evt.mime_type = o.mime_type.slice(0, 128);
-    if (typeof o.filename === "string") evt.filename = o.filename.slice(0, 255);
+    if (typeof o.mime_type === "string") evt.mime_type = required(o.mime_type, 128);
+    if (typeof o.filename === "string") evt.filename = required(o.filename, 255);
     if (kind === "text" && !evt.text) throw new Error("MISSING_TEXT");
     if ((kind === "file" || kind === "image") && !evt.file_ref) throw new Error("MISSING_FILE_REF");
     return evt;
