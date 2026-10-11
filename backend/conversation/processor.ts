@@ -52,6 +52,9 @@ export class ConversationProcessor {
         return "human";
       }
     }
+    // Suppress stale side effects after takeover during classifier / inspection.
+    const beforeAction=await this.gate.read(first.conversation_id);
+    if (beforeAction.mode!=="AI" || beforeAction.generation!==snap.generation) return "held";
     if (decision.intent === "HUMAN") {
       await this.orders.route_human({conversation_id:first.conversation_id,
         reason:decision.handover_reason??"NEEDS_CLARIFICATION",event_ids:batch.events.map(e=>e.event_id)});
