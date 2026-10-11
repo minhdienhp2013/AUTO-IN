@@ -81,7 +81,7 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
     const pipeline=createZaloPipeline({
       db,trusted_shop_id:"trusted-shop",trusted_oa_id:"oa",
       documents:{async inspect(){return []}},
-      orders:{async suggest_draft(){drafts++;return {order_id:"simulated",revision:1}},
+      orders:{async suggest_draft(){drafts++;return {status:"created",order_id:"simulated"}},
               async route_human(){throw Error("unexpected human")}},
       clock:{now:()=>new Date("2026-10-11T03:00:00Z")},
       schedule:{allowed:()=>true},
