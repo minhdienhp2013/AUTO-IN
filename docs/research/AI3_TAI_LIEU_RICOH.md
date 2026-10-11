@@ -44,3 +44,47 @@
 - Phân tích cục bộ bằng PyMuPDF `page.get_text('blocks')` và `page.get_image_info()`: dấu hiệu chữ số, ảnh raster, hỗn hợp hoặc trang trống/vector. Không OCR và không gửi nội dung văn bản ra API/DeepSeek; chỉ trả số ký tự, số ảnh và tỷ lệ ảnh lớn nhất.
 - Processor trả `page_content_signals`, `content_kind_counts`, `content_review_recommended`; tài liệu có ảnh/vector cần xem trực quan, không tự chọn màu/đen trắng và không coi là bằng chứng lệnh in đúng.
 - Kiểm thử mới: 3 ca unit chạy thật trên Linux (PyMuPDF/Pillow); ca tích hợp `inspect` được thêm vào bộ test và cần kiểm lại cùng toàn suite khi AI0 ghép nhánh. Windows/Ricoh vẫn chưa thử thật.
+
+
+## CODE-203 — Processor bridge / AI0 Port (đợt 2)
+
+**Module base** \`72647b4e8d489c506f8814ac7565116d0d1a16df\`, scaffold AI0 \`a681fe91f24f3b0cec61cb72887cc0928d9460ca\` (giữ nguyên file chung được lấy vào nhánh mới). Không sửa \`contracts/**\` hoặc HTTP wire AI1.
+
+### AI0 gọi qua stdin / stdout JSON
+
+\`\`\`bash
+python -m workers.documents.bridge \
+  --input-root /srv/autoin/incoming-readonly \
+  --artifact-root /srv/autoin/private-processor-artifacts \
+  < request.json
+\`\`\`
+
+Hai root do AI0 cấu hình/cấp quyền riêng trong backend/worker, **không lấy từ body khách**. Root vào chứa file đã lưu/cách ly; root ra là thư mục private, chỉ backend/processor đọc. Worker POSIX dùng \`openat\` + \`O_NOFOLLOW\` từng thành phần, không hỗ trợ hạ mức bảo vệ sang \`open\` theo symlink Windows. Tên tài liệu trong request là path POSIX tương đối dưới input-root, không phải URL, không phải file do khách chỉ định tùy ý; chặn traversal/symlink/path tuyệt đối. Không log văn bản/ảnh/lease/token. Cấp giới hạn root/quota/cleanup ở AI0. Không dùng lối này làm Windows print driver.
+
+**Input v1**, \`expected_request_hash\` là hash *đã lưu ở DB* do AI1 tính \`sha256(canonical(request_data))\`. AI0 chỉ dùng JSON ổn định; số nguyên phải an toàn theo JS, reject float. \`request_data\` hiện chỉ ánh xạ chính xác một field \`documents\` để tránh tạo \`READY\` sai khi schema khác; nếu mô hình đơn không đúng phải map/chốt với AI0, không bỏ qua field âm thầm:
+
+\`\`\`json
+{
+  "request_data": {
+    "documents": [
+      {"artifact_name":"inbox/received.pdf","copies":3,"duplex":true,
+       "paper":"A4","orientation":"portrait","binding":"long_edge","page_range":"all"}
+    ]
+  },
+  "expected_request_hash":"<sha256 of AI1 canonical request_data>"
+}
+\`\`\`
+
+**Output** \`READY\` có \`plan\` đúng kiểu AI1 \`PrintPlan\`: \`request_hash,document_pages,printed_faces,physical_sheets,ready,printer_id,artifact_ref,verified_by\`. Ngoài ra có \`content_settings_sha256\` (hash bền vững nội dung+tham số+versions+preview hashes, không phụ thuộc thư mục UUID), \`renderer_versions\`, \`preview_artifacts\` gồm relative ref/SHA256/bytes, \`requires_price_confirmation\`, \`evidence_kind=local_render_verified_artifacts\`. \`artifact_ref\` là **đường tương đối dưới artifact-root** tới manifest đã ghi, không cho khách đưa đường dẫn; AI0 cần lưu/chốt quyền giải ref và xác minh lại SHA256 khi phục vụ preview. Manifest chứa \`paper_plan\` từng file/bản; không ghép mặt cuối của file trước sang file sau. Thử ZIP an toàn tối đa 5 tài liệu; Word/Excel hoặc PDF font chưa nhúng/không tin cậy trả \`NEEDS_HUMAN\`, không đoán trang, không ép mọi định dạng thành PDF.
+
+Output lỗi chỉ \`{schema,status:"NEEDS_HUMAN",reason_code,ready:false}\` (không lộ path/file/data nội bộ), process exit 2. \`READY\` exit 0. Dù có \`READY\`, đây chỉ là **processor-derived evidence**: AI0 **phải** gọi \`OrderService.publishVerifiedPlan(processorPrincipal,orderId,{expected_revision,plan,idempotency_key})\` trong luồng nội bộ có credential scope processor, server so đúng request_hash/revision trước publish; publish sẽ tăng revision và bắt khách xác nhận + nhân viên duyệt lại. KHÔNG nhận plan từ client hoặc AI tự duyệt. \`READY\` không xác nhận nội dung đã in ra giấy/không thay thế kiểm tra preview của người.
+
+### Agent / backend và ca chứng minh
+
+Giữ nguyên \`HttpBackendClient\` theo wire AI1 HEAD \`fc0ca14\`: \`lease_token\` (không đổi sang \`lease_id\` hoặc \`send_authorization_id\` của scaffold chưa tích hợp). Mọi HTTP dùng HTTPS, scoped Bearer agent, chặn redirect và không có bypass TLS. Server phải thực hiện quyền scope/printer/revision/approval, claim/preflight/mark-sending nguyên tử trước tác dụng driver; journal SQLite \`WAL+synchronous=FULL\` ghi BOUNDARY trước mark, crash/mất ACK => UNKNOWN, restart chỉ report, không gọi driver lần 2. Không tin spooler là bằng chứng đủ giấy. \`GuardedWindowsDriver\` cố ý BLOCKED.
+
+Tệp test mới:
+- \`tests/unit/documents/test_bridge.py\`: synthetic real PyMuPDF/Pillow PDF/ảnh, hash/preview, PDF font không nhúng, ZIP hợp lệ và nguy hiểm, file hỏng, traversal/symlink, tách bản duplex.
+- \`tests/unit/printing/test_backend_simulation.py\`: HTTP AI1 wire mock **có trạng thái** cho mất ACK mark-sending, crash sau driver, mất ACK report, khởi động lại mà không gọi driver thêm.
+- Lệnh cần chạy: \`python -m pytest -q tests/unit/documents tests/unit/printing\`; \`python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing\`.
+- **Các kiểm thử của commit CODE-203 cần được chạy lại trên checkout đủ file, chưa được coi là đạt chỉ vì 47/47 test CODE-103 trước đó đã chạy.** AI0 cung cấp SHA/backend composition + PostgreSQL thật để AI5 chạy product integration; fake HTTP không thay thế live backend. Windows 11 / Ricoh IM7000 / OA vẫn CHƯA chạy. Không in thật, merge, deploy.
