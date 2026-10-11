@@ -37,7 +37,12 @@ export class MessageBatcher {
   }
   async flushDue(consume: (batch: Batch) => Promise<void>): Promise<number> {
     const due = await this.store.take_due(this.clock.now());
-    for (const batch of due) await consume(batch);
+    for (const batch of due) {
+      try { await consume(batch); } catch (error) {
+        await this.store.put(batch); // recovery on downstream failure; inbound event remains durable
+        throw error;
+      }
+    }
     return due.length;
   }
   /** Called only after trusted deterministic rules establish sufficient information. */
