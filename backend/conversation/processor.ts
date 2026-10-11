@@ -21,7 +21,7 @@ export class ConversationProcessor {
   private readonly documents:DocumentFactsPort;
   private readonly orders:OrderDraftPort;
   private readonly reply:ReplyQueuePort;
-  private readonly classifier?:ClassifierPort;
+  private readonly classifier:ClassifierPort | undefined;
   constructor(gate:GatePort,documents:DocumentFactsPort,orders:OrderDraftPort,
     reply:ReplyQueuePort,classifier?:ClassifierPort) {
     this.gate=gate;this.documents=documents;this.orders=orders;
