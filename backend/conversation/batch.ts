@@ -41,7 +41,9 @@ export class MessageBatcher {
   async flushDue(consume: (batch: Batch) => Promise<void>): Promise<number> {
     const due = await this.store.take_due(this.clock.now());
     for (let i=0; i<due.length; i++) {
-      try { await consume(due[i]); } catch (error) {
+      const batch = due[i];
+      if (!batch) throw new Error("BATCH_QUEUE_CORRUPT");
+      try { await consume(batch); } catch (error) {
         for (const pending of due.slice(i)) await this.store.put(pending);
         throw error;
       }
