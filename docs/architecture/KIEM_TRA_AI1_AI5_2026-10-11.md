@@ -48,3 +48,16 @@ HEAD kiểm: 7e6623a995a67f756d30be48f2a4be9ac06691f8, Draft PR #12. AI0 checkou
 - ImportMetaEnv cũ đã được sửa. Lỗi mới: HttpPrintPort.mutate suy ra conversation_state là string ở nhánh handover/return-to-ai, không khớp ConversationState của OrderView.
 - AI4 cần khai báo kiểu trả về Promise<OrderView> cho HttpPrintPort.mutate hoặc tạo kết quả có kiểu OrderView, giữ literal staff/ai; không dùng any để giấu lỗi. Chạy lại test/typecheck/build và commit web/package-lock.json thật trong môi trường truy cập npm.
 - HEAD vẫn chưa có web/package-lock.json. Backend read model/HTTP, browser/iPhone/Push vẫn chưa kiểm chứng. CODE-204 chưa đạt điều kiện DONE/build; không merge/deploy.
+
+
+## Kiểm tra AI1 CODE-201 — cập nhật 11/10/2026
+
+HEAD ebdd740d87b3bb72fd7f1229b2ab2e728f55f0bc, Draft PR #11. AI0 checkout riêng và compile core/api/storage bằng TypeScript5.9.3 strict NodeNext ES2023: PASS. Không sửa namespace AI1.
+
+Chạy AI1_BUILD_DIR trỏ output backend, NODE_PATH trỏ dependency pg đã khóa, node --test tests/unit/core/safety.test.cjs tests/integration/core/postgres.test.cjs: 8 PASS, 1 PostgreSQL integration SKIP do chưa có TEST_DATABASE_URL/server test thật. Skip không là PASS; CODE-201 còn thiếu gate PG.
+
+Đã đối chiếu code: claim dùng confirmed_at hiệu lực; migration003/004; giấy kiểm chứng một phần giữ UNKNOWN/missing_sheets; getOrder bổ sung current/print_progress/conversation_control; handover/return generation và scoped printer principal. Đây là kiểm tra mã và unit-test, chưa chứng minh SQL transaction thực.
+
+AI4 cần đọc read model nested thực tế current.request_confirmation/price_confirmation/verified_plan/preview_ref, print_progress và conversation_control.generation/status. Mapper 7e6623a vẫn chưa đọc các trường này nên thao tác live tiếp tục khóa an toàn. Không mở bằng hardcode, cập nhật test contract trên fixture đúng response AI1 ebdd740.
+
+Việc tiếp theo: AI0 đồng bộ schemas/mapper/composition theo wire AI1; AI5 chạy migration001–004 và integration PG thật trên DB test, cùng hai connection độc lập. Không merge/deploy/in thật hoặc báo CODE-201 DONE trước khi PG gate đạt.
