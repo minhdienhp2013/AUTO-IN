@@ -146,3 +146,42 @@ Tệp test mới:
   python -m pytest -q tests/unit/printing/test_product_backend_optin.py
   ```
   Server phải có PostgreSQL test thật, 1 tác vụ mode=simulation được khách xác nhận/nhân viên duyệt hợp lệ, HTTPS scoped credential. Test yêu cầu `SIMULATED_DONE`, paper_verified=false, restart không gửi trùng; không có job thì SKIP, không xem là PASS. AI0/AI5 nghiệm thu HTTP/PG. Windows 11 / Ricoh thật / OA vẫn **NOT RUN**; không in thật, merge hay deploy.
+
+## AI3 — rà soát độc lập CODE-103 → 203 → 303; chuẩn bị bàn giao AI3 High (chưa bàn giao)
+
+**Ngày:** 2026-10-11. **Phạm vi:** chỉ module AI3. Nguồn: spec TN-005/TN-005A/TN-009/TN-012/TN-023/TN-025/TN-029/TN-034/TN-035/TN-037; code GitHub tại HEAD CODE-303 `107d00e41cc4c10a0bb3fd1c59fcdfcb8e919cf5`; Draft PR #2 → #10 → #17. Không suy đoán từ lời báo DONE.
+
+### Tình trạng có bằng chứng
+
+| Thành phần | Kiểm chứng đã biết | Chưa đạt |
+|---|---|---|
+| CODE-103 PDF/ảnh/ZIP, page profile, DryRun/journal | AI0 đã checkout và báo 47/47 pytest PASS ở BASE `72647b4` | Windows/Ricoh thật, đường native driver |
+| CODE-203 bridge/Python dependencies, SHA-256, preview, JSON plan | AI0 đã checkout và báo **70/70 pytest + compileall PASS** ở `31e73ea` | Chưa có endpoint processor → AI1/PostgreSQL thực |
+| CODE-303 CLI input, timeout, HTTPS-localhost simulator, agent CLI | CI Node `npm run check` PASS ở `107d00e`; *không chạy Python*. Test Python mới đã commit | HEAD CODE-303 pytest/compileall NOT RUN; Fastify/PG product DryRun NOT RUN |
+| Rà soát này: snapshot bản gốc đã kiểm chứng | Code + pytest regression mới commit trên nhánh audit | **Python tests của snapshot chưa chạy**; backend/driver chưa xác nhận đọc artifact mới |
+
+### Nguy cơ và việc sửa theo thứ tự ưu tiên
+
+1. **P0 – TOCTOU/sai bản in giữa duyệt và gửi:** CODE-203 chỉ phát hành hash + preview, nhưng không lưu bản gốc bất biến; AI0/driver có thể mở lại file đầu vào đã bị ghi đè. Nhánh audit đã bổ sung `source_artifact_ref`/SHA256/size cho **bản sao bytes** tại artifact-root private và `fsync` từng source; khi lỗi chỉ trả NEEDS_HUMAN. Trước khi thử đường in thật, AI0 phải dùng bản sao đã đóng băng này, so SHA256 từ manifest lần nữa ngay lúc gửi, so cùng request_hash + approved revision + paper_plan; nếu bất kỳ điểm nào không khớp → khóa, không gửi. Đây chưa là kiểm chứng driver end-to-end.
+2. **P0 – Không in trùng ở ranh giới mark-sending:** Agent `Journal` ghi BOUNDARY trước mark; nếu mất ACK/crash thì UNKNOWN, recovery chỉ báo lại, không gọi driver. Không được biến UNKNOWN thành NOT_SENT sau lease timeout, hoặc bật retry ngoại tuyến. Khi HTTP/PG thực đạt, AI5 phải kiểm mất ACK trước/sau mark, ngay trước/sau driver, và hai agent cạnh tranh trong PostgreSQL thật.
+3. **P0 – Điều kiện VERIFIED_DONE và bản giấy:** `DryRunDriver` chỉ SIMULATED_DONE / paper_verified=false. Không có adapter Windows/Ricoh thật và không có đối soát driver/khay/mặt giấy. Không được dùng spooler làm bằng chứng đủ giấy, hoặc tự đóng/giao/thu tiền.
+4. **P1 – Bảo mật thư mục nguồn/preview:** CLI bridge POSIX dùng O_NOFOLLOW/dirfd và giới hạn ZIP. AI0 phải cấp process user + root riêng, chống đường dẫn đổi, giới hạn CPU/RAM/IO/timeout **tại process cha** (SIGALRM một mình không chống được mọi native decode), tránh log nội dung khách, và có chính sách dọn artifact hỏng/mồ côi đúng TN-011. Source snapshot chmod read-only chỉ chống lỗi vô ý; integrity phải kiểm hash lại.
+5. **P1 – Giới hạn in ảnh/PDF/Word:** Ảnh hiện có cảnh báo IMAGE_PAPER_SIZE_REQUIRES_CONFIRMATION nhưng `READY` chỉ thể hiện render/count, **không chứng minh khổ in đã được khách xác nhận**. Font PDF chưa nhúng/Word/Excel không có native preview kiểm chứng phải NEEDS_HUMAN. Chưa xác minh PrintPlan A3/A4/duplex/scale trên Ricoh; người duyệt phải nhìn preview/giấy.
+6. **P1 – Hợp đồng dữ liệu:** `process_request` cố ý chỉ map `request_data.documents`. AI0 phải đọc request_data đang lưu trong AI1 và cấp adapter chính xác, không nới field silently hoặc cho client tự ghi `expected_request_hash`/plan. `publishVerifiedPlan` chỉ gọi qua principal processor đã xác thực server; tăng revision buộc xác nhận khách/nhân viên duyệt lại.
+7. **P1 – HTTPS localhost product test:** `test_localhost_tls.py` chỉ là test socket TLS đến fake backend. `test_product_backend_optin.py` yêu cầu HTTPS localhost + token test + đơn simulation trong PostgreSQL thật; SKIP nếu không có dữ liệu thì gate vẫn chưa đạt. Không được bật xác thực TLS giả hoặc hạ sang HTTP để qua test.
+8. **P2 – Journal credential ở Windows:** SQLite local chứa `lease_token` cho khôi phục, POSIX 0600 đã test. Trên Windows cần kiểm ACL user/service cùng file WAL/SHM trước mở vận hành; không đặt journal ở thư mục tạm/shared/network; không commit lease/token.
+
+### Gate bàn giao cho AI3 mức suy luận High/Extra High sau khi có bản chạy thử
+
+- Đọc lại `AGENTS.md`, spec TN, code/PR #2 #10 #17 và nhánh audit; kiểm git SHA hiện tại, **không merge từ nhánh/module khác tùy tiện**. Phản biện độc lập từng giả định của bản trước, không coi tài liệu này là bằng chứng đạt.
+- Kiểm `python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing`; `python -m pytest -q tests/unit/documents tests/unit/printing` trên HEAD có snapshot. Giữ báo cáo số PASS/FAIL/SKIP thật, log redacted; không dùng số 70 lịch sử để thay cho HEAD mới.
+- Chạy CLI PDF/ảnh synthetic trong process thật, đối chiếu snapshot SHA trước và sau khi thay input, PDF embedded/missing font, ZIP traversal/bomb/encrypted, 1/2 mặt theo file/bản, 150/151 tờ; crash/SIGKILL ở nhiều ranh giới.
+- Chạy CODE-006 Fastify+PostgreSQL thật với ít nhất hai connection/agent, scoped auth, stale revision, manual lock, lịch/ngày nghỉ, idempotency, claim/preflight/mark-sending/report, lost ACK/lease expiry/restart: **không driver call lần hai**.
+- Kiểm lệnh thực tế đến Ricoh IM7000 RMP7000 192.168.1.195 chỉ sau **chủ cho phép từng phép thử thật**. So giấy A4/A3, portrait/landscape, duplex cạnh dài/ngắn, khay, thu nhỏ không phóng lớn, font tiếng Việt, bản giấy thực, kẹt/mất giấy. Chưa có phép thử này phải ghi NOT RUN.
+- Nghiệm thu TN-037 của V1 (210 đơn/7 ngày, 100 đơn/ngày mô phỏng, không có lỗi nghiêm trọng) là gate độc lập do AI0/AI5/chủ phê duyệt; không tự merge/deploy, không nhắn khách, không bật live. **Chỉ chuyển cho AI3 mới khi đã có bản phần mềm chạy thử**, theo chỉ đạo chủ.
+
+### Kiểm thử mới của nhánh audit
+
+- `tests/unit/documents/test_source_snapshots.py`: đọc snapshot bytes/hash, thay file inbox nhưng artifact không đổi, kết quả hash bền vững qua lần chạy, ZIP chứa hai source độc lập, lỗi fsync/giới hạn tổng bytes trả NEEDS_HUMAN.
+- Chạy: `python -m pip install -r workers/documents/requirements-test.txt && python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing && python -m pytest -q tests/unit/documents tests/unit/printing`.
+- **Status:** code+fixture đã commit; chưa có bằng chứng Python tests của HEAD audit. Không tự nâng thành DONE.
