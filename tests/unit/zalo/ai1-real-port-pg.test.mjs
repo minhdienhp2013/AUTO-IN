@@ -14,6 +14,8 @@ if(databaseUrl) {
     pg=await import('pg');
     ai1=await import('../../../dist/backend/core/ai-order-port.js');
     core=await import('../../../dist/backend/core/service.js');
+    const storage=await import('../../../dist/backend/storage/database.js');
+    core={...core,PgStore:storage.PgStore};
   } catch { /* Explicit SKIP if AI1 port not integrated; never replace with mock. */ }
 }
 test('REAL PostgreSQL + REAL AI1 createAiOrderPort: new conversation, 2 workers, takeover, restart and UNKNOWN',{
@@ -50,16 +52,8 @@ test('REAL PostgreSQL + REAL AI1 createAiOrderPort: new conversation, 2 workers,
     const pids=await run('INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,$3,$4,\'staff\') RETURNING id',
       [staffId,shop,'staff-'+unique,'fixture-not-a-real-hash']);
     assert.equal(pids.rowCount,1);
-    const storeA={tx:async cb=>{
-      const client=await poolA.connect();
-      try{await client.query('BEGIN');const r=await cb(client);await client.query('COMMIT');return r}
-      catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
-    }};
-    const storeB={tx:async cb=>{
-      const client=await poolB.connect();
-      try{await client.query('BEGIN');const r=await cb(client);await client.query('COMMIT');return r}
-      catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
-    }};
+    const storeA=new core.PgStore(poolA);
+    const storeB=new core.PgStore(poolB);
     const ordersA=ai1.createAiOrderPort({store:storeA,trusted:{shop_id:shop,oa_id:oa}});
     const ordersB=ai1.createAiOrderPort({store:storeB,trusted:{shop_id:shop,oa_id:oa}});
     const baseA={...common,db:createZaloTransactions(poolA),orders:ordersA,documents:{async inspect(){return []}}};
@@ -92,9 +86,11 @@ test('REAL PostgreSQL + REAL AI1 createAiOrderPort: new conversation, 2 workers,
     await entered;
     const staff={id:staffId,shop_id:shop,role:'staff',verified:true};
     const service=new core.OrderService(storeA);
-    const claim=await service.handover(staff,conv,{expected_generation:0,idempotency_key:'take-'+unique});
+    let claim;
+    try{
+      claim=await service.handover(staff,conv,{expected_generation:0,idempotency_key:'take-'+unique});
+    }finally{releaseInspection()}
     assert.equal(claim.status,'HUMAN');assert.equal(claim.generation,1);
-    releaseInspection();
     const outcome=await blocked;
     assert.equal(outcome.held,1);
     const parked=(await run(`SELECT status,last_error_code FROM zalo_batches
@@ -136,6 +132,7 @@ test('REAL PostgreSQL + REAL AI1 createAiOrderPort: new conversation, 2 workers,
       await run('DELETE FROM zalo_process_queue WHERE oa_id=$1',[oa]);
       await run('DELETE FROM core_ai_draft_proposals WHERE shop_id=$1',[shop]);
       await run('DELETE FROM core_audit WHERE shop_id=$1',[shop]);
+      await run('DELETE FROM core_idempotency WHERE shop_id=$1',[shop]);
       await run('DELETE FROM core_revisions WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',[shop]);
       await run('DELETE FROM core_orders WHERE shop_id=$1',[shop]);
       await run('DELETE FROM core_conversation_controls WHERE shop_id=$1',[shop]);
