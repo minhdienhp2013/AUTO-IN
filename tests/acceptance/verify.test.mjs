@@ -32,7 +32,7 @@ test('FIXTURE ONLY: quote >150 sheets, deposit shortage',()=>{
  assert.notEqual(a.quote_revision,a.confirmed_quote_revision);
  assert.ok(b.paid_vnd<b.deposit_required_vnd);
 });
-const skip=!(process.env.AUTOIN_RUN_PRODUCT_ACCEPTANCE==='1'&&process.env.AUTOIN_ACCEPTANCE_ADAPTER)&&'PRODUCT NOT CONNECTED: NOT RUN';
+const skip=!(process.env.AUTOIN_RUN_LEGACY_P0==='1'&&process.env.AUTOIN_ACCEPTANCE_ADAPTER)&&'PRODUCT NOT CONNECTED: NOT RUN';
 const printer_id='RMP7000';
 const claim=id=>({printer_id,idempotency_key:'synthetic-claim-'+id});
 function noClaim(r){
