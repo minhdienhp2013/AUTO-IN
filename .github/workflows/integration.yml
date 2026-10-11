@@ -17,7 +17,6 @@ jobs:
           --health-cmd "pg_isready -U auto_in -d autoin_test_305"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_305
       TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_305
       AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_305
       AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
@@ -35,10 +34,14 @@ jobs:
       - run: npm ci
       - run: python -m pip install -r workers/documents/requirements-test.txt
       - run: npm run db:migrate
+        env:
+          DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_305
       - run: npm run check
       - run: python -m pytest -q tests/unit/documents tests/unit/printing
       - run: node tests/acceptance/run.mjs --integration
       - name: HTTP readiness and anonymous authorization
+        env:
+          DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_305
         run: |
           node dist/backend/server.js > /tmp/autoin-server.log 2>&1 &
           pid=$!
