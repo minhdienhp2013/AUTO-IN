@@ -20,7 +20,7 @@ test("worker retries transient failure and stops after terminal mark",async()=>{
     async ingest_pending(){return 0;},
     async claim_due(){return [{...batch,attempts:5}];},
     async complete(){throw Error("not called");},
-    async fail(_batch,reason){assert.match(reason,/network/);errors++;return "needs_human";}
+    async fail(_batch,reason){assert.equal(reason,"PROCESSING_FAILED");errors++;return "needs_human";}
   };
   const worker=new DurableConversationWorker(queue,{async consume(){throw Error("network");}});
   const result=await worker.tick();
