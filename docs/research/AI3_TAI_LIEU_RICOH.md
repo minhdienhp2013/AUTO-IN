@@ -185,3 +185,7 @@ Tệp test mới:
 - `tests/unit/documents/test_source_snapshots.py`: đọc snapshot bytes/hash, thay file inbox nhưng artifact không đổi, kết quả hash bền vững qua lần chạy, ZIP chứa hai source độc lập, lỗi fsync/giới hạn tổng bytes trả NEEDS_HUMAN.
 - Chạy: `python -m pip install -r workers/documents/requirements-test.txt && python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing && python -m pytest -q tests/unit/documents tests/unit/printing`.
 - **Status:** code+fixture đã commit; chưa có bằng chứng Python tests của HEAD audit. Không tự nâng thành DONE.
+
+### Hardening bổ sung: bằng chứng giấy trong DryRun
+
+Tại `agents/windows/agent.py`, sau khi gọi DryRunDriver, chỉ coi là `SIMULATED_DONE` nếu `mode=="simulation"`, `evidence_kind=="simulated"` và `paper_verified is False` cùng đúng. Nếu thiếu trường hoặc khai đã xác minh giấy, chuyển `UNKNOWN` và giữ journal để đối soát, tuyệt đối không chuyển thành VERIFIED_DONE. Test mới trong `tests/unit/printing/test_agent.py` cho `paper_verified=True` và thiếu trường. Đây là hardening phạm vi AI3, **chưa có kết quả pytest của HEAD**.
