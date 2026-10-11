@@ -57,7 +57,7 @@ test("takeover inside AI1 Port after preflight still prevents late draft and rep
       // Race: a staff handover commits just as the server operation begins.
       mode="HUMAN";generation++;
       if(mode!=="AI"||generation!==input.expected_generation)return {status:"stale_generation"};
-      committed++;return {order_id:"o",revision:1};
+      committed++;return {status:"created",order_id:"o"};
     },
     async route_human(){throw Error("unexpected")}
   },{async enqueue(){assert.fail("stale outbound") }});
