@@ -399,3 +399,49 @@ def test_cli_missing_manifest_evidence_fails_closed(private_root):
     response = json.loads(result.stdout)
     assert response["status"] == "NEEDS_HUMAN"
     assert response["facts"] == [{"kind": "unknown", "preview_trusted": False}]
+
+
+
+def test_same_size_source_mutation_is_detected_by_sha_not_size(private_root):
+    root, directory = private_root
+    path, item = _snapshot(root, directory, _pdf(), ".pdf")
+    assert inspect([item], artifact_root=root)[0]["kind"] == "pdf"
+    content = bytearray(path.read_bytes())
+    content[-10] ^= 0x01  # Preserve length to prove SHA check is mandatory.
+    path.chmod(0o600)
+    path.write_bytes(content)
+    assert path.stat().st_size == len(content)
+    assert inspect([item], artifact_root=root) == [
+        {"kind": "unknown", "preview_trusted": False}
+    ]
+
+
+def test_duplicate_manifest_entry_cannot_authorize_file(private_root):
+    root, directory = private_root
+    _, item = _snapshot(root, directory, _png(), ".png")
+    signed = root / item["manifest_ref"]
+    manifest = json.loads(signed.read_bytes())
+    manifest["files"].append(dict(manifest["files"][0]))
+    data = json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode()
+    signed.chmod(0o600)
+    signed.write_bytes(data)
+    modified = dict(item, manifest_sha256=hashlib.sha256(data).hexdigest())
+    assert inspect([modified], artifact_root=root) == [
+        {"kind": "unknown", "preview_trusted": False}
+    ]
+
+
+def test_corrupt_manifest_json_never_reveals_document(private_root):
+    root, directory = private_root
+    _, item = _snapshot(root, directory, _pdf(), ".pdf")
+    manifest = root / item["manifest_ref"]
+    manifest.chmod(0o600)
+    malformed = b'{"schema":"ai3.upload_snapshot.v1", "files":['
+    manifest.write_bytes(malformed)
+    verified = dict(item, manifest_sha256=hashlib.sha256(malformed).hexdigest())
+    cli = _cli(root, {"batch": [verified]})
+    assert cli.returncode == 2 and cli.stderr == b""
+    response = json.loads(cli.stdout)
+    assert response["status"] == "NEEDS_HUMAN"
+    assert response["facts"] == [{"kind": "unknown", "preview_trusted": False}]
+    assert verified["artifact_ref"].encode() not in cli.stdout
