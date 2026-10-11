@@ -93,3 +93,36 @@ test('nested progress cannot exceed independently evidenced real sheets',()=>{
  assert.equal(view.verified_sheets,null);
  assert.notEqual(view.delivery_state,'delivered');
 });
+
+
+test('AI1 complete job without counted verified paper is not presented as printed',()=>{
+ const d=detail();d.jobs=[{id:'j1',order_id:'order-ai1',revision:3,request_hash:'req-hash',state:'VERIFIED_DONE',
+   mode_at_send:'controlled_test',verified_sheets:0,evidence_kind:null,printer_id:'RMP7000'}] as typeof d.jobs;
+ d.print_progress={planned_sheets:180,verified_sheets:0,missing_sheets:180,delivered_sheets:0,
+   fully_verified:false,requires_manual_reconciliation:true};
+ const v=mapCoreOrderDetail(d);
+ assert.equal(v.print_state,'UNKNOWN');assert.equal(v.verified_sheets,null);
+ assert.notEqual(v.delivery_state,'delivered');
+ assert.ok(v.warnings.some(w=>w.includes('không khớp')));
+});
+
+test('historical real job must not count as paper for current revision',()=>{
+ const d=detail();d.order.delivered_sheets=180;
+ d.jobs=[{id:'j-old',order_id:'order-ai1',revision:1,request_hash:'old-hash',state:'VERIFIED_DONE',
+   mode_at_send:'production',evidence_kind:'staff_inspected',verified_sheets:180,printer_id:'RMP7000'}] as typeof d.jobs;
+ d.print_progress={planned_sheets:180,verified_sheets:180,missing_sheets:0,delivered_sheets:180,
+   fully_verified:true,requires_manual_reconciliation:false};
+ const v=mapCoreOrderDetail(d);
+ assert.equal(v.print_state,'NOT_SENT');assert.equal(v.verified_sheets,null);
+ assert.notEqual(v.delivery_state,'delivered');
+});
+
+test('job status VERIFIED_DONE with spooler evidence is not proof of real paper',()=>{
+ const d=detail();d.jobs=[{id:'j1',order_id:'order-ai1',revision:3,request_hash:'req-hash',state:'VERIFIED_DONE',
+   mode_at_send:'production',evidence_kind:'spooler',verified_sheets:180,printer_id:'RMP7000'}] as typeof d.jobs;
+ d.print_progress={planned_sheets:180,verified_sheets:180,missing_sheets:0,delivered_sheets:0,
+   fully_verified:true,requires_manual_reconciliation:false};
+ const v=mapCoreOrderDetail(d);
+ assert.equal(v.print_state,'UNKNOWN');assert.equal(v.verified_sheets,null);
+ assert.notEqual(v.delivery_state,'delivered');
+});
