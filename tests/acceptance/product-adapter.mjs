@@ -41,7 +41,7 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
  const pool=new pg.Pool({connectionString:databaseUrl,max:12,application_name:'autoin_ai5_acceptance'});
  const name=(await pool.query('SELECT current_database() AS name')).rows[0].name;
  if(!/^autoin_test[a-z0-9_-]*$/i.test(name)){await pool.end();throw Error('Connected DB is not isolated test DB');}
- for(const filename of ['001_core.sql','002_send_mode.sql']){
+ for(const filename of ['001_core.sql','002_send_mode.sql','003_confirmed_queue.sql','004_conversation_generation.sql']){
   const path=join(root,'backend/storage/migrations',filename);
   await access(path).catch(()=>{throw Error('Missing AI1 migration '+path)});
   await pool.query(await readFile(path,'utf8'));
@@ -80,7 +80,7 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
   await pool.query("INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,'staff',$3,'staff')",[staff,shop,await passwordHash(key('long-staff-password'))]);
   actors={owner:principal(owner,shop,'owner'),staff:principal(staff,shop,'staff'),processor:principal('processor-test',shop,'processor'),
    customer:principal('verified-zalo',shop,'customer',{customer_id:'synthetic-customer-'+uuid()}),
-   agent:principal('agent-1',shop,'print_agent'),'agent-1':principal('agent-1',shop,'print_agent'),'agent-2':principal('agent-2',shop,'print_agent')};
+   agent:principal('agent-1',shop,'print_agent',{printer_ids:['RMP7000']}),'agent-1':principal('agent-1',shop,'print_agent',{printer_ids:['RMP7000']}),'agent-2':principal('agent-2',shop,'print_agent',{printer_ids:['RMP7000']})};
   const initial=await svc.createDraft(actors.staff,{customer_id:actors.customer.customer_id,request_data:{files:[{file_id:'public-fixture',copies:1,format:'pdf'}]},idempotency_key:key('new')});
   order_id=initial.order_id;
   if(['unapproved_order','idempotency_conflict'].includes(seed))return;
@@ -145,6 +145,26 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
    receivable_vnd:details.receivable_vnd,refundable_vnd:details.refundable_vnd,
    remaining_deposit_vnd:Math.max(0,safeInt(quote?.deposit_required_vnd??0)-details.received_vnd)};
  }
+ async function checkConfirmedQueue(){
+  // Construct two REAL order/plan/confirm/approval transactions in one test shop.
+  // Confirm A then B, but approve B then A. Claim must return A.
+  async function newOrder(label){
+   const first=await svc.createDraft(actors.staff,{customer_id:actors.customer.customer_id,
+    request_data:{files:[{file_id:'synthetic-queue-'+label,copies:1,format:'pdf'}]},idempotency_key:key('queue-create')});
+   const printPlan={request_hash:first.request_hash,physical_sheets:1,document_pages:1,
+    printed_faces:1,ready:true,printer_id:'RMP7000',
+    artifact_ref:'synthetic/public/queue-'+label+'.pdf',verified_by:actors.processor.id};
+   await svc.publishVerifiedPlan(actors.processor,first.order_id,{expected_revision:1,plan:printPlan,idempotency_key:key('queue-plan')});
+   return first.order_id;
+  }
+  const A=await newOrder('A'),B=await newOrder('B');
+  await svc.confirm(actors.customer,A,{expected_revision:2,kind:'request',idempotency_key:key('confirm-A')});
+  await new Promise(done=>setTimeout(done,25)); // tie-break by actual PG timestamps
+  await svc.confirm(actors.customer,B,{expected_revision:2,kind:'request',idempotency_key:key('confirm-B')});
+  for(const id of [B,A])await svc.approve(actors.staff,id,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('queue-approve')});
+  const result=await svc.claim(actors.agent,{printer_id:'RMP7000',idempotency_key:key('queue-claim')});
+  return {first_order_id:A,second_order_id:B,claimed_order_id:result.job?.order_id??null};
+ }
  async function dryrunOnce(){
   const c=await svc.claim(actors.agent,{printer_id:'RMP7000',idempotency_key:key('dry-claim')});
   if(!c.job)return {status:'NO_JOB'};
@@ -162,6 +182,6 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
   await svc.report(actors.agent,job.job_id,{expected_revision:job.revision,lease_token:job.lease_token,result:'simulated_done',evidence_kind:'simulated',idempotency_key:key('dry-report')});
   return {status:'SIMULATED_DONE',job_id:job.job_id,evidence_kind:'simulated'};
  }
- return {environment:{type:'product-backed',database:'postgresql',print_driver:'DryRunDriver',scope:'isolated-test',source:'AI1-Service+AI3-Journal'},reset,act,snapshot,newAgent,dryrunOnce,
+ return {environment:{type:'product-backed',database:'postgresql',print_driver:'DryRunDriver',scope:'isolated-test',source:'AI1-Service+AI3-Journal'},reset,act,snapshot,newAgent,dryrunOnce,checkConfirmedQueue,
   async dispose(){for(const p of agents)await p.end();if(journalDir)await rm(journalDir,{recursive:true,force:true});await pool.end();}};
 }

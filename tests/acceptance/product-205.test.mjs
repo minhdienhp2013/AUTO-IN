@@ -67,3 +67,21 @@ test('DRYRUN-12 actual AI3 Journal/DryRunDriver used after actual AI1 mark-sendi
  const s=await a.snapshot();assert.equal(s.print_state,'SIMULATED_DONE');assert.equal(s.driver_calls,1);
  assert.equal((await a.dryrunOnce()).status,'NO_JOB');assert.equal((await a.snapshot()).driver_calls,1);
 }));
+
+test('PG-13 confirmed A before B, approved B before A: claim A first',{skip},()=>run('unapproved_order',async a=>{
+ const q=await a.checkConfirmedQueue();
+ assert.ok(q.claimed_order_id,'No approved job claimed');
+ assert.equal(q.claimed_order_id,q.first_order_id,'TN-007 FIFO must follow customer confirmation, not staff approval');
+ assert.notEqual(q.claimed_order_id,q.second_order_id);
+}));
+test('PG-14 printer scope is enforced by real AI1 agent service',{skip},()=>run('approved_unsent',async a=>{
+ error(await a.act('claim',{printer_id:'WRONG_PRINTER',idempotency_key:'scope-205'},{actor:'agent'}),'PRINTER_SCOPE_DENIED');
+}));
+test('PG-15 owner-only refund approval and over-refund guard',{skip},()=>run('partial_delivery_exception',async a=>{
+ error(await a.act('payment',{direction:'refund_approved',amount_vnd:30000,idempotency_key:'refund-staff-205'},{actor:'staff'}),'OWNER_REQUIRED');
+ error(await a.act('payment',{direction:'refund_approved',amount_vnd:30001,idempotency_key:'refund-large-205'},{actor:'owner'}),'REFUND_EXCEEDS_RECEIPTS');
+ const r=await a.act('payment',{direction:'refund_approved',amount_vnd:30000,idempotency_key:'refund-ok-205'},{actor:'owner'});
+ assert.equal(r.ok,true,JSON.stringify(r));
+ const paid=await a.act('payment',{direction:'refunded',amount_vnd:30000,idempotency_key:'refund-paid-205'},{actor:'owner'});
+ assert.equal(paid.ok,true,JSON.stringify(paid));
+}));
