@@ -77,3 +77,52 @@ AI1_BUILD_DIR=/tmp/autoin-code201-build/backend node --test tests/unit/core/safe
 ```
 
 Chỉ chạy integration khi đã cấu hình `TEST_DATABASE_URL` trỏ đến PostgreSQL thật và **database tên chứa `test`**; test tự chạy migrations 001→004. Nếu chưa có URL/pg, integration được SKIP và KHÔNG đạt P0. `npm run check` từ root của AI0 hiện **chưa include AI1**, nên check xanh chỉ chứng minh contract scaffold, không phải CODE-201. `getOrder.current.staff_approved`/price_confirmed/fully_verified luôn fail-closed nếu thiếu plan hợp lệ hoặc còn job UNKNOWN/SENT_UNVERIFIED.
+
+## CODE-301 — factory and PostgreSQL gate
+
+### Import/API for AI0
+
+`import { createCoreModule } from './backend/core/factory.js'` (relative to the AI0 entry) returns `{store,auth,service,registerRoutes}`.
+
+```ts
+import { Pool } from 'pg';
+import { createCoreModule } from './core/factory.js';
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const core = createCoreModule({ pool });
+// AI0 owns Fastify app, actual credential verification and migrations.
+// In a standalone AI1 route mode ONLY (NOT beside scaffold duplicate routes):
+core.registerRoutes(fastifyRoutePort, {
+  resolveVerifiedCustomer: verifyProviderOrCustomerCredentialServerSide,
+  resolvePrintAgent: verifyScopedAgentCredentialServerSide,
+});
+```
+
+`fastifyRoutePort` implements AI1 `RouteRegistrar` (`get`, `post`); AI0 must adapt Fastify types and compose a single route system. The CODE-000 app currently mounts the same endpoints with different request/response contracts; **do not call `registerRoutes` inside that app as-is**. AI0 either supplies one core router in place of scaffold registrations or writes verified operation adapters, updates contracts and tests. Never expose bare actor/role/shop/printer headers as authentication. Missing resolvers fail with 503 on startup; invalid verified principals fail with 403. `auth.login(shop_id, username, password)` returns an opaque bearer token; `auth.principal(token)` validates persisted session; owner bootstrap requires a one-time explicit trusted CLI call (`bootstrap_enabled=true`) and is never published as an HTTP route.
+
+`CORE_MIGRATIONS` from `backend/storage/migrations.ts` lists scripts in order (001–004). Runner and connection pooling belong to AI0. The factory deliberately does not run DDL implicitly. Run each SQL file on a dedicated database named `*_test` **before test**, not on production by copy-paste. Test scripts refuse DB names without a `test` token.
+
+### Run with PostgreSQL 18, Node 24, real independent connections
+
+Prerequisites: PostgreSQL service and AI0's locked dependencies (`npm ci`) on a machine with network or preinstalled binaries; a disposable database named `auto_in_test` (never `auto_in` production). Example development setup:
+
+```sh
+docker compose up -d postgres
+docker compose exec -T postgres psql -U auto_in -d auto_in -c 'CREATE DATABASE auto_in_test'
+export TEST_DATABASE_URL='postgresql://auto_in:development_only@127.0.0.1:5432/auto_in_test'
+./node_modules/.bin/tsc --strict --exactOptionalPropertyTypes --noUncheckedIndexedAccess --skipLibCheck --target ES2023 --module commonjs --moduleResolution node --esModuleInterop --types node --rootDir . --outDir /tmp/auto-in-code301-build backend/core/*.ts backend/api/*.ts backend/storage/*.ts
+AI1_BUILD_DIR=/tmp/auto-in-code301-build/backend node --test tests/unit/core/*.test.cjs tests/integration/core/*.test.cjs
+```
+
+The PostgreSQL tests apply migrations 001–004 in order and validate the DB name. `pg-concurrency.test.cjs` **explicitly opens two independent `pg.Pool` instances, obtains two backend PIDs** and tests first customer confirmation vs reversed approval, double approval/claim/mark-sending, stale revision, UNKNOWN not reclaimable, separate money and paper, and generation takeover/return race. Existing `postgres.test.cjs` checks quotes, partial paper, money/refund, mode changes, holidays and owner-only exceptional closure. If `TEST_DATABASE_URL` is absent the PG suite SKIPs: **this is not a successful PostgreSQL test**. If the URL is set but connection/driver is absent the suite FAILS visibly, no memory DB fallback.
+
+### AI4 read model facts
+
+`getOrder(staff, order_id)` preserves `{order,revisions,jobs,quote,received_vnd,receivable_vnd,refundable_vnd}` and provides nested `current`, `print_progress`, `conversation_control`. Read data is server scoped to `shop_id`, revision/hash/quote, trusted processor plan. `preview_ref` is null unless actual verified preview ref exists. `print_progress.fully_verified` is false while print job is unknown or unverified; partial staff inspected paper is deliverable only for the amount physically counted, not self-triggering a reprint. AI4 must never generate a readiness flag from a missing artifact.
+
+### AI2 generation port
+
+`service.withAiSendGate({shop_id, conversation_id, generation}, callback)` checks an existing shop-scoped conversation row under a database row lock. Pass only scope from trusted server context and run the durable, idempotent final outbound reservation/call within the callback; AI2 keeps its own outbound journal/uncertain Zalo provider result. Staff `handover`/`returnToAi` are explicit, expected_generation CAS and never auto-return. Root app must preserve 403/409 errors and never replay unverified OA sends.
+
+### Status
+
+No OA or Ricoh device was contacted. Local environment lacks PostgreSQL server and `pg` package, and DNS access to download binaries is unavailable. Integration remains **BLOCKED, NOT PASS** until tested against actual PostgreSQL. Only a real two-connection run and log can close this gate.
