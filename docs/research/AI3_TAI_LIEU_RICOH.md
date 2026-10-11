@@ -88,3 +88,61 @@ Tệp test mới:
 - \`tests/unit/printing/test_backend_simulation.py\`: HTTP AI1 wire mock **có trạng thái** cho mất ACK mark-sending, crash sau driver, mất ACK report, khởi động lại mà không gọi driver thêm.
 - Lệnh cần chạy: \`python -m pytest -q tests/unit/documents tests/unit/printing\`; \`python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing\`.
 - **Các kiểm thử của commit CODE-203 cần được chạy lại trên checkout đủ file, chưa được coi là đạt chỉ vì 47/47 test CODE-103 trước đó đã chạy.** AI0 cung cấp SHA/backend composition + PostgreSQL thật để AI5 chạy product integration; fake HTTP không thay thế live backend. Windows 11 / Ricoh IM7000 / OA vẫn CHƯA chạy. Không in thật, merge, deploy.
+
+
+## CODE-303 — CLI JSON processor + HTTPS DryRun (đợt 3)
+
+- **MODULE BASE:** \`31e73ea2607f25d521561a6c3fe9fda733900db5\`, nhánh \`ai3/dot3-processor-dryrun\`. Chỉ sửa AI3 namespace.
+- **Đọc STDIN / ghi STDOUT JSON duy nhất**, tối đa 256 KiB; không nhận file path gốc, renderer metadata hoặc quyền duyệt trực tiếp từ người dùng. Trùng key JSON, NaN/Infinity, JSON lỗi, hash không khớp, thiếu chứng cứ và unsupported → \`NEEDS_HUMAN\` + \`reason_code\`. Thời hạn POSIX \`SIGALRM\` 1–120 giây, mặc định 45 giây; xóa preview nháp khi timeout, không phát lệnh in. Tất cả dữ liệu ngoại lệ/traceback được ẩn khỏi stdout; Node phải có timeout/kill độc lập và giới hạn kích thước response.
+- Command từ AI0 trusted process:
+  \`\`\`sh
+  python -m workers.documents.bridge \
+    --input-root /var/lib/autoin/incoming \
+    --artifact-root /var/lib/autoin/private-artifacts \
+    --timeout-seconds 45 < synthetic-request.json
+  \`\`\`
+  Chỉ server AI0 được cung cấp root và hash DB đã lưu; tên \`artifact_name\` phải là đường tương đối ở input-root. Root output phải tồn tại, private và bền vững; API phục vụ preview luôn xác thực người xem và kiểm SHA trước khi đọc artifact. Worker không đi theo symlink hay cho phép đọc ngoài root. Không lưu raw tài liệu khách vào Git/log.
+- Mẫu request (placeholder hash phải lấy từ AI1 DB, không dùng giá trị khách gửi):
+  \`\`\`json
+  {
+    "request_data": {"documents": [
+      {"artifact_name":"inbox/example.pdf","copies":2,"duplex":true,
+       "paper":"A4","orientation":"portrait","binding":"long_edge","page_range":"all"}
+    ]},
+    "expected_request_hash":"<sha256(AI1 canonical(request_data))>"
+  }
+  \`\`\`
+  Nếu PDF này thực có 3 trang, đã render được và font được tin cậy, kết quả có \`plan\` tương thích **AI1 PrintPlan**:
+  \`\`\`json
+  {
+    "schema":"ai3.document_bridge.v1",
+    "status":"READY",
+    "plan":{
+      "request_hash":"<DB request_hash>", "physical_sheets":4,
+      "document_pages":3, "printed_faces":6, "ready":true,
+      "printer_id":"RMP7000",
+      "artifact_ref":"doc-<generated-id>/manifest.json",
+      "verified_by":"ai3.processor.v1"
+    },
+    "evidence_kind":"local_render_verified_artifacts",
+    "content_settings_sha256":"<sha256 stable evidence>",
+    "renderer_versions":{"pymupdf":"<pinned version>","pillow":"<pinned version>"},
+    "preview_artifacts":[{"ref":"doc-<generated-id>/<preview>.png","sha256":"<sha256>","bytes":12345}],
+    "requires_price_confirmation":false
+  }
+  \`\`\`
+  Preview \`bytes\`/refs/hash ví dụ phía trên chỉ là **cấu trúc minh họa**, không phải artifact đã sinh. \`artifact_ref\` là tương đối, không phải URL công khai hay đường dẫn để người dùng chọn. Manifest thật có \`files[]\` gồm file_sha256, settings_sha256, render_method, document_pages, printed_faces, physical_sheets, warnings; \`paper_plan[]\` phân theo file/bản và \`previews[]\` mỗi preview gồm ref/sha256/bytes. Không tự coi \`READY\` là đã in giấy.
+- **Mapping tại AI0, KHÔNG giao quyền cho client**: sau khi giải artifact private + so hash/revision trong PostgreSQL, chỉ gọi \`OrderService.publishVerifiedPlan(processorPrincipal, orderId, {expected_revision: stored.active_revision, plan: result.plan, idempotency_key: stable_key})\`. AI1 sẽ tăng revision và buộc khách xác nhận/nhân viên duyệt lại. Không dùng \`plan\` từ public JSON. Nếu request_data backend có field khác \`documents\` như mapper AI1, AI0 cần chốt chuyển đổi nhưng giữ nguyên hash của *request_data đã lưu*; bridge hiện intentionally fail-closed \`UNMAPPED_REQUEST_FIELDS\` để tránh chấp nhận sai kế hoạch.
+- **Exit code:** 0 READY; 2 NEEDS_HUMAN. Ví dụ \`{"schema":"ai3.document_bridge.v1","status":"NEEDS_HUMAN","reason_code":"PROCESSING_TIMEOUT","ready":false}\`. Không expose file path, nội dung PDF hoặc exception message trong lỗi. Không tự OCR hay đoán fonts; Word/Excel vẫn NEEDS_HUMAN.
+- **Agent CLI:** \`AUTO_IN_AGENT_TOKEN=... python -m agents.windows.cli --api-base-url https://localhost:PORT --journal /secure/agent.sqlite --http-timeout-seconds 10\`. Scoped token đặt trong ENV, **không trên argv/URL**; HTTPS xác minh cert đầy đủ (nếu CA local, chỉ đặt \`SSL_CERT_FILE\`), chặn HTTP và redirect. CLI chỉ tạo \`DryRunDriver\`, kết quả một dòng JSON không stack trace/token. Luồng claim → preflight → server atomic mark-sending → journal SQLite → DryRun → report; lost ACK/crash giữ UNKNOWN và restart KHÔNG gọi driver lại. Driver Ricoh luôn khóa.
+- **Tests:** \`tests/unit/documents/test_bridge_cli.py\` chạy subprocess thật với PDF/PNG synthetic, JSON lỗi, giới hạn, deadline, deterministic hash; \`tests/unit/printing/test_localhost_tls.py\` dùng socket TLS local CA (server mô phỏng có trạng thái, **không phải backend AI0**), journal/restart/ACK lost; \`tests/unit/printing/test_cli303.py\` CLI agent JSON/redaction; \`tests/unit/printing/test_product_backend_optin.py\` là gate **backend sản phẩm thực sự**, mặc định SKIP cho tới khi AI0 có CODE-006 composition.
+- **Chạy độc lập:** \`python -m pip install -r workers/documents/requirements-test.txt && python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing && python -m pytest -q tests/unit/documents tests/unit/printing\`. AI0 đã báo **70/70 PASS trên SHA 31e73ea trước CODE-303**; các ca mới chỉ được xác nhận khi chính suite được chạy trên HEAD CODE-303. Root CI Node thành công không đồng nghĩa pytest đã chạy.
+- **Chạy product-backed khi AI0 cấp SHA/start/TLS/PG test, không bao giờ dùng môi trường production:**
+  \`\`\`sh
+  AUTOIN_CODE303_RUN_PRODUCT_DRYRUN=YES_SIMULATION_ONLY \
+  AUTOIN_CODE303_HTTPS_URL=https://localhost:PORT \
+  AUTOIN_CODE303_AGENT_TOKEN=<TEST_SCOPED_AGENT_TOKEN> \
+  SSL_CERT_FILE=/path/to/trusted-test-ca.pem \
+  python -m pytest -q tests/unit/printing/test_product_backend_optin.py
+  \`\`\`
+  Server phải có PostgreSQL test thật, 1 tác vụ mode=simulation được khách xác nhận/nhân viên duyệt hợp lệ, HTTPS scoped credential. Test yêu cầu \`SIMULATED_DONE\`, paper_verified=false, restart không gửi trùng; không có job thì SKIP, không xem là PASS. AI0/AI5 nghiệm thu HTTP/PG. Windows 11 / Ricoh thật / OA vẫn **NOT RUN**; không in thật, merge hay deploy.
