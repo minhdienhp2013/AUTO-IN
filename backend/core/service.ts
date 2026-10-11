@@ -89,10 +89,23 @@ export class OrderService {
   if(input.direction!=='received')assertOwner(p);
   // Staff-observed actual receipt; no image recognition/payment webhooks are trusted here.
   return this.store.tx(db=>this.store.once(db,p,`orders.${id}.payment`,input.idempotency_key,input,async()=>{
+   // The order lock serializes concurrent payment/refund actions for this order.
    await this.order(db,id,p);
-   if(input.direction==='refunded'){
-    const approved=await this.store.one<{total:string}>(db,"SELECT COALESCE(SUM(CASE WHEN direction='refund_approved' THEN amount_vnd WHEN direction='refunded' THEN -amount_vnd ELSE 0 END),0)::text AS total FROM core_payments WHERE order_id=$1",[id]);
-    if(Number(approved.total)<input.amount_vnd)throw new DomainError('REFUND_NOT_APPROVED','Chưa duyệt đủ số tiền hoàn');
+   if(input.direction!=='received'){
+    const remainingCash=await this.received(db,id);
+    if(input.direction==='refund_approved'){
+     // Prevent approving multiple pending refunds against the same receipt.
+     const pending=await this.store.one<{total:string}>(db,"SELECT COALESCE(SUM(CASE WHEN direction='refund_approved' THEN amount_vnd WHEN direction='refunded' THEN -amount_vnd ELSE 0 END),0)::text AS total FROM core_payments WHERE order_id=$1",[id]);
+     const pendingAmount=dbSafeInteger(pending.total,'payment.pending_refunds');
+     if(pendingAmount<0||input.amount_vnd>remainingCash-pendingAmount)
+      throw new DomainError('REFUND_EXCEEDS_RECEIPTS','Số tiền duyệt hoàn vượt khoản thực nhận chưa phân bổ',422);
+    }else{
+     const approved=await this.store.one<{total:string}>(db,"SELECT COALESCE(SUM(CASE WHEN direction='refund_approved' THEN amount_vnd WHEN direction='refunded' THEN -amount_vnd ELSE 0 END),0)::text AS total FROM core_payments WHERE order_id=$1",[id]);
+     if(dbSafeInteger(approved.total,'payment.pending_refunds')<input.amount_vnd)
+      throw new DomainError('REFUND_NOT_APPROVED','Chưa duyệt đủ số tiền hoàn');
+     if(input.amount_vnd>remainingCash)
+      throw new DomainError('REFUND_EXCEEDS_RECEIPTS','Không thể hoàn nhiều hơn khoản tiền thực nhận còn lại',422);
+    }
    }
    const pid=newId();await db.query('INSERT INTO core_payments(id,order_id,direction,method,amount_vnd,reference,verified_by) VALUES($1,$2,$3,$4,$5,$6,$7)',[pid,id,input.direction,input.method,input.amount_vnd,input.reference??null,p.id]);
    await this.audit(db,p,'payment.'+input.direction,id,{payment_id:pid,amount_vnd:input.amount_vnd});
@@ -211,7 +224,7 @@ export class OrderService {
    const ref=await this.store.one<{order_id:string}>(db,'SELECT order_id FROM core_print_jobs WHERE id=$1',[job_id]);
    const o=await this.order(db,ref.order_id,p);const j=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 FOR UPDATE',[job_id]);
    if(j.state!=='SENT_UNVERIFIED'&&j.state!=='UNKNOWN')throw new DomainError('VERIFY_STATE','Chỉ kiểm chứng lệnh thực đã gửi/chưa rõ',409);
-   if(j.mode_at_send==='simulation'||!j.mode_at_send)throw new DomainError('SIMULATION_NOT_PAPER','Lệnh mô phỏng/không rõ chế độ không được xác nhận giấy thật',409);
+   if(j.mode_at_send!=='controlled_test'&&j.mode_at_send!=='production')throw new DomainError('SIMULATION_NOT_PAPER','Lệnh mô phỏng/không rõ chế độ không được xác nhận giấy thật',409);
    const rev=await this.revision(db,o);if(!rev.plan||input.physical_sheets>rev.plan.physical_sheets)throw new DomainError('PAPER_COUNT_EXCEEDS_PLAN','Số tờ kiểm chứng vượt kế hoạch in',422);
    await db.query("UPDATE core_print_jobs SET state='VERIFIED_DONE',evidence_kind=$2,verified_sheets=$3,verified_by=$4,reported_at=now() WHERE id=$1",[job_id,input.evidence_kind,input.physical_sheets,p.id]);
    await this.audit(db,p,'job.paper_verified',o.id,{job_id,physical_sheets:input.physical_sheets,evidence_kind:input.evidence_kind});
@@ -252,9 +265,13 @@ export class OrderService {
   return this.store.tx(db=>this.store.once(db,p,`orders.${id}.close_exception`,input.idempotency_key,input,async()=>{
    const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
    const received=await this.received(db,id);
+   const paymentHistory=await db.query('SELECT id FROM core_payments WHERE order_id=$1 LIMIT 1',[id]);
    const jobs=await db.query<JobRow>('SELECT * FROM core_print_jobs WHERE order_id=$1 FOR UPDATE',[id]);
    if(jobs.rows.some(j=>j.state==='SENDING'))throw new DomainError('JOB_IN_FLIGHT','Không được giả đóng khi đang gửi lệnh',409);
-   if(p.role!=='owner'&&(received!==0||jobs.rows.some(j=>j.state!=='NOT_SENT')))throw new DomainError('OWNER_REQUIRED','Đơn có tiền/đã in/không rõ: chỉ chủ đóng phần in',403);
+   // Net balance == 0 does NOT prove there has never been a deposit or refund.
+   // TN-036 reserves all orders with any payment history for the owner.
+   if(p.role!=='owner'&&(paymentHistory.rows.length>0||jobs.rows.some(j=>j.state!=='NOT_SENT')))
+    throw new DomainError('OWNER_REQUIRED','Đơn từng có thu/hoàn tiền hoặc đã in: chỉ chủ đóng phần in',403);
    await db.query('UPDATE core_orders SET print_closed=true,manual_lock=true,closed_reason=$2 WHERE id=$1',[id,input.reason]);
    await db.query("UPDATE core_print_jobs SET cancelled_at=now(),claimed_by=NULL,lease_secret_hash=NULL,lease_until=NULL WHERE order_id=$1 AND state='NOT_SENT' AND cancelled_at IS NULL",[id]);
    const quote=await this.quote(db,id);const rev=await this.revision(db,o);

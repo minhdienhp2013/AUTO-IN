@@ -107,6 +107,35 @@ const run=async()=>{
   await assert.rejects(svc.deliver(staff,order3.order_id,{expected_revision:2,physical_sheets:1,idempotency_key:key('overdeliver')}),e=>e.code==='PAPER_NOT_VERIFIED');
   const actual=(await pool.query('SELECT delivered_sheets::text AS count FROM core_orders WHERE id=$1',[order3.order_id])).rows[0].count;
   assert.equal(actual,'5');
+  // TN-036: an abandoned, never-printed order with a deposit/refund history
+  // remains owner-only to close, even when the net receipt balance returns to zero.
+  const depositOrder=await svc.createDraft(staff,{customer_id:customerId,request_data:req(1),idempotency_key:key('deposit-order')});
+  await svc.recordPayment(staff,depositOrder.order_id,{direction:'received',method:'cash',amount_vnd:500,idempotency_key:key('deposit-in')});
+  await assert.rejects(
+    svc.recordPayment(owner,depositOrder.order_id,{direction:'refund_approved',method:'cash',amount_vnd:700,idempotency_key:key('refund-too-large')}),
+    e=>e.code==='REFUND_EXCEEDS_RECEIPTS'
+  );
+  await svc.recordPayment(owner,depositOrder.order_id,{direction:'refund_approved',method:'cash',amount_vnd:500,idempotency_key:key('refund-approve')});
+  await assert.rejects(
+    svc.recordPayment(owner,depositOrder.order_id,{direction:'refund_approved',method:'cash',amount_vnd:1,idempotency_key:key('refund-double-approve')}),
+    e=>e.code==='REFUND_EXCEEDS_RECEIPTS'
+  );
+  await assert.rejects(
+    svc.recordPayment(owner,depositOrder.order_id,{direction:'refunded',method:'cash',amount_vnd:501,idempotency_key:key('refund-unapproved')}),
+    e=>e.code==='REFUND_NOT_APPROVED'
+  );
+  await svc.recordPayment(owner,depositOrder.order_id,{direction:'refunded',method:'cash',amount_vnd:500,idempotency_key:key('refund-paid')});
+  await assert.rejects(
+    svc.closePrintException(staff,depositOrder.order_id,{expected_revision:1,reason:'abandoned after refund',idempotency_key:key('close-with-refund-history')}),
+    e=>e.code==='OWNER_REQUIRED'
+  );
+  const ownerClosed=await svc.closePrintException(owner,depositOrder.order_id,{expected_revision:1,reason:'refund reconciled; no print',idempotency_key:key('close-owner-refunded')});
+  assert.equal(ownerClosed.receivable_vnd,0);
+  assert.equal(ownerClosed.refundable_vnd,0);
+  // A staff member may close a genuinely empty/unprinted/unpaid abandoned order.
+  const emptyOrder=await svc.createDraft(staff,{customer_id:customerId,request_data:req(1),idempotency_key:key('empty-order')});
+  const emptyClosed=await svc.closePrintException(staff,emptyOrder.order_id,{expected_revision:1,reason:'unconfirmed abandoned',idempotency_key:key('empty-close')});
+  assert.equal(emptyClosed.print_closed,true);
   return {shop,passed:true};
  }finally{await pool.end();}
 };
