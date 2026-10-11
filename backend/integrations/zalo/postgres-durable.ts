@@ -111,6 +111,21 @@ export class PostgresConversationQueue {
       return result.rowCount===1;
     });
   }
+  /** A stale-generation / staff-owned batch must remain visible and durable.
+   * Do NOT complete it or replay automatically after return-to-AI.
+   * Inbound rows and batch_items remain intact for manual reconciliation.
+   */
+  async hold(batch:LeasedBatch,reason="GENERATION_HELD"):Promise<boolean> {
+    if(!/^[A-Z][A-Z0-9_]{1,63}$/.test(reason))throw new Error("INVALID_HOLD_REASON");
+    return this.db.transaction(async tx=>{
+      const changed=await tx.query(`UPDATE zalo_batches
+        SET status='NEEDS_HUMAN',lease_token=NULL,lease_until=NULL,
+            last_error_code=$3
+        WHERE id=$1 AND lease_token=$2::uuid AND status='LEASED'`,
+        [batch.batch_id,batch.lease_token,reason]);
+      return changed.rowCount===1;
+    });
+  }
   async fail(batch:LeasedBatch,errorCode="PROCESSING_FAILED",maxAttempts=5):Promise<"retry"|"needs_human"|"lost_lease"> {
     positiveInt(maxAttempts,100);
     return this.db.transaction(async tx=>{
