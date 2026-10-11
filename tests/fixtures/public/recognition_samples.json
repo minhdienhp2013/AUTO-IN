@@ -1,0 +1,126 @@
+{
+  "dataset_id": "SYNTHETIC_DEV_V0_1",
+  "scope": "DEVELOPMENT_ONLY_NOT_FIELD_ACCEPTANCE",
+  "samples": [
+    {
+      "id": "R001",
+      "text": "In 2 bản A4 đen trắng",
+      "intent": "PRINT",
+      "common": true
+    },
+    {
+      "id": "R002",
+      "text": "In trang 1 đến 3, hai mặt",
+      "intent": "PRINT",
+      "common": true
+    },
+    {
+      "id": "R003",
+      "text": "Tệp này in dọc",
+      "intent": "PRINT",
+      "common": true
+    },
+    {
+      "id": "R004",
+      "text": "In 5 ảnh màu",
+      "intent": "MANUAL_COLOR",
+      "common": true
+    },
+    {
+      "id": "R005",
+      "text": "Trang có ảnh màu",
+      "intent": "MANUAL_COLOR",
+      "common": false
+    },
+    {
+      "id": "R006",
+      "text": "Có bán bàn học không?",
+      "intent": "NON_PRINT",
+      "common": true
+    },
+    {
+      "id": "R007",
+      "text": "ZIP 10 tài liệu",
+      "intent": "NEEDS_HUMAN",
+      "common": false
+    },
+    {
+      "id": "R008",
+      "text": "Word lỗi font",
+      "intent": "NEEDS_HUMAN",
+      "common": false
+    },
+    {
+      "id": "R009",
+      "text": "Sửa thành 4 bản",
+      "intent": "REVISION",
+      "common": true
+    },
+    {
+      "id": "R010",
+      "text": "Hủy đơn đang in",
+      "intent": "CANCEL_URGENT",
+      "common": false
+    },
+    {
+      "id": "R011",
+      "text": "In 200 tờ",
+      "intent": "PRINT",
+      "common": true
+    },
+    {
+      "id": "R012",
+      "text": "Đã gửi biên lai chuyển khoản",
+      "intent": "PAYMENT_VERIFY_HUMAN",
+      "common": true
+    },
+    {
+      "id": "R013",
+      "text": "Cửa hàng nghỉ à?",
+      "intent": "HOURS",
+      "common": true
+    },
+    {
+      "id": "R014",
+      "text": "Photo thẻ căn cước",
+      "intent": "PRINT",
+      "common": true
+    },
+    {
+      "id": "R015",
+      "text": "PDF có mật khẩu",
+      "intent": "NEEDS_HUMAN",
+      "common": false
+    },
+    {
+      "id": "R016",
+      "text": "In ngang A3",
+      "intent": "PRINT",
+      "common": true
+    },
+    {
+      "id": "R017",
+      "text": "Bổ sung một file",
+      "intent": "REVISION",
+      "common": true
+    },
+    {
+      "id": "R018",
+      "text": "Nhận trước 10 tờ",
+      "intent": "PARTIAL_DELIVERY",
+      "common": true
+    },
+    {
+      "id": "R019",
+      "text": "In ảnh chụp tài liệu",
+      "intent": "PRINT",
+      "common": true
+    },
+    {
+      "id": "R020",
+      "text": "Excel nhờ xử lý",
+      "intent": "NEEDS_HUMAN",
+      "common": false
+    }
+  ]
+}

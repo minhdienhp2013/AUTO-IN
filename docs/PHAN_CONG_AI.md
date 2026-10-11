@@ -73,3 +73,6 @@ Chủ giao tiếp tục song song ngày 11/10/2026. [Prompt đợt 3](prompts/do
 | AI5 | CODE-305 | Adapter cập nhật và nghiệm thu bản tích hợp PG/HTTP/DryRun/browser |
 
 AI1–AI5 bắt đầu phần độc lập ngay. Ca phụ thuộc CODE-006 chờ SHA tích hợp thật; thiếu môi trường ghi rõ BLOCKED. Không tự merge/deploy/in thật/nhắn khách. Không mở thêm vai trò AI.
+
+## CODE-006 — điểm nối được cấp cho AI0
+AI0 sở hữu thêm backend/composition/**, scripts/** và tests/integration/composition/** để nối runtime, migration, processor và kiểm thử tích hợp. Các module AI1–AI5 được nhập nguyên trạng từ SHA đã bàn giao; không đổi chủ file.

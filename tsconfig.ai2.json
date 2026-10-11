@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": false,
+    "noUncheckedIndexedAccess": false
+  },
+  "include": [
+    "backend/conversation/**/*.ts",
+    "backend/ai/**/*.ts",
+    "backend/integrations/zalo/**/*.ts"
+  ],
+  "exclude": []
+}

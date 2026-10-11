@@ -1,0 +1,11 @@
+/**
+ * AI0-owned migration runner can consume this ordered manifest.
+ * There is deliberately no implicit migration during normal startup.
+ * Schema changes must be reviewed and applied as a separate operator action.
+ */
+export const CORE_MIGRATIONS = [
+  '001_core.sql',
+  '002_send_mode.sql',
+  '003_confirmed_queue.sql',
+  '004_conversation_generation.sql'
+] as const;
