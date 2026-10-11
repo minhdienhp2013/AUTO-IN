@@ -38,7 +38,7 @@ function batchIdentity(batch:Batch):{event_ids:string[];key:string} {
   return {event_ids,key:"zalo:"+digest};
 }
 function isStale(result:DraftResult|HumanRouteResult):boolean {
-  return result.status==="stale_generation";
+  return result!==undefined && result.status==="stale_generation";
 }
 export class ConversationProcessor {
   private readonly gate:GatePort;
