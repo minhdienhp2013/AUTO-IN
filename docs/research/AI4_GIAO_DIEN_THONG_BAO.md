@@ -57,3 +57,14 @@
 3. `[AI5] [CODE-205]` Chạy browser E2E Windows/mobile 390×844 và desktop 1440×900, mất mạng/401/403/409/bấm kép/stale revision, xác nhận cảnh báo demo; iPhone và Web Push thật phải kiểm riêng, không coi desktop mock là đủ.
 
 Trạng thái CODE-204 tại thời điểm bàn giao: **BLOCKED vì lockfile/build/npm registry và read model thiếu**; đã đưa sửa code + kiểm thử thuần TS lên nhánh, không merge/deploy/in thật.
+
+## CODE-304 — nested read model AI1 (đợt 3)
+
+- BASE `694179cd5ac6804d276da837b3cded2e89da3c4d`, nguồn read model AI1 `ebdd740d87b3bb72fd7f1229b2ab2e728f55f0bc`, nhánh `ai4/dot3-web-contract-lock`.
+- Đã đối chiếu `backend/core/service.ts:getOrder` và `backend/core/model.ts:PrintPlan` của AI1. Mapper đọc `current.{revision,request_hash,verified_plan,request_confirmation,price_confirmation,approval,preview_ref}`, `print_progress`, `conversation_control`. Kiểm phiên bản/hash/quote_revision, BIGINT an toàn, generation/status/claimed_by; lỗi thiếu dữ liệu thì không suy đoán.
+- Xác nhận yêu cầu/giá và trạng thái đơn lấy từ server đúng phiên; giấy mô phỏng không thành giấy thật; UNKNOWN giữ đối soát; chỉ hiển thị giao đủ khi giấy thật được xác minh và server không còn reconciliation. Cọc thiếu vẫn là cảnh báo, không tự cấm duyệt; kiểm duyệt live vẫn khóa vì thiếu danh sách file và URL preview per-file được cấp quyền. `preview_ref` của processor là ref nội bộ, **không tự biến thành URL public**.
+- **PASS:** `cd web && npm test` 38/38 (30 ca cũ + 8 ca nested); TypeScript isolated strict API/domain/fixtures/notifications PASS bằng TS global 5.8.3 và khai báo ImportMeta tạm **ngoài repo**, không gọi là Vite build.
+- **FAIL/BLOCKED:** `npm install --package-lock-only --ignore-scripts --no-audit --no-fund --fetch-retries=0 --fetch-timeout=4500` trả `EAI_AGAIN registry.npmjs.org`; `npm ci --offline` fail vì thiếu lockfile; `npm run typecheck` và `npm run build` fail TS2688 `vite/client` do chưa có deps. Không tạo lockfile giả.
+- **NOT RUN:** browser viewport desktop/mobile, HTTP CODE-006/PostgreSQL, iPhone/Web Push, máy in thật. Không merge/deploy/in thật.
+
+**Yêu cầu AI0/AI1:** cung cấp danh sách file và URL preview có kiểm quyền/độ tin cậy gắn revision/hash, đồng thời SHA API simulation CODE-006 để AI4+AI5 chạy browser; khi npm registry khả dụng phải sinh `web/package-lock.json` bằng npm và chạy `npm ci && npm test && npm run typecheck && npm run build`.

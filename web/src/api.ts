@@ -93,11 +93,40 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
   if (!rev || typeof rev.request_hash !== 'string' || !rev.request_hash) {
     throw new ApiFault(503, 'INVALID_REVISION', 'Chưa nhận phiên bản và dấu vân tay tài liệu hiện hành.');
   }
-  const plan = asObject(rev.plan), quote = asObject(data.quote);
-  const latest = data.jobs.map(asObject).filter(j => j.revision === revision);
+  // CODE-301 AI1 read model: only nested `current` is authoritative for the
+  // active revision. Never promote a historical confirmation or client flag.
+  const current = asObject(data.current), quote = asObject(data.quote);
+  const nested = 'current' in data;
+  if (nested && (asNum(current.revision) !== revision || current.request_hash !== rev.request_hash)) {
+    throw new ApiFault(503, 'INVALID_CURRENT_REVISION', 'Read model hiện hành không khớp phiên bản/hash.');
+  }
+  const candidate = nested ? asObject(current.verified_plan) : asObject(rev.plan);
+  const trustedPlan = candidate.ready === true && candidate.request_hash === rev.request_hash &&
+    typeof candidate.verified_by === 'string' && candidate.verified_by.length > 0 &&
+    typeof candidate.artifact_ref === 'string' && candidate.artifact_ref.length > 0 &&
+    asNum(candidate.physical_sheets) !== null && (asNum(candidate.physical_sheets) ?? 0) > 0;
+  const count = trustedPlan ? asNum(candidate.physical_sheets) : null;
+  const requestConfirmation = asObject(current.request_confirmation);
+  const priceConfirmation = asObject(current.price_confirmation);
+  const confirmedRevision = nested && requestConfirmation.revision === revision &&
+    requestConfirmation.request_hash === rev.request_hash && requestConfirmation.kind === 'request'
+    ? revision : null;
+  const quoteRevision = asNum(quote.quote_revision);
+  const confirmedQuoteRevision = nested && quoteRevision !== null &&
+    priceConfirmation.revision === revision && priceConfirmation.request_hash === rev.request_hash &&
+    priceConfirmation.kind === 'quote' && asNum(priceConfirmation.quote_revision) === quoteRevision
+    ? quoteRevision : null;
+  const needsPrice = count !== null && count > 150 || quote.significant_cost === true;
+  const approval = asObject(current.approval);
+  const approved = nested && trustedPlan && confirmedRevision === revision &&
+    (!needsPrice || confirmedQuoteRevision === quoteRevision && quoteRevision !== null) &&
+    approval.revision === revision && approval.request_hash === rev.request_hash &&
+    (!needsPrice || asNum(approval.quote_revision) === quoteRevision) &&
+    typeof approval.id === 'string' && approval.id.length > 0;
+
+  const latest = data.jobs.map(asObject).filter(j => asNum(j.revision) === revision && (!nested || j.request_hash === rev.request_hash) && !j.cancelled_at);
   const states = latest.map(j => j.state);
-  // Multiple current jobs (including reprint) need reconciliation: don't select a
-  // convenient VERIFIED_DONE while another attempt remains ambiguous.
+  // Ambiguous attempts override all completed ones; no automatic resend.
   const print_state = latest.length === 0 ? 'NOT_SENT' : states.includes('UNKNOWN') ? 'UNKNOWN' :
     states.includes('SENDING') ? 'SENDING' : states.includes('SENT_UNVERIFIED') ? 'SENT_UNVERIFIED' :
     states.includes('SIMULATED_DONE') ? 'SIMULATED_DONE' :
@@ -105,35 +134,56 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
     states.every(x => x === 'NOT_SENT') ? 'NOT_SENT' : 'UNKNOWN';
   const uncertainJobs = latest.filter(j => j.state === 'SENT_UNVERIFIED' || j.state === 'UNKNOWN');
   const jobId = uncertainJobs.length === 1 && typeof uncertainJobs[0].id === 'string' ? uncertainJobs[0].id : null;
-  const count = (asNum(plan.physical_sheets) ?? 0) > 0 ? asNum(plan.physical_sheets) : null;
+  const progress = asObject(data.print_progress);
   const delivered = asNum(row.delivered_sheets) ?? 0;
   const amount = asNum(quote.amount_vnd), received = asNum(data.received_vnd) ?? 0;
-  // Only verified real sheets count as physical output. For old jobs without
-  // verified_sheets, the total remains unknown instead of being guessed.
-  const verifiedJobs = latest.filter(j => j.state === 'VERIFIED_DONE');
+  const verifiedJobs = latest.filter(j => j.state === 'VERIFIED_DONE' &&
+    j.mode_at_send !== 'simulation' && j.mode_at_send !== 'safe');
   const knownVerified = verifiedJobs.every(j => asNum(j.verified_sheets) !== null);
-  const verifiedSheets = knownVerified && verifiedJobs.length > 0
-    ? verifiedJobs.reduce((sum, j) => sum + (asNum(j.verified_sheets) ?? 0), 0)
-    : null;
-  const physicallyComplete = count !== null && verifiedSheets !== null && verifiedSheets >= count && delivered <= verifiedSheets;
+  const legacyVerified = knownVerified && verifiedJobs.length > 0
+    ? verifiedJobs.reduce((sum, j) => sum + (asNum(j.verified_sheets) ?? 0), 0) : null;
+  // The nested progress is calculated server-side and can include inspected
+  // partial UNKNOWN jobs. Still reject impossible values and simulation-only paper.
+  const serverVerified = nested && asNum(progress.planned_sheets) === count
+    ? asNum(progress.verified_sheets) : null;
+  const hasRealEvidence = latest.some(j =>
+    (j.state === 'VERIFIED_DONE' || j.state === 'UNKNOWN' && j.evidence_kind === 'staff_inspected') &&
+    j.mode_at_send !== 'simulation' && j.mode_at_send !== 'safe');
+  const verifiedSheets = nested
+    ? (hasRealEvidence && count !== null && serverVerified !== null && serverVerified <= count ? serverVerified : null)
+    : legacyVerified;
+  const physicallyComplete = count !== null && verifiedSheets !== null &&
+    verifiedSheets >= count && delivered <= verifiedSheets && print_state === 'VERIFIED_DONE' &&
+    (!nested || progress.fully_verified === true && progress.requires_manual_reconciliation !== true);
+  const control = asObject(data.conversation_control);
+  const controlStatus = control.status === 'AI' ? 'ai' : control.status === 'HUMAN' ? 'staff' : 'needs_human';
+  const controlGeneration = (control.status === 'AI' || control.status === 'HUMAN') && row.conversation_id
+    ? asNum(control.generation) : null;
   const warnings = [
-    'Backend chưa cung cấp xác nhận khách, preview từng file và nhật ký: giao diện không cho duyệt khi chưa xác minh.',
+    'Chưa có danh sách file/URL preview được cấp quyền: không thể duyệt chỉ bằng kế hoạch tổng hợp.',
     ...(latest.some(j => j.state === 'UNKNOWN') ? ['Có lệnh UNKNOWN, cần đối soát; không tự gửi lại.'] : []),
     ...(print_state === 'VERIFIED_DONE' && !physicallyComplete ? ['Giấy thật đã xác minh chưa đủ hoặc chưa có số tờ kiểm chứng; không đánh dấu in/giao đủ.'] : []),
   ];
-  const trustedPlan = plan.ready === true && typeof plan.verified_by === 'string' &&
-    typeof plan.artifact_ref === 'string' && plan.request_hash === rev.request_hash;
   if (!trustedPlan) warnings.push('Kế hoạch in chưa có bằng chứng processor đáng tin.');
+  if (nested && current.preview_ref && !candidate.preview_verified) warnings.push('Preview chưa được processor xác minh.');
+  if (nested && !confirmedRevision) warnings.push('Chưa có xác nhận yêu cầu đúng phiên bản/hash.');
+  if (nested && needsPrice && !confirmedQuoteRevision) warnings.push('Đơn lớn/chi phí đáng kể chưa có xác nhận giá đúng phiên bản.');
   const normalized = mapOrder({
     order_id: id, job_id: jobId, customer_name: `Mã khách: ${asString(row.customer_id, 'chưa rõ')}`,
-    conversation_id: row.conversation_id, revision, request_hash: rev.request_hash,
-    quote_revision: quote.quote_revision, amount_vnd: amount,
+    conversation_id: row.conversation_id,
+    conversation_generation: controlGeneration,
+    conversation_claimed_by: controlStatus === 'staff' && typeof control.claimed_by === 'string' ? control.claimed_by : null,
+    conversation_state: controlStatus,
+    revision, request_hash: rev.request_hash,
+    confirmed_revision: confirmedRevision, confirmed_quote_revision: confirmedQuoteRevision,
+    quote_revision: quoteRevision, amount_vnd: amount,
     required_deposit_vnd: quote.deposit_required_vnd, received_vnd: received,
     large_cost_flag: quote.significant_cost === true,
     manual_lock: row.manual_lock === true || row.print_closed === true,
-    order_state: row.print_closed === true ? 'closed' : latest.length > 0 ? 'approved' : 'draft',
+    order_state: row.print_closed === true ? 'closed' : approved || latest.length > 0 ? 'approved' : confirmedRevision !== null ? 'confirmed' : 'draft',
     print_state, total_sheets: count, verified_sheets: verifiedSheets, delivered_sheets: delivered,
-    delivery_state: print_state === 'VERIFIED_DONE' && count !== null && verifiedSheets !== null && delivered >= count && verifiedSheets >= count ? 'delivered' : delivered > 0 ? 'partial' : print_state === 'VERIFIED_DONE' ? 'quality_check' : 'not_ready',
+    delivery_state: physicallyComplete && delivered >= count! ? 'delivered' :
+      delivered > 0 ? 'partial' : physicallyComplete ? 'quality_check' : 'not_ready',
     payment_state: amount !== null && received >= amount ? 'paid' : received > 0 ? 'partial' : 'unpaid',
     created_at: row.created_at, warnings, documents: [],
   });
