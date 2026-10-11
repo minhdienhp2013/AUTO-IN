@@ -26,6 +26,7 @@ export function registerCoreRoutes(app:RouteRegistrar,d:CoreRouteDependencies):v
  const customer=async(r:HttpRequest)=>d.resolveVerifiedCustomer(r);
  const id=(r:HttpRequest)=>r.params?.order_id??'';
  const job=(r:HttpRequest)=>r.params?.job_id??'';
+ const conversation=(r:HttpRequest)=>r.params?.conversation_id??'';
  app.post('/api/v1/auth/login',wrap(async(r)=>d.auth.login(r.body.shop_id,r.body.username,r.body.password)));
  app.post('/api/v1/auth/logout',wrap(async(r)=>{await d.auth.logout(token(r));return {ok:true};}));
  app.get('/api/v1/auth/me',wrap(async(r)=>({principal:await staff(r)})));
@@ -47,4 +48,6 @@ export function registerCoreRoutes(app:RouteRegistrar,d:CoreRouteDependencies):v
  app.post('/internal/v1/print-jobs/:job_id/reports',wrap(async(r)=>d.service.report(await agent(r),job(r),r.body)));
  app.post('/api/v1/print-jobs/:job_id/mark-unknown',wrap(async(r)=>d.service.markUnknownForReconciliation(await staff(r),job(r),r.body)));
  app.post('/api/v1/print-jobs/:job_id/verify-paper',wrap(async(r)=>d.service.verifyPaper(await staff(r),job(r),r.body)));
+ app.post('/api/v1/conversations/:conversation_id/handover',wrap(async(r)=>d.service.handover(await staff(r),conversation(r),r.body)));
+ app.post('/api/v1/conversations/:conversation_id/return-to-ai',wrap(async(r)=>d.service.returnToAi(await staff(r),conversation(r),r.body)));
 }

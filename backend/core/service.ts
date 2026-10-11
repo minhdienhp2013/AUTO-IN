@@ -22,6 +22,9 @@ export class OrderService {
   return this.store.tx(db=>this.store.once(db,p,'orders.create',input.idempotency_key,input,async()=>{
    const id=newId(),hash=sha(canonical(input.request_data));
    await db.query('INSERT INTO core_orders(id,shop_id,customer_id,conversation_id) VALUES($1,$2,$3,$4)',[id,p.shop_id,input.customer_id,input.conversation_id??null]);
+   if(input.conversation_id){
+    await db.query("INSERT INTO core_conversation_controls(shop_id,conversation_id) VALUES($1,$2) ON CONFLICT DO NOTHING",[p.shop_id,input.conversation_id]);
+   }
    await db.query('INSERT INTO core_revisions(order_id,revision,request_hash,request_data) VALUES($1,1,$2,$3::jsonb)',[id,hash,JSON.stringify(input.request_data)]);
    await this.audit(db,p,'order.created',id,{revision:1,request_hash:hash});
    return {order_id:id,revision:1,request_hash:hash,print_ready:false};
@@ -304,6 +307,62 @@ export class OrderService {
    await this.audit(db,p,'job.reprint_owner_approved',id,{job_id,original_job_id:original.id,reason:input.reason});
    return {job_id,order_id:id,requires_agent_claim:true};
   }));
+ }
+
+ private async conversation(db:SqlConnection,p:Principal,conversation_id:string){
+  if(typeof conversation_id!=='string'||!conversation_id.trim()||conversation_id.length>256)
+   throw new DomainError('INVALID_CONVERSATION','Mã hội thoại không hợp lệ',422);
+  const r=await db.query<{shop_id:string;conversation_id:string;generation:string|number;status:'AI'|'HUMAN';claimed_by:string|null}>(
+   'SELECT shop_id,conversation_id,generation,status,claimed_by FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2 FOR UPDATE',[p.shop_id,conversation_id]);
+  if(!r.rows[0])throw new DomainError('CONVERSATION_NOT_LINKED','Hội thoại chưa được backend xác minh và liên kết cửa hàng',404);
+  return {...r.rows[0],generation:dbSafeInteger(r.rows[0].generation,'conversation.generation')};
+ }
+ /** TN-027: server-authorized handover; any concurrent worker must recheck generation. */
+ async handover(p:Principal,conversation_id:string,input:{expected_generation:number;idempotency_key:string}){
+  assertStaff(p);
+  return this.store.tx(db=>this.store.once(db,p,`conversations.${conversation_id}.handover`,input.idempotency_key,input,async()=>{
+   const c=await this.conversation(db,p,conversation_id);
+   checkRevision(input.expected_generation,c.generation);
+   if(c.status==='HUMAN'){
+    if(c.claimed_by!==p.id&&p.role!=='owner')throw new DomainError('CONVERSATION_TAKEN','Nhân viên khác đang tiếp quản',409);
+    if(c.claimed_by===p.id)return {conversation_id,generation:c.generation,status:'HUMAN' as const,claimed_by:p.id};
+   }
+   const generation=c.generation+1;
+   if(!Number.isSafeInteger(generation))throw new DomainError('GENERATION_OVERFLOW','Vượt giới hạn phiên hội thoại',500);
+   await db.query("UPDATE core_conversation_controls SET generation=$3,status='HUMAN',claimed_by=$4,updated_at=now() WHERE shop_id=$1 AND conversation_id=$2",[p.shop_id,conversation_id,generation,p.id]);
+   return {conversation_id,generation,status:'HUMAN' as const,claimed_by:p.id};
+  }));
+ }
+ /** Returning control to AI is ALWAYS an explicit staff/owner action; never a timer. */
+ async returnToAi(p:Principal,conversation_id:string,input:{expected_generation:number;idempotency_key:string}){
+  assertStaff(p);
+  return this.store.tx(db=>this.store.once(db,p,`conversations.${conversation_id}.return_to_ai`,input.idempotency_key,input,async()=>{
+   const c=await this.conversation(db,p,conversation_id);
+   checkRevision(input.expected_generation,c.generation);
+   if(c.status!=='HUMAN')throw new DomainError('NOT_HUMAN_CONTROLLED','Hội thoại không ở chế độ nhân viên',409);
+   if(c.claimed_by!==p.id&&p.role!=='owner')throw new DomainError('CONVERSATION_TAKEN','Chỉ nhân viên tiếp quản hoặc chủ được trả AI',403);
+   const generation=c.generation+1;
+   if(!Number.isSafeInteger(generation))throw new DomainError('GENERATION_OVERFLOW','Vượt giới hạn phiên hội thoại',500);
+   await db.query("UPDATE core_conversation_controls SET generation=$3,status='AI',claimed_by=NULL,updated_at=now() WHERE shop_id=$1 AND conversation_id=$2",[p.shop_id,conversation_id,generation]);
+   return {conversation_id,generation,status:'AI' as const,claimed_by:null};
+  }));
+ }
+ /** AI2 must use this verified server-side gate for outbound reservation/send.
+  * It holds the PostgreSQL row lock through the callback; no timer can enable AI.
+  * AI2 must keep its durable outbound journal and provider acknowledgments separate.
+  */
+ async withAiSendGate<T>(trusted_scope:{shop_id:string;conversation_id:string;generation:number},send:()=>Promise<T>):Promise<T>{
+  if(!trusted_scope?.shop_id||!trusted_scope.conversation_id||!Number.isSafeInteger(trusted_scope.generation))
+   throw new DomainError('INVALID_CONVERSATION_GATE','Thiếu scope/generation tin cậy',403);
+  return this.store.tx(async db=>{
+   const r=await db.query<{generation:string|number;status:string}>(
+    'SELECT generation,status FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2 FOR UPDATE',
+    [trusted_scope.shop_id,trusted_scope.conversation_id]);
+   const c=r.rows[0];
+   if(!c||c.status!=='AI'||dbSafeInteger(c.generation,'conversation.generation')!==trusted_scope.generation)
+    throw new DomainError('AI_REPLY_BLOCKED','Hội thoại đã thay đổi quyền/generation',409);
+   return send();
+  });
  }
  async getOrder(p:Principal,id:string){
   assertStaff(p);return this.store.tx(async db=>{
