@@ -185,7 +185,7 @@ export class OrderService {
    if(j.state!=='SENDING')throw new DomainError('INVALID_JOB_STATE','Chỉ có thể report SENDING',409);
    const settings=await this.store.one<SettingsRow>(db,'SELECT * FROM core_shop_settings WHERE shop_id=$1',[o.shop_id]);
    const map={sent_unverified:'SENT_UNVERIFIED',unknown:'UNKNOWN',simulated_done:'SIMULATED_DONE'} as const;
-   if((input.result==='sent_unverified'&&input.evidence_kind!=='spooler')||(input.result==='unknown'&&input.evidence_kind!=='agent_uncertain')||(input.result==='simulated_done'&&(settings.mode!=='simulation'||input.evidence_kind!=='simulated')))throw new DomainError('INVALID_EVIDENCE','Bằng chứng/trạng thái không phù hợp');
+   if((settings.mode==='simulation' && input.result==='sent_unverified')||(settings.mode!=='simulation' && input.result==='simulated_done')||(input.result==='sent_unverified'&&input.evidence_kind!=='spooler')||(input.result==='unknown'&&input.evidence_kind!=='agent_uncertain')||(input.result==='simulated_done'&&input.evidence_kind!=='simulated'))throw new DomainError('INVALID_EVIDENCE','Bằng chứng/trạng thái không phù hợp');
    await db.query('UPDATE core_print_jobs SET state=$2,evidence_kind=$3,reported_at=now() WHERE id=$1',[job_id,map[input.result],input.evidence_kind]);
    await this.audit(db,p,'job.report',o.id,{job_id,state:map[input.result],evidence_kind:input.evidence_kind});
    return {job_id,state:map[input.result]};
@@ -262,7 +262,7 @@ export class OrderService {
    const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
    if(o.print_closed||o.manual_lock)throw new DomainError('ORDER_LOCKED','Đơn đang khóa',409);
    const original=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 AND order_id=$2 FOR UPDATE',[input.original_job_id,id]);
-   if(original.state==='NOT_SENT'||original.state==='SIMULATED_DONE')throw new DomainError('NOT_REPRINTABLE','Không được in lại lệnh chưa gửi/mô phỏng',409);
+   if(original.state==='NOT_SENT'||original.state==='SENDING'||original.state==='SIMULATED_DONE')throw new DomainError('NOT_REPRINTABLE','Không được in lại lệnh chưa gửi/mô phỏng',409);
    const rev=await this.revision(db,o);if(original.revision!==o.active_revision||original.request_hash!==rev.request_hash)throw new DomainError('STALE_REVISION','In lại bản cũ cần đối soát thủ công',409);
    const job_id=newId();await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,original_job_id,authorized_reprint_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[job_id,id,rev.revision,rev.request_hash,original.approval_id,original.printer_id,original.id,p.id]);
    await this.audit(db,p,'job.reprint_owner_approved',id,{job_id,original_job_id:original.id,reason:input.reason});

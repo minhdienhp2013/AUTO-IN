@@ -45,6 +45,10 @@ const run=async()=>{
   await assert.rejects(svc.approve(staff,initial.order_id,{expected_revision:2,quote_revision:1,acknowledge_deposit_shortage:false,idempotency_key:key('noack')}),/cọc/i);
   const approve=await svc.approve(staff,initial.order_id,{expected_revision:2,quote_revision:1,acknowledge_deposit_shortage:true,idempotency_key:key('approve')});
   assert.equal(approve.deposit_short_vnd,50000);
+  // Same idempotency key cannot be reused with changed payload (amount, method, etc).
+  const idem=key('payment');
+  await svc.recordPayment(staff,initial.order_id,{direction:'received',method:'cash',amount_vnd:10000,idempotency_key:idem});
+  await assert.rejects(svc.recordPayment(staff,initial.order_id,{direction:'received',method:'cash',amount_vnd:20000,idempotency_key:idem}),e=>e.code==='IDEMPOTENCY_CONFLICT');
   await assert.rejects(svc.approve(staff,initial.order_id,{expected_revision:2,quote_revision:1,acknowledge_deposit_shortage:true,idempotency_key:key('approve2')}),e=>e.status===409);
   const [a,b]=await Promise.all([svc.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('claim')}),svc.claim(agent2,{printer_id:'RMP7000',idempotency_key:key('claim')})]);
   assert.equal([a,b].filter(x=>x.job).length,1,'one agent only gets the job');
@@ -57,8 +61,8 @@ const run=async()=>{
   const second=await svc.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('noclaim')});assert.equal(second.job,null);
   await assert.rejects(svc.closePrintException(staff,initial.order_id,{expected_revision:2,reason:'khách bỏ',idempotency_key:key('staffclose')}),e=>e.status===403);
   const closed=await svc.closePrintException(owner,initial.order_id,{expected_revision:2,reason:'khách bỏ sau in',idempotency_key:key('ownerclose')});
-  assert.equal(closed.receivable_vnd,90000);assert.equal(closed.undelivered_sheets,151);assert.equal(closed.delivered_sheets,0);
-  const detail=await svc.getOrder(staff,initial.order_id);assert.equal(detail.receivable_vnd,90000);
+  assert.equal(closed.receivable_vnd,80000);assert.equal(closed.undelivered_sheets,151);assert.equal(closed.delivered_sheets,0);
+  const detail=await svc.getOrder(staff,initial.order_id);assert.equal(detail.receivable_vnd,80000);
   // Independent no-paper holiday gate test; must never permit sending in holiday.
   const order2=await svc.createDraft(staff,{customer_id:customerId,request_data:req(1),idempotency_key:key('c2')});
   await svc.publishVerifiedPlan(processor,order2.order_id,{expected_revision:1,plan:{...plan,request_hash:order2.request_hash,physical_sheets:1,document_pages:1,printed_faces:1},idempotency_key:key('p2')});
