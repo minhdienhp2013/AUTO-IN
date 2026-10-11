@@ -189,3 +189,60 @@ Tệp test mới:
 ### Hardening bổ sung: bằng chứng giấy trong DryRun
 
 Tại `agents/windows/agent.py`, sau khi gọi DryRunDriver, chỉ coi là `SIMULATED_DONE` nếu `mode=="simulation"`, `evidence_kind=="simulated"` và `paper_verified is False` cùng đúng. Nếu thiếu trường hoặc khai đã xác minh giấy, chuyển `UNKNOWN` và giữ journal để đối soát, tuyệt đối không chuyển thành VERIFIED_DONE. Test mới trong `tests/unit/printing/test_agent.py` cho `paper_verified=True` và thiếu trường. Đây là hardening phạm vi AI3, **chưa có kết quả pytest của HEAD**.
+
+
+## CODE-303 — nối lại sau PR tích hợp #21 (12/10/2026)
+
+**SHA đối chiếu AI0** `15c1ac75859914b2cc07d5a98bf57c18973cbbb2` trên `ai0/tich-hop-simulation-v1` (Draft PR #21). **BASE nhánh AI3 giữ** `26479054dafa787fbe46991905e1fc431f9d53f1` (PR #20); các commit AI3 cũ không bị thay thế.
+
+### Hợp đồng backend AI1 có thực — không thiếu route DryRun
+
+Đã kiểm trực tiếp `backend/api/routes.ts`, `backend/core/service.ts`, `backend/composition/runtime.ts`, `backend/server.ts` tại SHA #21. Phần HTTP AI1 đăng ký đủ 4 endpoint:
+
+| Method/path | Request JSON | Phản hồi thành công |
+|---|---|---|
+| POST `/internal/v1/print-jobs/claim` | `{printer_id:"RMP7000",idempotency_key}` | `{job:null}` hoặc `{job:{job_id,order_id,revision,request_hash,approval_id,printer_id,lease_token,lease_seconds,mode:"simulation"}}` |
+| POST `/internal/v1/print-jobs/{job_id}/preflight` | `{expected_revision,lease_token}` | `{allowed:true,job_id,revision,mode:"simulation",approval_id}` |
+| POST `/internal/v1/print-jobs/{job_id}/mark-sending` | `{expected_revision,lease_token,idempotency_key}` | `{job_id,state:"SENDING",mode:"simulation"}`; AI1 chuyển trạng thái nguyên tử trong PG |
+| POST `/internal/v1/print-jobs/{job_id}/reports` | `{expected_revision,lease_token,result:"simulated_done"|"unknown",evidence_kind:"simulated"|"agent_uncertain",idempotency_key}` | `{job_id,state:"SIMULATED_DONE"|"UNKNOWN"}` |
+
+HTTP status 200 mới là ACK được xác minh thêm ID/state; 401/403/409/422/5xx hoặc mất ACK **không được tính là đã xác nhận gửi**. `HttpBackendClient` giữ tên `lease_token` và `result/evidence_kind`, dùng Bearer scoped principal `print_agent` có `printer_ids:["RMP7000"]`. Runtime AI0 chỉ cho shop mode simulation ở send boundary. **Không cần AI0 tạo thêm endpoint** để chạy DryRun. Thiếu điều kiện vận hành kiểm chứng: server HTTPS localhost **có bật** `AUTOIN_TLS_CERT`/`AUTOIN_TLS_KEY`, danh tính trong `AUTOIN_IDENTITIES_FILE`, PostgreSQL `autoin_test*` và fixture đơn có plan → khách xác nhận → nhân viên duyệt. Backend theo PR #21 **không tự tạo một approved job** khi gọi claim; trả `job:null` nếu hàng đợi chưa có. Không chuyển `job:null` thành PASS sản phẩm.
+
+### CLI thật (chỉ simulation)
+
+```bash
+# Dùng riêng DB PostgreSQL test, không phải dữ liệu cửa hàng; AI0 chuẩn bị
+# DATABASE_URL=postgresql://...@127.0.0.1:5432/autoin_test_305
+# AUTOIN_TLS_KEY=/private/test-key.pem
+# AUTOIN_TLS_CERT=/private/test-cert.pem
+# AUTOIN_IDENTITIES_FILE=/private/simulation-identities.json
+# PORT=3443 HOST=127.0.0.1 AUTO_IN_MODE=simulation npm start
+
+# Sau khi AI0 đã seed một approved job đủ điều kiện (fixture tổng hợp):
+export AUTO_IN_AGENT_TOKEN='TEST_SCOPED_AGENT_TOKEN_FROM_AI0'
+export SSL_CERT_FILE='/private/trusted-test-ca.pem'
+python -m agents.windows.cli \
+  --api-base-url https://localhost:3443 \
+  --journal /private/persistent-agent-journal.sqlite \
+  --http-timeout-seconds 10
+```
+
+- `--api-base-url` của CLI giờ **chỉ nhận HTTPS loopback** (`localhost/127.0.0.1/::1`, cổng tường minh, không path/userinfo/query/fragment); không thêm TLS `verify=False`, không dùng HTTP LAN, không cho token trên URL/argv. Nếu server AI0 chỉ khởi động HTTP (mặc định khi không có TLS key/cert), agent chủ động chặn; AI0 cần khởi động HTTPS test, **không phải thiếu API**.
+- Agent chỉ tạo `DryRunDriver`, không gọi Windows spooler/RAW 9100/Ricoh; `Journal` SQLite persist trạng thái BOUNDARY trước mark-sending, ARMED/DRIVER_CALLED, UNKNOWN khi crash/mất ACK; recovery report idempotent nhưng **không gửi driver lại**. `SIMULATED_DONE` phải `paper_verified:false`, không là `VERIFIED_DONE`.
+- Test localhost TLS ở `tests/unit/printing/test_localhost_tls.py` dùng **server giả qua socket TLS thật** cho luồng thành công, mất ACK mark/report và 4 ranh giới crash; **không gọi đó là backend sản phẩm**.
+- Test sản phẩm thực tế `tests/unit/printing/test_product_backend_optin.py` sử dụng **Fastify + PG của AI0** qua HTTPS: default SKIP khi chưa bật. Khi bật `AUTOIN_CODE303_RUN_PRODUCT_DRYRUN=YES_SIMULATION_ONLY`, thiếu URL/token/approved job phải FAIL. Mỗi lần chạy chỉ sử dụng **một job mới** và scenario có thể là `normal`, `cli`, `lost_mark_ack`, `lost_report_ack`, `before_mark_sending`, `after_mark_sending`, `after_journal_before_driver`, `after_driver`. Với lost ACK client cố ý bỏ ACK **sau khi backend AI1 đã commit transaction**; không phải fake HTTP. Chạy lại với job mới cho từng scenario:
+  ```bash
+  AUTOIN_CODE303_RUN_PRODUCT_DRYRUN=YES_SIMULATION_ONLY \
+  AUTOIN_CODE303_HTTPS_URL=https://localhost:3443 \
+  AUTOIN_CODE303_AGENT_TOKEN='TEST_SCOPED_AGENT_TOKEN_FROM_AI0' \
+  AUTOIN_CODE303_SCENARIO=normal \
+  SSL_CERT_FILE=/private/trusted-test-ca.pem \
+  python -m pytest -q tests/unit/printing/test_product_backend_optin.py
+  ```
+  Chạy `AUTOIN_CODE303_SCENARIO=cli` cho subprocess Windows-agent thực, rồi các ca fault; **AI0/AI5 cấp lại fixture mới trước mỗi lần**. Để test normal có đúng một eligible job, tránh in thêm đơn khác khi chạy lại. **Không lưu secret/DB URL vào Git, không bao giờ trỏ đến cửa hàng thật**.
+
+### Trạng thái bằng chứng và yêu cầu AI0/AI5
+
+- PR #21 tại SHA `15c1ac7` đã báo (và CI chạy) Python **95 PASS/1 SKIP**, AI5 PG/DryRun sản phẩm **20/20 PASS** trên snapshot AI3 trước những thay đổi mới; đó không chứng minh agent CLI HTTPS product path mới đạt.
+- Nhánh AI3 này bổ sung chặn CLI remote, bài kiểm ACK/crash TLS socket, gate product HTTPS/PG strict. Cần **AI0 nhập đúng SHA mới** vào nhánh simulation rồi chạy GitHub Actions `.github/workflows/integration.yml` (workflow thuộc AI0, AI3 không sửa). CI mặc định sản phẩm opt-in vẫn SKIP nếu chưa seed HTTPS agent test. AI5 phải chạy opt-in trên **Fastify thật với cert/token/job**; report riêng PASS/FAIL/SKIP.
+- Còn thiếu **đường chứng minh print thực**: backend job claim chỉ mang `request_hash`/revision, chưa có ký nhận manifest/source artifact hoặc native driver; tuyệt đối không mở driver thật/không tự lấy file gốc. Khi có driver Windows đã xác minh, AI0 phải cấp ref/hash nguồn bất biến và so lại SHA từng source sát lúc in. Ricoh A4/A3/duplex/font/spooler chưa chạy; Windows ACL journal cũng chưa chứng minh.
