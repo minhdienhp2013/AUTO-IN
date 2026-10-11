@@ -1,100 +1,120 @@
+import {createHash} from "node:crypto";
 import type { Batch } from "./batch.ts";
 import {interpretByRules,type DocumentFact} from "./rules.ts";
-import type { GatePort } from "./gate.ts";
+import type { GatePort,GateSnapshot } from "./gate.ts";
 import type { AiInterpretation } from "../ai/deepseek.ts";
-/** AI1 decides revisions, confirmation, permission, price and approval. */
+
+/** AI1 MUST compare expected_generation under its authoritative shop-scoped
+ * PostgreSQL row lock in the SAME transaction as each business effect.
+ * Returned stale_generation is a normal concurrent handover, not a retryable error.
+ * All other errors propagate so the durable worker keeps the batch for retry.
+ */
+export type DraftResult = {order_id:string;revision:number} | {status:"stale_generation"};
+export type HumanRouteResult = void | {status:"stale_generation"};
 export interface OrderDraftPort {
-  suggest_draft(data: {conversation_id:string; customer_id:string;
-    event_ids:string[]; text:string; idempotency_key:string}): Promise<{order_id:string;revision:number}>;
-  route_human(data:{conversation_id:string; reason:string; event_ids:string[]}): Promise<void>;
+  suggest_draft(data:{conversation_id:string;customer_id:string;expected_generation:number;
+    event_ids:string[];text:string;idempotency_key:string}):Promise<DraftResult>;
+  route_human(data:{conversation_id:string;expected_generation:number;reason:string;
+    event_ids:string[];idempotency_key:string}):Promise<HumanRouteResult>;
 }
-export interface ClassifierPort { classify(text:string): Promise<{result:AiInterpretation}> }
+export interface ClassifierPort { classify(text:string):Promise<{result:AiInterpretation}> }
 export interface DocumentFactsPort {
   /** AI3 counts files inside ZIP and checks preview. Never infer page count with AI. */
-  inspect(batch: Batch): Promise<DocumentFact[]>;
+  inspect(batch:Batch):Promise<DocumentFact[]>;
 }
 export interface ReplyQueuePort {
   enqueue(data:{outbound_id:string;conversation_id:string;generation:number;text:string}):Promise<void>;
+}
+function batchIdentity(batch:Batch):{event_ids:string[];key:string} {
+  const first=batch.events[0];
+  if(!first)throw new Error("EMPTY_BATCH");
+  const event_ids=[...new Set(batch.events.map(e=>e.event_id))].sort();
+  // Stable across crash/restart/worker changes and independent of generation.
+  // Bound the idempotency key to AI1's <=128-byte limit; never include message text.
+  const digest=createHash("sha256").update(JSON.stringify([
+    first.oa_id,first.customer_id,first.conversation_id,event_ids
+  ])).digest("hex");
+  return {event_ids,key:"zalo:"+digest};
+}
+function isStale(result:DraftResult|HumanRouteResult):boolean {
+  return result!==undefined && "status" in result && result.status==="stale_generation";
 }
 export class ConversationProcessor {
   private readonly gate:GatePort;
   private readonly documents:DocumentFactsPort;
   private readonly orders:OrderDraftPort;
   private readonly reply:ReplyQueuePort;
-  private readonly classifier:ClassifierPort | undefined;
+  private readonly classifier:ClassifierPort|undefined;
   constructor(gate:GatePort,documents:DocumentFactsPort,orders:OrderDraftPort,
     reply:ReplyQueuePort,classifier?:ClassifierPort) {
     this.gate=gate;this.documents=documents;this.orders=orders;
     this.reply=reply;this.classifier=classifier;
   }
+  private async current(snapshot:GateSnapshot):Promise<boolean> {
+    const now=await this.gate.read(snapshot.conversation_id);
+    return now.mode==="AI"&&now.generation===snapshot.generation;
+  }
   async consume(batch:Batch):Promise<"processed"|"human"|"held"> {
     const first=batch.events[0];
-    if (!first) return "held";
+    if(!first)return "held";
     const snap=await this.gate.read(first.conversation_id);
-    // Always persist events upstream; never process or enqueue replies while taken over.
-    if (snap.mode !== "AI") return "held";
+    if(snap.mode!=="AI")return "held";
+    const {event_ids,key}=batchIdentity(batch);
     const text=batch.events.filter(e=>e.kind==="text").map(e=>e.text??"").join("\n");
+    const routeHuman=async(reason:string):Promise<"human"|"held">=>{
+      if(!await this.current(snap))return "held";
+      const result=await this.orders.route_human({
+        conversation_id:first.conversation_id,expected_generation:snap.generation,
+        reason,event_ids,idempotency_key:key+":human:"+createHash("sha256").update(reason).digest("hex").slice(0,16)
+      });
+      return isStale(result)?"held":"human";
+    };
     let decision;
     try {
       decision=interpretByRules(batch.events,await this.documents.inspect(batch));
     } catch {
-      const gateAfterError=await this.gate.read(first.conversation_id);
-      if (gateAfterError.mode!=="AI" || gateAfterError.generation!==snap.generation) return "held";
-      await this.orders.route_human({conversation_id:first.conversation_id,
-        reason:"DOCUMENT_INSPECTION_FAILED",event_ids:batch.events.map(e=>e.event_id)});
-      return "human";
+      return routeHuman("DOCUMENT_INSPECTION_FAILED");
     }
-    if (decision.needs_deepseek && !this.classifier) {
-      await this.orders.route_human({conversation_id:first.conversation_id,reason:"AI_UNAVAILABLE",
-        event_ids:batch.events.map(e=>e.event_id)});
-      return "human";
-    }
-    if (decision.needs_deepseek && this.classifier) {
+    if(decision.needs_deepseek && !this.classifier)
+      return routeHuman("AI_UNAVAILABLE");
+    if(decision.needs_deepseek && this.classifier) {
       try {
         const ai=await this.classifier.classify(text);
-        if (ai.result.intent === "HUMAN") {
-          decision={...decision,intent:"HUMAN" as const,handover_reason:"NEEDS_CLARIFICATION" as const,
+        if(ai.result.intent==="HUMAN") {
+          decision={...decision,intent:"HUMAN" as const,
+            handover_reason:"NEEDS_CLARIFICATION" as const,
             reply:"Tôi đã chuyển nhân viên hỗ trợ bạn.",needs_deepseek:false};
-        } else if (ai.result.requires_clarification) {
-          // Never echo arbitrary model prose; DeepSeek only classifies intent.
-          decision={...decision,intent:"QUESTION" as const,reply:"Bạn có thể nói rõ yêu cầu in và thông số bạn muốn không?",needs_deepseek:false};
-        } else if (ai.result.intent === "PRINT") {
-          decision={...decision,intent:"PRINT" as const,reply:"Tôi đã nhận yêu cầu. Cửa hàng sẽ chuẩn bị bản xem trước để bạn xác nhận.",needs_deepseek:false};
+        } else if(ai.result.requires_clarification) {
+          decision={...decision,intent:"QUESTION" as const,
+            reply:"Bạn có thể nói rõ yêu cầu in và thông số bạn muốn không?",needs_deepseek:false};
+        } else if(ai.result.intent==="PRINT") {
+          decision={...decision,intent:"PRINT" as const,
+            reply:"Tôi đã nhận yêu cầu. Cửa hàng sẽ chuẩn bị bản xem trước để bạn xác nhận.",needs_deepseek:false};
         }
       } catch {
-        const gateAfterError=await this.gate.read(first.conversation_id);
-        if (gateAfterError.mode!=="AI" || gateAfterError.generation!==snap.generation) return "held";
-        await this.orders.route_human({conversation_id:first.conversation_id,reason:"AI_UNAVAILABLE",
-          event_ids:batch.events.map(e=>e.event_id)});
-        return "human";
+        return routeHuman("AI_UNAVAILABLE");
       }
     }
-    // Suppress stale side effects after takeover during classifier / inspection.
-    const beforeAction=await this.gate.read(first.conversation_id);
-    if (beforeAction.mode!=="AI" || beforeAction.generation!==snap.generation) return "held";
-    if (decision.intent === "OTHER") {
-      await this.orders.route_human({conversation_id:first.conversation_id,reason:"OUT_OF_SCOPE",
-        event_ids:batch.events.map(e=>e.event_id)});
-      return "human";
+    if(!await this.current(snap))return "held";
+    if(decision.intent==="OTHER")return routeHuman("OUT_OF_SCOPE");
+    if(decision.intent==="HUMAN"||decision.handover_reason==="PRICE_QUOTE") {
+      const result=await routeHuman(decision.handover_reason??"NEEDS_CLARIFICATION");
+      if(result==="held")return "held";
     }
-    if (decision.intent === "HUMAN" || decision.handover_reason === "PRICE_QUOTE") {
-      await this.orders.route_human({conversation_id:first.conversation_id,
-        reason:decision.handover_reason??"NEEDS_CLARIFICATION",event_ids:batch.events.map(e=>e.event_id)});
-    }
-    if (decision.intent === "PRINT") {
-      await this.orders.suggest_draft({
+    if(decision.intent==="PRINT") {
+      // AI1 performs generation CAS and idempotent draft insert AT the side-effect
+      // boundary: this second gate read alone cannot prevent a concurrent handover.
+      const result=await this.orders.suggest_draft({
         conversation_id:first.conversation_id,customer_id:first.customer_id,
-        event_ids:batch.events.map(e=>e.event_id),text,
-        idempotency_key:`zalo:${first.oa_id}:${batch.events.map(e=>e.event_id).sort().join(":")}`,
+        expected_generation:snap.generation,event_ids,text,idempotency_key:key+":draft"
       });
+      if(isStale(result))return "held";
     }
-    // Recheck generation AFTER AI/AI3/AI1 before queuing any outbound.
-    const latest=await this.gate.read(first.conversation_id);
-    if (latest.mode!=="AI" || latest.generation!==snap.generation) return "held";
-    if (decision.reply) {
-      await this.reply.enqueue({outbound_id:`reply:${first.oa_id}:${batch.events.map(e=>e.event_id).sort().join(":")}`,
+    if(!await this.current(snap))return "held";
+    if(decision.reply) {
+      await this.reply.enqueue({outbound_id:"reply:"+key,
         conversation_id:first.conversation_id,generation:snap.generation,text:decision.reply});
     }
-    return (decision.intent==="HUMAN" || decision.handover_reason==="PRICE_QUOTE")?"human":"processed";
+    return (decision.intent==="HUMAN"||decision.handover_reason==="PRICE_QUOTE")?"human":"processed";
   }
 }
