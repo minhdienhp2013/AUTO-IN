@@ -48,7 +48,7 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
   await pool.query(await readFile(path,'utf8'));
  }
  const store=new PgStore(pool),svc=new OrderService(store),auth=new AuthService(store);
- let shop,order_id,revision=1,actors={},driver_calls=0,journalDir,agents=[];
+ let shop,order_id,conversationId,revision=1,actors={},driver_calls=0,journalDir,agents=[];
  function who(actor='staff'){
   if(actor==='anonymous')return {id:'anonymous',shop_id:shop,role:'customer',verified:false};
   if(actor==='other-customer')return principal('other',shop,'customer',{customer_id:'other'});
@@ -72,7 +72,7 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
   return svc.approve(actors.staff,order_id,{expected_revision:revision,acknowledge_deposit_shortage:true,idempotency_key:key('approve')});
  }
  async function reset(seed){
-  shop='autoin-test-shop-'+uuid();revision=1;driver_calls=0;
+  shop='autoin-test-shop-'+uuid();conversationId='synthetic-conversation-'+uuid();revision=1;driver_calls=0;
   // No deletion/truncation: every case creates an isolated synthetic shop in a dedicated DB.
   await auth.bootstrapOwner({shop_id:shop,username:'owner',password:key('long-owner-password'),bootstrap_enabled:true});
   await pool.query("UPDATE core_shop_settings SET mode='simulation',printing_enabled=false,open_at='00:00',close_at='24:00' WHERE shop_id=$1",[shop]);
@@ -82,7 +82,7 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
   actors={owner:principal(owner,shop,'owner'),staff:principal(staff,shop,'staff'),processor:principal('processor-test',shop,'processor'),
    customer:principal('verified-zalo',shop,'customer',{customer_id:'synthetic-customer-'+uuid()}),
    agent:principal('agent-1',shop,'print_agent',{printer_ids:['RMP7000']}),'agent-1':principal('agent-1',shop,'print_agent',{printer_ids:['RMP7000']}),'agent-2':principal('agent-2',shop,'print_agent',{printer_ids:['RMP7000']})};
-  const initial=await svc.createDraft(actors.staff,{customer_id:actors.customer.customer_id,request_data:{files:[{file_id:'public-fixture',copies:1,format:'pdf'}]},idempotency_key:key('new')});
+  const initial=await svc.createDraft(actors.staff,{customer_id:actors.customer.customer_id,conversation_id:conversationId,request_data:{files:[{file_id:'public-fixture',copies:1,format:'pdf'}]},idempotency_key:key('new')});
   order_id=initial.order_id;
   if(['unapproved_order','idempotency_conflict'].includes(seed))return;
   await plan(seed==='large_quote_unconfirmed'?151:seed==='partial_delivery_exception'?40:5,seed==='approved_unsent');
@@ -166,6 +166,39 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
   const result=await svc.claim(actors.agent,{printer_id:'RMP7000',idempotency_key:key('queue-claim')});
   return {first_order_id:A,second_order_id:B,claimed_order_id:result.job?.order_id??null};
  }
+ async function checkGenerationGate(){
+  // Calls the real AI1 generation transaction gate, NEVER the live Zalo provider.
+  const scope={shop_id:shop,conversation_id:conversationId,generation:0};
+  let callbacks=0;
+  const first=await svc.withAiSendGate(scope,async()=>{callbacks++;return 'synthetic-allow'});
+  if(first!=='synthetic-allow')throw Error('Unlinked generation gate success');
+  const taken=await svc.handover(actors.staff,conversationId,{expected_generation:0,idempotency_key:key('handover')});
+  if(taken.status!=='HUMAN'||taken.generation!==1)throw Error('Handover generation invalid');
+  let blocked=false;
+  try {await svc.withAiSendGate(scope,async()=>{callbacks++;return 'synthetic-NOT-ALLOWED'})}
+  catch(e){if(e.code!=='AI_REPLY_BLOCKED')throw e;blocked=true}
+  if(!blocked||callbacks!==1)throw Error('Stale AI callback executed after staff takeover');
+  const returned=await svc.returnToAi(actors.staff,conversationId,{expected_generation:1,idempotency_key:key('return')});
+  if(returned.status!=='AI'||returned.generation!==2)throw Error('Return-to-AI did not increment generation');
+  const next=await svc.withAiSendGate({...scope,generation:2},async()=>{callbacks++;return 'synthetic-reallowed'});
+  if(next!=='synthetic-reallowed'||callbacks!==2)throw Error('Updated generation not correctly gated');
+  return {old_generation_blocked:true,generation:2,callback_count:callbacks,mode:'AI'};
+ }
+ async function checkConcurrentHandover(){
+  // Conflicting independent actors compete for the same generation.
+  const scoped='synthetic-controlled-conversation-'+uuid();
+  await svc.createDraft(actors.staff,{customer_id:actors.customer.customer_id,conversation_id:scoped,
+   request_data:{files:[{file_id:'public-gate',copies:1,format:'pdf'}]},idempotency_key:key('conv-create')});
+  const [a,b]=await Promise.allSettled([
+   svc.handover(actors.staff,scoped,{expected_generation:0,idempotency_key:key('handover-staff')}),
+   svc.handover(actors.owner,scoped,{expected_generation:0,idempotency_key:key('handover-owner')})
+  ]);
+  const granted=[a,b].filter(x=>x.status==='fulfilled');
+  const denied=[a,b].filter(x=>x.status==='rejected');
+  if(granted.length!==1||denied.length!==1||denied[0].reason?.code!=='STALE_REVISION')
+   throw Error('Concurrent handover did not serialize generation exactly once');
+  return {grants:1,rejected_stale:1};
+ }
  async function dryrunCrashAfterMark(){
   // An explicit crash-boundary acceptance test. Never invoke the printer driver.
   const c=await svc.claim(actors.agent,{printer_id:'RMP7000',idempotency_key:key('crash-claim')});
@@ -205,6 +238,6 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
   await svc.report(actors.agent,job.job_id,{expected_revision:job.revision,lease_token:job.lease_token,result:'simulated_done',evidence_kind:'simulated',idempotency_key:key('dry-report')});
   return {status:'SIMULATED_DONE',job_id:job.job_id,evidence_kind:'simulated'};
  }
- return {environment:{type:'product-backed',database:'postgresql',print_driver:'DryRunDriver',scope:'isolated-test',source:'AI1-Service+AI3-Journal'},reset,act,snapshot,newAgent,dryrunOnce,dryrunCrashAfterMark,checkConfirmedQueue,
+ return {environment:{type:'product-backed',database:'postgresql',print_driver:'DryRunDriver',scope:'isolated-test',source:'AI1-Service+AI3-Journal'},reset,act,snapshot,newAgent,dryrunOnce,dryrunCrashAfterMark,checkConfirmedQueue,checkGenerationGate,checkConcurrentHandover,
   async dispose(){for(const p of agents)await p.end();if(journalDir)await rm(journalDir,{recursive:true,force:true});await pool.end();}};
 }

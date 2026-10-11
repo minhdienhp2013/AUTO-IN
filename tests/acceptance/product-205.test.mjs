@@ -123,3 +123,16 @@ test('DRYRUN-18 crash AFTER mark-sending journals UNKNOWN, never resends',{skip}
  assert.equal(after.ok,true,JSON.stringify(after));
  assert.equal(after.job,null,'UNKNOWN must not be eligible for auto-retry');
 }));
+
+test('PG-19 AI1 generation gate blocks late AI callback after handover, explicit return resumes',{skip},()=>run('unapproved_order',async a=>{
+ const r=await a.checkGenerationGate();
+ assert.equal(r.old_generation_blocked,true);
+ assert.equal(r.generation,2);
+ assert.equal(r.callback_count,2);
+ assert.equal(r.mode,'AI');
+}));
+test('PG-20 independent staff/owner handover can advance generation only once',{skip},()=>run('unapproved_order',async a=>{
+ const r=await a.checkConcurrentHandover();
+ assert.equal(r.grants,1);
+ assert.equal(r.rejected_stale,1);
+}));
