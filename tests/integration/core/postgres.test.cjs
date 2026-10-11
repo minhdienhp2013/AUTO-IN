@@ -24,9 +24,15 @@ const run=async()=>{
   const sql=fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/001_core.sql'),'utf8');
   await pool.query(sql);
   await pool.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/002_send_mode.sql'),'utf8'));
-  const store=new PgStore(pool),auth=new AuthService(store),svc=new OrderService(store,()=>new Date('2026-10-12T04:00:00.000Z'));
+  // Clock must be aligned with the live PostgreSQL lease clock, not a future fixed date.
+  const dbNow=(await pool.query('SELECT clock_timestamp() AS moment')).rows[0].moment;
+  const local=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(dbNow);
+  const part=k=>local.find(x=>x.type===k).value;
+  const holidayDate=`${part('year')}-${part('month')}-${part('day')}`;
+  const store=new PgStore(pool),auth=new AuthService(store),svc=new OrderService(store,()=>dbNow);
   const shop='test-shop-'+uuid();
   await auth.bootstrapOwner({shop_id:shop,username:'owner',password:'long-owner-password-2026',bootstrap_enabled:true});
+  await pool.query("UPDATE core_shop_settings SET open_at='00:00', close_at='24:00' WHERE shop_id=$1",[shop]);
   const owner=(await auth.login(shop,'owner','long-owner-password-2026')).principal;
   const staffId=uuid();await pool.query("INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,'staff',$3,'staff')",[staffId,shop,await passwordHash('long-staff-password-2026')]);
   const staff=(await auth.login(shop,'staff','long-staff-password-2026')).principal;
@@ -71,7 +77,7 @@ const run=async()=>{
   await svc.publishVerifiedPlan(processor,order2.order_id,{expected_revision:1,plan:{...plan,request_hash:order2.request_hash,physical_sheets:1,document_pages:1,printed_faces:1},idempotency_key:key('p2')});
   await svc.confirm(customer,order2.order_id,{expected_revision:2,kind:'request',idempotency_key:key('req2')});
   await svc.approve(staff,order2.order_id,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('app2')});
-  await pool.query('UPDATE core_shop_settings SET holiday_dates=$2 WHERE shop_id=$1',[shop,['2026-10-12']]);
+  await pool.query('UPDATE core_shop_settings SET holiday_dates=$2 WHERE shop_id=$1',[shop,[holidayDate]]);
   await assert.rejects(svc.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('holiday')}),e=>e.code==='PRINT_CLOSED');
   // A genuine pg BIGINT is a STRING. Split deliveries must add numerically, never concatenate.
   await pool.query("UPDATE core_shop_settings SET holiday_dates='{}', mode='controlled_test', printing_enabled=true WHERE shop_id=$1",[shop]);
