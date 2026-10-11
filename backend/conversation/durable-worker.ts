@@ -6,8 +6,11 @@ import type {PostgresConversationQueue,LeasedBatch} from "../integrations/zalo/p
  * AI0 schedules tick(); no timers, no OA/live calls are started here.
  */
 export class DurableConversationWorker {
-  constructor(private readonly queue:PostgresConversationQueue,
-    private readonly processor:Pick<ConversationProcessor,"consume">){}
+  private readonly queue:PostgresConversationQueue;
+  private readonly processor:Pick<ConversationProcessor,"consume">;
+  constructor(queue:PostgresConversationQueue,processor:Pick<ConversationProcessor,"consume">){
+    this.queue=queue;this.processor=processor;
+  }
   async tick(options:{ingest_limit?:number;batch_limit?:number}={}):Promise<{
     ingested:number;claimed:number;processed:number;held:number;needs_human:number;retry:number;
   }> {
