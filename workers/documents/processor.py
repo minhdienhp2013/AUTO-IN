@@ -62,11 +62,16 @@ def _render_pdf(data: bytes, preview_dir: Path | None, stem: str) -> dict[str, A
         return _human('PDF_RENDER_FAILED')
 
 
-def _image(data: bytes, preview_dir: Path | None, stem: str) -> dict[str, Any]:
+def _image(data: bytes, preview_dir: Path | None, stem: str, suffix: str) -> dict[str, Any]:
     try:
         from PIL import Image, ImageOps, UnidentifiedImageError
         Image.MAX_IMAGE_PIXELS = 40_000_000
         with Image.open(io.BytesIO(data)) as img:
+            expected = {'.jpg': 'JPEG', '.jpeg': 'JPEG', '.png': 'PNG',
+                        '.tif': 'TIFF', '.tiff': 'TIFF', '.webp': 'WEBP',
+                        '.bmp': 'BMP'}
+            if img.format != expected[suffix]:
+                return _human('EXTENSION_CONTENT_MISMATCH')
             n = getattr(img, 'n_frames', 1)
             if not 1 <= n <= MAX_PAGES:
                 return _human('INVALID_PAGE_COUNT')
@@ -155,7 +160,7 @@ def _inspect_data(filename: str, data: bytes, preview_dir: Path | None = None,
             return {**common, **_human('EXTENSION_CONTENT_MISMATCH')}
         result = _render_pdf(data, preview_dir, stem)
     elif ext in IMAGE_EXTENSIONS:
-        result = _image(data, preview_dir, stem)
+        result = _image(data, preview_dir, stem, ext)
     elif ext == '.docx':
         # DOCX may render differently from the final native Windows print path.
         # Do not invent a page count from XML paragraphs or a PDF surrogate.

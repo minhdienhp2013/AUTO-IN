@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-import sys
 from typing import Any, Protocol
 
 
@@ -47,6 +46,17 @@ class Journal:
     def __init__(self, filename: str | Path):
         self.filename = Path(filename)
         self.filename.parent.mkdir(parents=True, exist_ok=True)
+        # Runtime lease credentials require a restrictive on-disk journal.
+        # Windows ACL needs validation before production; no real driver is enabled.
+        if self.filename.is_symlink():
+            raise PrintBlocked('Journal must not be a symbolic link')
+        if os.name == 'posix':
+            if self.filename.exists():
+                if self.filename.stat().st_mode & 0o077:
+                    raise PrintBlocked('Insecure journal file permissions')
+            else:
+                fd = os.open(self.filename, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                os.close(fd)
         self.db = sqlite3.connect(str(self.filename), isolation_level=None, timeout=10)
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA synchronous=FULL')
@@ -74,7 +84,7 @@ class Journal:
                             (job['job_id'], job['revision'], job['request_hash'],
                              _hash_payload(job), 'BOUNDARY', json.dumps({key: job[key] for key in
                               ('job_id', 'order_id', 'revision', 'request_hash', 'approval_id',
-                               'claim_id', 'mode', 'print_state', 'printer_id', 'manual_lock')})))
+                               'lease_token', 'mode', 'printer_id')})))
         except sqlite3.IntegrityError as exc:
             raise PrintBlocked('Duplicate journal job') from exc
 
@@ -88,6 +98,10 @@ class Journal:
     def unresolved(self) -> list[str]:
         rows = self.db.execute("SELECT job_id FROM jobs WHERE state IN ('BOUNDARY','ARMED','DRIVER_CALLED')")
         return [r[0] for r in rows]
+
+    def reportable(self) -> list[dict[str, Any]]:
+        rows = self.db.execute("SELECT job_id FROM jobs WHERE state IN ('UNKNOWN','SIMULATED_DONE')")
+        return [self.get(row[0]) for row in rows]
 
     def close(self) -> None:
         self.db.close()
@@ -118,7 +132,7 @@ class PrintAgent:
     def recover(self) -> list[str]:
         pending = self.journal.unresolved()
         for job_id in pending:
-            evidence = {'evidence_kind': 'local_recovery',
+            evidence = {'evidence_kind': 'agent_uncertain',
                         'reason': 'crash_boundary_cannot_prove_not_sent'}
             self.journal.state(job_id, 'UNKNOWN', evidence)
             # Report ambiguity without ever resending. A rejected report remains
@@ -127,6 +141,15 @@ class PrintAgent:
             try:
                 self.backend.report(json.loads(saved['job_json']), 'UNKNOWN', evidence)
             except Exception:
+                pass
+        # A server report is idempotent; a printer driver side effect is NOT.
+        # Retransmit any locally persisted report after a restart without print.
+        for saved in self.journal.reportable():
+            try:
+                job = json.loads(saved['job_json'])
+                self.backend.report(job, saved['state'], json.loads(saved['evidence']))
+            except Exception:
+                # Non-SENDING server job or rejected lease needs staff reconciliation.
                 pass
         return pending
 
@@ -151,21 +174,20 @@ class PrintAgent:
                     'reason': 'EXISTING_JOURNAL_NO_AUTOMATIC_RETRY'}
         # Server preflight must be authoritative, not a client-provided approved flag.
         check = self.backend.preflight(job)
-        if check.get('allow') is not True or check.get('job_id') != job['job_id'] or check.get('revision') != job['revision']:
+        if (check.get('allowed') is not True or check.get('job_id') != job['job_id']
+                or check.get('revision') != job['revision'] or check.get('mode') != 'simulation'
+                or check.get('approval_id') != job['approval_id']):
             return {'status': 'BLOCKED', 'job_id': job['job_id'], 'reason': 'SERVER_PREFLIGHT_DENIED'}
         self.journal.begin(job)
         if fault_at == 'before_mark_sending':
             raise SimulatedCrash('before_mark_sending')
         try:
             marked = self.backend.mark_sending(job)
-            if (marked.get('allowed') is not True or marked.get('job_id') != job['job_id']
-                    or marked.get('revision') != job['revision']
-                    or marked.get('request_hash') != job['request_hash']):
-                self.journal.state(job['job_id'], 'UNKNOWN', {'reason': 'MARK_SENDING_NOT_CONFIRMED'})
-                return {'status': 'UNKNOWN', 'job_id': job['job_id']}
+            if (marked.get('state') != 'SENDING' or marked.get('job_id') != job['job_id']
+                    or marked.get('mode') != 'simulation'):
+                return self._uncertain(job, 'MARK_SENDING_NOT_CONFIRMED')
         except Exception:
-            self.journal.state(job['job_id'], 'UNKNOWN', {'reason': 'MARK_SENDING_AMBIGUOUS'})
-            return {'status': 'UNKNOWN', 'job_id': job['job_id']}
+            return self._uncertain(job, 'MARK_SENDING_AMBIGUOUS')
         self.journal.state(job['job_id'], 'ARMED')
         if fault_at == 'after_mark_sending':
             raise SimulatedCrash('after_mark_sending')
@@ -182,7 +204,7 @@ class PrintAgent:
         except SimulatedCrash:
             raise
         except Exception:
-            evidence = {'evidence_kind': 'local_error', 'reason': 'DRIVER_RESULT_AMBIGUOUS'}
+            evidence = {'evidence_kind': 'agent_uncertain', 'reason': 'DRIVER_RESULT_AMBIGUOUS'}
             status = 'UNKNOWN'
         self.journal.state(job['job_id'], status, evidence)
         try:
@@ -192,16 +214,26 @@ class PrintAgent:
             return {'status': status, 'job_id': job['job_id'], 'report_pending': True}
         return {'status': status, 'job_id': job['job_id'], 'evidence': evidence}
 
+    def _uncertain(self, job: dict[str, Any], reason: str) -> dict[str, Any]:
+        evidence = {'evidence_kind': 'agent_uncertain', 'reason': reason}
+        self.journal.state(job['job_id'], 'UNKNOWN', evidence)
+        try:
+            self.backend.report(job, 'UNKNOWN', evidence)
+        except Exception:
+            return {'status': 'UNKNOWN', 'job_id': job['job_id'], 'report_pending': True}
+        return {'status': 'UNKNOWN', 'job_id': job['job_id']}
+
     def _verify_job(self, job: dict[str, Any]) -> None:
         if job.get('mode') != 'simulation' or not isinstance(self.driver, DryRunDriver):
             raise PrintBlocked('Real driver paths intentionally disabled')
-        if (job.get('print_state') != 'NOT_SENT' or job.get('printer_id') != 'RMP7000'
-                or job.get('manual_lock') is not False):
-            raise PrintBlocked('Invalid printer, job state or manual lock')
-        for field in ('job_id', 'order_id', 'approval_id', 'claim_id', 'request_hash'):
+        if job.get('printer_id') != 'RMP7000':
+            raise PrintBlocked('Invalid printer identity')
+        # Never trust client flags for approval or manual lock; AI1 server validates.
+        for field in ('job_id', 'order_id', 'approval_id', 'lease_token', 'request_hash'):
             if not isinstance(job.get(field), str) or not job[field]:
                 raise PrintBlocked(f'Missing {field}')
         if (type(job.get('revision')) is not int or job['revision'] < 1 or
+                type(job.get('lease_seconds')) is not int or job['lease_seconds'] <= 0 or
                 not isinstance(job.get('request_hash'), str) or
                 len(job['request_hash']) != 64 or
                 any(c not in '0123456789abcdef' for c in job['request_hash'])):
@@ -223,8 +255,9 @@ class FakeBackend:
         return self.job.copy()
 
     def preflight(self, job: dict[str, Any]) -> dict[str, Any]:
-        return {'allow': self.allow_preflight and self.state == 'NOT_SENT'
-                and job == self.job, 'job_id': job['job_id'], 'revision': job['revision']}
+        return {'allowed': self.allow_preflight and self.state == 'NOT_SENT'
+                and job == self.job, 'job_id': job['job_id'], 'revision': job['revision'],
+                'mode': self.job['mode'], 'approval_id': self.job['approval_id']}
 
     def mark_sending(self, job: dict[str, Any]) -> dict[str, Any]:
         if self.fail_mark:
@@ -233,11 +266,14 @@ class FakeBackend:
         if self.state != 'NOT_SENT' or job != self.job:
             return {'allowed': False}
         self.state = 'SENDING'
-        return {'allowed': True, 'job_id': job['job_id'], 'revision': job['revision'],
-                'request_hash': job['request_hash']}
+        return {'state': 'SENDING', 'job_id': job['job_id'], 'mode': job['mode']}
 
     def report(self, job: dict[str, Any], state: str, evidence: dict[str, Any]) -> None:
         if self.fail_report:
             raise ConnectionError('Simulated reporting outage')
+        if state not in ('SIMULATED_DONE', 'UNKNOWN'):
+            raise PrintBlocked('Fake server rejects physical print evidence')
+        if self.state != 'SENDING' and self.state != state:
+            raise PrintBlocked('Server rejects report for NOT_SENT/nonmatching state')
         self.state = state
         self.reports.append((state, evidence))
