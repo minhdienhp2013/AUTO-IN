@@ -257,6 +257,13 @@ def process_request(value: dict[str, Any], *, input_root: str | Path,
                 "renderer_versions": manifest["renderer_versions"],
                 "preview_artifacts": preview_records,
                 "requires_price_confirmation": final["requires_price_confirmation"]}
+    except _ProcessorDeadline:
+        if output_dir:
+            try:
+                shutil.rmtree(output_dir)
+            except OSError:
+                pass
+        return _human("PROCESSING_TIMEOUT")
     except Exception as exc:  # never surface untrusted path/content on failure
         if output_dir:
             try:
