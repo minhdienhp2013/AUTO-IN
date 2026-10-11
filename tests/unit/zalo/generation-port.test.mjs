@@ -37,12 +37,12 @@ test("AI1 stale_generation from route_human, including fallback errors, holds wi
     const replies=[],calls=[];
     const processor=new ConversationProcessor(aiGate(9),documents,{
       async suggest_draft(){throw Error("unexpected draft")},
-      async route_human(input){calls.push(input);return text==="in màu" ? "stale_generation" : {status:"stale_generation"}}
+      async route_human(input){calls.push(input);return {status:"stale_generation"}}
     },{async enqueue(v){replies.push(v)}});
     assert.equal(await processor.consume(makeBatch([ev("e2",text)])),"held");
     assert.equal(calls.length,1);
     assert.equal(calls[0].expected_generation,9);
-    assert.match(calls[0].idempotency_key,/^zalo:[a-f0-9]{64}:human:[a-f0-9]{16}$/);
+    assert.equal("idempotency_key" in calls[0],false); // real AI1 route_human contract
     assert.deepEqual(replies,[]);
   }
 });
@@ -71,7 +71,7 @@ test("Port outage AFTER commit is safely retried with stable idempotency key",as
   const orders={
     async suggest_draft(input){
       calls.push(input);
-      if(!drafts.has(input.idempotency_key))drafts.set(input.idempotency_key,{order_id:"stable-order",revision:1});
+      if(!drafts.has(input.idempotency_key))drafts.set(input.idempotency_key,{status:"created",order_id:"stable-order"});
       if(first){first=false;throw Error("lost AI1 ACK");}
       return drafts.get(input.idempotency_key);
     },
