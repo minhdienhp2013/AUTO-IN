@@ -37,8 +37,18 @@ function batchIdentity(batch:Batch):{event_ids:string[];key:string} {
   ])).digest("hex");
   return {event_ids,key:"zalo:"+digest};
 }
-function isStale(result:DraftResult|HumanRouteResult):boolean {
-  return result!==undefined && result.status==="stale_generation";
+function draftOutcome(result:DraftResult):"accepted"|"held" {
+  if(result?.status==="stale_generation")return "held";
+  if(result && (result.status==="created"||result.status==="existing") &&
+    typeof result.order_id==="string"&&result.order_id.length>0)return "accepted";
+  // Never treat a malformed or missing AI1 acknowledgement as success.
+  throw new Error("AI1_DRAFT_PORT_INVALID_RESULT");
+}
+function routeOutcome(result:HumanRouteResult):"human"|"held" {
+  if(result?.status==="stale_generation")return "held";
+  if(result && (result.status==="routed"||result.status==="already_routed") &&
+    Number.isSafeInteger(result.generation)&&result.generation>=0)return "human";
+  throw new Error("AI1_ROUTE_PORT_INVALID_RESULT");
 }
 export class ConversationProcessor {
   private readonly gate:GatePort;
@@ -76,7 +86,7 @@ export class ConversationProcessor {
         conversation_id:first.conversation_id,expected_generation:snap.generation,
         reason,event_ids
       });
-      return isStale(result)?"held":"human";
+      return routeOutcome(result);
     };
     let decision;
     try {
@@ -117,7 +127,7 @@ export class ConversationProcessor {
         conversation_id:first.conversation_id,customer_id:first.customer_id,
         expected_generation:snap.generation,event_ids,text,idempotency_key:key+":draft"
       });
-      if(isStale(result))return "held";
+      if(draftOutcome(result)==="held")return "held";
     }
     if(!await this.current(snap,batch))return "held";
     if(decision.reply) {
