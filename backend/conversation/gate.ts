@@ -37,7 +37,11 @@ export class OutboundDispatcher {
     outbound_id: string; conversation_id: string;
     generation: number; text: string;
   }): Promise<"sent" | "blocked" | "unknown"> {
-    if (!this.schedule.allowed(this.clock.now())) return "blocked";
+    if (!this.schedule.allowed(this.clock.now())) {
+      // Drop ordinary reply, not merely postpone it until the next morning.
+      await this.outbox.mark(input.outbound_id,"CANCELLED");
+      return "blocked";
+    }
     // Must be backed by ONE transaction that checks generation + claims outbound.
     const claimed = await this.outbox.reserve_if_current(
       input.outbound_id,input.conversation_id,input.generation);
