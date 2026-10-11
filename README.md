@@ -15,5 +15,5 @@ V1 tự in đen trắng; in màu, Excel và trường hợp khó chuyển nhân 
 
 ## Trạng thái
 
-Đã chuẩn bị tài liệu điều phối; chưa chốt stack, chưa có mã sản phẩm, chưa kiểm chứng OA/Windows/Ricoh/iPhone, chưa nghiệm thu. Chạy khảo sát OA và đường tài liệu/in trước khi giao triển khai sâu. Không đưa tài liệu khách hoặc khóa bí mật vào repo.
+Đã chuẩn bị [6 prompt code khởi đầu](docs/prompts/BO_PROMPT_CODE_KHOI_DAU_V1.md), [stack/wire v0.1](docs/architecture/KHOI_DAU_CODE_V1.md) và phạm vi để 6 AI làm song song. Chưa có scaffold/mã sản phẩm, chưa kiểm chứng OA/Windows/Ricoh/iPhone, chưa nghiệm thu. Mô phỏng là mặc định; phần thử thật làm và ghi bằng chứng riêng. Không đưa tài liệu khách hoặc khóa bí mật vào repo.
 

@@ -1,6 +1,6 @@
 # Hợp đồng dữ liệu và ranh giới duyệt → in
 
-Trạng thái: DỰ THẢO ĐIỀU PHỐI. Các nguyên tắc nghiệp vụ dưới đây bám đặc tả; tên trường, enum, API và cách lưu chưa khóa. AI1/AI2/AI3 gửi đề xuất; chỉ AI0 cập nhật tài liệu chung. Chưa được coi bảng này là API đã triển khai.
+Trạng thái: hợp đồng nền nghiệp vụ; chưa phải API đã triển khai. Đợt code song song dùng tên trường/enum/route wire v0.1 trong [KHOI_DAU_CODE_V1.md](architecture/KHOI_DAU_CODE_V1.md). AI0 viết body/schema/code hợp đồng chi tiết và khóa dependency sớm; AI1–AI5 làm module/Port độc lập trong lúc đó. Những ví dụ dự kiến bên dưới được cụ thể hóa bởi wire v0.1, không được tự đổi ở consumer. Chỉ AI0 cập nhật hợp đồng chung.
 
 ## Dữ liệu tối thiểu
 

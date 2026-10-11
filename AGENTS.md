@@ -4,10 +4,10 @@ Repo duy nhất: minhdienhp2013/AUTO-IN. V1 in tự động Minh Điến.
 
 ## Đọc và làm
 
-- Đầu phiên: kiểm tra Git/nhánh/HEAD, đọc docs/QUY_TAC_AI.md, docs/PHAN_CONG_AI.md, docs/HOP_DONG_DU_LIEU.md và đặc tả docs/spec/DAC_TA_TN001-TN037.md.
+- Đầu phiên: kiểm tra Git/nhánh/HEAD, đọc docs/QUY_TAC_AI.md, docs/PHAN_CONG_AI.md, docs/HOP_DONG_DU_LIEU.md, docs/architecture/KHOI_DAU_CODE_V1.md và đặc tả docs/spec/DAC_TA_TN001-TN037.md.
 - Các lượt tiếp theo chỉ đọc phần liên quan/thay đổi. Đặc tả gốc ưu tiên khi bản rút gọn thiếu nội dung; quyết định mới của chủ phải được cập nhật rõ.
 - Làm trên nhánh/worktree riêng. Chỉ sửa file được giao; giữ thay đổi của người khác. Thay API/schema/quy tắc chung gửi AI0 chốt trước.
-- Bảng phân công ghi rõ việc được bắt đầu và việc đang chờ. Không coi phạm vi dự kiến là lệnh làm toàn bộ V1.
+- Đợt CODE-000/CODE-101–105 được mở song song trong PHAN_CONG_AI. Chỉ làm đợt khởi đầu được giao, chưa coi là hoàn tất toàn bộ V1. AI0 giữ file chung; mỗi AI giữ module riêng.
 - Tự triển khai/kiểm thử phần được giao; báo kiểm thử thật/mô phỏng/chưa chạy. Bàn giao theo mẫu 6 dòng trong QUY_TAC_AI.
 - Không tự merge/deploy hoặc mở vận hành thật nếu chủ chưa cho phép. Lệnh in thử thật cũng phải được duyệt.
 - Không lưu token, khóa API, tài liệu khách, log chứa nội dung khách vào Git. Dữ liệu thử dùng tài liệu công khai/tổng hợp.
