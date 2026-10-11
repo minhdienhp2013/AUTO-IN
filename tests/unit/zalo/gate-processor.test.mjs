@@ -13,18 +13,19 @@ test("takeover before reserved send prevents OA outbound",async()=>{
 });
 test("takeover while DeepSeek is generating blocks stale reply",async()=>{
  let generation=5,mode="AI",drafts=0,replies=0,release;
+ let entered;const inClassifier=new Promise(resolve=>{entered=resolve});
  const gate={async read(){return {conversation_id:"s",generation,mode}}};
  const processor=new ConversationProcessor(gate,{async inspect(){return []}},
   {async suggest_draft(){drafts++;return {order_id:"o",revision:1}},async route_human(){}},
   {async enqueue(){replies++}},
-  {async classify(){await new Promise(r=>{release=r});return {result:{intent:"PRINT",requires_clarification:false}}}});
+  {async classify(){entered();await new Promise(r=>{release=r});return {result:{intent:"PRINT",requires_clarification:false}}}});
  const p=processor.consume({key:"s",first_at:0,deadline_at:60000,events:[{...event,text:"xin tư vấn"}]});
  await Promise.resolve();await Promise.resolve();
  mode="HUMAN";generation=6;
  release?.();
  // The fake promise may not yet have registered; exercise deterministic microtasks.
  if(!release){await Promise.resolve();release?.()}
- assert.equal(await p,"held");assert.equal(replies,0);assert.equal(drafts,1);
+ assert.equal(await p,"held");assert.equal(replies,0);assert.equal(drafts,0);
 });
 test("unknown outbound never blindly retries; budget outage never loses original events",async()=>{
  let sends=0,statuses=[];
