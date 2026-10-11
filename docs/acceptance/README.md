@@ -35,3 +35,10 @@ Thiếu adapter => exit code **2 (BLOCKED)**, không dùng mock để vượt qu
 Có `tests/acceptance/browser.test.mjs`, chỉ chạy khi `AUTOIN_WEB_URL` được cung cấp và Playwright được AI0/AI4 cài. Selector đề xuất: `operation-mode-banner`, `approve-print-action`, `send-real-print-action`. Chromium giả lập viewport mobile **không** phải iPhone thật.
 
 **CHƯA CHẠY:** tích hợp API/PostgreSQL, agent DryRunDriver của sản phẩm, OA thật, Ricoh thật, iPhone thật, tải 100 đơn/ngày và nghiệm thu 210 đơn trong ≥7 ngày. Mọi lệnh in thật phải được duyệt riêng; tuyệt đối không tự bật production. Xem `MA_TRAN_NGHIEM_THU.md` và `MAU_BAO_CAO_LOI.md`.
+
+## Bổ sung sau đối chiếu nhánh AI1/AI3/AI4
+
+- **Wire AI1 kiểm tra thật:** `POST /internal/v1/print-jobs/claim` chỉ nhận `printer_id` + `idempotency_key` và trả `{job:null}` khi hàng đợi rỗng; **không** dùng `order_id` để tạo kết quả từ chối giả. Khi có job, `mark-sending` cần `job_id`, `lease_token`, `expected_revision` và `idempotency_key`. `acknowledge_deposit_shortage` là tên trường đúng.
+- Acceptance Port cần chuẩn hóa `act('claim',body)` thành `{ok:true,job:null|{job_id,lease_token,revision}}`; `act('mark_sending',body)` trả `{ok:true,state:'SENDING'}` chỉ khi server cấp thành công; các lỗi theo `{ok:false,status,error:{code}}`. Không được trả `ok:false` vì thiếu trường request rồi tính là kiểm thử quyền đạt.
+- **HTTP kiểm tra quyền chạy riêng, không có token/in:** `AUTOIN_API_URL=http://127.0.0.1:3000 AUTOIN_ACCEPTANCE_HTTP_SCOPE=local-simulation node tests/acceptance/run.mjs --http`. Chỉ chấp nhận localhost HTTP, mã 401/403 và lỗi có `error.code`, không chấp nhận 404/422/500 là đạt. Máy chủ AI0 phải chạy riêng trong simulation.
+- **Integration:** `AUTOIN_ACCEPTANCE_ADAPTER=/absolute/adapter.mjs AUTOIN_TEST_DATABASE_URL=postgresql://... node tests/acceptance/run.mjs --integration`. Adapter do AI0 tích hợp AI1/AI2/AI3, không phải mock. Chưa có scaffold/backend đang chạy nên các ca này vẫn NOT RUN.
