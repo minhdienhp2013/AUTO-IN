@@ -24,6 +24,8 @@ const run=async()=>{
   const sql=fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/001_core.sql'),'utf8');
   await pool.query(sql);
   await pool.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/002_send_mode.sql'),'utf8'));
+  await pool.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/003_confirmed_queue.sql'),'utf8'));
+  await pool.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/004_conversation_generation.sql'),'utf8'));
   // Clock must be aligned with the live PostgreSQL lease clock, not a future fixed date.
   const dbNow=(await pool.query('SELECT clock_timestamp() AS moment')).rows[0].moment;
   const local=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(dbNow);
@@ -36,10 +38,11 @@ const run=async()=>{
   const owner=(await auth.login(shop,'owner','long-owner-password-2026')).principal;
   const staffId=uuid();await pool.query("INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,'staff',$3,'staff')",[staffId,shop,await passwordHash('long-staff-password-2026')]);
   const staff=(await auth.login(shop,'staff','long-staff-password-2026')).principal;
-  const agent1={id:'agent1',shop_id:shop,role:'print_agent',verified:true};
-  const agent2={id:'agent2',shop_id:shop,role:'print_agent',verified:true};
+  const agent1={id:'agent1',shop_id:shop,role:'print_agent',verified:true,printer_ids:['RMP7000']};
+  const agent2={id:'agent2',shop_id:shop,role:'print_agent',verified:true,printer_ids:['RMP7000']};
   const processor={id:'processor1',shop_id:shop,role:'processor',verified:true};
   const customerId='cust'+uuid();const customer={id:'zalo-verified',shop_id:shop,role:'customer',customer_id:customerId,verified:true};
+  await assert.rejects(svc.claim({...agent1,printer_ids:['another-printer']},{printer_id:'RMP7000',idempotency_key:key('wrong-printer')}),e=>e.code==='PRINTER_SCOPE_DENIED');
   const initial=await svc.createDraft(staff,{customer_id:customerId,request_data:req(151),idempotency_key:key('create')});
   const plan={request_hash:initial.request_hash,physical_sheets:151,document_pages:151,printed_faces:151,ready:true,printer_id:'RMP7000',artifact_ref:'fixture/public/print-plan',verified_by:'processor1'};
   const verified=await svc.publishVerifiedPlan(processor,initial.order_id,{expected_revision:1,plan,idempotency_key:key('plan')});
@@ -136,6 +139,64 @@ const run=async()=>{
   const emptyOrder=await svc.createDraft(staff,{customer_id:customerId,request_data:req(1),idempotency_key:key('empty-order')});
   const emptyClosed=await svc.closePrintException(staff,emptyOrder.order_id,{expected_revision:1,reason:'unconfirmed abandoned',idempotency_key:key('empty-close')});
   assert.equal(emptyClosed.print_closed,true);
+  // TN-007: queue by completed customer confirmation, NOT employee approval time.
+  const early=await svc.createDraft(staff,{customer_id:customerId,request_data:req(5),idempotency_key:key('early')});
+  const late=await svc.createDraft(staff,{customer_id:customerId,request_data:req(1),idempotency_key:key('late')});
+  await svc.publishVerifiedPlan(processor,early.order_id,{expected_revision:1,plan:{...plan,request_hash:early.request_hash,physical_sheets:5,document_pages:5,printed_faces:5},idempotency_key:key('early-plan')});
+  await svc.publishVerifiedPlan(processor,late.order_id,{expected_revision:1,plan:{...plan,request_hash:late.request_hash,physical_sheets:1,document_pages:1,printed_faces:1},idempotency_key:key('late-plan')});
+  await svc.confirm(customer,early.order_id,{expected_revision:2,kind:'request',idempotency_key:key('early-confirm')});
+  await svc.confirm(customer,late.order_id,{expected_revision:2,kind:'request',idempotency_key:key('late-confirm')});
+  // Later duplicate confirmations must NOT push the first customer's queue position back.
+  await svc.confirm(customer,early.order_id,{expected_revision:2,kind:'request',idempotency_key:key('early-duplicate')});
+  await svc.approve(staff,late.order_id,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('late-approve-FIRST')});
+  await svc.approve(staff,early.order_id,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('early-approve-SECOND')});
+  const firstClaim=await svc.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('queue-first')});
+  assert.equal(firstClaim.job?.order_id,early.order_id,'A confirmed before B must win despite B being approved first');
+  const readBefore=await svc.getOrder(staff,early.order_id);
+  assert.equal(readBefore.current.request_confirmed,true);
+  assert.equal(readBefore.current.staff_approved,true);
+  assert.equal(readBefore.current.preview_ref,null,'no fabricated preview');
+  assert.ok(readBefore.current.verified_plan?.artifact_ref,'only processor plan may be ready');
+  assert.equal(readBefore.current.verified_plan?.physical_sheets,5);
+  assert.equal(readBefore.print_progress.planned_sheets,5);
+  assert.equal(readBefore.print_progress.verified_sheets,0);
+  await svc.markSending(agent1,firstClaim.job.job_id,{expected_revision:2,lease_token:firstClaim.job.lease_token,idempotency_key:key('send-first')});
+  await svc.report(agent1,firstClaim.job.job_id,{expected_revision:2,lease_token:firstClaim.job.lease_token,result:'sent_unverified',evidence_kind:'spooler',idempotency_key:key('report-first')});
+  const partiallyVerified=await svc.verifyPaper(staff,firstClaim.job.job_id,{evidence_kind:'staff_inspected',physical_sheets:2,note:'2 of 5 real sheets; stop and reconcile',idempotency_key:key('partial-inspection')});
+  assert.equal(partiallyVerified.state,'UNKNOWN');
+  assert.equal(partiallyVerified.missing_sheets,3);
+  assert.equal(partiallyVerified.requires_manual_reconciliation,true);
+  const readAfter=await svc.getOrder(staff,early.order_id);
+  assert.equal(readAfter.print_progress.fully_verified,false);
+  assert.equal(readAfter.print_progress.verified_sheets,2);
+  assert.equal(readAfter.print_progress.missing_sheets,3);
+  assert.equal(readAfter.print_progress.requires_manual_reconciliation,true);
+  await svc.deliver(staff,early.order_id,{expected_revision:2,physical_sheets:2,note:'deliver only counted sheets',idempotency_key:key('partial-delivery')});
+  await assert.rejects(svc.deliver(staff,early.order_id,{expected_revision:2,physical_sheets:1,idempotency_key:key('cannot-overdeliver')}),e=>e.code==='PAPER_NOT_VERIFIED');
+  // A remains UNKNOWN; it must not be reclaimed or automatically topped up.
+  const secondClaim=await svc.claim(agent2,{printer_id:'RMP7000',idempotency_key:key('queue-second')});
+  assert.equal(secondClaim.job?.order_id,late.order_id);
+
+  // TN-027: owner/staff generation changes are atomic and prevent stale AI reply.
+  const conversationId='test-conversation-'+uuid();
+  const convOrder=await svc.createDraft(staff,{customer_id:customerId,conversation_id:conversationId,request_data:req(1),idempotency_key:key('conv-create')});
+  const conv0=await svc.getOrder(staff,convOrder.order_id);
+  assert.equal(conv0.conversation_control?.generation,0);
+  assert.equal(conv0.conversation_control?.status,'AI');
+  const takeover=await svc.handover(staff,conversationId,{expected_generation:0,idempotency_key:key('takeover')});
+  assert.equal(takeover.generation,1);assert.equal(takeover.status,'HUMAN');
+  await assert.rejects(svc.withAiSendGate({shop_id:shop,conversation_id:conversationId,generation:0},async()=>true),e=>e.code==='AI_REPLY_BLOCKED');
+  await assert.rejects(svc.returnToAi(staff,conversationId,{expected_generation:0,idempotency_key:key('stale-return')}),e=>e.code==='STALE_REVISION');
+  const aiAgain=await svc.returnToAi(staff,conversationId,{expected_generation:1,idempotency_key:key('return')});
+  assert.equal(aiAgain.generation,2);assert.equal(aiAgain.status,'AI');
+  assert.equal(await svc.withAiSendGate({shop_id:shop,conversation_id:conversationId,generation:2},async()=>42),42);
+  await assert.rejects(svc.withAiSendGate({shop_id:'wrong-shop',conversation_id:conversationId,generation:2},async()=>42),e=>e.code==='AI_REPLY_BLOCKED');
+  const [ha,hb]=await Promise.allSettled([
+    svc.handover(staff,conversationId,{expected_generation:2,idempotency_key:key('race-staff')}),
+    svc.handover(owner,conversationId,{expected_generation:2,idempotency_key:key('race-owner')})
+  ]);
+  assert.equal([ha,hb].filter(r=>r.status==='fulfilled').length,1,'only one takeover wins same generation');
+  assert.equal([ha,hb].filter(r=>r.status==='rejected'&&r.reason.code==='STALE_REVISION').length,1);
   return {shop,passed:true};
  }finally{await pool.end();}
 };

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const path=require('node:path');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../../.ai1-build/backend');
 const load=(m)=>require(path.join(root,m+'.js'));
-const {assertStaff,assertOwner,assertPlan,checkRevision,printingAllowed,canonical,sha,shortage,dbSafeInteger,DomainError}=load('core/model');
+const {assertStaff,assertOwner,assertAgent,assertPlan,checkRevision,printingAllowed,canonical,sha,shortage,dbSafeInteger,DomainError}=load('core/model');
 const {passwordHash,passwordVerify}=load('core/auth');
 const {OrderService}=load('core/service');
 const owner={id:'user1',shop_id:'shop1',role:'owner',verified:true};
@@ -65,4 +65,10 @@ test('mock-only: no paper verification of simulation, and fake device proof is r
  const svc=new OrderService(stubStore);
  await assert.rejects(svc.verifyPaper(staff,'job1',{evidence_kind:'staff_inspected',physical_sheets:1,note:'inspection',idempotency_key:'no-real-paper'}),e=>e.code==='SIMULATION_NOT_PAPER');
  await assert.rejects(svc.verifyPaper(staff,'job1',{evidence_kind:'device_verified',physical_sheets:1,note:'fake telemetry',idempotency_key:'fake-device'}),e=>e.code==='DEVICE_PROOF_NOT_CONNECTED'&&e.status===503);
+});
+
+test('agent role is not enough without a trusted printer scope',()=>{
+ assert.throws(()=>assertAgent({...owner,id:'unscoped',role:'print_agent'}),e=>e.code==='AGENT_REQUIRED');
+ assert.throws(()=>assertAgent({...owner,id:'unverified',role:'print_agent',printer_ids:['RMP7000'],verified:false}),e=>e.code==='AGENT_REQUIRED');
+ assert.doesNotThrow(()=>assertAgent({...owner,id:'agent',role:'print_agent',printer_ids:['RMP7000']}));
 });
