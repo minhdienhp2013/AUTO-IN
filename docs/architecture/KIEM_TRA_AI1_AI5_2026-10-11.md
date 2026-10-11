@@ -36,3 +36,15 @@ AI2 có Port/gate/migration events nhưng durable queue, outbound gate và takeo
 - AI5: `node tests/acceptance/run.mjs` (self-test); `--integration` cần adapter + AUTOIN_TEST_DATABASE_URL, không dùng mock.
 
 Kết luận: đủ5bàn giao code trên GitHub, chưa đủ điều kiện nói cả5đã hoàn tất. Sửa2lỗi đang FAIL, chạy PG thật và nối hợp đồng trước kiểm tra đầu-cuối. Không mở vận hành thật.
+
+
+## Kiểm tra AI4 CODE-204 — cập nhật 11/10/2026
+
+HEAD kiểm: 7e6623a995a67f756d30be48f2a4be9ac06691f8, Draft PR #12. AI0 checkout riêng, cài đúng manifest bằng npm install --ignore-scripts --package-lock=false; không sửa file AI4.
+
+- npm test: 30/30 PASS.
+- npm run typecheck: FAIL TS2416 tại web/src/api.ts:202 và TS2322 tại dòng306.
+- npm run build: FAIL cùng lỗi; chưa tới Vite bundling.
+- ImportMetaEnv cũ đã được sửa. Lỗi mới: HttpPrintPort.mutate suy ra conversation_state là string ở nhánh handover/return-to-ai, không khớp ConversationState của OrderView.
+- AI4 cần khai báo kiểu trả về Promise<OrderView> cho HttpPrintPort.mutate hoặc tạo kết quả có kiểu OrderView, giữ literal staff/ai; không dùng any để giấu lỗi. Chạy lại test/typecheck/build và commit web/package-lock.json thật trong môi trường truy cập npm.
+- HEAD vẫn chưa có web/package-lock.json. Backend read model/HTTP, browser/iPhone/Push vẫn chưa kiểm chứng. CODE-204 chưa đạt điều kiện DONE/build; không merge/deploy.
