@@ -37,7 +37,7 @@ test("AI1 stale_generation from route_human, including fallback errors, holds wi
     const replies=[],calls=[];
     const processor=new ConversationProcessor(aiGate(9),documents,{
       async suggest_draft(){throw Error("unexpected draft")},
-      async route_human(input){calls.push(input);return {status:"stale_generation"}}
+      async route_human(input){calls.push(input);return text==="in màu" ? "stale_generation" : {status:"stale_generation"}}
     },{async enqueue(v){replies.push(v)}});
     assert.equal(await processor.consume(makeBatch([ev("e2",text)])),"held");
     assert.equal(calls.length,1);
@@ -80,16 +80,18 @@ test("Port outage AFTER commit is safely retried with stable idempotency key",as
   const processor=new ConversationProcessor(aiGate(12),docs,orders,{
     async enqueue(reply){sent.set(reply.outbound_id,reply)}
   });
-  const one=makeBatch([ev("evtB"),ev("evtA")]);
+  const one=makeBatch([ev("evtB","In thêm 2 bản"),ev("evtA","In A4")]);
   await assert.rejects(processor.consume(one),/lost AI1 ACK/);
   assert.equal(sent.size,0);
   // Recreated batch order may change after restart; dedupe identity must be stable.
-  const two=makeBatch([ev("evtA"),ev("evtB")]);
+  const two=makeBatch([ev("evtA","In A4"),ev("evtB","In thêm 2 bản")]);
   assert.equal(await processor.consume(two),"processed");
   assert.equal(drafts.size,1);
   assert.equal(sent.size,1);
   assert.equal(calls[0].idempotency_key,calls[1].idempotency_key);
   assert.equal(calls[0].expected_generation,12);
+  assert.equal(calls[0].text,calls[1].text); // byte-stable AI1 once() payload
+  assert.equal(calls[0].text,"In A4\\nIn thêm 2 bản");
   assert.deepEqual(calls[0].event_ids,["evtA","evtB"]);
   assert.deepEqual(calls[1].event_ids,["evtA","evtB"]);
 });
