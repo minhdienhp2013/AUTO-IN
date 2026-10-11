@@ -1,19 +1,37 @@
-# AUTO-IN — In tự động Minh Điến
+# AUTO-IN Minh Điến
 
-Phần mềm độc lập: Zalo OA → chuẩn bị tài liệu/yêu cầu → khách xác nhận → nhân viên duyệt → Windows/Ricoh IM7000 → kiểm tra, giao giấy và đối soát tiền.
+V1 in tự động: Zalo OA → chuẩn bị đơn → khách xác nhận → nhân viên duyệt → Windows/Ricoh → kiểm tra/giao/tiền.
 
-V1 tự in đen trắng; in màu, Excel và trường hợp khó chuyển nhân viên. Mọi lệnh in thật cần được duyệt đúng phiên bản. Chưa có ứng dụng chạy hoặc tích hợp đã kiểm chứng.
+CODE-000 cung cấp khung Fastify, hợp đồng JSON/TypeScript/OpenAPI, fixture tổng hợp và kiểm thử. Các module AI1–AI5 nằm trên nhánh riêng và chưa được nối vào CLI này. Endpoint chưa nối trả 503; endpoint cần quyền trả 401 khi chưa có bộ xác thực. `/health` chỉ xác nhận tiến trình chạy.
 
-## Bắt đầu
+## Chạy khung
 
-1. Đọc [AGENTS.md](AGENTS.md) và [quy tắc chung](docs/QUY_TAC_AI.md).
-2. Chọn [prompt theo vai trò](docs/prompts/README.md), nhận đúng mã việc trong [bảng phân công](docs/PHAN_CONG_AI.md).
-3. Đọc [đặc tả đầy đủ](docs/spec/DAC_TA_TN001-TN037.md) và [hợp đồng dữ liệu dự thảo](docs/HOP_DONG_DU_LIEU.md); làm trên nhánh/worktree riêng.
-4. Bàn giao commit/PR và kết quả kiểm thử theo mẫu 6 dòng. Các lượt sau chỉ gửi mã việc và thay đổi.
+Node 24.19.0, npm 11.9.0 là phiên bản đã kiểm thử. Dependency được khóa trong package-lock.json.
 
-[Bản Word gốc](docs/spec/Dac_ta_nghiep_vu_Minh_Dien_2026-10-11.docx) · [Tổng hợp nghiệp vụ](docs/TONG_HOP_NGHIEP_VU.md).
+```sh
+npm ci
+npm run check
+npm run dev
+# GET http://127.0.0.1:3000/health
+```
 
-## Trạng thái
+Mặc định `simulation`, bind localhost. Đổi `HOST`/`PORT`/`AUTO_IN_MODE` bằng biến môi trường; `.env.example` chỉ là ví dụ, không tự được nạp. `production` và `controlled_test` bị từ chối khởi động trong khung này. Không có token OA, tài khoản chủ mặc định hay driver in thật.
 
-Đã chuẩn bị [6 prompt code khởi đầu](docs/prompts/BO_PROMPT_CODE_KHOI_DAU_V1.md), [stack/wire v0.1](docs/architecture/KHOI_DAU_CODE_V1.md) và phạm vi để 6 AI làm song song. Chưa có scaffold/mã sản phẩm, chưa kiểm chứng OA/Windows/Ricoh/iPhone, chưa nghiệm thu. Mô phỏng là mặc định; phần thử thật làm và ghi bằng chứng riêng. Không đưa tài liệu khách hoặc khóa bí mật vào repo.
+## PostgreSQL phát triển
 
+```sh
+docker compose up -d postgres
+```
+
+Compose là cấu hình phát triển (mật khẩu mẫu, bind localhost), chưa phải triển khai production. AI1 sở hữu migration và nghiệp vụ transaction; CODE-000 không tự chạy migration hoặc bootstrap tài khoản. `DATABASE_URL` chưa được CLI scaffold sử dụng trước CODE-006.
+
+## Hợp đồng và điểm nối
+
+- `contracts/schemas.ts`: nguồn schema và types; `generated/schema.json` cho Python, `generated/openapi.json` cho API.
+- `npm run contracts:generate`: cập nhật bản sinh; `contracts:check`: từ chối bản sinh cũ.
+- `contracts/hash.ts` và `fixtures/hash-vector.json`: canonical JSON + SHA-256 đã đối chiếu bằng Python.
+- `backend/app.ts`: `buildApp({auth,handlers,zaloWebhook})` nhận adapter tin cậy do server nối; không có test principal trong CLI.
+- [CODE-000 và bàn giao](docs/architecture/CODE000_BAN_GIAO.md): ranh giới, đối chiếu module đã có, việc các AI cần nối.
+- [Phân công](docs/PHAN_CONG_AI.md), [đặc tả TN](docs/spec/DAC_TA_TN001-TN037.md), [quy tắc AI](docs/QUY_TAC_AI.md).
+
+Không tự merge/deploy. Mô phỏng không chứng minh giấy đã in thật; OA/Ricoh/iPhone và TN-037 cần kiểm thử riêng.
