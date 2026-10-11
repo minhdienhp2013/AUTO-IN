@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildIntegratedApp, identityResolver } from '../../../backend/composition/runtime.js';
 import { assertIsolatedSimulationDatabase } from '../../../backend/composition/postgres.js';
+import { createZaloRawWebhook } from '../../../backend/composition/zalo-http.js';
 import type { SqlPool } from '../../../backend/storage/database.js';
 const unavailable: SqlPool = {
   query: async () => { throw new Error('DB must not be accessed without authentication'); },
@@ -46,4 +47,32 @@ test('simulation server accepts only isolated localhost PostgreSQL databases', (
     'postgresql://test:test@127.0.0.1:5432/my_autoin_test',
     'mysql://test:test@localhost:3306/autoin_test',
   ]) assert.throws(() => assertIsolatedSimulationDatabase(url));
+});
+
+test('Zalo Fastify adapter passes exact raw bytes and signature headers to AI2', async () => {
+  const rawBody = '{ "event_id": "fixture" }\n';
+  let received: Uint8Array | undefined;
+  let signature: string | undefined;
+  const app = buildIntegratedApp({
+    pool: unavailable,
+    zaloWebhook: createZaloRawWebhook({
+      async receive_webhook(raw, headers) {
+        received = raw;
+        signature = headers['x-test-fixture-key'];
+        return { status_code: 200, body: { status: 'accepted', event_id: 'fixture' } };
+      }
+    })
+  });
+  try {
+    await app.ready();
+    const response = await app.inject({
+      method: 'POST', url: '/webhooks/zalo',
+      headers: { 'content-type': 'application/json', 'x-test-fixture-key': 'signed-fixture' },
+      payload: rawBody
+    });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(Buffer.from(received ?? []), Buffer.from(rawBody));
+    assert.equal(signature, 'signed-fixture');
+    assert.equal((await app.inject('/health')).json().zalo_webhook_configured, true);
+  } finally { await app.close(); }
 });

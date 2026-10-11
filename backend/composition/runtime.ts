@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyPluginAsync } from 'fastify';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createCoreModule } from '../core/factory.js';
 import { DomainError, type Principal } from '../core/model.js';
@@ -10,6 +10,8 @@ export interface RuntimeOptions {
   pool: SqlPool;
   identities?: readonly ServiceIdentity[];
   tls?: { key: Buffer; cert: Buffer };
+  /** Only AI2's verifier/pipeline may be injected; absent means explicit 503. */
+  zaloWebhook?: FastifyPluginAsync;
 }
 export function identityResolver(identities: readonly ServiceIdentity[]) {
   for (const identity of identities) {
@@ -68,9 +70,10 @@ export function buildIntegratedApp(options: RuntimeOptions) {
   });
   app.get('/health', async () => ({ status: 'ok', mode: 'simulation', live_enabled: false,
     auth_configured: true, configured_operations: ['me', 'listOrders', 'approveOrder', 'claimJob', 'markSending', 'reportJob'],
-    registered_routes: registered, zalo_webhook_configured: false,
+    registered_routes: registered, zalo_webhook_configured: !!options.zaloWebhook,
     processor_configured: false, integration_stage: 'core-http' }));
-  app.post('/webhooks/zalo', async (_request, reply) => reply.code(503).send({ error: {
+  if (options.zaloWebhook) app.register(options.zaloWebhook);
+  else app.post('/webhooks/zalo', async (_request, reply) => reply.code(503).send({ error: {
     code: 'FEATURE_UNAVAILABLE', message: 'Verified pipeline wiring pending', retryable: false } }));
   return app;
 }
