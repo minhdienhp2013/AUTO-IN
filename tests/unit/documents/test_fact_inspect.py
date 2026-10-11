@@ -328,8 +328,10 @@ def test_scoped_storage_read_errors_fail_closed(private_root, monkeypatch, faile
     _, item = _snapshot(root, directory, _pdf(), ".pdf")
     original = bridge._read_scoped
 
+    target = item["manifest_ref"] if failed == "manifest" else item["artifact_ref"]
+
     def fail_storage(root_path, relative):
-        if relative == item["manifest_ref"] if failed == "manifest" else relative == item["artifact_ref"]:
+        if relative == target:
             raise OSError("I/O error /secret/server/private-name.pdf")
         return original(root_path, relative)
 
