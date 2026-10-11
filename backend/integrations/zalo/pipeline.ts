@@ -23,6 +23,7 @@ export interface SyntheticProvider {
 export interface ZaloPipelineOptions {
   db: PgTransactions;
   trusted_shop_id: string;
+  trusted_oa_id: string;
   orders: OrderDraftPort;
   documents: DocumentFactsPort;
   schedule: ReplySchedule;
@@ -34,6 +35,7 @@ export interface ZaloPipelineOptions {
 }
 export function createZaloPipeline(options:ZaloPipelineOptions) {
   if((options.mode ?? 'simulation')!=='simulation')throw new Error('ZALO_LIVE_DISABLED');
+  if(!options.trusted_oa_id||options.trusted_oa_id.length>128)throw new Error('INVALID_TRUSTED_OA');
   const gate=new CoreConversationGate(options.db,options.trusted_shop_id);
   const queue=new PostgresConversationQueue(options.db);
   const outbox=new PostgresOutboundRepository(options.db,gate);
@@ -41,7 +43,12 @@ export function createZaloPipeline(options:ZaloPipelineOptions) {
   if(provider&&provider.kind!=='synthetic_fixture')throw new Error('UNVERIFIED_PROVIDER');
   const reject=new RejectUnverifiedLiveZalo();
   const verifier=provider?.verifier ?? reject;
-  const normalizer=provider?.normalizer ?? reject;
+  const upstreamNormalizer=provider?.normalizer ?? reject;
+  const normalizer:EventNormalizer={normalize(raw:Uint8Array){
+    const event=upstreamNormalizer.normalize(raw);
+    if(event.oa_id!==options.trusted_oa_id)throw new Error('INVALID_OA_SCOPE');
+    return event;
+  }};
   const ingress=new ZaloIngress(verifier,normalizer,
     new PostgresInboundEventRepository(options.db) as InboundEventRepository);
   const processor=new ConversationProcessor(gate,options.documents,options.orders,outbox,options.classifier);
