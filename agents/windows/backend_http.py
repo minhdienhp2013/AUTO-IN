@@ -10,7 +10,19 @@ import json
 import uuid
 from typing import Any
 from urllib.parse import quote, urlsplit
-from urllib.request import Request, urlopen
+from urllib.error import HTTPError
+from urllib.request import Request, build_opener, HTTPRedirectHandler
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    """Never forward a scoped Authorization token to a redirect target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise HTTPError(req.full_url, code, "Redirects forbidden for agent API", headers, fp)
+
+
+def urlopen(request, timeout):
+    return build_opener(_RejectRedirects()).open(request, timeout=timeout)
 
 
 class HttpBackendClient:

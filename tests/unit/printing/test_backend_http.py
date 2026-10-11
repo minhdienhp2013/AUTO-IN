@@ -141,3 +141,14 @@ def test_end_to_end_agent_with_ai1_wire_mock(monkeypatch, tmp_path):
     assert server['state'] == 'SIMULATED_DONE'
     assert dry.calls == 1
     assert server['calls'] == ['claim', 'preflight', 'mark-sending', 'reports']
+
+
+
+def test_agent_redirect_rejected_without_credential_forward():
+    from urllib.error import HTTPError
+    from urllib.request import Request
+    request = Request('https://backend.example/internal/v1/print-jobs/claim',
+                      headers={'Authorization': 'Bearer secret'}, method='POST')
+    with pytest.raises(HTTPError):
+        backend_http._RejectRedirects().redirect_request(
+            request, None, 302, 'Moved', {}, 'https://attacker.example/capture')
