@@ -94,6 +94,28 @@ test('REAL PostgreSQL: AI2 Port draft dedupe, generation and HUMAN routing via i
   assert.equal(currentHuman.generation,1);
   assert.equal((await poolA.query('SELECT generation::text AS generation FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',
     [shop,conv])).rows[0].generation,'1','already_routed must not increment generation');
+  // Two independent worker pools race on generation 0. Once HUMAN wins, no late AI draft.
+  const raceConv='conv-race-'+key(),raceEvents=['evt-'+key(),'evt-'+key()];
+  await inserts(poolA,oa,raceConv,customer,raceEvents);
+  const raceDraft={conversation_id:raceConv,customer_id:customer,event_ids:raceEvents,
+    text:'Tạo nháp nếu AI còn quyền',idempotency_key:'race-'+key(),expected_generation:0};
+  const raceHuman={conversation_id:raceConv,reason:'Nhân viên xử lý thay AI',
+    event_ids:raceEvents,expected_generation:0};
+  const [draftRace,humanRace]=await Promise.all([
+    portA.suggest_draft(raceDraft),portB.route_human(raceHuman)
+  ]);
+  assert.equal(humanRace.status,'routed','handover must eventually stop AI at generation 0');
+  assert.ok(['created','stale_generation'].includes(draftRace.status));
+  const countAfterRace=(await poolA.query(
+    'SELECT count(*)::int AS n FROM core_orders WHERE shop_id=$1 AND conversation_id=$2',
+    [shop,raceConv])).rows[0].n;
+  assert.equal(countAfterRace,draftRace.status==='created'?1:0);
+  assert.deepEqual(await portA.suggest_draft(raceDraft),{status:'stale_generation'});
+  assert.deepEqual(await portB.route_human(raceHuman),{status:'stale_generation'});
+  assert.equal((await poolA.query(
+    'SELECT generation::text AS generation FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',
+    [shop,raceConv])).rows[0].generation,'1');
+
   const staffId=randomUUID();
   await poolA.query("INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,'staff',$3,'staff')",[staffId,shop,'test-hash-never-used']);
   const staff={id:staffId,role:'staff',shop_id:shop,verified:true};
