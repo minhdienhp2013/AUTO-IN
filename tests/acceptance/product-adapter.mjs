@@ -15,6 +15,7 @@ export function assertSafeDatabase(url,productionUrl=process.env.DATABASE_URL){
  const parsed=new URL(url);
  if(!['postgres:','postgresql:'].includes(parsed.protocol))throw Error('PostgreSQL URL required');
  if(!['127.0.0.1','localhost','[::1]'].includes(parsed.hostname))throw Error('Remote PostgreSQL forbidden');
+ if(parsed.search||parsed.hash)throw Error('Connection URI query/fragment forbidden: could override PostgreSQL host or SSL');
  if(!/^autoin_test[a-z0-9_-]*$/i.test(decodeURIComponent(parsed.pathname.slice(1))))throw Error('Database name must start autoin_test');
  return parsed;
 }
@@ -165,6 +166,28 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
   const result=await svc.claim(actors.agent,{printer_id:'RMP7000',idempotency_key:key('queue-claim')});
   return {first_order_id:A,second_order_id:B,claimed_order_id:result.job?.order_id??null};
  }
+ async function dryrunCrashAfterMark(){
+  // An explicit crash-boundary acceptance test. Never invoke the printer driver.
+  const c=await svc.claim(actors.agent,{printer_id:'RMP7000',idempotency_key:key('crash-claim')});
+  if(!c.job)throw Error('Crash fixture expected an approved unsent job');
+  const job=c.job;
+  const gate=await svc.preflight(actors.agent,job.job_id,{expected_revision:job.revision,lease_token:job.lease_token});
+  if(gate.allowed!==true)throw Error('Crash fixture preflight denied');
+  journalDir??=await mkdtemp(join(tmpdir(),'autoin-ai5-journal-'));
+  const journal=join(journalDir,'crash-journal.sqlite3'),input=JSON.stringify(job);
+  execFileSync('python3',[bridge,'begin',journal],{cwd:root,input,timeout:10000});
+  const sent=await svc.markSending(actors.agent,job.job_id,{expected_revision:job.revision,lease_token:job.lease_token,idempotency_key:key('crash-mark')});
+  if(sent.state!=='SENDING')throw Error('Crash fixture did not reach mark-sending');
+  const recovered=JSON.parse(execFileSync('python3',[bridge,'recover',journal],{cwd:root,input,timeout:10000}).toString());
+  if(recovered.state!=='UNKNOWN'||recovered.driver_calls!==0)throw Error('Unsafe local journal recovery');
+  const uncertain=await svc.markUnknownForReconciliation(actors.staff,job.job_id,{
+   reason:'Synthetic crash after mark-sending, BEFORE any DryRunDriver call',idempotency_key:key('crash-unknown')
+  });
+  if(uncertain.state!=='UNKNOWN')throw Error('Server failed to persist ambiguity');
+  const next=await svc.claim(actors.agent,{printer_id:'RMP7000',idempotency_key:key('crash-reclaim')});
+  if(next.job!==null)throw Error('UNKNOWN job was automatically reclaimed');
+  return {state:'UNKNOWN',job_id:job.job_id,driver_calls,server_reclaimed:false};
+ }
  async function dryrunOnce(){
   const c=await svc.claim(actors.agent,{printer_id:'RMP7000',idempotency_key:key('dry-claim')});
   if(!c.job)return {status:'NO_JOB'};
@@ -182,6 +205,6 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
   await svc.report(actors.agent,job.job_id,{expected_revision:job.revision,lease_token:job.lease_token,result:'simulated_done',evidence_kind:'simulated',idempotency_key:key('dry-report')});
   return {status:'SIMULATED_DONE',job_id:job.job_id,evidence_kind:'simulated'};
  }
- return {environment:{type:'product-backed',database:'postgresql',print_driver:'DryRunDriver',scope:'isolated-test',source:'AI1-Service+AI3-Journal'},reset,act,snapshot,newAgent,dryrunOnce,checkConfirmedQueue,
+ return {environment:{type:'product-backed',database:'postgresql',print_driver:'DryRunDriver',scope:'isolated-test',source:'AI1-Service+AI3-Journal'},reset,act,snapshot,newAgent,dryrunOnce,dryrunCrashAfterMark,checkConfirmedQueue,
   async dispose(){for(const p of agents)await p.end();if(journalDir)await rm(journalDir,{recursive:true,force:true});await pool.end();}};
 }

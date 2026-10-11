@@ -24,3 +24,11 @@ test('ADAPTER: isolated local PostgreSQL URL allowed',()=>{
 test('ADAPTER: fail closed on non-simulation/real printer',async()=>{
  await assert.rejects(createAcceptanceAdapter({mode:'production',printer:'WindowsPrinter'}),/Real printing strictly forbidden/);
 });
+
+test('ADAPTER: reject PostgreSQL URI query overrides and fragments',()=>{
+ for(const url of [
+  'postgres://x:y@localhost/autoin_test_205?host=remote.example',
+  'postgres://x:y@127.0.0.1/autoin_test_205?sslmode=disable',
+  'postgres://x:y@localhost/autoin_test_205#override'
+ ]) assert.throws(()=>accepted(url),/query\/fragment forbidden/);
+});

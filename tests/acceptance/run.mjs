@@ -2,22 +2,22 @@ import {spawnSync} from 'node:child_process';
 import {resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {assertLocalSimulationUrl} from './local-http-guard.mjs';
+import {requireIntegratedSha,requireIsolatedPgEnv} from './integration-preflight.mjs';
 const integration=process.argv.includes('--integration'),http=process.argv.includes('--http'),browser=process.argv.includes('--browser');
 if(integration){
- if(!process.env.AUTOIN_TEST_DATABASE_URL || process.env.AUTOIN_ALLOW_PG_ACCEPTANCE!=='YES_ISOLATED_TEST_DB'){
-  console.error('BLOCKED exit2: AUTOIN_TEST_DATABASE_URL and isolated test DB opt-in required');process.exit(2);
- }
+ try{requireIsolatedPgEnv();}
+ catch(e){console.error('BLOCKED exit2: '+e.message);process.exit(2)}
  if(process.env.AUTOIN_ACCEPTANCE_ADAPTER){
   console.error('CODE-205 uses only tests/acceptance/product-adapter.mjs; external adapter cannot silently replace it');process.exit(2);
  }
 }
 if(http||browser){
- try{assertLocalSimulationUrl(http?process.env.AUTOIN_API_URL:process.env.AUTOIN_WEB_URL)}
+ try{requireIntegratedSha();assertLocalSimulationUrl(http?process.env.AUTOIN_API_URL:process.env.AUTOIN_WEB_URL)}
  catch(e){console.error('BLOCKED exit2: '+e.message);process.exit(2)}
 }
 const dir=dirname(fileURLToPath(import.meta.url));
 const names=['verify.test.mjs','fixtures.test.mjs','metrics.test.mjs','release-gate.test.mjs',
- 'security.test.mjs','local-http-guard.test.mjs','product-adapter.test.mjs','product-205.test.mjs'];
+ 'security.test.mjs','local-http-guard.test.mjs','integration-preflight.test.mjs','product-adapter.test.mjs','product-205.test.mjs'];
 if(http)names.push('http-readiness.test.mjs','http-auth.test.mjs');
 if(browser)names.push('browser.test.mjs');
 const env={...process.env};
