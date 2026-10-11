@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-const skip=!process.env.AUTOIN_ACCEPTANCE_ADAPTER&&'Product adapter missing: NOT RUN';
+const skip=!(process.env.AUTOIN_RUN_PRODUCT_ACCEPTANCE==='1'&&process.env.AUTOIN_ACCEPTANCE_ADAPTER)&&'Product adapter missing: NOT RUN';
 async function run(seed,fn){
  const mod=await import(pathToFileURL(resolve(process.env.AUTOIN_ACCEPTANCE_ADAPTER)).href);
  const a=await mod.createAcceptanceAdapter({databaseUrl:process.env.AUTOIN_TEST_DATABASE_URL,mode:'simulation',printer:'DryRunDriver'});
@@ -24,15 +24,19 @@ test('PRODUCT P0: malformed PDF/path traversal/ZIP bomb/6 docs do not auto-print
  assert.equal((await a.snapshot()).driver_calls,0);
 }));
 test('PRODUCT P0: idempotency collision with different body returns HTTP 409',{skip},()=>run('idempotency_conflict',async a=>{
- await a.act('revise',{order_id:'synthetic-o2',copies:2,idempotency_key:'same'},{actor:'staff'});
- const r=await a.act('revise',{order_id:'synthetic-o2',copies:3,idempotency_key:'same'},{actor:'staff'});
+ const one=await a.act('revise',{order_id:'synthetic-o2',expected_revision:2,request_data:{synthetic:true,copies:2},idempotency_key:'same'},{actor:'staff'});
+ assert.equal(one.ok,true,'First mutation must succeed or this is a vacuous rejection test');
+ const r=await a.act('revise',{order_id:'synthetic-o2',expected_revision:2,request_data:{synthetic:true,copies:3},idempotency_key:'same'},{actor:'staff'});
  denial(r);assert.equal(r.status,409);
 }));
 test('PRODUCT P0: duplicate mark-sending cannot grant two send permissions',{skip},()=>run('approved_unsent',async a=>{
  const x=await a.newAgent('agent-1'),y=await a.newAgent('agent-2');
  assert.notEqual(x.connection_id,y.connection_id);
- await x.act('claim',{order_id:'synthetic-o3'});
- const r=await Promise.all([x.act('mark_sending',{order_id:'synthetic-o3'}),y.act('mark_sending',{order_id:'synthetic-o3'})]);
- assert.equal(r.filter(z=>z.ok&&z.new_send_permission).length,1);
+ const got=await x.act('claim',{printer_id:'RMP7000',idempotency_key:'synthetic-double-send-claim'});
+ assert.equal(got.ok,true);assert.ok(got.job?.job_id&&got.job?.lease_token);
+ const body={job_id:got.job.job_id,lease_token:got.job.lease_token,expected_revision:got.job.revision};
+ const r=await Promise.all([x.act('mark_sending',{...body,idempotency_key:'synthetic-first-send'}),x.act('mark_sending',{...body,idempotency_key:'synthetic-second-send'})]);
+ assert.equal(r.filter(z=>z.ok===true&&z.state==='SENDING').length,1);
+ assert.ok(r.some(z=>z.ok===false),'Second mark-sending must be rejected, not grant new send');
  assert.ok((await a.snapshot()).driver_calls<=1);
 }));

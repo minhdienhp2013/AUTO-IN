@@ -32,7 +32,22 @@ test('FIXTURE ONLY: quote >150 sheets, deposit shortage',()=>{
  assert.notEqual(a.quote_revision,a.confirmed_quote_revision);
  assert.ok(b.paid_vnd<b.deposit_required_vnd);
 });
-const skip=!process.env.AUTOIN_ACCEPTANCE_ADAPTER&&'PRODUCT NOT CONNECTED: NOT RUN';
+const skip=!(process.env.AUTOIN_RUN_PRODUCT_ACCEPTANCE==='1'&&process.env.AUTOIN_ACCEPTANCE_ADAPTER)&&'PRODUCT NOT CONNECTED: NOT RUN';
+const printer_id='RMP7000';
+const claim=id=>({printer_id,idempotency_key:'synthetic-claim-'+id});
+function noClaim(r){
+ if(r?.ok===false){
+  assert.ok(['PRINT_CLOSED','MANUAL_LOCK','NO_ELIGIBLE_JOB'].includes(r.error?.code),JSON.stringify(r));
+ }else{
+  assert.equal(r?.ok,true,JSON.stringify(r));assert.equal(r.job??null,null,'Unexpected eligible job');
+ }
+}
+function hasClaim(r){
+ assert.equal(r?.ok,true,JSON.stringify(r));
+ assert.ok(r.job?.job_id&&r.job?.lease_token&&Number.isInteger(r.job?.revision),'No valid claim lease');
+ return r.job;
+}
+const sendPayload=(job,key)=>({job_id:job.job_id,lease_token:job.lease_token,expected_revision:job.revision,idempotency_key:key});
 async function withProduct(seed,fn){
  const mod=await import(pathToFileURL(resolve(process.env.AUTOIN_ACCEPTANCE_ADAPTER)).href);
  if(typeof mod.createAcceptanceAdapter!=='function')throw Error('Missing adapter factory');
@@ -48,28 +63,32 @@ function deny(r){assert.equal(r?.ok,false,JSON.stringify(r));assert.ok(r.error?.
 function zero(s){assert.equal(s.driver_calls,0,'Unauthorized command reached DryRunDriver');}
 function p0(name,fn){test('PRODUCT P0 '+name,{skip},()=>withProduct(name,fn));}
 p0('unapproved_order',async a=>{
- deny(await a.act('claim',{order_id:'synthetic-o1'},{actor:'agent'}));zero(await a.snapshot());
+ noClaim(await a.act('claim',claim('unapproved'),{actor:'agent'}));zero(await a.snapshot());
 });
 p0('stale_revision',async a=>{
- deny(await a.act('approve',{order_id:'synthetic-o2',expected_revision:1},{actor:'staff'}));zero(await a.snapshot());
+ deny(await a.act('approve',{order_id:'synthetic-o2',expected_revision:1,acknowledge_deposit_shortage:false,idempotency_key:'synthetic-stale'},{actor:'staff'}));zero(await a.snapshot());
 });
 p0('forged_actor',async a=>{
- deny(await a.act('approve',{approved:true,role:'owner'},{actor:'anonymous'}));zero(await a.snapshot());
+ deny(await a.act('approve',{order_id:'synthetic-o1',expected_revision:1,acknowledge_deposit_shortage:true,idempotency_key:'synthetic-forged',approved:true,role:'owner'},{actor:'anonymous'}));zero(await a.snapshot());
 });
 p0('approved_unsent',async a=>{
  const x=await a.newAgent('agent-1'),y=await a.newAgent('agent-2');
  assert.notEqual(x.connection_id,y.connection_id,'Separate PostgreSQL connections required');
- const r=await Promise.all([x.act('claim',{order_id:'synthetic-o3',idempotency_key:'a'}),
- y.act('claim',{order_id:'synthetic-o3',idempotency_key:'b'})]);
- assert.equal(r.filter(z=>z?.ok).length,1);zero(await a.snapshot());
+ const r=await Promise.all([x.act('claim',claim('double-a')),
+ y.act('claim',claim('double-b'))]);
+ assert.ok(r.every(z=>z.ok===true),JSON.stringify(r));
+ assert.equal(r.filter(z=>z.job?.job_id).length,1,'Two agents received a lease');
+ assert.equal(r.filter(z=>z.job===null).length,1,'One agent must see an empty queue');
+ zero(await a.snapshot());
 });
 p0('sending_revision_race',async a=>{
  const x=await a.newAgent('agent-1'),y=await a.newAgent('staff');
  assert.notEqual(x.connection_id,y.connection_id);
- await x.act('claim',{order_id:'synthetic-o3'});
- const r=await Promise.all([x.act('mark_sending',{order_id:'synthetic-o3'}),
- y.act('revise',{order_id:'synthetic-o3',expected_revision:3})]);
- assert.ok(r.some(z=>!z?.ok),'Must serialize competing edits');assert.ok((await a.snapshot()).driver_calls<=1);
+ const job=hasClaim(await x.act('claim',claim('race')));
+ const r=await Promise.all([x.act('mark_sending',sendPayload(job,'synthetic-send-race')),
+ y.act('revise',{order_id:'synthetic-o3',expected_revision:3,request_data:{copies:7,synthetic:true},idempotency_key:'synthetic-revise-race'})]);
+ assert.equal(r.filter(z=>z?.ok).length,1,'Exactly one conflicting mutation must win');
+ assert.ok((await a.snapshot()).driver_calls<=1);
 });
 p0('unknown_after_crash',async a=>{
  deny(await a.act('recover',{order_id:'synthetic-o4'},{actor:'agent'}));
@@ -80,21 +99,21 @@ p0('spooler',async a=>{
  assert.notEqual((await a.snapshot()).print_state,'VERIFIED_DONE');
 });
 p0('manual_lock',async a=>{
- deny(await a.act('claim',{order_id:'synthetic-o9'},{actor:'agent'}));zero(await a.snapshot());
+ noClaim(await a.act('claim',claim('manual'),{actor:'agent'}));zero(await a.snapshot());
 });
 p0('holiday',async a=>{
- deny(await a.act('claim',{order_id:'synthetic-o8'},{actor:'agent'}));zero(await a.snapshot());
+ noClaim(await a.act('claim',claim('holiday'),{actor:'agent'}));zero(await a.snapshot());
 });
 p0('large_quote_unconfirmed',async a=>{
- deny(await a.act('approve',{order_id:'synthetic-o5',quote_revision:2},{actor:'staff'}));zero(await a.snapshot());
+ deny(await a.act('approve',{order_id:'synthetic-o5',expected_revision:1,quote_revision:2,acknowledge_deposit_shortage:false,idempotency_key:'synthetic-quote'},{actor:'staff'}));zero(await a.snapshot());
 });
 p0('deposit_short',async a=>{
- assert.equal((await a.act('approve',{order_id:'synthetic-o6',deposit_warning_acknowledged:true},{actor:'staff'})).ok,true);
+ assert.equal((await a.act('approve',{order_id:'synthetic-o6',expected_revision:1,acknowledge_deposit_shortage:true,idempotency_key:'synthetic-deposit'},{actor:'staff'})).ok,true);
  assert.equal((await a.snapshot()).receivable_vnd,100000);
 });
 p0('partial_delivery_exception',async a=>{
- deny(await a.act('close_exception',{order_id:'synthetic-o7'},{actor:'staff'}));
- assert.equal((await a.act('close_exception',{order_id:'synthetic-o7'},{actor:'owner'})).ok,true);
+ deny(await a.act('close_exception',{order_id:'synthetic-o7',expected_revision:1,reason:'synthetic uncollected',idempotency_key:'synthetic-staff-exception'},{actor:'staff'}));
+ assert.equal((await a.act('close_exception',{order_id:'synthetic-o7',expected_revision:1,reason:'synthetic uncollected',idempotency_key:'synthetic-owner-exception'},{actor:'owner'})).ok,true);
  const s=await a.snapshot();assert.equal(s.receivable_vnd,70000);assert.equal(s.undelivered_sheets,28);
 });
 p0('duplicate_webhook',async a=>{
