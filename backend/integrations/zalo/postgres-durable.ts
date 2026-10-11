@@ -30,7 +30,8 @@ export interface LeasedBatch extends Batch { batch_id:string; lease_token:string
  * Multiple workers use FOR UPDATE SKIP LOCKED; crashes rollback all changes.
  */
 export class PostgresConversationQueue {
-  constructor(private readonly db:PgTransactions){}
+  private readonly db:PgTransactions;
+  constructor(db:PgTransactions){this.db=db;}
   async ingest_pending(limit=100):Promise<number> {
     positiveInt(limit,1000);
     return this.db.transaction(async tx=>{
@@ -130,7 +131,9 @@ export interface AuthoritativeGateLock {
   lock_if_current(tx:PgTx,conversation_id:string,generation:number):Promise<boolean>;
 }
 export class PostgresOutboundRepository implements OutboundPort {
-  constructor(private readonly db:PgTransactions,private readonly control:AuthoritativeGateLock){}
+  private readonly db:PgTransactions;
+  private readonly control:AuthoritativeGateLock;
+  constructor(db:PgTransactions,control:AuthoritativeGateLock){this.db=db;this.control=control;}
   async enqueue(input:{outbound_id:string;conversation_id:string;generation:number;text:string}):Promise<void> {
     if(!input.outbound_id||!input.conversation_id||!Number.isSafeInteger(input.generation)||
        input.generation<0||!input.text||input.text.length>4000) throw new Error("INVALID_OUTBOUND");
