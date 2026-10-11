@@ -28,3 +28,27 @@ Fixture nằm trực tiếp trong các test và có `synthetic_fixture:true`; **
 
 ## P0 chưa kiểm chứng
 Signature/raw-body + event payload thật; OAuth/permission/renew token; text/PDF/Word/ảnh/ZIP/Excel attachments; download URL expiry/cap; webhook trùng/đảo; OA send limits/preview/24h window; OA Manager handover signals; pagination/queue load; durable transactions/restart/parallel worker; DeepSeek timeout/usage/cost production; integration PostgreSQL/AI1/AI3. Chưa đạt TN-022/037 hoặc nghiệm thu 210 đơn/7 ngày.
+
+
+## CODE-202 — durable PostgreSQL (11/10/2026)
+
+- MODULE_BASE_SHA `ccf5e6e1bb97fb1ca8c70a4b2d1c6ad22d59e682`; SCAFFOLD_SHA `a681fe91f24f3b0cec61cb72887cc0928d9460ca`. Scaffold imported unchanged onto isolated AI2 branch after first DeepSeek test fix.
+- First fix `2b22fdff5160b693bc50d381e7e09ccb082bde61` removes one surplus brace in DeepSeek mock. All files changed by AI2 remain in its namespace (besides unchanged scaffold import).
+- Migration: `backend/integrations/zalo/migrations/001_zalo_durable.sql`. Owns `zalo_inbound_events`, `zalo_process_queue`, `zalo_batches`, `zalo_batch_items`, `zalo_outbound`; does not modify AI1 migrations. Apply to isolated test database first. Deploy/apply migration is NOT performed here.
+- `PostgresConversationQueue.ingest_pending()` atomically moves verified, deduplicated event markers into grouped batches via a PostgreSQL transaction. Parallel intake uses `FOR UPDATE SKIP LOCKED`; unique `(oa_id,event_id)` protects duplicates. `claim_due()` uses leases, `complete()` compares lease token, `fail()` retries after delay then persists `NEEDS_HUMAN`. Original event is not deleted.
+- `DurableConversationWorker.tick()` can be invoked by AI0 scheduler, persists intake even when AI has been handed over; failures keep DB state. AI1 operations called by `ConversationProcessor` MUST be idempotent by the event id/key because batch processing is at-least-once, not exactly-once. `NEEDS_HUMAN` must be exposed to staff; no automatic provider send.
+- `PostgresOutboundRepository`: unique outbound_id; atomically reserve only `QUEUED` against AI1 `AuthoritativeGateLock.lock_if_current(tx,conversation_id,generation)`. Lock MUST check authoritative AI1 control row `FOR UPDATE` in SAME PostgreSQL transaction; missing row or wrong generation/mode fails closed. `RESERVED` is made `UNKNOWN` after restart/timeout, never re-queued. Status transitions disallow `UNKNOWN/SENT/CANCELLED` replay. `OutboundDispatcher` rechecks the AI1 gate/schedule before OA I/O; provider call already in flight cannot be recalled.
+- DeepSeek remains advisory only; it cannot price, approve, or print. Zalo webhook live verification and live OA sender remain DISABLED without provider-verified signature/payload/permissions. Do not substitute the synthetic fixture verifier in live composition. Outside schedule, inbound is persisted; ordinary replies are cancelled before provider call.
+
+### AI0 / AI1 port and operational dependencies
+
+[AI0 CODE-006] Provide real `PgTransactions` wrapper around AI1 `PgStore.tx`, the scheduler calling `DurableConversationWorker.tick()`, real raw-byte Fastify ingress (signature verification required), schedule guard, `ZaloIngress` composition and an operator view for `NEEDS_HUMAN` / `UNKNOWN`. Do not enable live Zalo send until official provider contract is verified. AI0 also wires AI3 `DocumentFactsPort` and AI1 `OrderDraftPort`.
+
+[AI1 CODE-201] Implement durable authenticated conversation control/generation on AI1-owned tables and the `AuthoritativeGateLock.lock_if_current` adapter using the SAME transaction as outbound reserve (e.g. SELECT ... FOR UPDATE of the AI1 control row). Handover/return increment generation. Ensure `suggest_draft` and `route_human` are idempotent by event key, with no AI approval/printing rights. Ownership of that control record remains AI1; the queues/outbound remain AI2.
+
+### Verified / not verified
+
+- **PASS (local reconstructed working tree, Node v22.16.0):** `node --experimental-strip-types --test tests/unit/zalo/*.test.mjs`: 22 PASS / 0 FAIL / 1 SKIP (PG). `tsc --noEmit` strict NodeNext over new AI2 durable/worker source also PASS, using locally installed TypeScript v5.8.3. These are local reconstructed-file checks, not a GitHub checkout or CI proof.
+- **SKIP:** real PostgreSQL test `tests/unit/zalo/postgres-integration.test.mjs` needs an isolated database `AUTOIN_TEST_DATABASE_URL` and package `pg`. Run this with migrated disposable schema and verify independent sessions. Do not call mock tests a PostgreSQL PASS.
+- **NOT RUN:** live OA provider verification/messages, external DeepSeek network, Fastify/AI1 full integration, actual production DB, 100/day load, TN-022/037 and 210 orders/7 days. No real customer message, print instruction, merge or deploy.
+
