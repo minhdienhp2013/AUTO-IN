@@ -14,7 +14,7 @@ Cả 6 AI được bắt đầu song song theo yêu cầu chủ ngày 11/10/2026
 
 | Mã | AI / nhánh | File được sửa | Điều kiện đạt |
 | --- | --- | --- | --- |
-| CODE-000 | AI0 / ai0/khoi-tao-code-v1 | config/manifest/lock/build/CI root; contracts/**; backend/app.ts hoặc entry được ghi rõ; tests/unit/contracts/**; README.md, AGENTS.md, .gitignore; tài liệu chung/architecture/prompts | Scaffold, schema/API/fixture/Port và script chạy/kiểm tra thật; bàn giao commit sớm. Không tạo/sửa module AI1–AI5. |
+| CODE-000 | AI0 / ai0/khoi-tao-code-v1 | config/manifest/lock/build/CI root; contracts/**; backend/app.ts, backend/server.ts (entry CODE-000); tests/unit/contracts/**; README.md, AGENTS.md, .gitignore; tài liệu chung/architecture/prompts | Scaffold, schema/API/fixture/Port và script chạy/kiểm tra thật; bàn giao commit sớm. Không tạo/sửa module AI1–AI5. |
 | CODE-101 | AI1 / ai1/nghiep-vu-ban-dau-v1 | backend/core/**, backend/api/**, backend/storage/**, backend/jobs/**, tests/unit/core/**, tests/integration/core/**, docs/research/AI1_NGHIEP_VU_API.md | Auth/quyền, đơn/phiên bản/duyệt, job/mark-sending, tiền/giao/ngoại lệ tối thiểu; migration và ca đồng thời trên PostgreSQL thật. |
 | CODE-102 | AI2 / ai2/zalo-hoi-thoai-ban-dau-v1 | backend/integrations/zalo/**, backend/conversation/**, backend/ai/**, tests/unit/zalo/**, docs/research/AI2_ZALO_OA.md | Pipeline normalize/verify/dedupe/gom/lịch/tiếp quản/rules/AI/chi phí; adapter+fixture có nhãn; live chưa đủ verify thì từ chối. |
 | CODE-103 | AI3 / ai3/tai-lieu-agent-ban-dau-v1 | workers/documents/**, agents/windows/**, tests/unit/documents/**, tests/unit/printing/**, docs/research/AI3_TAI_LIEU_RICOH.md | Processor file thật khi công cụ có; NEEDS_HUMAN khi không tin cậy; count/preview, agent DryRun+journal/UNKNOWN và adapter Windows. |
@@ -38,3 +38,7 @@ Mẫu 6 dòng trong QUY_TAC_AI.md. DONE chỉ cho phạm vi kiểm thử đã đ
 
 Lượt sau chỉ gửi mã việc, BASE SHA mới nếu có, file được sửa, yêu cầu thay đổi và ca đạt; không lặp prompt đầy đủ.
 
+
+## Entry được cấp cho CODE-000
+
+AI0 sở hữu backend/app.ts (composition) và backend/server.ts (CLI). contracts/export.ts sinh contracts/generated/schema.json + openapi.json; consumer không sửa bản sinh. Bộ khung không tạo file trong module AI1–AI5. Nền cố định: 84ab02d643622bc7bfdf07eee662d8797bdd84fd.
