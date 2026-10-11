@@ -65,3 +65,7 @@
 **Release gate bổ sung:** yêu cầu `evidence.integration_sha` 40 ký tự và `evidence.product_runs.pg/http/dryrun/browser` từng mục có `status:'PASS'`, `fail:0`, `skip:0`, `pass >= 1` và **cùng SHA**; các điều kiện nghiệp vụ/thiết bị TN-037 trước đây vẫn giữ nguyên. Một bài SKIP không phải PASS.
 
 **Nguyên tắc báo cáo:** Bất kỳ ca P0 FAIL -> SAFE, không tự gửi in, không tự nhắn OA. File/code AI5 chỉ báo lỗi, chủ module tương ứng sửa. Mọi báo cáo phải ghi SHA, lệnh tái hiện, observed/expected và bằng chứng đã che thông tin nhạy cảm.
+
+## Cập nhật xác minh 2026-10-12
+
+Xem [Bằng chứng SHA 15c1ac7](CODE305_SHA_15c1ac7_EVIDENCE.md). Các bảng NOT RUN ở trên là trạng thái lịch sử trước khi AI0 cấp SHA. Kết quả mới của GitHub Actions **push trực tiếp SHA**: 20 PG/DryRun PASS/0 FAIL/0 SKIP; HTTP auth/readiness 6 PASS/0 FAIL/0 SKIP; 1 bài webhook synthetic Fastify/PostgreSQL PASS. Toàn runner --integration 50 PASS/19 SKIP; --http 36 PASS/40 SKIP (các SKIP không phải kết quả PASS sản phẩm). Browser BLOCKED vì AI4 chưa có package-lock.json. Zalo OA thật, Ricoh thật, iPhone thật và TN-037 vẫn NOT RUN/BLOCKED. Không nâng trạng thái TN-037 dựa trên CI simulation.

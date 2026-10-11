@@ -59,3 +59,7 @@ Lỗi PostgreSQL/transaction/ledger/confirmation queue/generation -> **AI1**; Za
 ## Trạng thái ở thời điểm bàn giao
 
 Selftest chốt SHA riêng (`integration-preflight.test.mjs`) đã chạy cục bộ: 4 PASS / 0 FAIL. Toàn bộ product PG/HTTP/DryRun/browser CODE-305: **NOT RUN/BLOCKED vì thiếu SHA tích hợp và PostgreSQL/server thực**. Không báo số PASS sản phẩm hoặc in thử.
+
+## Sau khi có SHA 15c1ac7
+
+Đã có [bằng chứng CI push trực tiếp HEAD](CODE305_SHA_15c1ac7_EVIDENCE.md) cho PostgreSQL, DryRun, HTTP auth và webhook synthetic. Người kiểm thử mới chạy trên SHA khác phải đặt AUTOIN_INTEGRATION_SHA bằng SHA CODE-006 mới và chạy lại nhóm sản phẩm, không chép kết quả cũ. Trong run.mjs AI5 đã bổ sung một ca synthetic webhook thật sự gọi composition test với PostgreSQL test rồi bắt buộc 1 PASS/0 FAIL/0 SKIP; ca này CHƯA được CI chạy trên SHA 15c1ac7 vì thay đổi AI5 tạo sau SHA đó. Browser yêu cầu AI4 package-lock.json và web/dist/index.html, thiếu sẽ báo BLOCKED exit2; không coi unit tests web là browser E2E. HTTP-ZALO-01 vẫn SKIP trên default server không gắn ingress; synthetic test dùng app.inject với provider thử riêng, không phải OA live.
