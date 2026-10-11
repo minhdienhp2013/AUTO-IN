@@ -22,3 +22,11 @@ coverage/
 .DS_Store
 Thumbs.db
 
+
+# CODE-000 build/development outputs
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
