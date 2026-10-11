@@ -178,7 +178,7 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
           return {status:"stale_generation"};
         await tx.query("INSERT INTO ai1_draft_fixture(idempotency_key,order_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
           [input.idempotency_key,"fixture-order"]);
-        return {order_id:"fixture-order",revision:1};
+        return {status:"created",order_id:"fixture-order"};
       });
     };
     const takeoverPipeline=createZaloPipeline({
@@ -231,7 +231,7 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
               return {status:"stale_generation"};
             await tx.query("INSERT INTO ai1_draft_fixture(idempotency_key,order_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
               [input.idempotency_key,"one-order"]);
-            return {order_id:"one-order",revision:1};
+            return {status:"created",order_id:"one-order"};
           });
           if(loseAckOnce){loseAckOnce=false;throw Error("simulated lost Port ACK");}
           return value;
