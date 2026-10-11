@@ -33,12 +33,30 @@ def private_root(tmp_path):
 
 
 def _snapshot(root, directory, data: bytes, ext: str, index: int = 0):
+    """Synthetic server-ingested immutable bytes + manifest pinned in DB by SHA."""
     digest = hashlib.sha256(data).hexdigest()
+    # Each snapshot gets one sealed manifest, never overwrite older evidence.
+    sealed_dir = root / f"{directory.name}-{index:03d}-{digest[:10]}"
+    sealed_dir.mkdir(mode=0o700)
     name = f"source-{index:03d}-{digest}{ext}"
-    path = directory / name
+    path = sealed_dir / name
     path.write_bytes(data)
     path.chmod(0o400)
-    item = {"artifact_ref": f"{directory.name}/{name}", "sha256": digest}
+    ref = f"{sealed_dir.name}/{name}"
+    manifest_ref = f"{sealed_dir.name}/manifest.json"
+    manifest = {
+        "schema": "ai3.upload_snapshot.v1",
+        "files": [{"source_artifact_ref": ref, "file_sha256": digest,
+                   "size_bytes": len(data)}],
+    }
+    manifest_path = sealed_dir / "manifest.json"
+    manifest_bytes = json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode()
+    manifest_path.write_bytes(manifest_bytes)
+    manifest_path.chmod(0o400)
+    # Manifest ref + digest MUST be resolved from AI0 trusted DB, not webhook.
+    item = {"artifact_ref": ref, "sha256": digest,
+            "manifest_ref": manifest_ref,
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest()}
     return path, item
 
 
@@ -251,3 +269,131 @@ def test_batch_over_rule_threshold_is_preserved_for_ai2_handover(private_root):
     facts = inspect(rows, artifact_root=root)
     assert len(facts) == 6 and all(f["preview_trusted"] for f in facts)
     # AI2 computes the actual total and routes >5 to a human.
+
+
+
+def test_bare_ref_and_self_declared_file_digest_are_not_sufficient(private_root):
+    root, directory = private_root
+    _, item = _snapshot(root, directory, _pdf(), ".pdf")
+    unsigned = {"artifact_ref": item["artifact_ref"], "sha256": item["sha256"]}
+    assert inspect([unsigned], artifact_root=root) == [
+        {"kind": "unknown", "preview_trusted": False}
+    ]
+    assert process_request({"batch": [unsigned]}, artifact_root=root)["status"] == "NEEDS_HUMAN"
+
+
+def test_manifest_deleted_or_mutated_must_block_known_valid_document(private_root):
+    root, directory = private_root
+    _, item = _snapshot(root, directory, _png(), ".png")
+    signed = root / item["manifest_ref"]
+    assert inspect([item], artifact_root=root)[0]["kind"] == "image"
+    signed.chmod(0o600)
+    signed.write_text('{"schema":"ai3.upload_snapshot.v1","files":[]}', encoding="utf-8")
+    assert inspect([item], artifact_root=root)[0] == {
+        "kind": "unknown", "preview_trusted": False
+    }
+    signed.unlink()
+    assert inspect([item], artifact_root=root)[0]["kind"] == "unknown"
+
+
+def test_manifest_source_evidence_wrong_but_manifest_sha_correct_rejected(private_root):
+    root, directory = private_root
+    _, item = _snapshot(root, directory, _pdf(), ".pdf")
+    manifest_file = root / item["manifest_ref"]
+    old = json.loads(manifest_file.read_text())
+    old["files"][0]["file_sha256"] = "0" * 64
+    serialized = json.dumps(old, sort_keys=True, separators=(",", ":")).encode()
+    manifest_file.chmod(0o600)
+    manifest_file.write_bytes(serialized)
+    # Even a hash-updated manifest cannot make a mismatched source entry trusted.
+    overwritten = dict(item, manifest_sha256=hashlib.sha256(serialized).hexdigest())
+    assert inspect([overwritten], artifact_root=root) == [
+        {"kind": "unknown", "preview_trusted": False}
+    ]
+
+
+def test_snapshot_missing_but_manifest_kept_returns_unknown(private_root):
+    root, directory = private_root
+    file, item = _snapshot(root, directory, _pdf(), ".pdf")
+    file.unlink()
+    assert inspect([item], artifact_root=root)[0] == {
+        "kind": "unknown", "preview_trusted": False
+    }
+
+
+@pytest.mark.parametrize("failed", ["manifest", "document"])
+def test_scoped_storage_read_errors_fail_closed(private_root, monkeypatch, failed):
+    from workers.documents import bridge
+    root, directory = private_root
+    _, item = _snapshot(root, directory, _pdf(), ".pdf")
+    original = bridge._read_scoped
+
+    def fail_storage(root_path, relative):
+        if relative == item["manifest_ref"] if failed == "manifest" else relative == item["artifact_ref"]:
+            raise OSError("I/O error /secret/server/private-name.pdf")
+        return original(root_path, relative)
+
+    monkeypatch.setattr(bridge, "_read_scoped", fail_storage)
+    result = process_request({"batch": [item]}, artifact_root=root)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["facts"] == [{"kind": "unknown", "preview_trusted": False}]
+    assert "/secret" not in json.dumps(result)
+
+
+def test_symlink_manifest_is_never_followed(private_root, tmp_path):
+    root, directory = private_root
+    _, item = _snapshot(root, directory, _png(), ".png")
+    manifest_path = root / item["manifest_ref"]
+    evidence = manifest_path.read_bytes()
+    external = tmp_path / "manifest.json"
+    external.write_bytes(evidence)
+    manifest_path.unlink()
+    try:
+        manifest_path.symlink_to(external)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation unavailable")
+    assert inspect([item], artifact_root=root)[0] == {
+        "kind": "unknown", "preview_trusted": False
+    }
+
+
+def test_real_bridge_published_snapshot_and_manifest_are_compatible(tmp_path):
+    from workers.documents import bridge
+    incoming = tmp_path / "incoming"
+    root = tmp_path / "artifacts"
+    incoming.mkdir()
+    root.mkdir()
+    (incoming / "verified.pdf").write_bytes(_pdf())
+    request_data = {"documents": [{"artifact_name": "verified.pdf"}]}
+    output = bridge.process_request(
+        {"request_data": request_data,
+         "expected_request_hash": hashlib.sha256(
+             bridge._canonical(request_data).encode()).hexdigest()},
+        input_root=incoming, artifact_root=root)
+    assert output["status"] == "READY", output
+    manifest_ref = output["plan"]["artifact_ref"]
+    raw = (root / manifest_ref).read_bytes()
+    manifest = json.loads(raw)
+    evidence = manifest["files"][0]
+    item = {
+        "artifact_ref": evidence["source_artifact_ref"],
+        "sha256": evidence["file_sha256"],
+        "manifest_ref": manifest_ref,
+        "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    assert inspect([item], artifact_root=root) == [
+        {"kind": "pdf", "preview_trusted": True}
+    ]
+    assert process_request({"batch": [item]}, artifact_root=root)["status"] == "READY"
+
+
+def test_cli_missing_manifest_evidence_fails_closed(private_root):
+    root, directory = private_root
+    _, item = _snapshot(root, directory, _png(), ".png")
+    untrusted = dict(item)
+    untrusted.pop("manifest_sha256")
+    result = _cli(root, {"batch": [untrusted]})
+    assert result.returncode == 2 and result.stderr == b""
+    response = json.loads(result.stdout)
+    assert response["status"] == "NEEDS_HUMAN"
+    assert response["facts"] == [{"kind": "unknown", "preview_trusted": False}]
