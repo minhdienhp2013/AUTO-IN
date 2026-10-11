@@ -15,7 +15,6 @@ from agents.windows.agent import DryRunDriver, Journal, PrintAgent
 from agents.windows.backend_http import HttpBackendClient
 
 
-@pytest.mark.product_integration
 def test_ai0_product_backend_claim_preflight_mark_journal_dryrun_report(tmp_path):
     base = os.environ.get("AUTOIN_CODE303_HTTPS_URL", "")
     token = os.environ.get("AUTOIN_CODE303_AGENT_TOKEN", "")
