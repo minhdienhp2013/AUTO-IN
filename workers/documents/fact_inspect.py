@@ -1,13 +1,12 @@
 """AI3 CODE-303: server-only document facts Port for AI2 interpretByRules.
 
-The caller MUST retrieve artifact_ref + sha256 from its trusted server-side
-upload/manifest record, never from webhook text, Zalo filenames or the browser.
+The caller MUST resolve artifact_ref/sha256 and manifest_sha256 from its
+server-owned DB/manifest index, never from webhook text or a customer request.
 No physical printing or order approval happens here.
 """
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -30,6 +29,8 @@ _REF = re.compile(
     r"(pdf|doc|docx|xls|xlsx|csv|png|jpe?g|tiff?|webp|bmp|zip)"
 )
 _SHA = re.compile(r"[0-9a-f]{64}")
+_MANIFEST_LIMIT = 256 * 1024
+_MANIFEST_SCHEMAS = frozenset({"ai3.document_bridge.v1", "ai3.upload_snapshot.v1"})
 _KINDS = {
     ".pdf": "pdf", ".doc": "word", ".docx": "word",
     ".xls": "excel", ".xlsx": "excel", ".csv": "excel",
@@ -93,13 +94,71 @@ def _fact(name: str, data: bytes) -> dict[str, Any]:
     return {"kind": "zip", "count_inside": len(files), "preview_trusted": True}
 
 
+def _verified_source(root: Path, item: dict[str, Any]) -> tuple[str, bytes] | None:
+    """Require TWO server-persisted digests: sealed manifest and frozen bytes.
+
+    The manifest digest MUST be read from AI0's authenticated DB metadata,
+    not derived from a request. A forged ref/hash pair alone proves nothing.
+    Secure dirfd opens reject symlinks at all relative path segments; read the
+    verified document bytes only once, then decode from those same bytes.
+    """
+    if not isinstance(item, dict) or set(item) != {
+            "artifact_ref", "sha256", "manifest_ref", "manifest_sha256"}:
+        return None
+    ref, digest = item["artifact_ref"], item["sha256"]
+    manifest_ref, manifest_hash = item["manifest_ref"], item["manifest_sha256"]
+    if not all(isinstance(v, str) for v in (ref, digest, manifest_ref, manifest_hash)):
+        return None
+    matched = _REF.fullmatch(ref)
+    if not (matched and _SHA.fullmatch(digest) and matched.group(1) == digest
+            and _SHA.fullmatch(manifest_hash)
+            and manifest_ref == ref.split("/", 1)[0] + "/manifest.json"):
+        return None
+
+    # Authenticate manifest bytes against the independent hash captured and
+    # persisted by the server before trusting any source refs in its contents.
+    raw_manifest = bridge._read_scoped(root, manifest_ref)
+    if len(raw_manifest) > _MANIFEST_LIMIT:
+        return None
+    if hashlib.sha256(raw_manifest).hexdigest() != manifest_hash:
+        return None
+    manifest = json.loads(raw_manifest.decode("utf-8"),
+                          object_pairs_hook=bridge._no_duplicate_keys,
+                          parse_constant=bridge._no_nonfinite_json)
+    if not isinstance(manifest, dict) or manifest.get("schema") not in _MANIFEST_SCHEMAS:
+        return None
+    entries = manifest.get("files")
+    if not isinstance(entries, list) or not 1 <= len(entries) <= processor.MAX_DOCS:
+        return None
+    if manifest["schema"] == "ai3.document_bridge.v1":
+        # Bridge manifests commit request/renderer evidence; the caller must
+        # authenticate the manifest hash against the correct shop/order.
+        if not (_SHA.fullmatch(str(manifest.get("request_hash", "")))
+                and _SHA.fullmatch(str(manifest.get("content_settings_sha256", "")))):
+            return None
+    matching = [entry for entry in entries if isinstance(entry, dict)
+                and entry.get("source_artifact_ref") == ref]
+    if len(matching) != 1:
+        return None
+    proof = matching[0]
+    if proof.get("file_sha256") != digest or type(proof.get("size_bytes")) is not int:
+        return None
+    if not 0 < proof["size_bytes"] <= processor.MAX_FILE:
+        return None
+
+    content = bridge._read_scoped(root, ref)
+    if len(content) != proof["size_bytes"] or hashlib.sha256(content).hexdigest() != digest:
+        return None
+    return ref, content
+
+
 def inspect(batch: list[dict[str, Any]], *,
             artifact_root: str | Path) -> list[dict[str, Any]]:
     """Port: inspect(batch) -> DocumentFact[] (AI2 rules.ts exact field names).
 
-    Inbound batch must originate from AI0's trusted DB/manifest resolver.
-    sha256 must be the immutable snapshot hash already stored by the server.
-    A malicious/missing/mutated artifact is always UNKNOWN, never a page guess.
+    AI0 must take artifact_ref, sha256, manifest_ref and manifest_sha256 from
+    the verified per-shop/per-order server record, NEVER from the webhook.
+    A missing/unregistered/changed manifest or source yields unknown.
     """
     if not isinstance(batch, list) or not 1 <= len(batch) <= MAX_BATCH:
         return [_unknown()]
@@ -109,24 +168,11 @@ def inspect(batch: list[dict[str, Any]], *,
     result = []
     for item in batch:
         try:
-            if not isinstance(item, dict) or set(item) != {"artifact_ref", "sha256"}:
+            verified = _verified_source(root, item)
+            if verified is None:
                 result.append(_unknown())
                 continue
-            ref, expected = item["artifact_ref"], item["sha256"]
-            if not isinstance(ref, str) or not isinstance(expected, str):
-                result.append(_unknown())
-                continue
-            matched = _REF.fullmatch(ref)
-            if not matched or not _SHA.fullmatch(expected) or matched.group(1) != expected:
-                result.append(_unknown())
-                continue
-            # Reject "..", URLs, symlinks, and TOCTOU by secure dirfd reads.
-            # This reads bytes ONCE and decodes those same verified bytes only.
-            data = bridge._read_scoped(root, ref)
-            digest = hashlib.sha256(data).hexdigest()
-            if digest != expected:
-                result.append(_unknown())
-                continue
+            ref, data = verified
             result.append(_fact(ref, data))
         except Exception:
             # Intentionally no filename, file text, traceback or raw exceptions.

@@ -266,11 +266,15 @@ python -m workers.documents.fact_inspect \
   "batch": [
     {
       "artifact_ref": "doc-a1b2c3d4/source-000-<64hex-sha256>.pdf",
-      "sha256": "<64hex-sha256>"
+      "sha256": "<64hex-sha256>",
+      "manifest_ref": "doc-a1b2c3d4/manifest.json",
+      "manifest_sha256": "<64hex-sha256-of-stored-manifest>"
     },
     {
-      "artifact_ref": "doc-a1b2c3d4/source-001-<64hex-sha256>.zip",
-      "sha256": "<64hex-sha256>"
+      "artifact_ref": "doc-e5f6a7b8/source-000-<64hex-sha256>.zip",
+      "sha256": "<64hex-sha256>",
+      "manifest_ref": "doc-e5f6a7b8/manifest.json",
+      "manifest_sha256": "<64hex-sha256-of-stored-manifest>"
     }
   ]
 }
@@ -291,7 +295,7 @@ python -m workers.documents.fact_inspect \
 ```
 Mỗi phần tử trong `facts` có đúng các key AI2 đang hiểu. Hàm `inspect` Python trả trực tiếp mảng facts; CLI bọc `schema/status/reason_code/facts` để AI0 phân biệt tình trạng. Nếu **bất kỳ** phần tử thiếu/hash sai/symlink/ZIP lỗi/bị sửa/font PDF chưa nhúng/render hỏng/format chưa xác minh, `status:"NEEDS_HUMAN"` và phần tử `{"kind":"unknown","preview_trusted":false}` hoặc `{"kind":"word"|"excel"|"zip","preview_trusted":false}` phù hợp. Không suy ra `document_pages` từ metadata đoán, không nâng `preview_trusted` nếu chưa thực render.
 
-**Kiểm chứng an toàn:** `O_NOFOLLOW` từng path segment qua `bridge._read_scoped`; so `sha256` với hash **có trong tên snapshot** rồi SHA-256 bytes đã đọc, *trước* giải mã PDF/Pillow/ZIP. Chỉ xem nội dung những bytes đã hash; không đọc lại inbound. PDF phải đọc được và không dùng font chưa nhúng; ảnh phải Pillow render được; ZIP kiểm traversal/symlink/password/compression/giới hạn file, kiểm thực từng member, chỉ trả `count_inside` khi ZIP cấu trúc an toàn. Word/Excel nhận biết loại nhưng `preview_trusted:false`, không đoán số trang, chuyển người. Bản copy preview chỉ tạo tạm, không mở in.
+**Kiểm chứng an toàn:** Bắt buộc bốn trường `artifact_ref`, `sha256`, `manifest_ref`, `manifest_sha256` **đều do AI0 lấy từ DB đáng tin cậy**; không còn chấp nhận cặp ref/hash tự khai. Mở manifest bằng `O_NOFOLLOW` từng path segment, so SHA-256 manifest với digest lưu server, so `files[]` chứa đúng một `source_artifact_ref`/digest/size, sau đó mới mở snapshot bằng dirfd và xác minh bytes SHA-256 cùng kích thước, *trước* giải mã PDF/Pillow/ZIP. Hỏng/sai/thiếu manifest hoặc snapshot đều UNKNOWN/NEEDS_HUMAN. Chỉ xem nội dung những bytes đã hash; không đọc lại inbound. PDF phải đọc được và không dùng font chưa nhúng; ảnh phải Pillow render được; ZIP kiểm traversal/symlink/password/compression/giới hạn file, kiểm thực từng member, chỉ trả `count_inside` khi ZIP cấu trúc an toàn. Word/Excel nhận biết loại nhưng `preview_trusted:false`, không đoán số trang, chuyển người. Bản copy preview chỉ tạo tạm, không mở in.
 
 **Giới hạn tích hợp:** Quyền cấp `artifact_ref`/hash thuộc AI0 backend và quyền đọc nguồn thuộc server, **không thuộc AI2/webhook**. Port không thể tự chứng minh một chuỗi do khách gửi là ref đáng tin: AI0 phải kiểm subject/shop/order/manifest trong DB trước khi gọi, bảo vệ artifact-root (owner/quota/cleanup), và không giao đường dẫn lẫn SHA từ raw webhook sang Port. `inspect(batch)` không tự tạo đơn hoặc duyệt in. Dữ liệu sai/thiếu vẫn được nhận để chuyển nhân viên, không mặc định `PRINT`.
 
@@ -301,3 +305,13 @@ python -m compileall -q workers/documents agents/windows tests/unit/documents te
 python -m pytest -q tests/unit/documents tests/unit/printing
 ```
 Đây là Port module AI3; AI0 sẽ map JSON CLI đầu ra thành `DocumentFact[]` cho AI2 và chịu trách nhiệm kiểm DB/ref. PR #24 vẫn là chứng cứ **100 PASS / 1 SKIP của SHA trước lần bổ sung Port**, không chứng minh những bài mới đã chạy.
+
+### Cập nhật điều kiện an toàn — manifest có hash từ DB
+
+Port `inspect(batch)` đã được nâng lên yêu cầu **bốn** trường chứng cứ server: `artifact_ref`, `sha256`, `manifest_ref`, `manifest_sha256` (không phải hai trường). Bản tích hợp AI0 hiện gọi `inspectDocumentRequest` để tạo manifest: giá trị `evidenceHash` từ `backend/composition/processor.ts` là SHA-256 **raw manifest bytes**, phù hợp `manifest_sha256`; nhưng AI0 phải tự lưu vào PostgreSQL cùng liên kết shop/order/artifact một cách đáng tin trước khi gọi Port. Không được cho webhook truyền hash/ref thay cho record DB.
+
+Manifest do `workers.documents.bridge` sinh dùng schema `ai3.document_bridge.v1`, có `files[]`, `source_artifact_ref`, `file_sha256`, `size_bytes`, `request_hash`, `content_settings_sha256`. Với upload từ server chưa qua bridge, AI0 có thể tạo một private immutable manifest theo `ai3.upload_snapshot.v1` và `files[]` tương tự (bắt buộc có `source_artifact_ref/file_sha256/size_bytes`), rồi lưu **SHA-256 manifest** trong server DB. Port không tự sinh bằng chứng, không nhận metadata của khách; thiếu manifest hoặc record phải trả UNKNOWN.
+
+ZIP raw chỉ có khi AI0 đã lưu **container ZIP raw** theo quy tắc snapshot/manifest này; bridge in hiện có lưu từng thành viên sau giải nén, chưa làm bằng chứng riêng cho container ZIP. Thử nghiệm dữ liệu từ fixture tự tạo không đồng nghĩa AI0 đã nối upload ZIP thật.
+
+Các test hồi quy có fixture server-ingest với manifest SHA được ghim; kiểm thêm trường hợp giữ nguyên file nhưng xóa/sửa manifest, manifest trỏ hash/size sai, file thay đổi, mất file, lỗi I/O đọc manifest/bytes, symlink manifest, và kiểm tương thích *thực tế* manifest do bridge tạo. Khi CI chưa hoàn tất, không gọi số PASS từ PR #24/#26 là bằng chứng cho commit sửa lần này.
