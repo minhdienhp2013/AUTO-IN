@@ -2,14 +2,17 @@ import type { InboundEvent } from "../integrations/zalo/protocol.ts";
 export type Intent = "PRINT" | "QUESTION" | "HUMAN" | "OTHER";
 export type HandoverReason =
   "EXCEL" | "COLOR_PRINT" | "COMPLEX_PRINT" | "TOO_MANY_DOCUMENTS" |
-  "UNSUPPORTED_FILE" | "DOWNLOAD_FAILED" | "UNREADABLE" | "NEEDS_CLARIFICATION";
+  "UNSUPPORTED_FILE" | "DOWNLOAD_FAILED" | "UNREADABLE" | "NEEDS_CLARIFICATION" | "PRICE_QUOTE";
 export interface DocumentFact { kind: "pdf" | "word" | "image" | "excel" | "unknown" | "zip";
   count_inside?: number; preview_trusted?: boolean }
 export interface RulesResult { intent: Intent; handover_reason?: HandoverReason;
   reply?: string; needs_deepseek: boolean; requires_confirmation: boolean }
-const RE_PRICE = /(giá|bao nhiêu tiền|báo giá|đặt cọc)/iu;
-const RE_COLOR = /\b(in màu|màu sắc|đen trắng kết hợp|xen kẽ màu)\b/i;
-const RE_PRINT = /\b(in|photo|photocopy|in ấn|bản|tờ|trang|a4|a3|hai mặt|một mặt)\b/i;
+// Unicode-aware boundaries: \b does not recognize Vietnamese accented letters.
+const boundary = (words: string) => new RegExp(
+  `(?:^|[^\\p{L}\\p{N}])(?:${words})(?=$|[^\\p{L}\\p{N}])`, "iu");
+const RE_PRICE = boundary("giá|bao\\s+nhiêu\\s+tiền|báo\\s+giá|đặt\\s+cọc");
+const RE_COLOR = boundary("in\\s+màu|màu\\s+sắc|đen\\s+trắng\\s+kết\\s+hợp|xen\\s+kẽ\\s+màu");
+const RE_PRINT = boundary("in(?:\\s+ấn)?|photo|photocopy|bản|tờ|trang|a4|a3|hai\\s+mặt|một\\s+mặt");
 const RE_MIXED = /in\s*(trang|page).*(màu|đen)|trang.*(màu|đen).*(trang|page)/i;
 const RE_COMPLEX = /in.*(sách đóng gáy|dàn trang|đóng quyển|thiết kế)/i;
 export function interpretByRules(
@@ -32,7 +35,7 @@ export function interpretByRules(
   if (RE_COLOR.test(text))
     return {intent:"HUMAN",handover_reason:"COLOR_PRINT",reply:"Yêu cầu in màu được chuyển nhân viên hỗ trợ bạn.",needs_deepseek:false,requires_confirmation:false};
   if (RE_PRICE.test(text))
-    return {intent:"QUESTION",reply:"Giá và tiền cọc do nhân viên cửa hàng xác nhận, tôi sẽ chuyển yêu cầu báo giá cho bạn.",needs_deepseek:false,requires_confirmation:false};
+    return {intent:"QUESTION",handover_reason:"PRICE_QUOTE",reply:"Giá và tiền cọc do nhân viên cửa hàng xác nhận, tôi sẽ chuyển yêu cầu báo giá cho bạn.",needs_deepseek:false,requires_confirmation:false};
   if (RE_PRINT.test(text) || types.length > 0)
     return {intent:"PRINT",reply:"Tôi đã nhận yêu cầu in. Bạn vui lòng xác nhận thông số và bản xem trước sau khi cửa hàng chuẩn bị.",needs_deepseek:false,requires_confirmation:true};
   return {intent:"OTHER",needs_deepseek:true,requires_confirmation:false};
