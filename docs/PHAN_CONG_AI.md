@@ -57,3 +57,19 @@ Theo kiểm tra AI0 và yêu cầu chủ tiếp tục phân việc. Chi tiết n
 | CODE-006 | AI0 | Giữ wire AI1 đang dùng, đồng bộ schema/OpenAPI/mapper, root config và composition, bàn giao SHA tích hợp |
 
 AI1–AI4 song song, AI5 chuẩn bị adapter ngay. CODE-006 chỉ nối module đã bàn giao; lỗi trong module trả chủ file. Không tự merge/deploy hoặc bật in thật. Đây là giao việc; chưa ghi các việc mới đã hoàn tất.
+
+
+## Đợt 3 — CODE-301–305 và CODE-006
+
+Chủ giao tiếp tục song song ngày 11/10/2026. [Prompt đợt 3](prompts/dot-3/README.md) là giao việc hiện hành, giữ phạm vi file cũ.
+
+| AI | Mã | Việc |
+| --- | --- | --- |
+| AI0 | CODE-006 | Tích hợp simulation, wire/schema/config/composition; cấp SHA cho AI5 |
+| AI1 | CODE-301 | Export điểm nối và kiểm PostgreSQL/transaction thật |
+| AI2 | CODE-302 | Wiring pipeline/generation gate và durable PG concurrency |
+| AI3 | CODE-303 | CLI JSON processor, artifact và DryRun với HTTP sản phẩm |
+| AI4 | CODE-304 | Lockfile thật, mapper nested AI1 và kiểm browser |
+| AI5 | CODE-305 | Adapter cập nhật và nghiệm thu bản tích hợp PG/HTTP/DryRun/browser |
+
+AI1–AI5 bắt đầu phần độc lập ngay. Ca phụ thuộc CODE-006 chờ SHA tích hợp thật; thiếu môi trường ghi rõ BLOCKED. Không tự merge/deploy/in thật/nhắn khách. Không mở thêm vai trò AI.
