@@ -31,23 +31,25 @@ export interface LeasedBatch extends Batch { batch_id:string; lease_token:string
  */
 export class PostgresConversationQueue {
   private readonly db:PgTransactions;
-  constructor(db:PgTransactions){this.db=db;}
+  private readonly oa_id?:string;
+  constructor(db:PgTransactions,oa_id?:string){this.db=db;this.oa_id=oa_id;}
   async ingest_pending(limit=100):Promise<number> {
     positiveInt(limit,1000);
     return this.db.transaction(async tx=>{
       const picked=await tx.query<{oa_id:string;event_id:string;payload_json:unknown}>(`
         SELECT q.oa_id,q.event_id,e.payload_json FROM zalo_process_queue q
         JOIN zalo_inbound_events e USING(oa_id,event_id)
-        WHERE q.status='QUEUED' ORDER BY q.created_at,q.oa_id,q.event_id
-        LIMIT $1 FOR UPDATE OF q SKIP LOCKED`,[limit]);
+        WHERE q.status='QUEUED' AND ($2::text IS NULL OR q.oa_id=$2)
+        ORDER BY q.created_at,q.oa_id,q.event_id
+        LIMIT $1 FOR UPDATE OF q SKIP LOCKED`,[limit,this.oa_id??null]);
       for(const row of picked.rows) {
         const evt=normalized(row.payload_json),key=batchKey(evt);
         const created=await tx.query<{id:string}>(`
-          INSERT INTO zalo_batches(batch_key) VALUES($1)
-          ON CONFLICT (batch_key) WHERE status='OPEN' DO NOTHING RETURNING id`,[key]);
+          INSERT INTO zalo_batches(batch_key,oa_id) VALUES($1,$2)
+          ON CONFLICT (batch_key) WHERE status='OPEN' DO NOTHING RETURNING id`,[key,evt.oa_id]);
         const found=await tx.query<{id:string}>(`
-          SELECT id FROM zalo_batches WHERE batch_key=$1 AND status='OPEN'
-          FOR UPDATE`,[key]);
+          SELECT id FROM zalo_batches WHERE batch_key=$1 AND oa_id=$2 AND status='OPEN'
+          FOR UPDATE`,[key,evt.oa_id]);
         const id=found.rows[0]?.id;
         if(!id) throw new Error("BATCH_LOCK_UNAVAILABLE");
         const inserted=await tx.query(`
@@ -78,9 +80,10 @@ export class PostgresConversationQueue {
       const rows=await tx.query<{id:string;batch_key:string;first_at:Date;
         deadline_at:Date;attempts:number}>(`
         SELECT id,batch_key,first_at,deadline_at,attempts FROM zalo_batches
-        WHERE (status='OPEN' AND deadline_at<=now())
-           OR (status='LEASED' AND lease_until<=now())
-        ORDER BY deadline_at,id LIMIT $1 FOR UPDATE SKIP LOCKED`,[limit]);
+        WHERE ((status='OPEN' AND deadline_at<=now())
+           OR (status='LEASED' AND lease_until<=now()))
+          AND ($2::text IS NULL OR oa_id=$2)
+        ORDER BY deadline_at,id LIMIT $1 FOR UPDATE SKIP LOCKED`,[limit,this.oa_id??null]);
       const claimed:LeasedBatch[]=[];
       for(const row of rows.rows) {
         const token=randomUUID();
@@ -133,22 +136,29 @@ export interface AuthoritativeGateLock {
 export class PostgresOutboundRepository implements OutboundPort {
   private readonly db:PgTransactions;
   private readonly control:AuthoritativeGateLock;
-  constructor(db:PgTransactions,control:AuthoritativeGateLock){this.db=db;this.control=control;}
+  private readonly scope?:{shop_id:string;oa_id:string};
+  constructor(db:PgTransactions,control:AuthoritativeGateLock,scope?:{shop_id:string;oa_id:string}){
+    this.db=db;this.control=control;this.scope=scope;
+    if(scope&&(!scope.shop_id||!scope.oa_id))throw new Error('INVALID_OUTBOUND_SCOPE');
+  }
   async enqueue(input:{outbound_id:string;conversation_id:string;generation:number;text:string}):Promise<void> {
     if(!input.outbound_id||!input.conversation_id||!Number.isSafeInteger(input.generation)||
        input.generation<0||!input.text||input.text.length>4000) throw new Error("INVALID_OUTBOUND");
     await this.db.transaction(async tx=>{
       const inserted=await tx.query(`INSERT INTO zalo_outbound
-        (outbound_id,conversation_id,generation,body_text,status)
-        VALUES($1,$2,$3,$4,'QUEUED') ON CONFLICT(outbound_id) DO NOTHING`,
-        [input.outbound_id,input.conversation_id,input.generation,input.text]);
+        (outbound_id,conversation_id,generation,body_text,status,shop_id,oa_id)
+        VALUES($1,$2,$3,$4,'QUEUED',$5,$6) ON CONFLICT(outbound_id) DO NOTHING`,
+        [input.outbound_id,input.conversation_id,input.generation,input.text,
+          this.scope?.shop_id??null,this.scope?.oa_id??null]);
       if(inserted.rowCount===1) return;
-      const old=await tx.query<{conversation_id:string;generation:number;body_text:string}>(`
-        SELECT conversation_id,generation,body_text FROM zalo_outbound
+      const old=await tx.query<{conversation_id:string;generation:number;body_text:string;shop_id:string|null;oa_id:string|null}>(`
+        SELECT conversation_id,generation,body_text,shop_id,oa_id FROM zalo_outbound
         WHERE outbound_id=$1 FOR UPDATE`,[input.outbound_id]);
       const value=old.rows[0];
       if(!value||value.conversation_id!==input.conversation_id||
-         value.generation!==input.generation||value.body_text!==input.text)
+         value.generation!==input.generation||value.body_text!==input.text||
+         (value.shop_id??null)!==(this.scope?.shop_id??null)||
+         (value.oa_id??null)!==(this.scope?.oa_id??null))
         throw new Error("OUTBOUND_IDEMPOTENCY_CONFLICT");
       // Keep SENT/UNKNOWN/CANCELLED/RESERVED unchanged; never resurrect a reply.
     });
@@ -159,7 +169,9 @@ export class PostgresOutboundRepository implements OutboundPort {
     return this.db.transaction(async tx=>{
       const waiting=await tx.query<{outbound_id:string;conversation_id:string;generation:string;body_text:string}>(
         `SELECT outbound_id,conversation_id,generation::text AS generation,body_text
-         FROM zalo_outbound WHERE status='QUEUED' ORDER BY created_at,outbound_id LIMIT $1`,[limit]);
+         FROM zalo_outbound WHERE status='QUEUED' AND
+         ($2::text IS NULL OR (shop_id=$2 AND oa_id=$3))
+         ORDER BY created_at,outbound_id LIMIT $1`,[limit,this.scope?.shop_id??null,this.scope?.oa_id??null]);
       return waiting.rows.map(row=>{
         const generation=Number(row.generation);
         if(!Number.isSafeInteger(generation)||generation<0)throw new Error('INVALID_OUTBOUND_GENERATION');
@@ -172,7 +184,9 @@ export class PostgresOutboundRepository implements OutboundPort {
       if(!await this.control.lock_if_current(tx,conversation_id,generation)) return false;
       const changed=await tx.query(`UPDATE zalo_outbound SET status='RESERVED',reserved_at=now()
         WHERE outbound_id=$1 AND conversation_id=$2 AND generation=$3
-        AND status='QUEUED'`,[outbound_id,conversation_id,generation]);
+        AND status='QUEUED'
+        AND ($4::text IS NULL OR (shop_id=$4 AND oa_id=$5))`,
+        [outbound_id,conversation_id,generation,this.scope?.shop_id??null,this.scope?.oa_id??null]);
       return changed.rowCount===1;
     });
   }
@@ -180,7 +194,9 @@ export class PostgresOutboundRepository implements OutboundPort {
     const current=status==="CANCELLED"?"('QUEUED','RESERVED')":"('RESERVED')";
     await this.db.transaction(async tx=>{
       const result=await tx.query(`UPDATE zalo_outbound SET status=$2,finished_at=now()
-        WHERE outbound_id=$1 AND status IN ${current}`,[outbound_id,status]);
+        WHERE outbound_id=$1 AND status IN ${current}
+        AND ($3::text IS NULL OR (shop_id=$3 AND oa_id=$4))`,
+        [outbound_id,status,this.scope?.shop_id??null,this.scope?.oa_id??null]);
       if(result.rowCount!==1) throw new Error("OUTBOUND_INVALID_TRANSITION");
     });
   }
@@ -189,8 +205,9 @@ export class PostgresOutboundRepository implements OutboundPort {
     positiveInt(seconds,86400);
     return this.db.transaction(async tx=>{
       const result=await tx.query(`UPDATE zalo_outbound SET status='UNKNOWN',finished_at=now()
-        WHERE status='RESERVED' AND reserved_at < now()-($1::int*interval '1 second')`,
-        [seconds]);
+        WHERE status='RESERVED' AND reserved_at < now()-($1::int*interval '1 second')
+          AND ($2::text IS NULL OR (shop_id=$2 AND oa_id=$3))`,
+        [seconds,this.scope?.shop_id??null,this.scope?.oa_id??null]);
       return result.rowCount??0;
     });
   }
