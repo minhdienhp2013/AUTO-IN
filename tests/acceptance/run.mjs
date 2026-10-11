@@ -3,6 +3,7 @@ import {resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {assertLocalSimulationUrl} from './local-http-guard.mjs';
 import {requireIntegratedSha,requireIsolatedPgEnv} from './integration-preflight.mjs';
+import {requireAi4Build} from './browser-build-guard.mjs';
 const integration=process.argv.includes('--integration'),http=process.argv.includes('--http'),browser=process.argv.includes('--browser');
 if(integration){
  try{requireIsolatedPgEnv();}
@@ -16,8 +17,9 @@ if(http||browser){
  catch(e){console.error('BLOCKED exit2: '+e.message);process.exit(2)}
 }
 const dir=dirname(fileURLToPath(import.meta.url));
+if(browser){try{requireAi4Build(resolve(dir,'../..'))}catch(e){console.error('BLOCKED exit2: '+e.message);process.exit(2)}}
 const names=['verify.test.mjs','fixtures.test.mjs','metrics.test.mjs','release-gate.test.mjs',
- 'security.test.mjs','local-http-guard.test.mjs','integration-preflight.test.mjs','product-adapter.test.mjs','product-205.test.mjs'];
+ 'security.test.mjs','local-http-guard.test.mjs','integration-preflight.test.mjs','browser-build-guard.test.mjs','product-adapter.test.mjs','product-205.test.mjs','integrated-webhook.test.mjs'];
 if(http)names.push('http-readiness.test.mjs','http-auth.test.mjs','http-webhook.test.mjs');
 if(browser)names.push('browser.test.mjs');
 const env={...process.env};
