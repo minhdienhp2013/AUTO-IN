@@ -17,9 +17,16 @@ export interface ReplyQueuePort {
   enqueue(data:{outbound_id:string;conversation_id:string;generation:number;text:string}):Promise<void>;
 }
 export class ConversationProcessor {
-  constructor(private readonly gate:GatePort,private readonly documents:DocumentFactsPort,
-    private readonly orders:OrderDraftPort,private readonly reply:ReplyQueuePort,
-    private readonly classifier?:ClassifierPort) {}
+  private readonly gate:GatePort;
+  private readonly documents:DocumentFactsPort;
+  private readonly orders:OrderDraftPort;
+  private readonly reply:ReplyQueuePort;
+  private readonly classifier?:ClassifierPort;
+  constructor(gate:GatePort,documents:DocumentFactsPort,orders:OrderDraftPort,
+    reply:ReplyQueuePort,classifier?:ClassifierPort) {
+    this.gate=gate;this.documents=documents;this.orders=orders;
+    this.reply=reply;this.classifier=classifier;
+  }
   async consume(batch:Batch):Promise<"processed"|"human"|"held"> {
     const first=batch.events[0];
     if (!first) return "held";
