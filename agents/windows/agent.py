@@ -198,7 +198,11 @@ class PrintAgent:
             evidence = self.driver.send(job)
             if fault_at == 'after_driver':
                 raise SimulatedCrash('after_driver')
-            if evidence.get('mode') != 'simulation' or evidence.get('evidence_kind') != 'simulated':
+            if (evidence.get('mode') != 'simulation' or
+                    evidence.get('evidence_kind') != 'simulated' or
+                    evidence.get('paper_verified') is not False):
+                # A DryRun may NEVER assert real paper even if a subclass,
+                # fixture or backend accidentally marks it verified.
                 raise PrintBlocked('Unverified driver evidence')
             status = 'SIMULATED_DONE'
         except SimulatedCrash:
