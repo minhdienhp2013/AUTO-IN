@@ -246,3 +246,58 @@ python -m agents.windows.cli \
 - PR #21 tại SHA `15c1ac7` đã báo (và CI chạy) Python **95 PASS/1 SKIP**, AI5 PG/DryRun sản phẩm **20/20 PASS** trên snapshot AI3 trước những thay đổi mới; đó không chứng minh agent CLI HTTPS product path mới đạt.
 - Nhánh AI3 này bổ sung chặn CLI remote, bài kiểm ACK/crash TLS socket, gate product HTTPS/PG strict. Cần **AI0 nhập đúng SHA mới** vào nhánh simulation rồi chạy GitHub Actions `.github/workflows/integration.yml` (workflow thuộc AI0, AI3 không sửa). CI mặc định sản phẩm opt-in vẫn SKIP nếu chưa seed HTTPS agent test. AI5 phải chạy opt-in trên **Fastify thật với cert/token/job**; report riêng PASS/FAIL/SKIP.
 - Còn thiếu **đường chứng minh print thực**: backend job claim chỉ mang `request_hash`/revision, chưa có ký nhận manifest/source artifact hoặc native driver; tuyệt đối không mở driver thật/không tự lấy file gốc. Khi có driver Windows đã xác minh, AI0 phải cấp ref/hash nguồn bất biến và so lại SHA từng source sát lúc in. Ricoh A4/A3/duplex/font/spooler chưa chạy; Windows ACL journal cũng chưa chứng minh.
+
+
+## CODE-303 — Port DocumentFact[] dành cho AI2 / AI0 (12/10/2026)
+
+**Chính xác nguồn kiểu:** `backend/conversation/rules.ts` PR tích hợp #21 định nghĩa
+`DocumentFact { kind: "pdf"|"word"|"image"|"excel"|"unknown"|"zip"; count_inside?: number; preview_trusted?: boolean }`.
+Không thay `backend/conversation/**` hoặc contracts AI0.
+
+**Port Python:** `workers.documents.fact_inspect.inspect(batch, artifact_root=<SERVER_PRIVATE_ROOT>) -> list[DocumentFact]`. JSON CLI:
+```sh
+python -m workers.documents.fact_inspect \
+  --artifact-root /private/autoin/verified-artifacts \
+  --timeout-seconds 45 < batch.json
+```
+`batch.json` dạng sau (tất cả ref/hash phải lấy từ hồ sơ artifact ở **server**, không được copy từ trường file name/URL/zalo-event/client):
+```json
+{
+  "batch": [
+    {
+      "artifact_ref": "doc-a1b2c3d4/source-000-<64hex-sha256>.pdf",
+      "sha256": "<64hex-sha256>"
+    },
+    {
+      "artifact_ref": "doc-a1b2c3d4/source-001-<64hex-sha256>.zip",
+      "sha256": "<64hex-sha256>"
+    }
+  ]
+}
+```
+`artifact_ref` phải là ref private của **snapshot bất biến** do pipeline server tạo (`doc-*/source-XXX-<sha>.<extension>`), không phải input path, public URL, Zalo attachment URL hay client name. Tệp ZIP raw cần được **AI0 lưu thành snapshot riêng và đăng ký ref/hash tại DB hoặc manifest server tin cậy** trước khi gọi Port; bridge in hiện tại chụp từng file sau giải nén, chưa chụp ZIP container raw, vì vậy **chưa có tự động nối upload ZIP → batch Port**. Nếu AI0 không có snapshot đáng tin cậy, trả UNKNOWN, không mở file trực tiếp từ webhook.
+
+**Output khi đủ chứng cứ (không có đường dẫn, nội dung file, OCR, số trang hoặc hash):**
+```json
+{
+  "schema": "ai3.document_facts.v1",
+  "status": "READY",
+  "facts": [
+    {"kind":"pdf","preview_trusted":true},
+    {"kind":"image","preview_trusted":true},
+    {"kind":"zip","count_inside":2,"preview_trusted":true}
+  ]
+}
+```
+Mỗi phần tử trong `facts` có đúng các key AI2 đang hiểu. Hàm `inspect` Python trả trực tiếp mảng facts; CLI bọc `schema/status/reason_code/facts` để AI0 phân biệt tình trạng. Nếu **bất kỳ** phần tử thiếu/hash sai/symlink/ZIP lỗi/bị sửa/font PDF chưa nhúng/render hỏng/format chưa xác minh, `status:"NEEDS_HUMAN"` và phần tử `{"kind":"unknown","preview_trusted":false}` hoặc `{"kind":"word"|"excel"|"zip","preview_trusted":false}` phù hợp. Không suy ra `document_pages` từ metadata đoán, không nâng `preview_trusted` nếu chưa thực render.
+
+**Kiểm chứng an toàn:** `O_NOFOLLOW` từng path segment qua `bridge._read_scoped`; so `sha256` với hash **có trong tên snapshot** rồi SHA-256 bytes đã đọc, *trước* giải mã PDF/Pillow/ZIP. Chỉ xem nội dung những bytes đã hash; không đọc lại inbound. PDF phải đọc được và không dùng font chưa nhúng; ảnh phải Pillow render được; ZIP kiểm traversal/symlink/password/compression/giới hạn file, kiểm thực từng member, chỉ trả `count_inside` khi ZIP cấu trúc an toàn. Word/Excel nhận biết loại nhưng `preview_trusted:false`, không đoán số trang, chuyển người. Bản copy preview chỉ tạo tạm, không mở in.
+
+**Giới hạn tích hợp:** Quyền cấp `artifact_ref`/hash thuộc AI0 backend và quyền đọc nguồn thuộc server, **không thuộc AI2/webhook**. Port không thể tự chứng minh một chuỗi do khách gửi là ref đáng tin: AI0 phải kiểm subject/shop/order/manifest trong DB trước khi gọi, bảo vệ artifact-root (owner/quota/cleanup), và không giao đường dẫn lẫn SHA từ raw webhook sang Port. `inspect(batch)` không tự tạo đơn hoặc duyệt in. Dữ liệu sai/thiếu vẫn được nhận để chuyển nhân viên, không mặc định `PRINT`.
+
+**Kiểm thử:** `tests/unit/documents/test_fact_inspect.py` có PDF/ảnh thật (fitz/Pillow), ZIP nhiều file/hỏng/path traversal, bản snapshot thay đổi/hash mismatch, thiếu nguồn, từ chối path khách/URL/symlink, CLI JSON và định dạng đúng AI2. Chạy:
+```sh
+python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing
+python -m pytest -q tests/unit/documents tests/unit/printing
+```
+Đây là Port module AI3; AI0 sẽ map JSON CLI đầu ra thành `DocumentFact[]` cho AI2 và chịu trách nhiệm kiểm DB/ref. PR #24 vẫn là chứng cứ **100 PASS / 1 SKIP của SHA trước lần bổ sung Port**, không chứng minh những bài mới đã chạy.
