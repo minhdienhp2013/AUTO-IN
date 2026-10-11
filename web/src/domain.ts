@@ -25,6 +25,7 @@ export interface DocumentView {
 export interface AuditEntry { at: string; actor: string; action: string; summary: string }
 export interface OrderView {
   order_id: string;
+  job_id?: string | null; // AI1 job eligible for physical-paper verification; never inferred from a list
   customer_name: string;
   conversation_id: string | null;
   revision: number;
@@ -52,7 +53,7 @@ export interface OrderView {
 }
 export interface StaffSession { actor_id: string; display_name: string; role: StaffRole; can_approve: boolean; can_manage_schedule: boolean }
 export interface Snapshot { mode: OperationMode; orders: OrderView[]; session: StaffSession }
-export type ActionKind = 'approve' | 'quote' | 'payment' | 'delivery' | 'manual' | 'handover' | 'return_to_ai';
+export type ActionKind = 'approve' | 'quote' | 'payment' | 'delivery' | 'manual' | 'handover' | 'return_to_ai' | 'verify_paper';
 export interface Mutation { expected_revision: number; idempotency_key: string; request_hash: string; [key: string]: string | number | boolean | null }
 
 export const printLabels: Record<PrintState, string> = {
@@ -66,7 +67,7 @@ export const paymentLabels: Record<PaymentState, string> = { unpaid: 'Chưa thu'
 export const money = (n: number | null): string => n === null ? 'Chưa nhập' : new Intl.NumberFormat('vi-VN').format(n) + ' đ';
 export const hasValidApprovalInputs = (order: OrderView): boolean => {
   if (order.order_state !== 'confirmed' || order.confirmed_revision !== order.revision || order.manual_lock) return false;
-  if (!order.request_hash || order.documents.some(d => !d.preview_trusted || d.pages === null || d.physical_sheets === null)) return false;
+  if (!order.request_hash || order.documents.length === 0 || order.documents.some(d => !d.preview_trusted || d.pages === null || d.physical_sheets === null)) return false;
   if (order.print_state !== 'NOT_SENT') return false;
   const mustConfirmPrice = order.total_sheets !== null && order.total_sheets > 150 || order.large_cost_flag;
   return !mustConfirmPrice || order.amount_vnd !== null && order.quote_revision !== null && order.confirmed_quote_revision === order.quote_revision;
@@ -77,11 +78,15 @@ export const isPrintUncertain = (s: PrintState): boolean => ['SENDING', 'SENT_UN
 export const validMoney = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 export const actionPath = (order: OrderView, kind: ActionKind): string => {
   const prefix = '/api/v1';
+  if (kind === 'verify_paper') {
+    if (!order.job_id) throw new Error('Chưa xác định duy nhất tác vụ cần kiểm giấy.');
+    return `${prefix}/print-jobs/${encodeURIComponent(order.job_id)}/verify-paper`;
+  }
   if (kind === 'handover' || kind === 'return_to_ai') {
     if (!order.conversation_id) throw new Error('Đơn chưa liên kết hội thoại.');
     return `${prefix}/conversations/${encodeURIComponent(order.conversation_id)}/${kind === 'handover' ? 'handover' : 'return-to-ai'}`;
   }
-  const suffix: Record<Exclude<ActionKind, 'handover' | 'return_to_ai'>, string> = {
+  const suffix: Record<Exclude<ActionKind, 'handover' | 'return_to_ai' | 'verify_paper'>, string> = {
     approve: 'approvals', quote: 'quote', payment: 'payments', delivery: 'deliveries', manual: 'manual',
   };
   return `${prefix}/orders/${encodeURIComponent(order.order_id)}/${suffix[kind]}`;

@@ -6,7 +6,7 @@ export class ApiFault extends Error {
   constructor(status: number, code: string, message: string, currentRevision?: number) { super(message); this.name = 'ApiFault'; this.status = status; this.code = code; this.currentRevision = currentRevision; }
 }
 export interface PrintPort {
-  login(username: string, password: string): Promise<StaffSession>;
+  login(shopId: string, username: string, password: string): Promise<StaffSession>;
   logout(): Promise<void>;
   me(): Promise<StaffSession>;
   listOrders(): Promise<OrderView[]>;
@@ -39,7 +39,7 @@ export function mapOrder(raw: unknown): OrderView {
     };
   }) : [];
   return {
-    order_id: asString(o.order_id), customer_name: asString(o.customer_name, 'Khách hàng'), conversation_id: typeof o.conversation_id === 'string' ? o.conversation_id : null,
+    order_id: asString(o.order_id), job_id: typeof o.job_id === 'string' ? o.job_id : null, customer_name: asString(o.customer_name, 'Khách hàng'), conversation_id: typeof o.conversation_id === 'string' ? o.conversation_id : null,
     revision: asNum(o.revision) ?? 0, request_hash: asString(o.request_hash), quote_revision: asNum(o.quote_revision),
     order_state: knownState(o.order_state, ['draft','awaiting_customer','confirmed','approved','abandoned','closed'] as const, 'draft'),
     conversation_state: knownState(o.conversation_state, ['ai','needs_human','staff'] as const, 'needs_human'),
@@ -55,6 +55,71 @@ export function mapOrder(raw: unknown): OrderView {
     manual_lock: o.manual_lock === true,
   };
 }
+/** Adapter for the actual AI1 CODE-101 GET /orders response. A list row is only a summary:
+ * no proof of customer confirmation, print status, documents or permission is inferred. */
+export function mapOrderSummary(raw: unknown): OrderView {
+  const r = asObject(raw);
+  if (typeof r.id !== 'string' || !Number.isSafeInteger(r.active_revision) || (r.active_revision as number) < 1) {
+    throw new ApiFault(503, 'INVALID_ORDER_SUMMARY', 'API danh sách đơn thiếu mã hoặc phiên bản.');
+  }
+  return mapOrder({
+    order_id: r.id, customer_name: `Mã khách: ${asString(r.customer_id, 'chưa rõ')}`,
+    conversation_id: r.conversation_id, revision: r.active_revision,
+    manual_lock: r.manual_lock, delivered_sheets: r.delivered_sheets,
+    order_state: r.print_closed === true ? 'closed' : 'draft', created_at: r.created_at,
+    warnings: ['Danh sách chỉ là dữ liệu tổng hợp; mở đơn để tải trạng thái từ server.'],
+  });
+}
+/** AI1 getOrder returns {order,revisions,jobs,quote,received_vnd,...}.
+ * Confirmations, audit, conversation state and file preview are not exposed; all are
+ * deliberately unknown until AI0/AI1 publish a server-authored read model. */
+export function mapCoreOrderDetail(raw: unknown): OrderView {
+  const data = asObject(raw), row = asObject(data.order);
+  const id = asString(row.id), revision = row.active_revision;
+  if (!id || !Number.isSafeInteger(revision) || (revision as number) < 1 || !Array.isArray(data.revisions) || !Array.isArray(data.jobs)) {
+    throw new ApiFault(503, 'INVALID_ORDER_DETAIL', 'API chi tiết đơn thiếu mã, phiên bản hoặc lịch sử lệnh.');
+  }
+  const rev = data.revisions.map(asObject).find(v => v.revision === revision);
+  if (!rev || typeof rev.request_hash !== 'string' || !rev.request_hash) {
+    throw new ApiFault(503, 'INVALID_REVISION', 'Chưa nhận phiên bản và dấu vân tay tài liệu hiện hành.');
+  }
+  const plan = asObject(rev.plan), quote = asObject(data.quote);
+  const latest = data.jobs.map(asObject).filter(j => j.revision === revision);
+  const states = latest.map(j => j.state);
+  // Multiple current jobs (including reprint) need reconciliation: don't select a
+  // convenient VERIFIED_DONE while another attempt remains ambiguous.
+  const print_state = latest.length === 0 ? 'NOT_SENT' : states.includes('UNKNOWN') ? 'UNKNOWN' :
+    states.includes('SENDING') ? 'SENDING' : states.includes('SENT_UNVERIFIED') ? 'SENT_UNVERIFIED' :
+    states.includes('SIMULATED_DONE') ? 'SIMULATED_DONE' :
+    states.every(x => x === 'VERIFIED_DONE') ? 'VERIFIED_DONE' :
+    states.every(x => x === 'NOT_SENT') ? 'NOT_SENT' : 'UNKNOWN';
+  const uncertainJobs = latest.filter(j => j.state === 'SENT_UNVERIFIED' || j.state === 'UNKNOWN');
+  const jobId = uncertainJobs.length === 1 && typeof uncertainJobs[0].id === 'string' ? uncertainJobs[0].id : null;
+  const count = validMoney(plan.physical_sheets) && plan.physical_sheets > 0 ? plan.physical_sheets : null;
+  const delivered = asNum(row.delivered_sheets) ?? 0;
+  const amount = asNum(quote.amount_vnd), received = asNum(data.received_vnd) ?? 0;
+  const warnings = [
+    'Backend chưa cung cấp xác nhận khách, preview từng file và nhật ký: giao diện không cho duyệt khi chưa xác minh.',
+    ...(latest.some(j => j.state === 'UNKNOWN') ? ['Có lệnh UNKNOWN, cần đối soát; không tự gửi lại.'] : []),
+  ];
+  const trustedPlan = plan.ready === true && typeof plan.verified_by === 'string' &&
+    typeof plan.artifact_ref === 'string' && plan.request_hash === rev.request_hash;
+  if (!trustedPlan) warnings.push('Kế hoạch in chưa có bằng chứng processor đáng tin.');
+  const normalized = mapOrder({
+    order_id: id, job_id: jobId, customer_name: `Mã khách: ${asString(row.customer_id, 'chưa rõ')}`,
+    conversation_id: row.conversation_id, revision, request_hash: rev.request_hash,
+    quote_revision: quote.quote_revision, amount_vnd: amount,
+    required_deposit_vnd: quote.deposit_required_vnd, received_vnd: received,
+    large_cost_flag: quote.significant_cost === true,
+    manual_lock: row.manual_lock === true || row.print_closed === true,
+    order_state: row.print_closed === true ? 'closed' : latest.length > 0 ? 'approved' : 'draft',
+    print_state, total_sheets: count, delivered_sheets: delivered,
+    delivery_state: print_state === 'VERIFIED_DONE' ? (count !== null && delivered >= count ? 'delivered' : delivered > 0 ? 'partial' : 'quality_check') : delivered > 0 ? 'partial' : 'not_ready',
+    payment_state: amount !== null && received >= amount ? 'paid' : received > 0 ? 'partial' : 'unpaid',
+    created_at: row.created_at, warnings, documents: [],
+  });
+  return normalized;
+}
 const unwrap = (payload: unknown, key: 'order' | 'orders' | 'session'): unknown => {
   const obj = asObject(payload);
   if (key in obj) return obj[key];
@@ -63,13 +128,17 @@ const unwrap = (payload: unknown, key: 'order' | 'orders' | 'session'): unknown 
 };
 export class HttpPrintPort implements PrintPort {
   private readonly baseUrl: string; private readonly fetcher: typeof fetch;
+  // Backend AI1 has bearer sessions, NOT browser cookie sessions. No persistence,
+  // no localStorage and no token in URL: refreshing requires a fresh login.
+  private token: string | null = null;
   constructor(baseUrl = '', fetcher: typeof fetch = fetch) { this.baseUrl = baseUrl; this.fetcher = fetcher; }
   private async call(path: string, options: RequestInit = {}): Promise<unknown> {
     let response: Response;
     try {
       response = await this.fetcher(`${this.baseUrl}${path}`, {
-        ...options, credentials: 'include', cache: 'no-store',
-        headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
+        ...options, credentials: 'same-origin', cache: 'no-store',
+        headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+          ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...options.headers },
       });
     } catch { throw new ApiFault(0, 'NETWORK', 'Mất kết nối API. Không tự xác nhận kết quả; tải lại để đối soát.'); }
     let json: unknown = null;
@@ -77,35 +146,54 @@ export class HttpPrintPort implements PrintPort {
     if (!response.ok) {
       const e = asObject(asObject(json).error);
       const defaults: Record<number, string> = { 401: 'Hết phiên đăng nhập. Vui lòng đăng nhập lại.', 403: 'Tài khoản không có quyền thực hiện.', 409: 'Phiên bản đã thay đổi. Tải lại đơn trước khi thao tác.', 422: 'Dữ liệu nghiệp vụ chưa hợp lệ.', 503: 'Chức năng chưa sẵn sàng.' };
+      if (response.status === 401) this.token = null;
       throw new ApiFault(response.status, asString(e.code, `HTTP_${response.status}`), asString(e.message, defaults[response.status] ?? 'API không xử lý được yêu cầu.'), asNum(e.current_revision) ?? undefined);
     }
     return json;
   }
-  async login(username: string, password: string): Promise<StaffSession> {
-    await this.call('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
-    return this.me(); // trust /me, not the submitted role or browser storage.
+  private session(raw: unknown): StaffSession {
+    const o = asObject(raw);
+    if (!asString(o.id) || !asString(o.shop_id) || o.verified !== true || !['staff', 'owner'].includes(String(o.role))) {
+      throw new ApiFault(503, 'INVALID_SESSION', 'API chưa trả tài khoản nhân viên/chủ đã xác minh.');
+    }
+    return { actor_id: asString(o.id), display_name: `${o.role === 'owner' ? 'Chủ' : 'Nhân viên'} · ${asString(o.id).slice(0,8)}`,
+      role: o.role as StaffSession['role'], can_approve: true, can_manage_schedule: o.role === 'owner' };
   }
-  async logout() { await this.call('/api/v1/auth/logout', { method: 'POST' }); }
+  async login(shopId: string, username: string, password: string): Promise<StaffSession> {
+    this.token = null;
+    const result = asObject(await this.call('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ shop_id: shopId, username, password }) }));
+    if (typeof result.token !== 'string' || !result.token || !result.principal) throw new ApiFault(503,'INVALID_LOGIN','API chưa cấp phiên xác minh.');
+    this.token = result.token;
+    try { return await this.me(); } catch(e) { this.token = null; throw e; }
+  }
+  async logout() { try { if(this.token) await this.call('/api/v1/auth/logout', { method: 'POST' }); } finally { this.token = null; } }
   async me(): Promise<StaffSession> {
-    const o = asObject(unwrap(await this.call('/api/v1/auth/me'), 'session'));
-    if (!o.actor_id || !o.role) throw new ApiFault(503, 'INVALID_SESSION', 'API chưa trả đủ thông tin tài khoản.');
-    return { actor_id: asString(o.actor_id), display_name: asString(o.display_name, 'Nhân viên'), role: knownState(o.role, ['staff','owner'] as const, 'staff'), can_approve: o.can_approve === true, can_manage_schedule: o.can_manage_schedule === true };
+    if (!this.token) throw new ApiFault(401, 'UNAUTHENTICATED', 'Vui lòng đăng nhập để xem đơn.');
+    return this.session(asObject(await this.call('/api/v1/auth/me')).principal);
   }
   async listOrders() {
-    const raw = unwrap(await this.call('/api/v1/orders'), 'orders');
+    const raw = asObject(await this.call('/api/v1/orders')).orders;
     if (!Array.isArray(raw)) throw new ApiFault(503, 'INVALID_ORDERS', 'Danh sách đơn từ API chưa đúng hợp đồng.');
-    return raw.map(mapOrder);
+    return raw.map(mapOrderSummary);
   }
-  async getOrder(id: string) { return mapOrder(unwrap(await this.call(`/api/v1/orders/${encodeURIComponent(id)}`), 'order')); }
+  async getOrder(id: string) {
+    const raw = await this.call(`/api/v1/orders/${encodeURIComponent(id)}`);
+    return mapCoreOrderDetail(raw);
+  }
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string) {
-    const raw = await this.call(actionPath(order, kind), { method: 'POST', body: JSON.stringify(makeMutation(order, payload, key)), headers: { 'Idempotency-Key': key } });
-    // Mutations may return a receipt only. Never infer success details from local payload.
-    const o = asObject(raw);
-    if ('order' in o && asObject(o.order).order_id) return mapOrder(o.order);
+    // Confirmed AI1 routes only. AI2/conversation integration has no registered route yet.
+    if (kind === 'handover' || kind === 'return_to_ai') throw new ApiFault(503, 'NOT_IMPLEMENTED', 'API hội thoại chưa được bàn giao, không thực hiện thay đổi.');
+    const body = makeMutation(order, payload, key);
+    const raw = await this.call(actionPath(order, kind), { method: 'POST', body: JSON.stringify(body), headers: { 'Idempotency-Key': key } });
+    const receipt = asObject(raw);
+    if (kind !== 'payment' && kind !== 'verify_paper' && receipt.order_id !== order.order_id) throw new ApiFault(503, 'INVALID_MUTATION_RECEIPT', 'API thiếu mã đơn trong biên nhận; cần đối soát.');
+    if (kind === 'verify_paper' && (receipt.job_id !== order.job_id || receipt.state !== 'VERIFIED_DONE')) throw new ApiFault(503, 'INVALID_MUTATION_RECEIPT', 'API không xác minh đúng job và giấy thật.');
+    // A 2xx receipt is NOT an order snapshot, and re-fetch can fail. Never show a
+    // success unless the server reports the updated real state.
     return this.getOrder(order.order_id);
   }
   async mode(): Promise<OperationMode> {
-    // No public runtime mode route in wire v0.1. Do not guess a production mode.
+    // No public mode route in AI1: do not present simulated/production as fact.
     return 'unverified';
   }
 }
@@ -116,7 +204,7 @@ export class DemoPrintPort implements PrintPort {
   private online = true;
   setNetwork(online: boolean) { this.online = online; }
   private checkNetwork() { if (!this.online) throw new ApiFault(0, 'NETWORK', 'Mất mạng mô phỏng.'); }
-  async login(username: string, _password: string) {
+  async login(_shopId: string, username: string, _password: string) {
     this.checkNetwork();
     this.session = username === 'demo-owner' ? { actor_id: 'demo-owner', display_name: 'Chủ demo', role: 'owner', can_approve: true, can_manage_schedule: true } : structuredClone(demoSession);
     return structuredClone(this.session);
@@ -144,26 +232,29 @@ export class DemoPrintPort implements PrintPort {
     if (current.revision !== order.revision || current.request_hash !== order.request_hash) throw new ApiFault(409, 'STALE_REVISION', 'Đơn đã thay đổi; tải lại.', current.revision);
     if (kind !== 'handover' && kind !== 'return_to_ai' && !this.session.can_approve) throw new ApiFault(403, 'FORBIDDEN', 'Bạn không có quyền thao tác.');
     const updated = structuredClone(current);
+    if (kind === 'verify_paper') throw new ApiFault(503,'DEMO_ONLY','Không thể dùng demo làm bằng chứng đã in giấy thật.');
     if (kind === 'approve') {
       if (!hasValidApprovalInputs(updated)) throw new ApiFault(422, 'NEEDS_CONFIRMATION', 'Chưa đủ điều kiện duyệt phiên bản/preview/giá.');
-      if (depositShortfall(updated) > 0 && body.deposit_shortfall_acknowledged !== true) throw new ApiFault(422, 'DEPOSIT_ACK', 'Phải đọc cảnh báo cọc thiếu.');
+      if (depositShortfall(updated) > 0 && body.acknowledge_deposit_shortage !== true) throw new ApiFault(422, 'DEPOSIT_ACK', 'Phải đọc cảnh báo cọc thiếu.');
       updated.order_state = 'approved';
     } else if (kind === 'quote') {
-      if (!validMoney(body.amount_vnd)) throw new ApiFault(422, 'INVALID_AMOUNT', 'Giá phải là số VND nguyên không âm.');
+      if (!validMoney(body.amount_vnd) || !validMoney(body.deposit_required_vnd) || typeof body.significant_cost !== 'boolean') throw new ApiFault(422, 'INVALID_AMOUNT', 'Giá, mức cọc và đánh dấu chi phí phải hợp lệ.');
+      updated.required_deposit_vnd = body.deposit_required_vnd; updated.large_cost_flag = body.significant_cost;
       updated.amount_vnd = body.amount_vnd;
       updated.quote_revision = (updated.quote_revision ?? 0) + 1;
       updated.confirmed_quote_revision = null;
     } else if (kind === 'payment') {
-      if (!validMoney(body.amount_vnd) || body.amount_vnd === 0 || !['cash','transfer'].includes(String(body.method))) throw new ApiFault(422, 'INVALID_PAYMENT', 'Nhập số tiền nhận thực tế và phương thức.');
+      if (!validMoney(body.amount_vnd) || body.amount_vnd === 0 || !['cash','bank_transfer'].includes(String(body.method))) throw new ApiFault(422, 'INVALID_PAYMENT', 'Nhập số tiền nhận thực tế và phương thức.');
       updated.received_vnd += body.amount_vnd;
       updated.payment_state = updated.amount_vnd !== null && updated.received_vnd >= updated.amount_vnd ? 'paid' : 'partial';
     } else if (kind === 'delivery') {
       if (updated.print_state !== 'VERIFIED_DONE') throw new ApiFault(422, 'NOT_VERIFIED', 'Không ghi giao giấy thật từ tác vụ chưa xác minh.');
-      if (!validMoney(body.sheets) || body.sheets === 0 || updated.total_sheets === null || updated.delivered_sheets + body.sheets > updated.total_sheets) throw new ApiFault(422, 'INVALID_SHEETS', 'Số tờ giao không hợp lệ.');
-      updated.delivered_sheets += body.sheets;
+      if (!validMoney(body.physical_sheets) || body.physical_sheets === 0 || updated.total_sheets === null || updated.delivered_sheets + body.physical_sheets > updated.total_sheets) throw new ApiFault(422, 'INVALID_SHEETS', 'Số tờ giao không hợp lệ.');
+      updated.delivered_sheets += body.physical_sheets;
       updated.delivery_state = updated.delivered_sheets === updated.total_sheets ? 'delivered' : 'partial';
     } else if (kind === 'manual') {
       if (updated.print_state !== 'NOT_SENT') throw new ApiFault(422, 'PRINT_UNCERTAIN', 'Lệnh đã hoặc có thể đã gửi; phải đối soát trước.');
+      if (!String(body.reason ?? '').trim()) throw new ApiFault(422, 'REASON_REQUIRED', 'Cần lý do xử lý thủ công.');
       updated.manual_lock = true;
     } else if (kind === 'handover') {
       updated.conversation_state = 'staff';
@@ -180,6 +271,7 @@ export class DemoPrintPort implements PrintPort {
 }
 export const makePort = (): PrintPort => isDemo() ? new DemoPrintPort() : new HttpPrintPort(import.meta.env.VITE_API_BASE_URL ?? '');
 export const snapshotFromPort = async (port: PrintPort): Promise<Snapshot> => {
-  const [session, orders, mode] = await Promise.all([port.me(), port.listOrders(), port.mode()]);
+  const session = await port.me();
+  const [orders, mode] = await Promise.all([port.listOrders(), port.mode()]);
   return { session, orders, mode };
 };

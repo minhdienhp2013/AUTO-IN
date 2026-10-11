@@ -25,3 +25,12 @@
 `[AI3] [CODE-104] Cần metadata preview đáng tin, URL truy cập theo quyền, trang/mặt/tờ đúng revision; lý do UI không thể giả preview/file thật; xong khi có fixture và test tích hợp đúng nguồn.`
 
 `[AI5] [CODE-104] Nhờ chạy E2E thao tác trên Chromium + iPhone thật: quyền, bấm kép, stale revision, mất mạng, xem đúng đơn từ thông báo và layout nhỏ; xong khi có ảnh/trace và ma trận pass/fail.`
+
+## Lượt CODE-104 tiếp theo: đối chiếu AI1 CODE-101
+
+- Đã đọc thực tế `backend/api/routes.ts`, `backend/core/service.ts`, `backend/core/auth.ts` trên `ai1/nghiep-vu-ban-dau-v1` và cập nhật `web/src/api.ts`: `shop_id`/Bearer-only memory session; `/auth/me` trả `{principal}`, `/orders` trả `{orders}` và chi tiết `{order,revisions,jobs,quote,received_vnd,...}`. Không coi danh sách tóm tắt là xác nhận khách hoặc tình trạng in đã đủ tin cậy.
+- Đã đồng bộ request `acknowledge_deposit_shortage`, `deposit_required_vnd`, `significant_cost`, `direction:'received'`, `bank_transfer`, `physical_sheets`, lý do manual. Đã nối nút kiểm tra giấy thực tế vào endpoint `POST /api/v1/print-jobs/{job_id}/verify-paper` chỉ khi `SENT_UNVERIFIED`/`UNKNOWN` có một job duy nhất, có ghi chú và số tờ nhân viên xác minh; không cho dùng SIMULATED_DONE.
+- Chưa có GET confirmations/preview/file metadata nên việc duyệt trên live bị khóa an toàn; cần AI0/AI1 cấp read model có bằng chứng đáng tin. Hội thoại, lịch, chế độ server, owner reprint/close-exception chưa nối UI. Chưa có môi trường runtime AI0/PostgreSQL/in Ricoh để kiểm thử end-to-end.
+- Đã thử `cd web && npm test` (23/23 PASS trên Node 22) và type-check riêng các module dữ liệu/port bằng TypeScript global; kiểm tra cú pháp TS/TSX. `npm install && npm run build`, Chromium/Playwright/iPhone thật CHƯA chạy vì npm registry không phân giải DNS và React/Vite chưa cài; chưa có lockfile sinh thật.
+
+`[AI0/AI1] [CODE-104→CODE-000/101] [GET /orders/{id} read model xác nhận khách phiên/hash, quote confirmed, file preview/trust và audit; mode server] [UI hiện không đủ dữ liệu để bật duyệt an toàn] [Done khi schema+fixture backend xác minh, test contract AI4 đạt]`.
