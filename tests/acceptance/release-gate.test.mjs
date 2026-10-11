@@ -15,3 +15,10 @@ test('one critical failure blocks an otherwise complete report',()=>{
   load_orders_per_day:100,recognition_rate:.95,conversation_rate:.90,synthetic_dataset:false,evidence});
  assert.equal(r.allowed,false);
 });
+
+test('non-finite or impossible rates must never enable release',()=>{
+ const evidence=Object.fromEntries(['postgres_concurrency','oa_verified','ricoh_verified','iphone_verified','all_p0_rechecked','reviewed_by_owner'].map(k=>[k,true]));
+ const base={mode:'controlled_test',critical_failures:0,passing_orders:210,clean_test_days:7,load_orders_per_day:100,recognition_rate:.95,conversation_rate:.9,synthetic_dataset:false,evidence};
+ assert.equal(releaseGate({...base,recognition_rate:NaN}).allowed,false);
+ assert.equal(releaseGate({...base,conversation_rate:2}).allowed,false);
+});
