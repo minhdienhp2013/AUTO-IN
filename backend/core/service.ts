@@ -118,13 +118,17 @@ export class OrderService {
    const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
    if(o.manual_lock||o.print_closed)throw new DomainError('ORDER_LOCKED','Đơn bị khóa/đóng',409);
    const rev=await this.revision(db,o);if(!rev.plan)throw new DomainError('PRINT_NOT_READY','Chưa có kế hoạch in tin cậy');assertPlan(rev.plan,rev.request_hash);
-   const confirmation=await db.query('SELECT id FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND kind=$4 LIMIT 1',[id,rev.revision,rev.request_hash,'request']);
-   if(!confirmation.rows.length)throw new DomainError('CUSTOMER_NOT_CONFIRMED','Khách chưa xác nhận phiên bản hiện tại');
+   // Keep the FIRST valid customer confirmation: retries/duplicate messages must not delay queue position.
+   const confirmation=await db.query<{confirmed_at:Date|null}>("SELECT MIN(created_at) AS confirmed_at FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND kind='request'",[id,rev.revision,rev.request_hash]);
+   const requestConfirmedAt=confirmation.rows[0]?.confirmed_at;
+   if(!requestConfirmedAt)throw new DomainError('CUSTOMER_NOT_CONFIRMED','Khách chưa xác nhận phiên bản hiện tại');
+   let queueConfirmedAt=new Date(requestConfirmedAt);
    const q=await this.quote(db,id);const needsPrice=rev.plan.physical_sheets>150||Boolean(q?.significant_cost);
    if(needsPrice){
     if(!q||q.quote_revision!==input.quote_revision)throw new DomainError('QUOTE_REQUIRED','Phải có báo giá nhân viên nhập và đúng phiên bản giá');
-    const approvedQuote=await db.query('SELECT id FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND kind=$3 AND quote_revision=$4 LIMIT 1',[id,rev.revision,'quote',q.quote_revision]);
-    if(!approvedQuote.rows.length)throw new DomainError('PRICE_CONFIRMATION_REQUIRED','Khách chưa xác nhận mức giá');
+    const approvedQuote=await db.query<{confirmed_at:Date|null}>("SELECT MIN(created_at) AS confirmed_at FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND kind='quote' AND quote_revision=$4",[id,rev.revision,rev.request_hash,q.quote_revision]);
+    if(!approvedQuote.rows[0]?.confirmed_at)throw new DomainError('PRICE_CONFIRMATION_REQUIRED','Khách chưa xác nhận mức giá');
+    queueConfirmedAt=new Date(Math.max(queueConfirmedAt.getTime(),new Date(approvedQuote.rows[0].confirmed_at).getTime()));
    }
    const missing=shortage(q?.deposit_required_vnd??0,await this.received(db,id));
    if(missing>0&&!input.acknowledge_deposit_shortage)throw new DomainError('DEPOSIT_WARNING_REQUIRED','Cần xác nhận đã xem cảnh báo thiếu cọc');
@@ -132,7 +136,7 @@ export class OrderService {
    if(existing.rows.length)throw new DomainError('ALREADY_APPROVED','Phiên bản đã có lệnh, không được duyệt kép',409);
    const approval_id=newId(),job_id=newId();
    await db.query('INSERT INTO core_approvals(id,order_id,revision,request_hash,quote_revision,actor_id,deposit_short_vnd) VALUES($1,$2,$3,$4,$5,$6,$7)',[approval_id,id,rev.revision,rev.request_hash,q?.quote_revision??null,p.id,missing]);
-   await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id) VALUES($1,$2,$3,$4,$5,$6)',[job_id,id,rev.revision,rev.request_hash,approval_id,rev.plan.printer_id]);
+   await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,confirmed_at) VALUES($1,$2,$3,$4,$5,$6,$7)',[job_id,id,rev.revision,rev.request_hash,approval_id,rev.plan.printer_id,queueConfirmedAt]);
    await this.audit(db,p,'print.approved',id,{revision:rev.revision,approval_id,job_id,deposit_short_vnd:missing});
    return {order_id:id,revision:rev.revision,approval_id,job_id,deposit_short_vnd:missing};
   }));
@@ -161,11 +165,12 @@ export class OrderService {
    const candidates=await db.query<{id:string}>(`SELECT o.id FROM core_orders o JOIN core_print_jobs j ON j.order_id=o.id
     WHERE o.shop_id=$1 AND o.active_revision=j.revision AND NOT o.manual_lock AND NOT o.print_closed
     AND j.printer_id=$2 AND j.state='NOT_SENT' AND j.cancelled_at IS NULL
+    AND j.confirmed_at IS NOT NULL
     AND (j.lease_until IS NULL OR j.lease_until<now())
-    ORDER BY j.created_at,j.id FOR UPDATE OF o SKIP LOCKED LIMIT 1`,[p.shop_id,input.printer_id]);
+    ORDER BY j.confirmed_at,j.id FOR UPDATE OF o SKIP LOCKED LIMIT 1`,[p.shop_id,input.printer_id]);
    if(!candidates.rows[0])return {job:null};
    const o=await this.order(db,candidates.rows[0].id,p);
-   const jobs=await db.query<JobRow>("SELECT * FROM core_print_jobs WHERE order_id=$1 AND printer_id=$2 AND revision=$3 AND state='NOT_SENT' AND cancelled_at IS NULL AND (lease_until IS NULL OR lease_until<now()) ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1",[o.id,input.printer_id,o.active_revision]);
+   const jobs=await db.query<JobRow>("SELECT * FROM core_print_jobs WHERE order_id=$1 AND printer_id=$2 AND revision=$3 AND state='NOT_SENT' AND confirmed_at IS NOT NULL AND cancelled_at IS NULL AND (lease_until IS NULL OR lease_until<now()) ORDER BY confirmed_at,id FOR UPDATE SKIP LOCKED LIMIT 1",[o.id,input.printer_id,o.active_revision]);
    const job=jobs.rows[0];if(!job)return {job:null};
    const rev=await this.revision(db,o);await this.checkGates(db,o,job,rev);
    const secret=randomBytes(32).toString('base64url');
@@ -226,9 +231,16 @@ export class OrderService {
    if(j.state!=='SENT_UNVERIFIED'&&j.state!=='UNKNOWN')throw new DomainError('VERIFY_STATE','Chỉ kiểm chứng lệnh thực đã gửi/chưa rõ',409);
    if(j.mode_at_send!=='controlled_test'&&j.mode_at_send!=='production')throw new DomainError('SIMULATION_NOT_PAPER','Lệnh mô phỏng/không rõ chế độ không được xác nhận giấy thật',409);
    const rev=await this.revision(db,o);if(!rev.plan||input.physical_sheets>rev.plan.physical_sheets)throw new DomainError('PAPER_COUNT_EXCEEDS_PLAN','Số tờ kiểm chứng vượt kế hoạch in',422);
-   await db.query("UPDATE core_print_jobs SET state='VERIFIED_DONE',evidence_kind=$2,verified_sheets=$3,verified_by=$4,reported_at=now() WHERE id=$1",[job_id,input.evidence_kind,input.physical_sheets,p.id]);
-   await this.audit(db,p,'job.paper_verified',o.id,{job_id,physical_sheets:input.physical_sheets,evidence_kind:input.evidence_kind});
-   return {job_id,state:'VERIFIED_DONE' as const};
+   // Partial paper is real and deliverable, but must NOT become VERIFIED_DONE.
+   // UNKNOWN prevents auto-retry; missing sheets require manual reconciliation/owner reprint.
+   if(dbSafeInteger((j as JobRow & {verified_sheets?:string|number}).verified_sheets??0,'job.verified_sheets')>0)
+    throw new DomainError('ALREADY_VERIFIED','Giấy đã được kiểm chứng trước đó; cần đối soát',409);
+   const complete=input.physical_sheets===rev.plan.physical_sheets;
+   const state=complete?'VERIFIED_DONE':'UNKNOWN';
+   await db.query("UPDATE core_print_jobs SET state=$2,evidence_kind=$3,verified_sheets=$4,verified_by=$5,reported_at=now() WHERE id=$1",[job_id,state,input.evidence_kind,input.physical_sheets,p.id]);
+   const missing=rev.plan.physical_sheets-input.physical_sheets;
+   await this.audit(db,p,'job.paper_verified',o.id,{job_id,physical_sheets:input.physical_sheets,planned_sheets:rev.plan.physical_sheets,missing_sheets:missing,evidence_kind:input.evidence_kind});
+   return {job_id,state,verified_sheets:input.physical_sheets,planned_sheets:rev.plan.physical_sheets,missing_sheets:missing,requires_manual_reconciliation:!complete};
   }));
  }
  async manual(p:Principal,id:string,input:{expected_revision:number;reason:string;idempotency_key:string}){
@@ -248,7 +260,7 @@ export class OrderService {
    const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
    const rev=await this.revision(db,o);
    if(!rev.plan)throw new DomainError('NO_PRINT_PLAN','Thiếu kế hoạch in');
-   const printed=await this.store.one<{sum:string}>(db,"SELECT COALESCE(SUM(verified_sheets),0)::text AS sum FROM core_print_jobs WHERE order_id=$1 AND state='VERIFIED_DONE'",[id]);
+   const printed=await this.store.one<{sum:string}>(db,"SELECT COALESCE(SUM(verified_sheets),0)::text AS sum FROM core_print_jobs WHERE order_id=$1 AND (state='VERIFIED_DONE' OR (state='UNKNOWN' AND evidence_kind='staff_inspected' AND verified_sheets>0))",[id]);
    const printedSheets=dbSafeInteger(printed.sum,'printed.verified_sheets');
    const available=printedSheets-dbSafeInteger(o.delivered_sheets,'delivered_sheets');
    if(input.physical_sheets>available)throw new DomainError('PAPER_NOT_VERIFIED','Không thể ghi giao giấy chưa kiểm chứng');
