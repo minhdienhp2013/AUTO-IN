@@ -71,12 +71,15 @@ export class RejectUnverifiedLiveZalo implements WebhookVerifier, EventNormalize
   normalize(): InboundEvent { throw new Error("ZALO_LIVE_MAPPING_NOT_VERIFIED"); }
 }
 export class ZaloIngress {
-  constructor(
-    private readonly verifier: WebhookVerifier,
-    private readonly normalizer: EventNormalizer,
-    private readonly events: InboundEventRepository,
-    private readonly max_payload_bytes = 1024 * 1024,
-  ) {}
+  private readonly verifier: WebhookVerifier;
+  private readonly normalizer: EventNormalizer;
+  private readonly events: InboundEventRepository;
+  private readonly max_payload_bytes: number;
+  constructor(verifier: WebhookVerifier,normalizer: EventNormalizer,
+    events: InboundEventRepository,max_payload_bytes = 1024 * 1024) {
+    this.verifier=verifier;this.normalizer=normalizer;this.events=events;
+    this.max_payload_bytes=max_payload_bytes;
+  }
   async receive(raw: Uint8Array, headers: Readonly<Record<string, string>>): Promise<WebhookReceipt> {
     if (raw.length === 0 || raw.length > this.max_payload_bytes) throw new Error("WEBHOOK_SIZE_REJECTED");
     if (!await this.verifier.verify(raw, headers)) throw new Error("WEBHOOK_SIGNATURE_REJECTED");
@@ -88,7 +91,8 @@ export class ZaloIngress {
 }
 /** Fixture only. Never wire this verifier into the production webhook. */
 export class SyntheticTestVerifier implements WebhookVerifier {
-  constructor(private readonly token: string) {}
+  private readonly token:string;
+  constructor(token:string) { this.token=token; }
   async verify(_raw: Uint8Array, headers: Readonly<Record<string, string>>): Promise<boolean> {
     return this.token.length > 0 && headers["x-test-fixture-key"] === this.token;
   }
