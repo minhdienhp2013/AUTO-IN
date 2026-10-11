@@ -23,9 +23,16 @@ const run=async()=>{
   if(!dbName.includes('test'))throw Error('Refuse migration outside a database with "test" in its name');
   const sql=fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/001_core.sql'),'utf8');
   await pool.query(sql);
-  const store=new PgStore(pool),auth=new AuthService(store),svc=new OrderService(store,()=>new Date('2026-10-12T04:00:00.000Z'));
+  await pool.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/002_send_mode.sql'),'utf8'));
+  // Clock must be aligned with the live PostgreSQL lease clock, not a future fixed date.
+  const dbNow=(await pool.query('SELECT clock_timestamp() AS moment')).rows[0].moment;
+  const local=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(dbNow);
+  const part=k=>local.find(x=>x.type===k).value;
+  const holidayDate=`${part('year')}-${part('month')}-${part('day')}`;
+  const store=new PgStore(pool),auth=new AuthService(store),svc=new OrderService(store,()=>dbNow);
   const shop='test-shop-'+uuid();
   await auth.bootstrapOwner({shop_id:shop,username:'owner',password:'long-owner-password-2026',bootstrap_enabled:true});
+  await pool.query("UPDATE core_shop_settings SET open_at='00:00', close_at='24:00' WHERE shop_id=$1",[shop]);
   const owner=(await auth.login(shop,'owner','long-owner-password-2026')).principal;
   const staffId=uuid();await pool.query("INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,'staff',$3,'staff')",[staffId,shop,await passwordHash('long-staff-password-2026')]);
   const staff=(await auth.login(shop,'staff','long-staff-password-2026')).principal;
@@ -58,6 +65,8 @@ const run=async()=>{
   await svc.markSending(current,claimed.job_id,{expected_revision:2,lease_token:claimed.lease_token,idempotency_key:key('sending')});
   await assert.rejects(svc.revise(staff,initial.order_id,{expected_revision:2,request_data:req(100),idempotency_key:key('revise')}),e=>e.status===409);
   await svc.markUnknownForReconciliation(staff,claimed.job_id,{reason:'mất mạng agent',idempotency_key:key('unknown')});
+  await assert.rejects(svc.verifyPaper(staff,claimed.job_id,{evidence_kind:'staff_inspected',physical_sheets:151,note:'must reject simulation',idempotency_key:key('fakepaper')}),e=>e.code==='SIMULATION_NOT_PAPER');
+  await assert.rejects(svc.verifyPaper(staff,claimed.job_id,{evidence_kind:'device_verified',physical_sheets:151,note:'fake driver verification',idempotency_key:key('fakedevice')}),e=>e.code==='DEVICE_PROOF_NOT_CONNECTED');
   const second=await svc.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('noclaim')});assert.equal(second.job,null);
   await assert.rejects(svc.closePrintException(staff,initial.order_id,{expected_revision:2,reason:'khách bỏ',idempotency_key:key('staffclose')}),e=>e.status===403);
   const closed=await svc.closePrintException(owner,initial.order_id,{expected_revision:2,reason:'khách bỏ sau in',idempotency_key:key('ownerclose')});
@@ -68,8 +77,65 @@ const run=async()=>{
   await svc.publishVerifiedPlan(processor,order2.order_id,{expected_revision:1,plan:{...plan,request_hash:order2.request_hash,physical_sheets:1,document_pages:1,printed_faces:1},idempotency_key:key('p2')});
   await svc.confirm(customer,order2.order_id,{expected_revision:2,kind:'request',idempotency_key:key('req2')});
   await svc.approve(staff,order2.order_id,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('app2')});
-  await pool.query('UPDATE core_shop_settings SET holiday_dates=$2 WHERE shop_id=$1',[shop,['2026-10-12']]);
+  await pool.query('UPDATE core_shop_settings SET holiday_dates=$2 WHERE shop_id=$1',[shop,[holidayDate]]);
   await assert.rejects(svc.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('holiday')}),e=>e.code==='PRINT_CLOSED');
+  // A genuine pg BIGINT is a STRING. Split deliveries must add numerically, never concatenate.
+  await pool.query("UPDATE core_shop_settings SET holiday_dates='{}', mode='controlled_test', printing_enabled=true WHERE shop_id=$1",[shop]);
+  const order3=await svc.createDraft(staff,{customer_id:customerId,request_data:req(5),idempotency_key:key('c3')});
+  await svc.publishVerifiedPlan(processor,order3.order_id,{expected_revision:1,plan:{...plan,request_hash:order3.request_hash,physical_sheets:5,document_pages:5,printed_faces:5},idempotency_key:key('p3')});
+  await svc.confirm(customer,order3.order_id,{expected_revision:2,kind:'request',idempotency_key:key('req3')});
+  await svc.approve(staff,order3.order_id,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('app3')});
+  const newClaim=await svc.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('claim3')});
+  // order2 is still waiting, so its earlier approved job may be claimed first.
+  const pendingJob=newClaim.job;assert.ok(pendingJob);
+  if(pendingJob.order_id===order2.order_id){
+    await svc.markSending(agent1,pendingJob.job_id,{expected_revision:2,lease_token:pendingJob.lease_token,idempotency_key:key('send2')});
+    await svc.report(agent1,pendingJob.job_id,{expected_revision:2,lease_token:pendingJob.lease_token,result:'sent_unverified',evidence_kind:'spooler',idempotency_key:key('rep2')});
+  }
+  const deliveryClaim=pendingJob.order_id===order3.order_id?pendingJob:(await svc.claim(agent1,{printer_id:'RMP7000',idempotency_key:key('claim3again')})).job;
+  assert.ok(deliveryClaim);assert.equal(deliveryClaim.order_id,order3.order_id);
+  await svc.markSending(agent1,deliveryClaim.job_id,{expected_revision:2,lease_token:deliveryClaim.lease_token,idempotency_key:key('send3')});
+  // Changing the shop mode after SENDING must NOT rewrite the job's historical evidence mode.
+  await pool.query("UPDATE core_shop_settings SET mode='simulation' WHERE shop_id=$1",[shop]);
+  await svc.report(agent1,deliveryClaim.job_id,{expected_revision:2,lease_token:deliveryClaim.lease_token,result:'sent_unverified',evidence_kind:'spooler',idempotency_key:key('rep3')});
+  await pool.query("UPDATE core_shop_settings SET mode='controlled_test' WHERE shop_id=$1",[shop]);
+  await assert.rejects(svc.verifyPaper(staff,deliveryClaim.job_id,{evidence_kind:'staff_inspected',physical_sheets:6,note:'bad count',idempotency_key:key('badpaper')}),e=>e.code==='PAPER_COUNT_EXCEEDS_PLAN');
+  await svc.verifyPaper(staff,deliveryClaim.job_id,{evidence_kind:'staff_inspected',physical_sheets:5,note:'counted 5 sheets',idempotency_key:key('paper3')});
+  const first=await svc.deliver(staff,order3.order_id,{expected_revision:2,physical_sheets:2,note:'first batch',idempotency_key:key('d1')});
+  const secondDelivery=await svc.deliver(staff,order3.order_id,{expected_revision:2,physical_sheets:3,note:'second batch',idempotency_key:key('d2')});
+  assert.equal(first.delivered_sheets,2);assert.equal(secondDelivery.delivered_sheets,5);assert.equal(secondDelivery.remaining_sheets,0);
+  await assert.rejects(svc.deliver(staff,order3.order_id,{expected_revision:2,physical_sheets:1,idempotency_key:key('overdeliver')}),e=>e.code==='PAPER_NOT_VERIFIED');
+  const actual=(await pool.query('SELECT delivered_sheets::text AS count FROM core_orders WHERE id=$1',[order3.order_id])).rows[0].count;
+  assert.equal(actual,'5');
+  // TN-036: an abandoned, never-printed order with a deposit/refund history
+  // remains owner-only to close, even when the net receipt balance returns to zero.
+  const depositOrder=await svc.createDraft(staff,{customer_id:customerId,request_data:req(1),idempotency_key:key('deposit-order')});
+  await svc.recordPayment(staff,depositOrder.order_id,{direction:'received',method:'cash',amount_vnd:500,idempotency_key:key('deposit-in')});
+  await assert.rejects(
+    svc.recordPayment(owner,depositOrder.order_id,{direction:'refund_approved',method:'cash',amount_vnd:700,idempotency_key:key('refund-too-large')}),
+    e=>e.code==='REFUND_EXCEEDS_RECEIPTS'
+  );
+  await svc.recordPayment(owner,depositOrder.order_id,{direction:'refund_approved',method:'cash',amount_vnd:500,idempotency_key:key('refund-approve')});
+  await assert.rejects(
+    svc.recordPayment(owner,depositOrder.order_id,{direction:'refund_approved',method:'cash',amount_vnd:1,idempotency_key:key('refund-double-approve')}),
+    e=>e.code==='REFUND_EXCEEDS_RECEIPTS'
+  );
+  await assert.rejects(
+    svc.recordPayment(owner,depositOrder.order_id,{direction:'refunded',method:'cash',amount_vnd:501,idempotency_key:key('refund-unapproved')}),
+    e=>e.code==='REFUND_NOT_APPROVED'
+  );
+  await svc.recordPayment(owner,depositOrder.order_id,{direction:'refunded',method:'cash',amount_vnd:500,idempotency_key:key('refund-paid')});
+  await assert.rejects(
+    svc.closePrintException(staff,depositOrder.order_id,{expected_revision:1,reason:'abandoned after refund',idempotency_key:key('close-with-refund-history')}),
+    e=>e.code==='OWNER_REQUIRED'
+  );
+  const ownerClosed=await svc.closePrintException(owner,depositOrder.order_id,{expected_revision:1,reason:'refund reconciled; no print',idempotency_key:key('close-owner-refunded')});
+  assert.equal(ownerClosed.receivable_vnd,0);
+  assert.equal(ownerClosed.refundable_vnd,0);
+  // A staff member may close a genuinely empty/unprinted/unpaid abandoned order.
+  const emptyOrder=await svc.createDraft(staff,{customer_id:customerId,request_data:req(1),idempotency_key:key('empty-order')});
+  const emptyClosed=await svc.closePrintException(staff,emptyOrder.order_id,{expected_revision:1,reason:'unconfirmed abandoned',idempotency_key:key('empty-close')});
+  assert.equal(emptyClosed.print_closed,true);
   return {shop,passed:true};
  }finally{await pool.end();}
 };
