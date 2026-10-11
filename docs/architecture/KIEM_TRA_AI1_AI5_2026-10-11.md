@@ -61,3 +61,27 @@ Chạy AI1_BUILD_DIR trỏ output backend, NODE_PATH trỏ dependency pg đã kh
 AI4 cần đọc read model nested thực tế current.request_confirmation/price_confirmation/verified_plan/preview_ref, print_progress và conversation_control.generation/status. Mapper 7e6623a vẫn chưa đọc các trường này nên thao tác live tiếp tục khóa an toàn. Không mở bằng hardcode, cập nhật test contract trên fixture đúng response AI1 ebdd740.
 
 Việc tiếp theo: AI0 đồng bộ schemas/mapper/composition theo wire AI1; AI5 chạy migration001–004 và integration PG thật trên DB test, cùng hai connection độc lập. Không merge/deploy/in thật hoặc báo CODE-201 DONE trước khi PG gate đạt.
+
+
+## Kiểm tra bàn giao AI2/AI3/AI5 đợt 2 và AI4 sửa build
+
+AI0 kiểm tra checkout thật ngày 2026-10-11; không merge/deploy hoặc gửi lệnh in thật.
+
+| AI | SHA | Kết quả chạy lại |
+| --- | --- | --- |
+| AI2 CODE-202 | 9b431352de19a7f9ad5f7814e200ecbc6ca5bf0e | Node 24: 25 PASS, 0 FAIL, 1 SKIP PostgreSQL |
+| AI3 CODE-203 | 31e73ea2607f25d521561a6c3fe9fda733900db5 | Python 3.12: 70 PASS; compileall PASS |
+| AI5 CODE-205 | 5707b81128e7e84180db57865896d52d256dac33 | Runner: 23 PASS, 0 FAIL, 36 SKIP |
+| AI4 CODE-204 sửa tiếp | 694179c (origin/ai4/dot2-web-build-readmodel) | typecheck PASS, Vite build PASS, 30 unit PASS |
+
+Lệnh AI2: node --experimental-strip-types --test tests/unit/zalo/*.test.mjs.
+TypeScript PASS: strict NodeNext noEmit với allowImportingTsExtensions kiểm tra postgres-durable.ts, durable-worker.ts và core-gate.ts; chưa phải build module tích hợp.
+
+Lệnh AI3: python -m pytest -q tests/unit/documents tests/unit/printing; python -m compileall -q agents workers tests/unit/documents tests/unit/printing.
+Các ca HTTP backend simulation của AI3 dùng mock; 70 PASS không chứng minh luồng Fastify/PostgreSQL thực, Windows/Ricoh hoặc giấy thật.
+
+Lệnh AI5: node tests/acceptance/run.mjs. 23 PASS thuộc fixtures, guards, metrics và release-gate selftests. 17 ca CODE-205 PG/DryRun sản phẩm và 19 ca legacy vẫn SKIP; HTTP/browser NOT RUN. Không được tính 23 PASS là nghiệm thu sản phẩm.
+
+AI4 chạy với dependencies đúng manifest đã cài ở worktree review trước, liên kết node_modules để kiểm tra SHA mới; không phải npm ci mới. Lỗi ConversationState/Promise<OrderView> đã hết. package-lock và mapper read model AI1 nested vẫn cần hoàn thiện trước nghiệm thu tích hợp.
+
+PostgreSQL thật chưa chạy: chưa có DB test hợp lệ hoạt động trong môi trường này. CODE-006 composition của AI0 và kiểm thử luồng liên module vẫn chưa hoàn thành. Bàn giao các module đủ để bắt đầu tích hợp simulation, chưa đủ để nghiệm thu hoặc mở in thật.
