@@ -15,9 +15,9 @@ Trạng thái: PARTIAL/BLOCKED, chưa có luồng sản phẩm xuyên suốt. Nh
 
 backend/server.ts chạy buildIntegratedApp; dùng createCoreModule, AuthService/PostgreSQL và duy nhất bộ route AI1. CODE-000 buildApp giữ cho kiểm thử scaffold, không đăng ký cùng runtime mới. Identity customer/agent lấy từ cấu hình riêng server, không từ body. Send boundary chỉ cho shop simulation. HTTPS dùng AUTOIN_TLS_KEY và AUTOIN_TLS_CERT; agent AI3 yêu cầu HTTPS.
 
-npm run build tạo dist/backend/core, api, storage và module AI2. npm run check kiểm contracts scaffold, typecheck, build, unit core/Zalo và 3 ca composition Fastify. AI2 dùng tsconfig.ai2.json strict tương đương cấu hình đã bàn giao; sáu lỗi exactOptionalPropertyTypes/noUncheckedIndexedAccess vẫn chờ AI2, không sửa namespace AI2 hoặc tuyên bố đạt hai tùy chọn đó.
+npm run build tạo dist/backend/core, api, storage và module AI2. npm run check kiểm contracts scaffold, typecheck, build, unit core/Zalo và 5 ca composition (gồm một ca PostgreSQL thật khi có TEST_DATABASE_URL). AI2 dùng tsconfig.ai2.json strict tương đương cấu hình đã bàn giao; sáu lỗi exactOptionalPropertyTypes/noUncheckedIndexedAccess vẫn chờ AI2, không sửa namespace AI2 hoặc tuyên bố đạt hai tùy chọn đó.
 
-npm run db:migrate chạy migration AI1 001–004, AI2 001–002 trong transaction và advisory lock. Chỉ nhận DB test localhost và opt-in. npm run db:bootstrap tạo owner tổng hợp do người chạy cấp, không có HTTP bootstrap/mật khẩu production mặc định. CI integration.yml cấp PostgreSQL service riêng và chạy product PG/DryRun của AI5; chưa có kết quả CI ở thời điểm viết.
+npm run db:migrate chạy migration AI1 001–004, AI2 001–002 trong transaction và advisory lock. Chỉ nhận DB test localhost và opt-in. npm run db:bootstrap tạo owner tổng hợp do người chạy cấp, không có HTTP bootstrap/mật khẩu production mặc định. CI integration.yml cấp PostgreSQL 18.3 riêng và chạy product PG/DryRun của AI5.
 
 ## Chạy cục bộ
 
@@ -43,19 +43,19 @@ Lấy SHA thực của HEAD nhánh này làm AUTOIN_INTEGRATION_SHA. Đặt AUTO
 
 ## Kết quả local
 
-npm run check: PASS; contracts 18, core 11 (2 PG SKIP), Zalo 31 (1 PG SKIP), composition 3. Python ở SHA AI3 nhập: 95 PASS, 1 product SKIP. Web cùng SHA: 40 PASS, typecheck/build PASS với dependencies đã cài; chưa có lock/npm ci. Môi trường local không có PostgreSQL test chạy hợp lệ; CI được thêm để thực hiện thật, không dùng DB memory thay thế.
+npm run check: PASS; contracts 18, core 11 (2 PG SKIP), Zalo 31 (1 PG SKIP), composition 4 (1 PG SKIP). Python AI3: 95 PASS, 1 SKIP. Web cùng SHA: 40 PASS, typecheck/build PASS với dependencies đã cài; chưa có lock/npm ci. Môi trường local không có PostgreSQL test chạy hợp lệ; CI thực hiện thật, không dùng DB memory thay thế.
 
 ## Phần chưa xong và đầu mối
 
 - AI0: đồng bộ OpenAPI/schema runtime theo wire AI1. contracts/generated hiện là scaffold, CHƯA là OpenAPI runtime tích hợp; consumer bám backend/api/routes.ts và tài liệu AI1.
-- AI0: nối processor CLI/private artifact/preview vào đơn với hash/revision; phải dùng snapshot nguồn AI3, không đọc lại inbound lúc gửi.
+- AI0: đã nối processor CLI nội bộ vào AI1 qua PostgreSQL; còn thiếu upload/preview/artifact theo quyền từ web. Phải giữ snapshot nguồn AI3, không đọc lại inbound lúc gửi.
 - AI0 + AI2: nối raw webhook, transaction, trusted OA/shop và Port đơn/tài liệu. /webhooks/zalo hiện 503 rõ ràng; không dựng receipt giả hoặc bật worker chưa nối.
 - AI2: xử lý 6 lỗi stricter TS ở batch.ts:44, processor.ts:28, schedule.ts:27, postgres-durable.ts:35,141. Strict cơ bản PASS.
 - AI4: lockfile/npm ci và UI live; AI5: PG/HTTP/DryRun/browser thực. Bộ test hiện không thay TN-037.
 
 ## Xác minh CI và processor sau commit đầu
 
-GitHub Actions cho SHA cc4113c1ceb9dec5cc23dcbc993466fd97c3d06d: CODE checks SUCCESS, Simulation integration SUCCESS với PostgreSQL 18.3 thật. AI1 13 PASS/0 SKIP, AI2 32 PASS/0 SKIP, AI5 20/20 ca PG/DryRun sản phẩm PASS; nhóm runner --integration 50 PASS/0 FAIL/19 SKIP (19 ca legacy/chưa nối). HTTP readiness và 5 ca từ chối truy cập không xác thực PASS; runner --http vẫn có ca khác SKIP. Đây là bằng chứng core/PG/DryRun service, chưa phải chứng minh processor và webhook chạy từ giao diện.
+GitHub Actions Simulation integration cho SHA 6d09569bc5751515a98ef2f13d99c31573a5d83d: SUCCESS với PostgreSQL 18.3 thật. Contracts 18 PASS; AI1 13 PASS/0 SKIP, AI2 32 PASS/0 SKIP, composition 5 PASS/0 SKIP; Python AI3 95 PASS/1 SKIP. AI5 20/20 ca PG/DryRun sản phẩm PASS; nhóm runner --integration 50 PASS/0 FAIL/19 SKIP (19 ca legacy/chưa nối). HTTP readiness và 5 ca từ chối truy cập không xác thực PASS; runner --http vẫn có ca khác SKIP. CODE checks tại SHA đó FAIL vì job thiếu Pillow cho ca processor synthetic; SHA 6d9bdf6882bdc8d3d557978b0e71e7785402fdbd bổ sung setup-python và requirements-test.txt, chờ CI xác nhận. Đây là bằng chứng core/PG/DryRun service và CLI processor, chưa phải luồng từ giao diện hay webhook.
 
 AI0 tiếp tục thêm `backend/composition/processor.ts`: gọi subprocess AI3 bằng JSON, giới hạn 256 KiB, timeout và stdout, kiểm manifest/hash, giữ snapshot nguồn trong artifact root. `npm run process:order -- <shop_id> <order_uuid>` là CLI nội bộ; cần DATABASE_URL, AUTOIN_INPUT_ROOT, AUTOIN_ARTIFACT_ROOT, AUTOIN_PROCESSOR_ID, Python có PyMuPDF/Pillow. Lấy request_data/hash của revision hiện hành trong PostgreSQL, chỉ cho shop simulation rồi gọi AI1 publishVerifiedPlan. AI1 tăng revision, yêu cầu xác nhận/duyệt lại. Không đi qua HTTP công khai, không gửi máy in. Nên sử dụng trên DB test và file synthetic cho tới khi có endpoint upload/preview được xác thực. Không gán `preview_verified=true` vì preview chưa có route phục vụ theo quyền.
 
