@@ -18,7 +18,7 @@ if(http||browser){
 const dir=dirname(fileURLToPath(import.meta.url));
 const names=['verify.test.mjs','fixtures.test.mjs','metrics.test.mjs','release-gate.test.mjs',
  'security.test.mjs','local-http-guard.test.mjs','integration-preflight.test.mjs','product-adapter.test.mjs','product-205.test.mjs'];
-if(http)names.push('http-readiness.test.mjs','http-auth.test.mjs');
+if(http)names.push('http-readiness.test.mjs','http-auth.test.mjs','http-webhook.test.mjs');
 if(browser)names.push('browser.test.mjs');
 const env={...process.env};
 if(integration)env.AUTOIN_RUN_PRODUCT_ACCEPTANCE='1';else delete env.AUTOIN_RUN_PRODUCT_ACCEPTANCE;
