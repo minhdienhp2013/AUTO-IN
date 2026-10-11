@@ -59,14 +59,19 @@ export function createAiOrderPort(options:{store:PgStore;trusted:TrustedAiOrderS
     if(linked.rows.length)throw new DomainError('AI_CONVERSATION_CUSTOMER_CONFLICT','Conversation linked to another customer',409);
     return bound;
   }
-  async function lockedControl(db:SqlConnection,conversationId:string) {
-    await db.query('INSERT INTO core_conversation_controls(shop_id,conversation_id) VALUES($1,$2) ON CONFLICT DO NOTHING',
-      [shopId,conversationId]);
-    const rows=await db.query<{status:'AI'|'HUMAN';generation:string|number;
-      claimed_by:string|null;ai_route_fingerprint:string|null}>(
-      'SELECT status,generation,claimed_by,ai_route_fingerprint FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2 FOR UPDATE',
-      [shopId,conversationId]);
-    const c=rows.rows[0];
+  async function lockedControl(db:SqlConnection,conversationId:string,expected:number) {
+    type ControlRow={status:'AI'|'HUMAN';generation:string|number;
+      claimed_by:string|null;ai_route_fingerprint:string|null};
+    const query='SELECT status,generation,claimed_by,ai_route_fingerprint FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2 FOR UPDATE';
+    const first=await db.query<ControlRow>(query,[shopId,conversationId]);
+    if(!first.rows[0] && expected!==0)
+      return null; // Stale generation may not create a conversation control as a side effect.
+    if(!first.rows[0]) {
+      // Verified first event may initialize generation 0. Concurrent inserts serialize by PK.
+      await db.query('INSERT INTO core_conversation_controls(shop_id,conversation_id) VALUES($1,$2) ON CONFLICT DO NOTHING',
+        [shopId,conversationId]);
+    }
+    const c=first.rows[0]??(await db.query<ControlRow>(query,[shopId,conversationId])).rows[0];
     if(!c)throw new DomainError('AI_CONVERSATION_NOT_FOUND','Conversation control missing',409);
     return {...c,generation:dbSafeInteger(c.generation,'conversation.generation')};
   }
@@ -82,8 +87,8 @@ export function createAiOrderPort(options:{store:PgStore;trusted:TrustedAiOrderS
     const contentHash=sha(canonical({conversation_id:conv,customer_id:customer,text,expected_generation:expected}));
     return store.tx(async db=>{
       await verifiedBinding(db,conv,ids,customer);
-      const control=await lockedControl(db,conv);
-      if(control.generation!==expected||control.status!=='AI')return {status:'stale_generation'};
+      const control=await lockedControl(db,conv,expected);
+      if(!control||control.generation!==expected||control.status!=='AI')return {status:'stale_generation'};
       const old=await db.query<{order_id:string;event_fingerprint:string;content_hash:string}>(
         'SELECT order_id,event_fingerprint,content_hash FROM core_ai_draft_proposals WHERE shop_id=$1 AND oa_id=$2 AND (event_fingerprint=$3 OR idempotency_key=$4) FOR UPDATE',
         [shopId,oaId,fingerprint,key]);
@@ -117,13 +122,10 @@ export function createAiOrderPort(options:{store:PgStore;trusted:TrustedAiOrderS
     const fingerprint=sha(canonical({conversation_id:conv,event_ids:ids}));
     return store.tx(async db=>{
       await verifiedBinding(db,conv,ids);
-      const control=await lockedControl(db,conv);
-      if(control.generation!==expected) {
-        if(control.status==='HUMAN'&&control.claimed_by===null&&
-           control.generation===expected+1&&control.ai_route_fingerprint===fingerprint)
-          return {status:'already_routed',generation:control.generation};
-        return {status:'stale_generation'};
-      }
+      const control=await lockedControl(db,conv,expected);
+      // Strict generation CAS: an identical retry with an outdated generation is STALE.
+      // Only a HUMAN conversation at the CURRENT generation can return already_routed.
+      if(!control||control.generation!==expected)return {status:'stale_generation'};
       if(control.status==='HUMAN')return {status:'already_routed',generation:control.generation};
       if(expected>=Number.MAX_SAFE_INTEGER)
         throw new DomainError('AI_GENERATION_OVERFLOW','Generation limit reached',409);
