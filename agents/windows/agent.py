@@ -53,14 +53,15 @@ class Journal:
         self.db.execute('CREATE TABLE IF NOT EXISTS jobs ('
                         'job_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, '
                         'request_hash TEXT NOT NULL, payload_hash TEXT NOT NULL, '
-                        'state TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT "{}")')
+                        'state TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT "{}", '
+                        'job_json TEXT NOT NULL DEFAULT "{}")')
 
     def get(self, job_id: str) -> dict[str, Any] | None:
-        row = self.db.execute('SELECT job_id, revision, request_hash, payload_hash, state, evidence '
+        row = self.db.execute('SELECT job_id, revision, request_hash, payload_hash, state, evidence, job_json '
                               'FROM jobs WHERE job_id=?', (job_id,)).fetchone()
         if not row:
             return None
-        return dict(zip(('job_id', 'revision', 'request_hash', 'payload_hash', 'state', 'evidence'), row))
+        return dict(zip(('job_id', 'revision', 'request_hash', 'payload_hash', 'state', 'evidence', 'job_json'), row))
 
     def begin(self, job: dict[str, Any]) -> None:
         # Persist boundary before asking backend to mark-sending. A restart with
@@ -68,10 +69,12 @@ class Journal:
         if self.get(job['job_id']):
             raise PrintBlocked('Job already journaled; reconciliation required')
         try:
-            self.db.execute('INSERT INTO jobs(job_id,revision,request_hash,payload_hash,state) '
-                            'VALUES(?,?,?,?,?)',
+            self.db.execute('INSERT INTO jobs(job_id,revision,request_hash,payload_hash,state,job_json) '
+                            'VALUES(?,?,?,?,?,?)',
                             (job['job_id'], job['revision'], job['request_hash'],
-                             _hash_payload(job), 'BOUNDARY'))
+                             _hash_payload(job), 'BOUNDARY', json.dumps({key: job[key] for key in
+                              ('job_id', 'order_id', 'revision', 'request_hash', 'approval_id',
+                               'claim_id', 'mode', 'print_state', 'printer_id', 'manual_lock')})))
         except sqlite3.IntegrityError as exc:
             raise PrintBlocked('Duplicate journal job') from exc
 
@@ -115,8 +118,16 @@ class PrintAgent:
     def recover(self) -> list[str]:
         pending = self.journal.unresolved()
         for job_id in pending:
-            self.journal.state(job_id, 'UNKNOWN', {'evidence_kind': 'local_recovery',
-                                                    'reason': 'crash_boundary_cannot_prove_not_sent'})
+            evidence = {'evidence_kind': 'local_recovery',
+                        'reason': 'crash_boundary_cannot_prove_not_sent'}
+            self.journal.state(job_id, 'UNKNOWN', evidence)
+            # Report ambiguity without ever resending. A rejected report remains
+            # in the journal for an operator to reconcile with the server.
+            saved = self.journal.get(job_id)
+            try:
+                self.backend.report(json.loads(saved['job_json']), 'UNKNOWN', evidence)
+            except Exception:
+                pass
         return pending
 
     def run_once(self, *, fault_at: str | None = None) -> dict[str, Any]:

@@ -107,3 +107,8 @@ def test_encrypted_pdf_needs_human(tmp_path):
                                                         owner_pw='owner', user_pw='secret')
     doc.close(); path = tmp_path / 'secure.pdf'; path.write_bytes(pdf)
     assert inspect(path)['reason_code'] == 'PASSWORD_PROTECTED'
+
+def test_zip_unknown_entry_needs_human(tmp_path):
+    z = tmp_path / 'unknown.zip'
+    archive_file(z, [('a.pdf', sample_pdf(1)), ('malware.bin', b'unknown')])
+    assert inspect(z)['reason_code'] == 'ZIP_UNKNOWN_ENTRY'

@@ -127,6 +127,8 @@ def _check_archive(data: bytes) -> tuple[list[tuple[str, bytes]], str | None]:
                 ext = Path(e.filename).suffix.lower()
                 if ext == '.zip':
                     return [], 'NESTED_ZIP_REQUIRES_HUMAN'
+                if ext not in SUPPORTED | MANUAL:
+                    return [], 'ZIP_UNKNOWN_ENTRY'
                 if ext in SUPPORTED | MANUAL:
                     if len(results) >= MAX_DOCS:
                         return [], 'OVER_FIVE_DOCUMENTS'

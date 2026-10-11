@@ -57,6 +57,7 @@ def test_crash_unknown_restart_never_reprints(tmp_path, fault_at):
     agent.journal.close()
     reopened = make_agent(tmp_path, backend, driver)
     assert reopened.recover() == ['j1']
+    assert backend.reports[-1][0] == 'UNKNOWN'
     assert reopened.journal.get('j1')['state'] == 'UNKNOWN'
     assert reopened.run_once()['status'] == 'UNKNOWN'
     assert driver.calls <= 1
