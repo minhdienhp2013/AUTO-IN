@@ -91,7 +91,7 @@ test("Port outage AFTER commit is safely retried with stable idempotency key",as
   assert.equal(calls[0].idempotency_key,calls[1].idempotency_key);
   assert.equal(calls[0].expected_generation,12);
   assert.equal(calls[0].text,calls[1].text); // byte-stable AI1 once() payload
-  assert.equal(calls[0].text,"In A4\\nIn thêm 2 bản");
+  assert.deepEqual(calls[0].text.split(String.fromCharCode(10)),["In A4","In thêm 2 bản"]);
   assert.deepEqual(calls[0].event_ids,["evtA","evtB"]);
   assert.deepEqual(calls[1].event_ids,["evtA","evtB"]);
 });
