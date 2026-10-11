@@ -51,14 +51,18 @@ export class ConversationProcessor {
     this.gate=gate;this.documents=documents;this.orders=orders;
     this.reply=reply;this.classifier=classifier;
   }
-  private async current(snapshot:GateSnapshot):Promise<boolean> {
-    const now=await this.gate.read(snapshot.conversation_id);
+  private async current(snapshot:GateSnapshot,batch:Batch):Promise<boolean> {
+    const now=this.gate.read_verified_batch
+      ? await this.gate.read_verified_batch(batch)
+      : await this.gate.read(snapshot.conversation_id);
     return now.mode==="AI"&&now.generation===snapshot.generation;
   }
   async consume(batch:Batch):Promise<"processed"|"human"|"held"> {
     const first=batch.events[0];
     if(!first)return "held";
-    const snap=await this.gate.read(first.conversation_id);
+    const snap=this.gate.read_verified_batch
+      ? await this.gate.read_verified_batch(batch)
+      : await this.gate.read(first.conversation_id);
     if(snap.mode!=="AI")return "held";
     const {event_ids,key}=batchIdentity(batch);
     // Processing payload is canonical even if a retry reconstructs a batch in a
@@ -67,7 +71,7 @@ export class ConversationProcessor {
       Date.parse(a.occurred_at)-Date.parse(b.occurred_at)||a.event_id.localeCompare(b.event_id));
     const text=ordered.filter(e=>e.kind==="text").map(e=>e.text??"").join("\n");
     const routeHuman=async(reason:string):Promise<"human"|"held">=>{
-      if(!await this.current(snap))return "held";
+      if(!await this.current(snap,batch))return "held";
       const result=await this.orders.route_human({
         conversation_id:first.conversation_id,expected_generation:snap.generation,
         reason,event_ids
@@ -100,7 +104,7 @@ export class ConversationProcessor {
         return routeHuman("AI_UNAVAILABLE");
       }
     }
-    if(!await this.current(snap))return "held";
+    if(!await this.current(snap,batch))return "held";
     if(decision.intent==="OTHER")return routeHuman("OUT_OF_SCOPE");
     if(decision.intent==="HUMAN"||decision.handover_reason==="PRICE_QUOTE") {
       const result=await routeHuman(decision.handover_reason??"NEEDS_CLARIFICATION");
@@ -115,7 +119,7 @@ export class ConversationProcessor {
       });
       if(isStale(result))return "held";
     }
-    if(!await this.current(snap))return "held";
+    if(!await this.current(snap,batch))return "held";
     if(decision.reply) {
       await this.reply.enqueue({outbound_id:"reply:"+key,
         conversation_id:first.conversation_id,generation:snap.generation,text:decision.reply});
