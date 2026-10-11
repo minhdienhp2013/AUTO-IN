@@ -35,6 +35,11 @@ export class ConversationProcessor {
         reason:"DOCUMENT_INSPECTION_FAILED",event_ids:batch.events.map(e=>e.event_id)});
       return "human";
     }
+    if (decision.needs_deepseek && !this.classifier) {
+      await this.orders.route_human({conversation_id:first.conversation_id,reason:"AI_UNAVAILABLE",
+        event_ids:batch.events.map(e=>e.event_id)});
+      return "human";
+    }
     if (decision.needs_deepseek && this.classifier) {
       try {
         const ai=await this.classifier.classify(text);
@@ -55,6 +60,11 @@ export class ConversationProcessor {
     // Suppress stale side effects after takeover during classifier / inspection.
     const beforeAction=await this.gate.read(first.conversation_id);
     if (beforeAction.mode!=="AI" || beforeAction.generation!==snap.generation) return "held";
+    if (decision.intent === "OTHER") {
+      await this.orders.route_human({conversation_id:first.conversation_id,reason:"OUT_OF_SCOPE",
+        event_ids:batch.events.map(e=>e.event_id)});
+      return "human";
+    }
     if (decision.intent === "HUMAN") {
       await this.orders.route_human({conversation_id:first.conversation_id,
         reason:decision.handover_reason??"NEEDS_CLARIFICATION",event_ids:batch.events.map(e=>e.event_id)});
