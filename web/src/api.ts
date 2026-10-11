@@ -1,4 +1,4 @@
-import { actionPath, depositShortfall, hasValidApprovalInputs, validMoney, type ActionKind, type Mutation, type OrderView, type Snapshot, type StaffSession, type OperationMode } from './domain.ts';
+import { actionPath, depositShortfall, hasValidApprovalInputs, validMoney, type ActionKind, type Mutation, type OrderView, type Snapshot, type StaffSession, type OperationMode, type ConversationState } from './domain.ts';
 import { demoOrders, demoSession } from './fixtures.ts';
 
 export class ApiFault extends Error {
@@ -199,7 +199,7 @@ export class HttpPrintPort implements PrintPort {
     const raw = await this.call(`/api/v1/orders/${encodeURIComponent(id)}`);
     return mapCoreOrderDetail(raw);
   }
-  async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string) {
+  async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView> {
     // AI1 CODE-201 routes now exist, but they require current generation from a
     // verified read model. No value supplied => fail closed, no request sent.
     if (kind === 'handover' || kind === 'return_to_ai') {
@@ -213,9 +213,10 @@ export class HttpPrintPort implements PrintPort {
         throw new ApiFault(503,'INVALID_CONVERSATION_RECEIPT','Biên nhận hội thoại không xác minh thay đổi generation; cần đối soát.');
       }
       // Only server receipt, not browser assumptions, changes the conversation axis.
+      const conversation_state: ConversationState = kind === 'handover' ? 'staff' : 'ai';
       return {...order, conversation_generation:response.generation as number,
         conversation_claimed_by:typeof response.claimed_by === 'string'?response.claimed_by:null,
-        conversation_state:kind === 'handover' ? 'staff' : 'ai'};
+        conversation_state};
     }
     const body = makeMutation(order, payload, key);
     const raw = await this.call(actionPath(order, kind), { method: 'POST', body: JSON.stringify(body), headers: { 'Idempotency-Key': key } });
