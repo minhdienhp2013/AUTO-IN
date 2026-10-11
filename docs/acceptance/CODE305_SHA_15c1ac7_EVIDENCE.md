@@ -39,3 +39,9 @@ Ngày kiểm tra: 2026-10-12 (Asia/Bangkok). Không phải nghiệm thu V1.
 - AI4: bổ sung web/package-lock.json, npm ci, build và browser.
 
 Không tự merge/deploy/gửi khách hoặc phát lệnh in.
+
+## Chốt release gate AI5 sau lượt kiểm
+
+- `release-gate.mjs` yêu cầu `evidence.zalo_oa_verification_source='official_live_oa'` bên cạnh các chứng cứ TN-037 khác; `synthetic_fastify_pg` dù PASS không đạt điều kiện này.
+- Lượt tự kiểm chứng preflight browser từ mã đã ghi lên PR AI5: Node local **3 PASS / 0 FAIL / 0 SKIP**. Đây chỉ là kiểm tra chốt lockfile/build, không phải chạy UI.
+- Không có kết quả CI GitHub cho HEAD mới nhất của nhánh AI5 vào lúc ghi báo cáo. Kết quả PG/HTTP trên SHA 15c1ac7 là từ CI đợt trước, cần chạy lại trên SHA tích hợp mới có kiểm thử AI5 cập nhật.
