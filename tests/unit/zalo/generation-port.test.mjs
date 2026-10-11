@@ -57,7 +57,7 @@ test("takeover inside AI1 Port after preflight still prevents late draft and rep
       // Race: a staff handover commits just as the server operation begins.
       mode="HUMAN";generation++;
       if(mode!=="AI"||generation!==input.expected_generation)return {status:"stale_generation"};
-      committed++;return {order_id:"o",revision:1};
+      committed++;return {status:"created",order_id:"o"};
     },
     async route_human(){throw Error("unexpected")}
   },{async enqueue(){assert.fail("stale outbound") }});
@@ -94,4 +94,21 @@ test("Port outage AFTER commit is safely retried with stable idempotency key",as
   assert.deepEqual(calls[0].text.split(String.fromCharCode(10)),["In A4","In thêm 2 bản"]);
   assert.deepEqual(calls[0].event_ids,["evtA","evtB"]);
   assert.deepEqual(calls[1].event_ids,["evtA","evtB"]);
+});
+
+
+test("invalid AI1 acknowledgement never emits outbound and retains batch for retry",async()=>{
+  let emitted=0;
+  const p=new ConversationProcessor(aiGate(3),docs,{
+    async suggest_draft(){return undefined},
+    async route_human(){throw Error("unexpected")}
+  },{async enqueue(){emitted++}});
+  await assert.rejects(p.consume(makeBatch()),/AI1_DRAFT_PORT_INVALID_RESULT/);
+  assert.equal(emitted,0);
+  const routed=new ConversationProcessor(aiGate(3),docs,{
+    async suggest_draft(){throw Error("unexpected")},
+    async route_human(){return undefined}
+  },{async enqueue(){emitted++}});
+  await assert.rejects(routed.consume(makeBatch([ev("color","in màu")])) ,/AI1_ROUTE_PORT_INVALID_RESULT/);
+  assert.equal(emitted,0);
 });
