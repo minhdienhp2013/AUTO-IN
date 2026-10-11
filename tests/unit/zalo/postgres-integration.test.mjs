@@ -156,6 +156,108 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
     finally {controller.release();}
     assert.equal((await run("SELECT status FROM zalo_outbound WHERE outbound_id='race'")).rows[0].status,'QUEUED');
 
+    // AI1 Port CAS in real PostgreSQL: takeover DURING a slow suggestion.
+    // AI1 Port is a labelled PostgreSQL synthetic adapter: not customer-facing.
+    await run("UPDATE core_conversation_controls SET generation=5,status='AI' WHERE shop_id='trusted-shop' AND conversation_id='c1'");
+    await run("CREATE TABLE ai1_draft_fixture (idempotency_key text PRIMARY KEY, order_id text NOT NULL)");
+    let reachedPort,continuePort;
+    const atPort=new Promise(resolve=>{reachedPort=resolve});
+    const resumePort=new Promise(resolve=>{continuePort=resolve});
+    const guardedDraft=async input=>{
+      reachedPort(input);
+      await resumePort; // handover commits while the AI1 Port is still processing
+      return db.transaction(async tx=>{
+        const control=(await tx.query(
+          "SELECT generation::text,status FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2 FOR UPDATE",
+          ["trusted-shop",input.conversation_id])).rows[0];
+        if(!control||control.status!=="AI"||Number(control.generation)!==input.expected_generation)
+          return {status:"stale_generation"};
+        await tx.query("INSERT INTO ai1_draft_fixture(idempotency_key,order_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
+          [input.idempotency_key,"fixture-order"]);
+        return {order_id:"fixture-order",revision:1};
+      });
+    };
+    const takeoverPipeline=createZaloPipeline({
+      db,trusted_shop_id:"trusted-shop",trusted_oa_id:"oa",
+      documents:{async inspect(){return []}},
+      orders:{suggest_draft:guardedDraft,async route_human(){throw Error("unexpected human")}},
+      schedule:{allowed:()=>true},clock:{now:()=>new Date()},
+      synthetic_provider:{kind:"synthetic_fixture",
+        verifier:new SyntheticTestVerifier("pg-synthetic-key"),
+        normalizer:new SyntheticFixtureNormalizer()}
+    });
+    const takeoverRaw=new TextEncoder().encode(JSON.stringify({...event("e6"),synthetic_fixture:true}));
+    assert.equal((await takeoverPipeline.receive_webhook(takeoverRaw,headers)).body.status,"accepted");
+    assert.equal((await takeoverPipeline.tick_inbound()).ingested,1);
+    await run("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' WHERE status='OPEN'");
+    const slowWorker=takeoverPipeline.tick_inbound();
+    const inPort=await atPort;
+    assert.equal(inPort.expected_generation,5);
+    await run("UPDATE core_conversation_controls SET generation=6,status='HUMAN' WHERE shop_id='trusted-shop' AND conversation_id='c1'");
+    continuePort();
+    const staleOutcome=await slowWorker;
+    assert.equal(staleOutcome.held,1);
+    assert.equal(staleOutcome.processed,0);
+    assert.equal((await run("SELECT count(*)::int AS n FROM ai1_draft_fixture")).rows[0].n,0);
+    const parked=(await run(`SELECT b.status,b.last_error_code,b.lease_token,
+      (SELECT count(*)::int FROM zalo_batch_items i WHERE i.batch_id=b.id) AS items
+      FROM zalo_batches b JOIN zalo_batch_items i ON i.batch_id=b.id AND i.event_id='e6'`)).rows[0];
+    assert.equal(parked.status,"NEEDS_HUMAN");
+    assert.equal(parked.last_error_code,"GENERATION_HELD");
+    assert.equal(parked.lease_token,null);
+    assert.equal(parked.items,1);
+    await run("UPDATE core_conversation_controls SET generation=7,status='AI' WHERE shop_id='trusted-shop' AND conversation_id='c1'");
+    assert.equal((await takeoverPipeline.tick_inbound()).claimed,0); // NEVER auto-resume stale batch
+    assert.equal((await takeoverPipeline.receive_webhook(takeoverRaw,headers)).body.status,"duplicate");
+
+    // Ambiguous ACK AFTER AI1 committed a draft: retry same event/batch/idempotency.
+    // Durable queue remains unacknowledged on Port error and never duplicates order.
+    let loseAckOnce=true,submitted=0;
+    const retryPipeline=createZaloPipeline({
+      db,trusted_shop_id:"trusted-shop",trusted_oa_id:"oa",
+      documents:{async inspect(){return []}},
+      orders:{
+        async suggest_draft(input){
+          submitted++;
+          const value=await db.transaction(async tx=>{
+            const gateRow=(await tx.query(
+              "SELECT generation::text,status FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2 FOR UPDATE",
+              ["trusted-shop",input.conversation_id])).rows[0];
+            if(!gateRow||gateRow.status!=="AI"||Number(gateRow.generation)!==input.expected_generation)
+              return {status:"stale_generation"};
+            await tx.query("INSERT INTO ai1_draft_fixture(idempotency_key,order_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
+              [input.idempotency_key,"one-order"]);
+            return {order_id:"one-order",revision:1};
+          });
+          if(loseAckOnce){loseAckOnce=false;throw Error("simulated lost Port ACK");}
+          return value;
+        },
+        async route_human(){throw Error("unexpected human")}
+      },
+      schedule:{allowed:()=>true},clock:{now:()=>new Date()},
+      synthetic_provider:{kind:"synthetic_fixture",
+        verifier:new SyntheticTestVerifier("pg-synthetic-key"),
+        normalizer:new SyntheticFixtureNormalizer()}
+    });
+    const retryRaw=new TextEncoder().encode(JSON.stringify({...event("e7"),synthetic_fixture:true}));
+    assert.equal((await retryPipeline.receive_webhook(retryRaw,headers)).body.status,"accepted");
+    assert.equal((await retryPipeline.receive_webhook(retryRaw,headers)).body.status,"duplicate");
+    assert.equal((await retryPipeline.tick_inbound()).ingested,1);
+    await run("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' WHERE status='OPEN'");
+    const errored=await retryPipeline.tick_inbound();
+    assert.equal(errored.retry,1);
+    assert.equal((await run("SELECT count(*)::int AS n FROM ai1_draft_fixture")).rows[0].n,1);
+    assert.equal((await run("SELECT count(*)::int AS n FROM zalo_outbound WHERE status='QUEUED' AND outbound_id LIKE 'reply:zalo:%'")).rows[0].n,0);
+    await run("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' WHERE status='OPEN'");
+    const recoveredAck=await retryPipeline.tick_inbound();
+    assert.equal(recoveredAck.processed,1);
+    assert.equal(submitted,2);
+    assert.equal((await run("SELECT count(*)::int AS n FROM ai1_draft_fixture")).rows[0].n,1);
+    assert.equal((await run("SELECT count(*)::int AS n FROM zalo_outbound WHERE status='QUEUED' AND outbound_id LIKE 'reply:zalo:%'")).rows[0].n,1);
+    assert.equal((await run("SELECT count(*)::int AS n FROM zalo_inbound_events WHERE event_id='e7'")).rows[0].n,1);
+    assert.equal((await retryPipeline.tick_outbound()).disabled,true); // NO real OA sender
+
+
   } finally {
     try{await admin.query('DROP SCHEMA IF EXISTS "'+schema+'" CASCADE')}finally{admin.release();await pool.end();}
   }
