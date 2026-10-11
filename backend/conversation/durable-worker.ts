@@ -25,7 +25,8 @@ export class DurableConversationWorker {
         else processed++; // includes a legitimate route_human via AI1
       } catch(error) {
         // Do not put side-effecting calls on an in-memory retry loop.
-        const code=error instanceof Error?error.message:"PROCESSING_FAILED";
+        const code=error instanceof Error && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.message)
+          ?error.message:"PROCESSING_FAILED";
         const outcome=await this.queue.fail(batch,code);
         if(outcome==="needs_human") needs_human++;
         else if(outcome==="retry") retry++;
