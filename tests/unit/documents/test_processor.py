@@ -113,3 +113,19 @@ def test_zip_unknown_entry_needs_human(tmp_path):
     z = tmp_path / 'unknown.zip'
     archive_file(z, [('a.pdf', sample_pdf(1)), ('malware.bin', b'unknown')])
     assert inspect(z)['reason_code'] == 'ZIP_UNKNOWN_ENTRY'
+
+
+def test_mismatched_image_extension_rejected(tmp_path):
+    pic = Image.new('RGB', (40, 60), 'white')
+    stream = io.BytesIO(); pic.save(stream, 'JPEG')
+    path = tmp_path / 'misnamed.png'; path.write_bytes(stream.getvalue())
+    assert inspect(path)['reason_code'] == 'EXTENSION_CONTENT_MISMATCH'
+
+
+def test_exif_rotated_jpeg_dimensions_are_correct(tmp_path):
+    pic = Image.new('RGB', (120, 80), 'white')
+    exif = pic.getexif(); exif[274] = 6
+    path = tmp_path / 'portrait.jpg'; pic.save(path, exif=exif)
+    result = inspect(path, tmp_path / 'preview')
+    assert result['status'] == 'READY'
+    assert result['page_sizes'][0] == {'width_px': 80, 'height_px': 120}
