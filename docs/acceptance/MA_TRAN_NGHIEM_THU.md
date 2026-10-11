@@ -46,3 +46,22 @@
 **Chặn P0:** thiếu duyệt, stale, trùng job, giả quyền, UNKNOWN tự retry, in sai, rò dữ liệu. Có P0 phải chuyển SAFE qua AI0, sửa đúng module và chạy lại; không tự in thật.
 
 **TN-021/037:** yêu cầu nhận diện ≥90%, hội thoại phổ biến tự xử lý ≥80%; mẫu số khóa trước, thiếu dự đoán tính sai, không loại ca khó; bước nhân viên duyệt là bắt buộc và không tính là lỗi của AI. 210 đơn đạt trong ≥7 ngày sạch lỗi nghiêm trọng + mô phỏng 100 đơn/ngày, OA/Ricoh/iPhone có bằng chứng thật, chủ duyệt mở chính thức. Chưa có các bằng chứng đó.
+
+## CODE-305 — ma trận bổ sung đợt 3 (2026-10-11)
+
+**BASE MODULE:** `5707b81128e7e84180db57865896d52d256dac33`. **Tích hợp CODE-006:** CHƯA CÓ SHA tại thời điểm viết. Các dòng dưới chỉ là ca đã **viết code**, sản phẩm vẫn **NOT RUN / BLOCKED**. Kết quả selftest không chuyển trạng thái nghiệm thu.
+
+| TN | Test trên sản phẩm thật (simulation, PostgreSQL test) | Chủ xử lý lỗi | Trạng thái |
+| --- | --- | --- | --- |
+| TN-007, TN-026 | PG-01–04, PG-13, PG-16–17: stale/claim kép/mark kép/FIFO xác nhận khác thứ tự duyệt | AI1 | NOT RUN |
+| TN-012, TN-023, TN-035 | PG-05/11, DRYRUN-12/18: UNKNOWN, crash journal, không gửi lại, không chứng minh giấy thật | AI1/AI3 | NOT RUN |
+| TN-017 | PG-14 printer scope; HTTP anonymous staff/agent denial | AI1/AI0 | NOT RUN |
+| TN-019, TN-030, TN-033, TN-036 | PG-07–10, PG-15: giá/cọc/hoàn/đóng ngoại lệ còn nợ | AI1 | NOT RUN |
+| TN-027 | PG-19/20: generation cũ bị chặn và handover đồng thời | AI1/AI2 | NOT RUN |
+| TN-001, TN-012, TN-022 | HTTP-ZALO-01 từ chối webhook không chữ ký nếu AI2 ingress tích hợp | AI0/AI2 | NOT RUN |
+| TN-008, TN-010, TN-032 | UI browser local Chromium; mobile viewport không phải iPhone thật | AI4 | NOT RUN |
+| TN-015, TN-021, TN-037 | 90%/80%, 100 đơn/ngày, 210 đơn ≥7 ngày, OA/Ricoh/iPhone thật và bằng chứng release gate | AI0/AI5 | FIELD NOT RUN |
+
+**Release gate bổ sung:** yêu cầu `evidence.integration_sha` 40 ký tự và `evidence.product_runs.pg/http/dryrun/browser` từng mục có `status:'PASS'`, `fail:0`, `skip:0`, `pass >= 1` và **cùng SHA**; các điều kiện nghiệp vụ/thiết bị TN-037 trước đây vẫn giữ nguyên. Một bài SKIP không phải PASS.
+
+**Nguyên tắc báo cáo:** Bất kỳ ca P0 FAIL -> SAFE, không tự gửi in, không tự nhắn OA. File/code AI5 chỉ báo lỗi, chủ module tương ứng sửa. Mọi báo cáo phải ghi SHA, lệnh tái hiện, observed/expected và bằng chứng đã che thông tin nhạy cảm.
