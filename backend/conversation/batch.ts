@@ -24,7 +24,8 @@ export class MessageBatcher {
     const current = await this.store.get(key);
     const first_at = current?.first_at ?? now;
     const events = [...(current?.events ?? [])];
-    if (!events.some(e => e.event_id === event.event_id)) events.push(event);
+    if (current && events.some(e => e.event_id === event.event_id)) return current;
+    events.push(event);
     // First message: max 60s; later messages: wait up to 10s, never beyond first+60s.
     const deadline_at = current
       ? Math.min(first_at + 60000, now + 10000)
@@ -37,9 +38,9 @@ export class MessageBatcher {
   }
   async flushDue(consume: (batch: Batch) => Promise<void>): Promise<number> {
     const due = await this.store.take_due(this.clock.now());
-    for (const batch of due) {
-      try { await consume(batch); } catch (error) {
-        await this.store.put(batch); // recovery on downstream failure; inbound event remains durable
+    for (let i=0; i<due.length; i++) {
+      try { await consume(due[i]); } catch (error) {
+        for (const pending of due.slice(i)) await this.store.put(pending);
         throw error;
       }
     }
@@ -49,7 +50,10 @@ export class MessageBatcher {
   async flushComplete(key: string, consume: (batch: Batch) => Promise<void>): Promise<boolean> {
     const batch = await this.store.take_one(key);
     if (!batch) return false;
-    await consume(batch);
+    try { await consume(batch); } catch (error) {
+      await this.store.put(batch);
+      throw error;
+    }
     return true;
   }
 }
