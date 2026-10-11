@@ -26,6 +26,8 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
     await admin.query('SET search_path TO "'+schema+'"');
     const migration=await readFile(fileURLToPath(new URL("../../../backend/integrations/zalo/migrations/001_zalo_durable.sql",import.meta.url)),"utf8");
     await admin.query(migration);
+    const scopeMigration=await readFile(fileURLToPath(new URL("../../../backend/integrations/zalo/migrations/002_zalo_oa_scope.sql",import.meta.url)),"utf8");
+    await admin.query(scopeMigration);
     // Mirrors the AI1 migration 004 control row layout; isolated disposable schema.
     await admin.query(`CREATE TABLE core_conversation_controls (
       shop_id text NOT NULL,conversation_id text NOT NULL,generation bigint NOT NULL,
