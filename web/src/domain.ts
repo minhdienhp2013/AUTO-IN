@@ -28,6 +28,8 @@ export interface OrderView {
   job_id?: string | null; // AI1 job eligible for physical-paper verification; never inferred from a list
   customer_name: string;
   conversation_id: string | null;
+  conversation_generation: number | null; // only server read model, never invented
+  conversation_claimed_by: string | null;
   revision: number;
   request_hash: string;
   quote_revision: number | null;
@@ -44,6 +46,7 @@ export interface OrderView {
   large_cost_flag: boolean;
   delivered_sheets: number;
   total_sheets: number | null;
+  verified_sheets: number | null; // real confirmed paper, never inferred from spooler/simulation
   urgent: boolean;
   created_at: string;
   documents: DocumentView[];

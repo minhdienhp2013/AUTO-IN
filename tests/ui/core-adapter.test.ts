@@ -78,11 +78,11 @@ test('payment/quote/delivery are sent with AI1 field names and server reread',as
  assert.equal(bodies[2].physical_sheets,10);assert.equal(bodies[2].expected_revision,3);
  assert.ok(routes.filter(x=>x.endsWith('/order-ai1')).length>=3);
 });
-test('missing receipt and unsupported conversation routes fail closed',async()=>{
+test('missing receipt and unavailable generation fail closed',async()=>{
  const port=new HttpPrintPort('',(async()=>json({ok:true})) as typeof fetch);
  const o=mapCoreOrderDetail(coreDetail());
  await assert.rejects(()=>port.mutate(o,'approve',{acknowledge_deposit_shortage:true},'no-id'),isFault('INVALID_MUTATION_RECEIPT'));
- await assert.rejects(()=>port.mutate(o,'handover',{},'not-yet'),isFault('NOT_IMPLEMENTED'));
+ await assert.rejects(()=>port.mutate(o,'handover',{},'not-yet'),isFault('GENERATION_UNVERIFIED'));
 });
 test('network failure on refresh or payment gives error and does not invent success',async()=>{
  const port=new HttpPrintPort('',(async()=>{throw Error('offline')}) as typeof fetch);

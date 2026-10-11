@@ -33,3 +33,9 @@ Mọi thao tác ghi yêu cầu phiên bản gửi `expected_revision`, `request_
 - **AI0/AI2**: backend phát Web Push (VAPID/subscription, quyền truy cập, lịch/khẩn). `public/sw.js` chỉ xử lý payload `order_id`/revision & điều hướng cùng origin; cấp permission không có nghĩa push đã hoạt động. Phải thử trên iPhone thật.
 
 Không có nút in trực tiếp, gửi lại lệnh, đóng ngoại lệ đã in, mở production trên giao diện V1 này. Mọi máy in thật cần duyệt và thiết bị kiểm chứng trước.
+
+## Đợt 2 — CODE-204 (trạng thái kiểm chứng)
+
+Cần `web/package-lock.json` **sinh bằng npm từ registry thật** trước khi chạy `npm ci`; phiên thực thi AI4 này không thể truy cập registry (`EAI_AGAIN`), vì vậy **chưa có lock và chưa đạt build**. Dependency đã ghim phiên bản trong `package.json`; không thay bằng lockfile viết tay/thiếu đồ thị gói. Kiểm thử phần thuần: `cd web && npm test` **30/30 PASS** trên Node22, transpile syntax các module và syntax SW PASS. `npm run typecheck`/`npm run build` FAIL thiếu `vite/client` do chưa cài dependency — cần chạy lại sau khi cài, không báo pass thay thế.
+
+AI1 CODE-201 đã thêm hai route handover/return-to-ai. UI cần `conversation_generation` do server xác minh trước khi gửi `expected_generation`. Backend hiện **chưa trả generation qua GET chi tiết**, nên live nút vẫn khóa. Biên nhận phải có `conversation_id`, `status`, generation mới; lỗi 403/409/mạng không tự thử lại. Đơn live vẫn khóa duyệt nếu không có confirmation đúng phiên bản và preview tin cậy; mode không xác minh là `unverified`. Đã thêm test IDs: `operation-mode`, `staff-login`, `order-list`, `order-detail`, `approve-action`, `api-error` cho AI5 viết browser test sau khi có build.

@@ -34,3 +34,26 @@
 - Đã thử `cd web && npm test` (23/23 PASS trên Node 22) và type-check riêng các module dữ liệu/port bằng TypeScript global; kiểm tra cú pháp TS/TSX. `npm install && npm run build`, Chromium/Playwright/iPhone thật CHƯA chạy vì npm registry không phân giải DNS và React/Vite chưa cài; chưa có lockfile sinh thật.
 
 `[AI0/AI1] [CODE-104→CODE-000/101] [GET /orders/{id} read model xác nhận khách phiên/hash, quote confirmed, file preview/trust và audit; mode server] [UI hiện không đủ dữ liệu để bật duyệt an toàn] [Done khi schema+fixture backend xác minh, test contract AI4 đạt]`.
+
+## CODE-204 / Đợt 2 — nhánh ai4/dot2-web-build-readmodel
+
+- Nền module `fde9cdccb6aad888fada378567590f8f325ab635`, khung AI0 `a681fe91f24f3b0cec61cb72887cc0928d9460ca`; nhánh riêng chỉ sửa `web/**`, `tests/ui/**` và báo cáo AI4 này. Khung AI0 được nhập bằng merge nội bộ trên nhánh AI4, không merge PR/deploy.
+- Đã khai báo `ImportMetaEnv` có `VITE_DEMO_MODE`, `VITE_API_BASE_URL` dưới `web/src/vite-env.d.ts`; sửa `isDemo` dùng `Pick<ImportMetaEnv,'VITE_DEMO_MODE'>` thay vì ép kiểu `any`. Đây là sửa nguyên nhân TS2559; **chưa xác minh bằng Vite typecheck thật** vì thiếu package npm.
+- Dữ liệu tiền/giấy dùng converter PostgreSQL `BIGINT` dạng chuỗi chữ số nguyên hợp lệ, từ chối số vượt `Number.MAX_SAFE_INTEGER`; không biến số thiếu tin cậy thành số thực. Giấy `VERIFIED_DONE` chưa có `verified_sheets` hoặc thấp hơn kế hoạch **không được hiển thị giao đủ**. Nút giao yêu cầu số giấy thật đã kiểm còn lại. Không dùng `SIMULATED_DONE`/spooler làm bằng chứng giấy.
+- AI1 CODE-201 đã khai báo POST handover/return-to-ai với `expected_generation`; UI gửi `idempotency_key` và generation khi có read model xác thực; bắt buộc phản hồi `conversation_id`/`status`/generation hợp lệ. Khi chưa được API GET trả generation, nút live vẫn khóa (fail closed), không giả giá trị `0` hay `1`; hai người cạnh tranh/403/409/mất mạng không tự retry.
+- Thêm `data-testid` cố định cho AI5 (`operation-mode`, `staff-login`, `order-list`, `order-detail`, `approve-action`, `api-error`); đây là điểm nối để viết E2E, **không phải bằng chứng đã chạy browser/iPhone**.
+
+### Lệnh và kết quả thực tại môi trường lượt này
+
+- `cd web && npm test`: **30 PASS, 0 FAIL** (Node v22.16.0), gồm 4 ca giấy thật/BIGINT, 3 ca hội thoại/generation/409/403/mạng, 23 ca gốc.
+- TS/TSX module `App.tsx`, `api.ts`, `domain.ts`, `fixtures.ts`, `main.tsx`, `notifications.ts`: **transpile syntax PASS** bằng TypeScript global. `node --check public/sw.js`: PASS.
+- `npm install --package-lock-only --ignore-scripts --no-audit --no-fund --fetch-retries=0 --fetch-timeout=5000`: **FAIL DNS EAI_AGAIN** `registry.npmjs.org`; không có metadata package để khóa dependencies đầy đủ; không sinh lock giả.
+- `npm ci --offline`: **FAIL (thiếu `web/package-lock.json`)**. `npm run typecheck` / `npm run build`: **FAIL TS2688 `vite/client` chưa cài**; không thể coi TS2559/build đã được xác minh bằng Vite. Browser Chromium viewport/Windows/iPhone/Web Push: **NOT RUN** khi chưa có app bundle và server.
+
+### Điều kiện giải blocker và bàn giao
+
+1. Khi npm registry hoạt động trên môi trường build đáng tin: `cd web && npm install --package-lock-only --ignore-scripts`, commit `web/package-lock.json` sinh thật; `npm ci`, `npm test`, `npm run typecheck`, `npm run build`, giữ log exit code. Không tự sửa root config/lock.
+2. `[AI1/AI0] [CODE-201/006→CODE-204]` Cấp GET chi tiết có xác nhận khách `revision/hash`, xác nhận giá `quote_revision`, preview per-file có kiểm quyền/độ tin cậy, generation/status/claimed_by hiện hành của hội thoại, mode/lịch; cần để UI mở nút duyệt/tiếp quản một cách xác thực. Điều kiện xong: schema/fixture + HTTP tests có nguồn từ server.
+3. `[AI5] [CODE-205]` Chạy browser E2E Windows/mobile 390×844 và desktop 1440×900, mất mạng/401/403/409/bấm kép/stale revision, xác nhận cảnh báo demo; iPhone và Web Push thật phải kiểm riêng, không coi desktop mock là đủ.
+
+Trạng thái CODE-204 tại thời điểm bàn giao: **BLOCKED vì lockfile/build/npm registry và read model thiếu**; đã đưa sửa code + kiểm thử thuần TS lên nhánh, không merge/deploy/in thật.

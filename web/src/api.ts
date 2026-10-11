@@ -14,14 +14,23 @@ export interface PrintPort {
   mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView>;
   mode(): Promise<OperationMode>;
 }
-export const isDemo = (env: { VITE_DEMO_MODE?: string } = import.meta.env): boolean => env.VITE_DEMO_MODE !== 'false';
+export const isDemo = (env: Pick<ImportMetaEnv, 'VITE_DEMO_MODE'> = import.meta.env): boolean => env.VITE_DEMO_MODE !== 'false';
 export const newMutationKey = (): string => crypto.randomUUID();
 export const makeMutation = (order: OrderView, payload: Record<string, string | number | boolean | null>, key: string): Mutation => ({
   ...payload, expected_revision: order.revision, request_hash: order.request_hash, idempotency_key: key,
 });
 
 const knownState = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T => typeof value === 'string' && allowed.includes(value as T) ? value as T : fallback;
-const asNum = (n: unknown): number | null => validMoney(n) ? n : null;
+// PostgreSQL bigint counters may be JSON decimal strings through pg. Convert only
+// non-negative safe integers; never coerce floats, signs, exponent notation or unsafe values.
+const asNum = (n: unknown): number | null => {
+  if (validMoney(n)) return n;
+  if (typeof n === 'string' && /^(0|[1-9][0-9]*)$/.test(n)) {
+    const value = Number(n);
+    return Number.isSafeInteger(value) ? value : null;
+  }
+  return null;
+};
 const asString = (s: unknown, fallback = ''): string => typeof s === 'string' ? s : fallback;
 const asObject = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 /** Provisional consumer mapper. AI0 owns final JSON responses, not this file. */
@@ -40,6 +49,7 @@ export function mapOrder(raw: unknown): OrderView {
   }) : [];
   return {
     order_id: asString(o.order_id), job_id: typeof o.job_id === 'string' ? o.job_id : null, customer_name: asString(o.customer_name, 'Khách hàng'), conversation_id: typeof o.conversation_id === 'string' ? o.conversation_id : null,
+    conversation_generation: asNum(o.conversation_generation), conversation_claimed_by: typeof o.conversation_claimed_by === 'string' ? o.conversation_claimed_by : null,
     revision: asNum(o.revision) ?? 0, request_hash: asString(o.request_hash), quote_revision: asNum(o.quote_revision),
     order_state: knownState(o.order_state, ['draft','awaiting_customer','confirmed','approved','abandoned','closed'] as const, 'draft'),
     conversation_state: knownState(o.conversation_state, ['ai','needs_human','staff'] as const, 'needs_human'),
@@ -48,7 +58,7 @@ export function mapOrder(raw: unknown): OrderView {
     payment_state: knownState(o.payment_state, ['unpaid','deposit_requested','partial','paid','refund_pending','refunded'] as const, 'unpaid'),
     confirmed_revision: asNum(o.confirmed_revision), confirmed_quote_revision: asNum(o.confirmed_quote_revision),
     amount_vnd: asNum(o.amount_vnd), required_deposit_vnd: asNum(o.required_deposit_vnd) ?? 0, received_vnd: asNum(o.received_vnd) ?? 0,
-    large_cost_flag: o.large_cost_flag === true, delivered_sheets: asNum(o.delivered_sheets) ?? 0, total_sheets: asNum(o.total_sheets),
+    large_cost_flag: o.large_cost_flag === true, delivered_sheets: asNum(o.delivered_sheets) ?? 0, total_sheets: asNum(o.total_sheets), verified_sheets: asNum(o.verified_sheets),
     urgent: o.urgent === true, created_at: asString(o.created_at),
     documents, warnings: Array.isArray(o.warnings) ? o.warnings.filter((w): w is string => typeof w === 'string') : [],
     audit: Array.isArray(o.audit) ? o.audit.map((entry) => { const a = asObject(entry); return { at: asString(a.at), actor: asString(a.actor), action: asString(a.action), summary: asString(a.summary) }; }) : [],
@@ -95,12 +105,21 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
     states.every(x => x === 'NOT_SENT') ? 'NOT_SENT' : 'UNKNOWN';
   const uncertainJobs = latest.filter(j => j.state === 'SENT_UNVERIFIED' || j.state === 'UNKNOWN');
   const jobId = uncertainJobs.length === 1 && typeof uncertainJobs[0].id === 'string' ? uncertainJobs[0].id : null;
-  const count = validMoney(plan.physical_sheets) && plan.physical_sheets > 0 ? plan.physical_sheets : null;
+  const count = (asNum(plan.physical_sheets) ?? 0) > 0 ? asNum(plan.physical_sheets) : null;
   const delivered = asNum(row.delivered_sheets) ?? 0;
   const amount = asNum(quote.amount_vnd), received = asNum(data.received_vnd) ?? 0;
+  // Only verified real sheets count as physical output. For old jobs without
+  // verified_sheets, the total remains unknown instead of being guessed.
+  const verifiedJobs = latest.filter(j => j.state === 'VERIFIED_DONE');
+  const knownVerified = verifiedJobs.every(j => asNum(j.verified_sheets) !== null);
+  const verifiedSheets = knownVerified && verifiedJobs.length > 0
+    ? verifiedJobs.reduce((sum, j) => sum + (asNum(j.verified_sheets) ?? 0), 0)
+    : null;
+  const physicallyComplete = count !== null && verifiedSheets !== null && verifiedSheets >= count && delivered <= verifiedSheets;
   const warnings = [
     'Backend chưa cung cấp xác nhận khách, preview từng file và nhật ký: giao diện không cho duyệt khi chưa xác minh.',
     ...(latest.some(j => j.state === 'UNKNOWN') ? ['Có lệnh UNKNOWN, cần đối soát; không tự gửi lại.'] : []),
+    ...(print_state === 'VERIFIED_DONE' && !physicallyComplete ? ['Giấy thật đã xác minh chưa đủ hoặc chưa có số tờ kiểm chứng; không đánh dấu in/giao đủ.'] : []),
   ];
   const trustedPlan = plan.ready === true && typeof plan.verified_by === 'string' &&
     typeof plan.artifact_ref === 'string' && plan.request_hash === rev.request_hash;
@@ -113,8 +132,8 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
     large_cost_flag: quote.significant_cost === true,
     manual_lock: row.manual_lock === true || row.print_closed === true,
     order_state: row.print_closed === true ? 'closed' : latest.length > 0 ? 'approved' : 'draft',
-    print_state, total_sheets: count, delivered_sheets: delivered,
-    delivery_state: print_state === 'VERIFIED_DONE' ? (count !== null && delivered >= count ? 'delivered' : delivered > 0 ? 'partial' : 'quality_check') : delivered > 0 ? 'partial' : 'not_ready',
+    print_state, total_sheets: count, verified_sheets: verifiedSheets, delivered_sheets: delivered,
+    delivery_state: print_state === 'VERIFIED_DONE' && count !== null && verifiedSheets !== null && delivered >= count && verifiedSheets >= count ? 'delivered' : delivered > 0 ? 'partial' : print_state === 'VERIFIED_DONE' ? 'quality_check' : 'not_ready',
     payment_state: amount !== null && received >= amount ? 'paid' : received > 0 ? 'partial' : 'unpaid',
     created_at: row.created_at, warnings, documents: [],
   });
@@ -181,8 +200,23 @@ export class HttpPrintPort implements PrintPort {
     return mapCoreOrderDetail(raw);
   }
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string) {
-    // Confirmed AI1 routes only. AI2/conversation integration has no registered route yet.
-    if (kind === 'handover' || kind === 'return_to_ai') throw new ApiFault(503, 'NOT_IMPLEMENTED', 'API hội thoại chưa được bàn giao, không thực hiện thay đổi.');
+    // AI1 CODE-201 routes now exist, but they require current generation from a
+    // verified read model. No value supplied => fail closed, no request sent.
+    if (kind === 'handover' || kind === 'return_to_ai') {
+      if (order.conversation_generation === null || !order.conversation_id) throw new ApiFault(503, 'GENERATION_UNVERIFIED', 'Chưa có generation hội thoại do máy chủ xác minh, không được tiếp quản/trả AI.');
+      const response = asObject(await this.call(actionPath(order,kind), {method:'POST',
+        body:JSON.stringify({expected_generation:order.conversation_generation,idempotency_key:key}),
+        headers:{'Idempotency-Key':key}}));
+      const expectedState = kind === 'handover' ? 'HUMAN' : 'AI';
+      if (response.conversation_id !== order.conversation_id || response.status !== expectedState ||
+          !Number.isSafeInteger(response.generation) || (response.generation as number) <= order.conversation_generation) {
+        throw new ApiFault(503,'INVALID_CONVERSATION_RECEIPT','Biên nhận hội thoại không xác minh thay đổi generation; cần đối soát.');
+      }
+      // Only server receipt, not browser assumptions, changes the conversation axis.
+      return {...order, conversation_generation:response.generation as number,
+        conversation_claimed_by:typeof response.claimed_by === 'string'?response.claimed_by:null,
+        conversation_state:kind === 'handover' ? 'staff' : 'ai'};
+    }
     const body = makeMutation(order, payload, key);
     const raw = await this.call(actionPath(order, kind), { method: 'POST', body: JSON.stringify(body), headers: { 'Idempotency-Key': key } });
     const receipt = asObject(raw);
