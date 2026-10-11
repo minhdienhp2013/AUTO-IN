@@ -1,0 +1,282 @@
+import { randomBytes } from 'node:crypto';
+import { assertAgent, assertOwner, assertPlan, assertProcessor, assertStaff, canAccessShop, canonical, checkRevision, DomainError, newId, nonNegativeVnd, printingAllowed, sha, shortage, type JobRow, type OrderRow, type Principal, type PrintPlan, type QuoteRow, type RevisionRow, type SettingsRow } from './model.js';
+import { PgStore, type SqlConnection } from '../storage/database.js';
+
+export class OrderService {
+ constructor(private readonly store:PgStore, private readonly now:()=>Date=()=>new Date()){}
+ private async order(db:SqlConnection,id:string,p:Principal):Promise<OrderRow>{
+  const o=await this.store.one<OrderRow>(db,'SELECT * FROM core_orders WHERE id=$1 FOR UPDATE',[id]);canAccessShop(p,o.shop_id);return o;
+ }
+ private async revision(db:SqlConnection,o:OrderRow):Promise<RevisionRow>{return this.store.one(db,'SELECT * FROM core_revisions WHERE order_id=$1 AND revision=$2',[o.id,o.active_revision]);}
+ private async quote(db:SqlConnection,id:string):Promise<QuoteRow|null>{return (await db.query<QuoteRow>('SELECT * FROM core_quotes WHERE order_id=$1 ORDER BY quote_revision DESC LIMIT 1',[id])).rows[0]??null;}
+ private async received(db:SqlConnection,id:string):Promise<number>{const x=await this.store.one<{amount:string}>(db,"SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_vnd WHEN direction='refunded' THEN -amount_vnd ELSE 0 END),0)::text AS amount FROM core_payments WHERE order_id=$1",[id]);return Number(x.amount);}
+ private async requireUnsent(db:SqlConnection,o:OrderRow):Promise<void>{
+  const jobs=await db.query<JobRow>('SELECT * FROM core_print_jobs WHERE order_id=$1 AND cancelled_at IS NULL FOR UPDATE',[o.id]);
+  if(jobs.rows.some(j=>j.state!=='NOT_SENT')) throw new DomainError('PRINT_ALREADY_ATTEMPTED','Lệnh đã gửi hoặc không rõ, phải đối soát trước khi sửa',409);
+  await db.query("UPDATE core_print_jobs SET cancelled_at=now(), claimed_by=NULL,lease_secret_hash=NULL,lease_until=NULL WHERE order_id=$1 AND state='NOT_SENT' AND cancelled_at IS NULL",[o.id]);
+ }
+ private async audit(db:SqlConnection,p:Principal,action:string,order_id:string,details:unknown={}):Promise<void>{await db.query('INSERT INTO core_audit(id,shop_id,actor_id,action,order_id,details) VALUES ($1,$2,$3,$4,$5,$6::jsonb)',[newId(),p.shop_id,p.id,action,order_id,JSON.stringify(details)]);}
+ async createDraft(p:Principal,input:{customer_id:string;conversation_id?:string;request_data:unknown;idempotency_key:string}){
+  assertStaff(p);
+  if(!input.customer_id||!input.request_data)throw new DomainError('INVALID_ORDER','Thiếu khách hoặc nội dung yêu cầu');
+  return this.store.tx(db=>this.store.once(db,p,'orders.create',input.idempotency_key,input,async()=>{
+   const id=newId(),hash=sha(canonical(input.request_data));
+   await db.query('INSERT INTO core_orders(id,shop_id,customer_id,conversation_id) VALUES($1,$2,$3,$4)',[id,p.shop_id,input.customer_id,input.conversation_id??null]);
+   await db.query('INSERT INTO core_revisions(order_id,revision,request_hash,request_data) VALUES($1,1,$2,$3::jsonb)',[id,hash,JSON.stringify(input.request_data)]);
+   await this.audit(db,p,'order.created',id,{revision:1,request_hash:hash});
+   return {order_id:id,revision:1,request_hash:hash,print_ready:false};
+  }));
+ }
+ async revise(p:Principal,id:string,input:{expected_revision:number;request_data:unknown;idempotency_key:string}){
+  assertStaff(p);
+  return this.store.tx(db=>this.store.once(db,p,`orders.${id}.revise`,input.idempotency_key,input,async()=>{
+   const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
+   if(o.print_closed||o.manual_lock) throw new DomainError('ORDER_LOCKED','Đơn đã khóa hoặc đóng xử lý in',409);
+   await this.requireUnsent(db,o);
+   const next=o.active_revision+1,hash=sha(canonical(input.request_data));
+   await db.query('INSERT INTO core_revisions(order_id,revision,request_hash,request_data) VALUES($1,$2,$3,$4::jsonb)',[id,next,hash,JSON.stringify(input.request_data)]);
+   await db.query('UPDATE core_orders SET active_revision=$2,updated_at=now() WHERE id=$1',[id,next]);
+   await this.audit(db,p,'order.revised',id,{old_revision:o.active_revision,revision:next,request_hash:hash});
+   return {order_id:id,revision:next,request_hash:hash,requires_reconfirmation:true};
+  }));
+ }
+ // Trusted only: never mount this on a public staff/customer route. Processor must resolve metadata itself.
+ async publishVerifiedPlan(p:Principal,id:string,input:{expected_revision:number;plan:PrintPlan;idempotency_key:string}){
+  assertProcessor(p);
+  return this.store.tx(db=>this.store.once(db,p,`orders.${id}.plan`,input.idempotency_key,input,async()=>{
+   const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
+   if(o.print_closed||o.manual_lock)throw new DomainError('ORDER_LOCKED','Đơn đã bị khóa',409);
+   await this.requireUnsent(db,o);
+   const old=await this.revision(db,o);assertPlan(input.plan,old.request_hash);
+   const next=o.active_revision+1;
+   await db.query('INSERT INTO core_revisions(order_id,revision,request_hash,request_data,plan) VALUES($1,$2,$3,$4::jsonb,$5::jsonb)',[id,next,old.request_hash,JSON.stringify(old.request_data),JSON.stringify(input.plan)]);
+   await db.query('UPDATE core_orders SET active_revision=$2,updated_at=now() WHERE id=$1',[id,next]);
+   await this.audit(db,p,'plan.verified',id,{revision:next,physical_sheets:input.plan.physical_sheets});
+   return {order_id:id,revision:next,requires_reconfirmation:true};
+  }));
+ }
+ async setQuote(p:Principal,id:string,input:{expected_revision:number;amount_vnd:number;deposit_required_vnd:number;significant_cost:boolean;idempotency_key:string}){
+  assertStaff(p);nonNegativeVnd(input.amount_vnd);nonNegativeVnd(input.deposit_required_vnd);
+  return this.store.tx(db=>this.store.once(db,p,`orders.${id}.quote`,input.idempotency_key,input,async()=>{
+   const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
+   if(o.print_closed||o.manual_lock)throw new DomainError('ORDER_LOCKED','Đơn đã khóa',409);
+   await this.requireUnsent(db,o);
+   const old=await this.quote(db,id),next=(old?.quote_revision??0)+1;
+   await db.query('INSERT INTO core_quotes(order_id,quote_revision,amount_vnd,deposit_required_vnd,significant_cost,entered_by) VALUES($1,$2,$3,$4,$5,$6)',[id,next,input.amount_vnd,input.deposit_required_vnd,input.significant_cost,p.id]);
+   await this.audit(db,p,'quote.created',id,{quote_revision:next,amount_vnd:input.amount_vnd});
+   return {order_id:id,quote_revision:next,requires_price_reconfirmation:true};
+  }));
+ }
+ async confirm(p:Principal,id:string,input:{expected_revision:number;kind:'request'|'quote';quote_revision?:number;idempotency_key:string}){
+  if(!p.verified||p.role!=='customer'||!p.customer_id)throw new DomainError('CUSTOMER_VERIFICATION_REQUIRED','Phải xác minh khách qua kênh/credential',403);
+  return this.store.tx(db=>this.store.once(db,p,`orders.${id}.confirm.${input.kind}`,input.idempotency_key,input,async()=>{
+   const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
+   if(o.customer_id!==p.customer_id)throw new DomainError('WRONG_CUSTOMER','Không phải khách của đơn',403);
+   if(o.manual_lock||o.print_closed)throw new DomainError('ORDER_LOCKED','Đơn bị khóa',409);
+   const rev=await this.revision(db,o);const q=await this.quote(db,id);
+   let quote_revision:number|null=null;
+   if(input.kind==='quote'){
+    if(!q||q.quote_revision!==input.quote_revision)throw new DomainError('STALE_QUOTE','Giá đã thay đổi',409);
+    quote_revision=q.quote_revision;
+   }
+   await db.query('INSERT INTO core_confirmations(id,order_id,revision,request_hash,kind,quote_revision,customer_id,channel) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[newId(),id,rev.revision,rev.request_hash,input.kind,quote_revision,p.customer_id,'verified_credential']);
+   await this.audit(db,p,'customer.confirmed',id,{revision:rev.revision,kind:input.kind,quote_revision});
+   return {order_id:id,revision:rev.revision,kind:input.kind,quote_revision};
+  }));
+ }
+ async recordPayment(p:Principal,id:string,input:{direction:'received'|'refund_approved'|'refunded';method:'cash'|'bank_transfer';amount_vnd:number;reference?:string;idempotency_key:string}){
+  assertStaff(p);nonNegativeVnd(input.amount_vnd);if(input.amount_vnd===0)throw new DomainError('INVALID_MONEY','Số tiền phải lớn hơn 0');
+  if(input.direction!=='received')assertOwner(p);
+  // Staff-observed actual receipt; no image recognition/payment webhooks are trusted here.
+  return this.store.tx(db=>this.store.once(db,p,`orders.${id}.payment`,input.idempotency_key,input,async()=>{
+   await this.order(db,id,p);
+   if(input.direction==='refunded'){
+    const approved=await this.store.one<{total:string}>(db,"SELECT COALESCE(SUM(CASE WHEN direction='refund_approved' THEN amount_vnd WHEN direction='refunded' THEN -amount_vnd ELSE 0 END),0)::text AS total FROM core_payments WHERE order_id=$1",[id]);
+    if(Number(approved.total)<input.amount_vnd)throw new DomainError('REFUND_NOT_APPROVED','Chưa duyệt đủ số tiền hoàn');
+   }
+   const pid=newId();await db.query('INSERT INTO core_payments(id,order_id,direction,method,amount_vnd,reference,verified_by) VALUES($1,$2,$3,$4,$5,$6,$7)',[pid,id,input.direction,input.method,input.amount_vnd,input.reference??null,p.id]);
+   await this.audit(db,p,'payment.'+input.direction,id,{payment_id:pid,amount_vnd:input.amount_vnd});
+   return {payment_id:pid,received_vnd:await this.received(db,id)};
+  }));
+ }
+ async approve(p:Principal,id:string,input:{expected_revision:number;quote_revision?:number;acknowledge_deposit_shortage:boolean;idempotency_key:string}){
+  assertStaff(p);
+  return this.store.tx(db=>this.store.once(db,p,`orders.${id}.approve`,input.idempotency_key,input,async()=>{
+   const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
+   if(o.manual_lock||o.print_closed)throw new DomainError('ORDER_LOCKED','Đơn bị khóa/đóng',409);
+   const rev=await this.revision(db,o);if(!rev.plan)throw new DomainError('PRINT_NOT_READY','Chưa có kế hoạch in tin cậy');assertPlan(rev.plan,rev.request_hash);
+   const confirmation=await db.query('SELECT id FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND kind=$4 LIMIT 1',[id,rev.revision,rev.request_hash,'request']);
+   if(!confirmation.rows.length)throw new DomainError('CUSTOMER_NOT_CONFIRMED','Khách chưa xác nhận phiên bản hiện tại');
+   const q=await this.quote(db,id);const needsPrice=rev.plan.physical_sheets>150||Boolean(q?.significant_cost);
+   if(needsPrice){
+    if(!q||q.quote_revision!==input.quote_revision)throw new DomainError('QUOTE_REQUIRED','Phải có báo giá nhân viên nhập và đúng phiên bản giá');
+    const approvedQuote=await db.query('SELECT id FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND kind=$3 AND quote_revision=$4 LIMIT 1',[id,rev.revision,'quote',q.quote_revision]);
+    if(!approvedQuote.rows.length)throw new DomainError('PRICE_CONFIRMATION_REQUIRED','Khách chưa xác nhận mức giá');
+   }
+   const missing=shortage(q?.deposit_required_vnd??0,await this.received(db,id));
+   if(missing>0&&!input.acknowledge_deposit_shortage)throw new DomainError('DEPOSIT_WARNING_REQUIRED','Cần xác nhận đã xem cảnh báo thiếu cọc');
+   const existing=await db.query('SELECT id FROM core_print_jobs WHERE order_id=$1 AND revision=$2 AND cancelled_at IS NULL LIMIT 1',[id,rev.revision]);
+   if(existing.rows.length)throw new DomainError('ALREADY_APPROVED','Phiên bản đã có lệnh, không được duyệt kép',409);
+   const approval_id=newId(),job_id=newId();
+   await db.query('INSERT INTO core_approvals(id,order_id,revision,request_hash,quote_revision,actor_id,deposit_short_vnd) VALUES($1,$2,$3,$4,$5,$6,$7)',[approval_id,id,rev.revision,rev.request_hash,q?.quote_revision??null,p.id,missing]);
+   await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id) VALUES($1,$2,$3,$4,$5,$6)',[job_id,id,rev.revision,rev.request_hash,approval_id,rev.plan.printer_id]);
+   await this.audit(db,p,'print.approved',id,{revision:rev.revision,approval_id,job_id,deposit_short_vnd:missing});
+   return {order_id:id,revision:rev.revision,approval_id,job_id,deposit_short_vnd:missing};
+  }));
+ }
+ private async validateJob(db:SqlConnection,p:Principal,job_id:string,lease_token:string,expected_revision:number){
+  const row=await this.store.one<{order_id:string}>(db,'SELECT order_id FROM core_print_jobs WHERE id=$1',[job_id]);
+  const o=await this.order(db,row.order_id,p);const j=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 FOR UPDATE',[job_id]);
+  checkRevision(expected_revision,o.active_revision);
+  const rev=await this.revision(db,o);const approved=await db.query('SELECT id FROM core_approvals WHERE id=$1 AND revision=$2 AND request_hash=$3 AND order_id=$4',[j.approval_id,o.active_revision,rev.request_hash,o.id]);
+  if(!approved.rows.length||j.revision!==o.active_revision||j.request_hash!==rev.request_hash||j.cancelled_at)throw new DomainError('STALE_APPROVAL','Duyệt không còn hiệu lực',409);
+  if(!lease_token||sha(lease_token)!==j.lease_secret_hash||j.claimed_by!==p.id)throw new DomainError('BAD_LEASE','Lease không hợp lệ',403);
+  return {o,j,rev};
+ }
+ private async checkGates(db:SqlConnection,o:OrderRow,j:JobRow,rev:RevisionRow):Promise<SettingsRow>{
+  if(o.manual_lock||o.print_closed)throw new DomainError('MANUAL_LOCK','Đơn bị khóa xử lý in',409);
+  if(!rev.plan)throw new DomainError('PRINT_NOT_READY','Kế hoạch in chưa xác minh');assertPlan(rev.plan,rev.request_hash);
+  if(rev.plan.printer_id!==j.printer_id)throw new DomainError('PRINTER_CHANGED','Máy in đã khác',409);
+  const s=await this.store.one<SettingsRow>(db,'SELECT * FROM core_shop_settings WHERE shop_id=$1 FOR UPDATE',[o.shop_id]);
+  if(!printingAllowed(s,this.now()))throw new DomainError('PRINT_CLOSED','Đang ngoài lịch/ngày nghỉ/khóa vận hành',409,true);
+  return s;
+ }
+ async claim(p:Principal,input:{printer_id:string;idempotency_key:string}){
+  assertAgent(p);if(!input.printer_id)throw new DomainError('PRINTER_REQUIRED','Thiếu máy in');
+  return this.store.tx(db=>this.store.once(db,p,'jobs.claim',input.idempotency_key,input,async()=>{
+   // Lock order first for consistent lock ordering with revise/approve/manual/mark-sending.
+   const candidates=await db.query<{id:string}>(`SELECT o.id FROM core_orders o JOIN core_print_jobs j ON j.order_id=o.id
+    WHERE o.shop_id=$1 AND o.active_revision=j.revision AND NOT o.manual_lock AND NOT o.print_closed
+    AND j.printer_id=$2 AND j.state='NOT_SENT' AND j.cancelled_at IS NULL
+    AND (j.lease_until IS NULL OR j.lease_until<now())
+    ORDER BY j.created_at,j.id FOR UPDATE OF o SKIP LOCKED LIMIT 1`,[p.shop_id,input.printer_id]);
+   if(!candidates.rows[0])return {job:null};
+   const o=await this.order(db,candidates.rows[0].id,p);
+   const jobs=await db.query<JobRow>("SELECT * FROM core_print_jobs WHERE order_id=$1 AND printer_id=$2 AND revision=$3 AND state='NOT_SENT' AND cancelled_at IS NULL AND (lease_until IS NULL OR lease_until<now()) ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1",[o.id,input.printer_id,o.active_revision]);
+   const job=jobs.rows[0];if(!job)return {job:null};
+   const rev=await this.revision(db,o);await this.checkGates(db,o,job,rev);
+   const secret=randomBytes(32).toString('base64url');
+   await db.query("UPDATE core_print_jobs SET claimed_by=$2,lease_secret_hash=$3,lease_until=now()+interval '90 seconds' WHERE id=$1",[job.id,p.id,sha(secret)]);
+   await this.audit(db,p,'job.claim',o.id,{job_id:job.id});
+   return {job:{job_id:job.id,order_id:o.id,revision:o.active_revision,request_hash:job.request_hash,approval_id:job.approval_id,printer_id:job.printer_id,lease_token:secret,lease_seconds:90,mode:(await this.store.one<SettingsRow>(db,'SELECT * FROM core_shop_settings WHERE shop_id=$1',[o.shop_id])).mode}};
+  }));
+ }
+ async preflight(p:Principal,job_id:string,input:{expected_revision:number;lease_token:string}){
+  assertAgent(p);return this.store.tx(async db=>{
+   const {o,j,rev}=await this.validateJob(db,p,job_id,input.lease_token,input.expected_revision);
+   if(j.state!=='NOT_SENT'||!j.lease_until||j.lease_until<this.now())throw new DomainError('LEASE_EXPIRED','Job đã gửi hoặc lease hết hạn',409);
+   const settings=await this.checkGates(db,o,j,rev);
+   return {allowed:true,job_id,revision:j.revision,mode:settings.mode,approval_id:j.approval_id};
+  });
+ }
+ async markSending(p:Principal,job_id:string,input:{expected_revision:number;lease_token:string;idempotency_key:string}){
+  assertAgent(p);return this.store.tx(db=>this.store.once(db,p,`jobs.${job_id}.sending`,input.idempotency_key,input,async()=>{
+   const {o,j,rev}=await this.validateJob(db,p,job_id,input.lease_token,input.expected_revision);
+   if(j.state!=='NOT_SENT'||!j.lease_until||j.lease_until<this.now())throw new DomainError('NOT_SENDABLE','Lệnh không còn chắc chắn chưa gửi',409);
+   const settings=await this.checkGates(db,o,j,rev);
+   await db.query("UPDATE core_print_jobs SET state='SENDING',sent_at=now(),lease_until=NULL WHERE id=$1 AND state='NOT_SENT'",[job_id]);
+   await this.audit(db,p,'job.mark_sending',o.id,{job_id,mode:settings.mode});
+   return {job_id,state:'SENDING' as const,mode:settings.mode};
+  }));
+ }
+ async report(p:Principal,job_id:string,input:{expected_revision:number;lease_token:string;result:'sent_unverified'|'unknown'|'simulated_done';evidence_kind:'spooler'|'agent_uncertain'|'simulated';idempotency_key:string}){
+  assertAgent(p);return this.store.tx(db=>this.store.once(db,p,`jobs.${job_id}.report`,input.idempotency_key,input,async()=>{
+   const {o,j}=await this.validateJob(db,p,job_id,input.lease_token,input.expected_revision);
+   if(j.state!=='SENDING')throw new DomainError('INVALID_JOB_STATE','Chỉ có thể report SENDING',409);
+   const settings=await this.store.one<SettingsRow>(db,'SELECT * FROM core_shop_settings WHERE shop_id=$1',[o.shop_id]);
+   const map={sent_unverified:'SENT_UNVERIFIED',unknown:'UNKNOWN',simulated_done:'SIMULATED_DONE'} as const;
+   if((settings.mode==='simulation' && input.result==='sent_unverified')||(settings.mode!=='simulation' && input.result==='simulated_done')||(input.result==='sent_unverified'&&input.evidence_kind!=='spooler')||(input.result==='unknown'&&input.evidence_kind!=='agent_uncertain')||(input.result==='simulated_done'&&input.evidence_kind!=='simulated'))throw new DomainError('INVALID_EVIDENCE','Bằng chứng/trạng thái không phù hợp');
+   await db.query('UPDATE core_print_jobs SET state=$2,evidence_kind=$3,reported_at=now() WHERE id=$1',[job_id,map[input.result],input.evidence_kind]);
+   await this.audit(db,p,'job.report',o.id,{job_id,state:map[input.result],evidence_kind:input.evidence_kind});
+   return {job_id,state:map[input.result]};
+  }));
+ }
+ async markUnknownForReconciliation(p:Principal,job_id:string,input:{reason:string;idempotency_key:string}){
+  assertStaff(p);if(!input.reason?.trim())throw new DomainError('REASON_REQUIRED','Phải ghi lý do mất kết quả gửi');
+  return this.store.tx(db=>this.store.once(db,p,`jobs.${job_id}.unknown`,input.idempotency_key,input,async()=>{
+   const x=await this.store.one<{order_id:string}>(db,'SELECT order_id FROM core_print_jobs WHERE id=$1',[job_id]);
+   const o=await this.order(db,x.order_id,p);const j=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 FOR UPDATE',[job_id]);
+   if(j.state!=='SENDING')throw new DomainError('INVALID_JOB_STATE','Chỉ đánh UNKNOWN khi gửi đang dở',409);
+   await db.query("UPDATE core_print_jobs SET state='UNKNOWN',evidence_kind='manual_uncertain',reported_at=now() WHERE id=$1",[job_id]);
+   await this.audit(db,p,'job.unknown_reconciliation',o.id,{job_id,reason:input.reason});
+   return {job_id,state:'UNKNOWN' as const,requires_manual_reconciliation:true};
+  }));
+ }
+ async verifyPaper(p:Principal,job_id:string,input:{evidence_kind:'staff_inspected'|'device_verified';physical_sheets:number;note:string;idempotency_key:string}){
+  assertStaff(p);if(!Number.isSafeInteger(input.physical_sheets)||input.physical_sheets<1||!input.note.trim())throw new DomainError('INVALID_EVIDENCE','Cần số giấy và ghi chú kiểm chứng');
+  return this.store.tx(db=>this.store.once(db,p,`jobs.${job_id}.verify`,input.idempotency_key,input,async()=>{
+   const ref=await this.store.one<{order_id:string}>(db,'SELECT order_id FROM core_print_jobs WHERE id=$1',[job_id]);
+   const o=await this.order(db,ref.order_id,p);const j=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 FOR UPDATE',[job_id]);
+   if(j.state!=='SENT_UNVERIFIED'&&j.state!=='UNKNOWN')throw new DomainError('VERIFY_STATE','Chỉ kiểm chứng lệnh thực đã gửi/chưa rõ',409);
+   await db.query("UPDATE core_print_jobs SET state='VERIFIED_DONE',evidence_kind=$2,verified_sheets=$3,verified_by=$4,reported_at=now() WHERE id=$1",[job_id,input.evidence_kind,input.physical_sheets,p.id]);
+   await this.audit(db,p,'job.paper_verified',o.id,{job_id,physical_sheets:input.physical_sheets,evidence_kind:input.evidence_kind});
+   return {job_id,state:'VERIFIED_DONE' as const};
+  }));
+ }
+ async manual(p:Principal,id:string,input:{expected_revision:number;reason:string;idempotency_key:string}){
+  assertStaff(p);if(!input.reason?.trim())throw new DomainError('REASON_REQUIRED','Cần ghi lý do xử lý thủ công');
+  return this.store.tx(db=>this.store.once(db,p,`orders.${id}.manual`,input.idempotency_key,input,async()=>{
+   const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
+   await db.query('UPDATE core_orders SET manual_lock=true WHERE id=$1',[id]);
+   await db.query("UPDATE core_print_jobs SET claimed_by=NULL,lease_secret_hash=NULL,lease_until=NULL WHERE order_id=$1 AND state='NOT_SENT'",[id]);
+   const uncertain=await db.query("SELECT id FROM core_print_jobs WHERE order_id=$1 AND state IN ('SENDING','SENT_UNVERIFIED','UNKNOWN')",[id]);
+   await this.audit(db,p,'order.manual_lock',id,{reason:input.reason,in_flight:uncertain.rows.length});
+   return {order_id:id,manual_lock:true,must_reconcile_in_flight:uncertain.rows.length>0};
+  }));
+ }
+ async deliver(p:Principal,id:string,input:{physical_sheets:number;expected_revision:number;note?:string;idempotency_key:string}){
+  assertStaff(p);if(!Number.isSafeInteger(input.physical_sheets)||input.physical_sheets<1)throw new DomainError('INVALID_DELIVERY','Số tờ giao phải lớn hơn 0');
+  return this.store.tx(db=>this.store.once(db,p,`orders.${id}.deliver`,input.idempotency_key,input,async()=>{
+   const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
+   const rev=await this.revision(db,o);
+   if(!rev.plan)throw new DomainError('NO_PRINT_PLAN','Thiếu kế hoạch in');
+   const printed=await this.store.one<{sum:string}>(db,"SELECT COALESCE(SUM(verified_sheets),0)::text AS sum FROM core_print_jobs WHERE order_id=$1 AND state='VERIFIED_DONE'",[id]);
+   const available=Number(printed.sum)-o.delivered_sheets;
+   if(input.physical_sheets>available)throw new DomainError('PAPER_NOT_VERIFIED','Không thể ghi giao giấy chưa kiểm chứng');
+   await db.query('INSERT INTO core_deliveries(id,order_id,physical_sheets,actor_id,note) VALUES($1,$2,$3,$4,$5)',[newId(),id,input.physical_sheets,p.id,input.note??null]);
+   const total=o.delivered_sheets+input.physical_sheets;
+   await db.query('UPDATE core_orders SET delivered_sheets=$2 WHERE id=$1',[id,total]);
+   await this.audit(db,p,'order.delivered',id,{delivered_sheets:input.physical_sheets,total_delivered:total});
+   return {order_id:id,delivered_sheets:total,remaining_sheets:Math.max(0,Number(printed.sum)-total)};
+  }));
+ }
+ async closePrintException(p:Principal,id:string,input:{expected_revision:number;reason:string;idempotency_key:string}){
+  assertStaff(p);if(!input.reason?.trim())throw new DomainError('REASON_REQUIRED','Cần lý do đóng ngoại lệ');
+  return this.store.tx(db=>this.store.once(db,p,`orders.${id}.close_exception`,input.idempotency_key,input,async()=>{
+   const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
+   const received=await this.received(db,id);
+   const jobs=await db.query<JobRow>('SELECT * FROM core_print_jobs WHERE order_id=$1 FOR UPDATE',[id]);
+   if(jobs.rows.some(j=>j.state==='SENDING'))throw new DomainError('JOB_IN_FLIGHT','Không được giả đóng khi đang gửi lệnh',409);
+   if(p.role!=='owner'&&(received!==0||jobs.rows.some(j=>j.state!=='NOT_SENT')))throw new DomainError('OWNER_REQUIRED','Đơn có tiền/đã in/không rõ: chỉ chủ đóng phần in',403);
+   await db.query('UPDATE core_orders SET print_closed=true,manual_lock=true,closed_reason=$2 WHERE id=$1',[id,input.reason]);
+   await db.query("UPDATE core_print_jobs SET cancelled_at=now(),claimed_by=NULL,lease_secret_hash=NULL,lease_until=NULL WHERE order_id=$1 AND state='NOT_SENT' AND cancelled_at IS NULL",[id]);
+   const quote=await this.quote(db,id);const rev=await this.revision(db,o);
+   const owed=(quote?.amount_vnd??0)-received;const undelivered=Math.max(0,(rev.plan?.physical_sheets??0)-o.delivered_sheets);
+   await this.audit(db,p,'order.print_exception_closed',id,{reason:input.reason,owed_vnd:owed,undelivered_sheets:undelivered});
+   return {order_id:id,print_closed:true,delivered_sheets:o.delivered_sheets,undelivered_sheets:undelivered,receivable_vnd:Math.max(0,owed),refundable_vnd:Math.max(0,-owed)};
+  }));
+ }
+ async approveReprint(p:Principal,id:string,input:{expected_revision:number;original_job_id:string;reason:string;idempotency_key:string}){
+  assertOwner(p);if(!input.reason?.trim())throw new DomainError('REASON_REQUIRED','Cần lý do in lại');
+  return this.store.tx(db=>this.store.once(db,p,`orders.${id}.reprint`,input.idempotency_key,input,async()=>{
+   const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
+   if(o.print_closed||o.manual_lock)throw new DomainError('ORDER_LOCKED','Đơn đang khóa',409);
+   const original=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 AND order_id=$2 FOR UPDATE',[input.original_job_id,id]);
+   if(original.state==='NOT_SENT'||original.state==='SENDING'||original.state==='SIMULATED_DONE')throw new DomainError('NOT_REPRINTABLE','Không được in lại lệnh chưa gửi/mô phỏng',409);
+   const rev=await this.revision(db,o);if(original.revision!==o.active_revision||original.request_hash!==rev.request_hash)throw new DomainError('STALE_REVISION','In lại bản cũ cần đối soát thủ công',409);
+   const job_id=newId();await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,original_job_id,authorized_reprint_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[job_id,id,rev.revision,rev.request_hash,original.approval_id,original.printer_id,original.id,p.id]);
+   await this.audit(db,p,'job.reprint_owner_approved',id,{job_id,original_job_id:original.id,reason:input.reason});
+   return {job_id,order_id:id,requires_agent_claim:true};
+  }));
+ }
+ async getOrder(p:Principal,id:string){
+  assertStaff(p);return this.store.tx(async db=>{
+   const o=await this.order(db,id,p);
+   const revisions=await db.query<RevisionRow>('SELECT * FROM core_revisions WHERE order_id=$1 ORDER BY revision',[id]);
+   const jobs=await db.query('SELECT id,revision,state,printer_id,created_at,evidence_kind,verified_sheets FROM core_print_jobs WHERE order_id=$1 ORDER BY created_at',[id]);
+   const quote=await this.quote(db,id);const received=await this.received(db,id);
+   return {order:o,revisions:revisions.rows,jobs:jobs.rows,quote,received_vnd:received,receivable_vnd:Math.max(0,(quote?.amount_vnd??0)-received),refundable_vnd:Math.max(0,received-(quote?.amount_vnd??0))};
+  });
+ }
+ async listOrders(p:Principal){assertStaff(p);const res=await this.store.pool.query('SELECT id,customer_id,active_revision,manual_lock,print_closed,delivered_sheets,created_at FROM core_orders WHERE shop_id=$1 ORDER BY created_at DESC LIMIT 100',[p.shop_id]);return res.rows;}
+}
