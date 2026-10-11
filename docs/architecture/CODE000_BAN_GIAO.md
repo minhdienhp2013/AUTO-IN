@@ -48,3 +48,7 @@ Không đổi âm thầm wire đang dùng. Các tên trên cần được chốt
 - AI5: nối acceptance adapter sản phẩm và PG hai connection độc lập; self-test/skip không phải nghiệm thu. OA/Ricoh/iPhone/210 đơn/7 ngày vẫn chưa kiểm chứng.
 
 Nguồn chính thức đã đối chiếu: Fastify TypeScript + Validation and Serialization, Node release matrix, TypeBox schemas. Không thêm Redis/Kafka/microservices hoặc adapter thật.
+
+## Quyết định tương thích cho đợt2
+
+Ngày11/10/2026 AI0 chốt giữ wire thực tế AI1 fc0ca14 mà AI3/AI4 đang dùng; schema/OpenAPI scaffold sẽ do AI0 đồng bộ ở CODE-006. Consumer chưa đổi sang manifest/lease_id hoặc body khác trong exports. Chi tiết [README đợt2](../prompts/dot-2/README.md); bảng khác biệt bên trên là checklist sửa điểm nối, không là lệnh buộc consumer đổi tất cả body.

@@ -42,3 +42,18 @@ Lượt sau chỉ gửi mã việc, BASE SHA mới nếu có, file được sử
 ## Entry được cấp cho CODE-000
 
 AI0 sở hữu backend/app.ts (composition) và backend/server.ts (CLI). contracts/export.ts sinh contracts/generated/schema.json + openapi.json; consumer không sửa bản sinh. Bộ khung không tạo file trong module AI1–AI5. Nền cố định: 84ab02d643622bc7bfdf07eee662d8797bdd84fd.
+
+## Đợt 2 — CODE-201–205
+
+Theo kiểm tra AI0 và yêu cầu chủ tiếp tục phân việc. Chi tiết nền/nhánh/phạm vi/ca đạt trong [bộ prompt đợt2](prompts/dot-2/README.md). Các phạm vi CODE-101–105 giữ nguyên, không có file hai chủ.
+
+| Mã | AI | Mục tiêu đợt2 |
+| --- | --- | --- |
+| CODE-201 | AI1 | PostgreSQL thật, hàng đợi theo xác nhận, read model, quyền/generation hội thoại |
+| CODE-202 | AI2 | Sửa test DeepSeek; durable queue/dedupe/outbound, nối generation qua Port |
+| CODE-203 | AI3 | Bridge processor và artifact tin cậy; agent DryRun với backend sản phẩm |
+| CODE-204 | AI4 | Sửa ImportMetaEnv, lock/build; mapper read model, handover và browser |
+| CODE-205 | AI5 | Adapter product-backed và nghiệm thu PG/HTTP/DryRun/browser, phân biệt skip |
+| CODE-006 | AI0 | Giữ wire AI1 đang dùng, đồng bộ schema/OpenAPI/mapper, root config và composition, bàn giao SHA tích hợp |
+
+AI1–AI4 song song, AI5 chuẩn bị adapter ngay. CODE-006 chỉ nối module đã bàn giao; lỗi trong module trả chủ file. Không tự merge/deploy hoặc bật in thật. Đây là giao việc; chưa ghi các việc mới đã hoàn tất.
