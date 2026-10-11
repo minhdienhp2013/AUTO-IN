@@ -7,7 +7,7 @@ test("DeepSeek uses JSON mode, parses bounded intent, records usage with mock tr
  const fetchMock=async(url,init)=>{sent.push({url,options:JSON.parse(init.body)});
    return {ok:true,async json(){return {choices:[{finish_reason:"stop",message:{content:JSON.stringify({
      intent:"PRINT",requires_clarification:false
-   })}}],usage:{prompt_tokens:120,completion_tokens:20}}}}};
+   })}}],usage:{prompt_tokens:120,completion_tokens:20}}}};
  };
  const adapter=new DeepSeekIntentAdapter({
   api_key:"synthetic-not-a-token",model:"synthetic-test-model",
