@@ -1,0 +1,7 @@
+{
+  "customer_id": "customer_demo", "conversation_id": "conversation_demo", "idempotency_key": "create_demo_1",
+  "manifest": { "documents": [{ "document_id": "document_demo", "original_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "format": "pdf", "settings": { "printer_id": "RMP7000", "paper": "A4", "orientation": "portrait", "copies": 1,
+      "sides": "duplex", "flip_edge": "long", "scaling": "shrink_to_fit", "color": "monochrome",
+      "page_ranges": [{ "from": 1, "to": 3 }], "separate_files": true, "separate_copies": true } }] }
+}

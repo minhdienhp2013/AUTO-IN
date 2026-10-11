@@ -1,0 +1,14 @@
+{
+  "expected_revision": 1,
+  "idempotency_key": "report_demo",
+  "request_hash": "565ec8c44b818f116999c10f89872d14876581d7eed53176a5ae96b1430df12c",
+  "lease_id": "lease_demo",
+  "send_authorization_id": "authorization_demo",
+  "mode": "simulation",
+  "state": "SIMULATED_DONE",
+  "evidence": {
+    "evidence_kind": "simulated",
+    "journal_id": "journal_demo",
+    "observed_at": "2026-10-11T00:00:00Z"
+  }
+}
