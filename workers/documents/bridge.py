@@ -257,9 +257,21 @@ def process_request(value: dict[str, Any], *, input_root: str | Path,
                 "renderer_versions": manifest["renderer_versions"],
                 "preview_artifacts": preview_records,
                 "requires_price_confirmation": final["requires_price_confirmation"]}
-    except Exception as exc:  # fail closed on malformed settings/renderer exceptions
+    except _ProcessorDeadline:
         if output_dir:
-            shutil.rmtree(output_dir)
+            try:
+                shutil.rmtree(output_dir)
+            except OSError:
+                pass
+        return _human("PROCESSING_TIMEOUT")
+    except Exception as exc:  # never surface untrusted path/content on failure
+        if output_dir:
+            try:
+                shutil.rmtree(output_dir)
+            except OSError:
+                # A privileged retention/cleanup worker must reconcile this
+                # directory; NEVER turn a partial artifact into READY.
+                pass
         reason = str(exc)
         # Never leak paths, filenames or exception bodies back to an API caller.
         if reason not in {
@@ -282,23 +294,75 @@ def process_request(value: dict[str, Any], *, input_root: str | Path,
         return _human(reason)
 
 
+class _ProcessorDeadline(Exception):
+    """Deadline is fail-closed; does not publish partial previews or plans."""
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("DUPLICATE_JSON_KEY")
+        result[key] = value
+    return result
+
+
+def _no_nonfinite_json(value: str) -> None:
+    raise ValueError("NONFINITE_JSON_NUMBER")
+
+
+def run_json_stream(input_stream: Any, *, input_root: str | Path,
+                    artifact_root: str | Path) -> dict[str, Any]:
+    """Exactly one bounded UTF-8 JSON request in, one safe response out.
+
+    Node must also enforce a parent-side wall-clock kill and stdout size cap.
+    """
+    data = input_stream.read(MAX_REQUEST + 1)
+    if len(data) > MAX_REQUEST:
+        return _human("INPUT_TOO_LARGE")
+    try:
+        request = json.loads(data.decode("utf-8"), object_pairs_hook=_no_duplicate_keys,
+                             parse_constant=_no_nonfinite_json)
+    except (ValueError, UnicodeDecodeError, TypeError):
+        return _human("INVALID_JSON")
+    return process_request(request, input_root=input_root, artifact_root=artifact_root)
+
+
 def main() -> int:
     import argparse
-    parser = argparse.ArgumentParser(description="AUTO-IN document bridge; no print")
+    import signal
+    parser = argparse.ArgumentParser(description="AUTO-IN document bridge (NO PRINT)")
     parser.add_argument("--input-root", required=True)
     parser.add_argument("--artifact-root", required=True)
+    parser.add_argument("--timeout-seconds", type=int, default=45,
+                        help="Bounded worker deadline (1..120s, default 45)")
     args = parser.parse_args()
-    body = sys.stdin.buffer.read(MAX_REQUEST + 1)
-    if len(body) > MAX_REQUEST:
-        result = _human("INPUT_TOO_LARGE")
+    if not 1 <= args.timeout_seconds <= 120:
+        parser.error("--timeout-seconds must be in 1..120")
+
+    def expired(_signum: int, _frame: Any) -> None:
+        raise _ProcessorDeadline()
+
+    # This POSIX worker requires O_NOFOLLOW; setitimer guards the whole stdin
+    # read + renderer call. Windows agent is a separate, DryRun-only process.
+    if not hasattr(signal, "setitimer"):
+        result = _human("PROCESSOR_TIMEOUT_UNAVAILABLE")
     else:
+        old_handler = signal.signal(signal.SIGALRM, expired)
         try:
-            value = json.loads(body)
-            result = process_request(value, input_root=args.input_root,
-                                     artifact_root=args.artifact_root)
-        except (ValueError, UnicodeDecodeError):
-            result = _human("INVALID_JSON")
-    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+            signal.setitimer(signal.ITIMER_REAL, args.timeout_seconds)
+            try:
+                result = run_json_stream(sys.stdin.buffer, input_root=args.input_root,
+                                         artifact_root=args.artifact_root)
+            except _ProcessorDeadline:
+                result = _human("PROCESSING_TIMEOUT")
+            except Exception:
+                result = _human("PROCESSOR_UNVERIFIED")
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old_handler)
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+          flush=True)
     return 0 if result["status"] == "READY" else 2
 
 

@@ -18,26 +18,41 @@ def main() -> int:
     parser.add_argument('job_json', nargs='?', help='Synthetic JSON fixture; never a real job')
     parser.add_argument('--api-base-url', help='HTTPS internal API for simulation only')
     parser.add_argument('--journal', required=True, help='Persistent local SQLite path, not a temp file')
+    parser.add_argument('--http-timeout-seconds', type=int, default=10,
+                        help='HTTPS request deadline (1..30 seconds)')
     args = parser.parse_args()
     if (args.job_json is None) == (args.api_base_url is None):
         parser.error('Choose exactly one synthetic fixture or --api-base-url')
-    if args.api_base_url:
-        # Do not accept the scoped credential on the command line (shell history).
-        token = os.environ.get('AUTO_IN_AGENT_TOKEN', '')
-        backend = HttpBackendClient(args.api_base_url, token)
-    else:
-        job = json.loads(Path(args.job_json).read_text(encoding='utf-8'))
-        backend = FakeBackend(job)
-    journal = Journal(args.journal)
+    if not 1 <= args.http_timeout_seconds <= 30:
+        parser.error('--http-timeout-seconds must be in 1..30')
+    previous = []
+    journal = None
+    result = {'status': 'UNKNOWN', 'reason_code': 'AGENT_UNVERIFIED_FAILURE'}
     try:
+        if args.api_base_url:
+            # Never accept the scoped credential in argv or weaken HTTPS/TLS.
+            backend = HttpBackendClient(args.api_base_url,
+                                        os.environ.get('AUTO_IN_AGENT_TOKEN', ''),
+                                        timeout=args.http_timeout_seconds)
+        else:
+            job = json.loads(Path(args.job_json).read_text(encoding='utf-8'))
+            backend = FakeBackend(job)
+        journal = Journal(args.journal)
         agent = PrintAgent(backend, journal, DryRunDriver())
         previous = agent.recover()
         result = agent.run_once()
-        print(json.dumps({'mode': 'simulation', 'recovered_as_unknown': previous,
-                          'result': result}, ensure_ascii=False, indent=2))
-        return 0 if result['status'] in ('SIMULATED_DONE', 'NO_JOB') else 2
+    except Exception:
+        # NEVER put a traceback, file path, lease, bearer token or document into
+        # stderr/stdout. If a boundary may have been journaled, uncertainty is
+        # retained for the next startup's report-only reconciliation.
+        result = {'status': 'UNKNOWN', 'reason_code': 'AGENT_UNVERIFIED_FAILURE',
+                  'requires_reconciliation': True}
     finally:
-        journal.close()
+        if journal is not None:
+            journal.close()
+    print(json.dumps({'mode': 'simulation', 'recovered_as_unknown': previous,
+                      'result': result}, ensure_ascii=False, separators=(',', ':')))
+    return 0 if result.get('status') in ('SIMULATED_DONE', 'NO_JOB') else 2
 
 
 if __name__ == '__main__':
