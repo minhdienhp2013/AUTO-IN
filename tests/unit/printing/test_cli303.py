@@ -36,7 +36,8 @@ def test_dryrun_cli_invalid_url_or_token_fail_closed_json_no_traceback(tmp_path)
     import os
     env = {**os.environ}
     env["AUTO_IN_AGENT_TOKEN"] = "A"*24
-    for url in ("http://localhost:4444", "https://user:pass@localhost:4444"):
+    for url in ("http://localhost:4444", "https://user:pass@localhost:4444",
+                "https://backend.example:4444", "https://localhost:4444/path"):
         db = tmp_path / ("journal-" + str(len(url)) + ".sqlite")
         completed = _run("--api-base-url", url, "--journal", str(db), env=env)
         assert completed.returncode == 2
