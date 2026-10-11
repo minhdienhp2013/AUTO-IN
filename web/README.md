@@ -69,3 +69,10 @@ npm run build
 hand-author a fake lockfile. Browser desktop/mobile viewport E2E additionally requires
 a running CODE-006 simulation API and installed browser test dependencies. Testing a
 mobile viewport is not testing a physical iPhone.
+
+### CODE-304 — kiểm tra bổ sung (11/10/2026)
+
+- Mapper nested từ AI1 `ebdd740` đã kiểm thử với 40/40 bài unit (30 cũ + 10 nested/giấy thật). Dữ liệu `print_progress.verified_sheets` không được vượt tổng số tờ có bằng chứng từ job gửi ở chế độ `controlled_test`/`production`; mode thiếu/simulation không được tính.
+- `tsc` kiểm tra độc lập các module `api.ts`, `domain.ts`, `fixtures.ts`, `notifications.ts` PASS với khai báo ImportMeta tạm **không phải** build Vite.
+- npm registry báo `EAI_AGAIN` nên không sinh được `web/package-lock.json` thật. `npm ci --offline` FAIL thiếu lock; `npm run typecheck` và `npm run build` FAIL `TS2688` thiếu `vite/client`. Không tự tạo lockfile giả, không báo Vite build PASS.
+- Browser desktop/mobile, CODE-006 localhost, PostgreSQL, iPhone thật: chưa chạy. Nút duyệt live tiếp tục khóa khi không có preview per-file được xác thực.
