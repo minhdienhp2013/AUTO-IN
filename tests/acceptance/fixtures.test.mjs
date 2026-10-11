@@ -25,5 +25,7 @@ test('FIXTURE ONLY: 8 safe/dangerous assets are distinguishable',()=>{
  assert.ok(a['nguy-hiem-zip-bomb-ratio.zip'].readUInt32LE(22)>=400000);
  const z=a['nguy-hiem-qua-5-tai-lieu.zip'];
  assert.equal(z.readUInt16LE(z.length-12),6);
+ for(let i=0;i<6;i++)assert.ok(z.includes(Buffer.from('doc'+i+'.pdf')),'6 recognized PDFs required, not unsupported TXT');
+ const good=a['hop-le-2-file.zip'];assert.ok(good.includes(Buffer.from('page.pdf')));assert.ok(good.includes(Buffer.from('image.png')));
  assert.equal(a['nguy-hiem-file-loi.zip'].toString(),'THIS IS NOT A ZIP');
 });

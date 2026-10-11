@@ -19,7 +19,10 @@ test('PRODUCT P0: forged Zalo signature blocked',{skip},()=>run('bad_zalo_signat
 test('PRODUCT P0: malformed PDF/path traversal/ZIP bomb/6 docs do not auto-print',{skip},()=>run('malicious_documents',async a=>{
  for(const f of ['nguy-hiem-pdf-khong-hop-le.pdf','nguy-hiem-path-traversal.zip','nguy-hiem-zip-bomb-ratio.zip','nguy-hiem-qua-5-tai-lieu.zip']){
   const r=await a.act('ingest_fixture',{fixture_name:f},{actor:'staff'});
-  assert.ok(r?.ok===false||r?.state==='NEEDS_HUMAN',f);
+  const acceptedReasons=['ZIP_PATH_TRAVERSAL','ZIP_COMPRESSION_RATIO','OVER_FIVE_DOCUMENTS','CORRUPT_DOCUMENT','FILE_CORRUPT','PDF_OPEN_ERROR','INVALID_PDF','INVALID_DOCUMENT','ZIP_EXPANSION_LIMIT'];
+  const reason=r?.reason_code??r?.error?.code;
+  assert.ok(r?.state==='NEEDS_HUMAN'||r?.status==='NEEDS_HUMAN'||(r?.ok===false&&acceptedReasons.includes(reason)),
+   'Unsafe input must be rejected for file safety, not auth/bad-request: '+f+' '+JSON.stringify(r));
  }
  assert.equal((await a.snapshot()).driver_calls,0);
 }));

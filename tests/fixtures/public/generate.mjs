@@ -45,10 +45,10 @@ export function makeAssets(){
  return {
   'tai-lieu-mau-an-toan.pdf':syntheticPdf(),
   'anh-mau-an-toan.png':syntheticPng(),
-  'hop-le-2-file.zip':syntheticZip([{name:'readme.txt',content:'SYNTHETIC PUBLIC'},{name:'doc.txt',content:'A4 two sheets'}]),
+  'hop-le-2-file.zip':syntheticZip([{name:'page.pdf',content:syntheticPdf()},{name:'image.png',content:syntheticPng()}]),
   'nguy-hiem-path-traversal.zip':syntheticZip([{name:'../../escape.txt',content:'DO NOT EXTRACT'}]),
   'nguy-hiem-zip-bomb-ratio.zip':syntheticZip([{name:'big.txt',content:'x'.repeat(400000)}]),
-  'nguy-hiem-qua-5-tai-lieu.zip':syntheticZip(Array.from({length:6},(_,i)=>({name:'doc'+i+'.txt',content:'synthetic '+i}))),
+  'nguy-hiem-qua-5-tai-lieu.zip':syntheticZip(Array.from({length:6},(_,i)=>({name:'doc'+i+'.pdf',content:syntheticPdf()}))),
   'nguy-hiem-file-loi.zip':Buffer.from('THIS IS NOT A ZIP'),
   'nguy-hiem-pdf-khong-hop-le.pdf':Buffer.from('%PDF-1.4\ntruncated synthetic')
  };
