@@ -138,3 +138,13 @@ Khi quá trình tạo nháp của AI1 đã COMMIT nhưng việc ghi phản hồi
 - Test `tests/integration/composition/inbound-reconcile-pg.test.mjs` trên PostgreSQL thật: mất ACK sau AI1 COMMIT, chủ khôi phục; cấm nhân viên; sai thông số; mất ACK trước COMMIT vẫn giữ PENDING; hai lời gọi đồng thời chỉ cập nhật một lần; kiểm DB có đúng một audit và không tạo thêm đơn. Nếu thiếu TEST_DATABASE_URL thì báo SKIP, không đánh dấu PASS.
 
 Lưu ý: đây là quy trình *simulation-only*, không dùng token nhân viên để phục hồi, không cho phép tạo đơn mới thay vì phục hồi. Sau khi liên kết phải tiếp tục quy trình xác nhận/preview/duyệt đúng revision đã kiểm chứng.
+
+
+## CODE-006 — API danh sách preview đã xác minh cho AI4
+
+Thêm endpoint phía AI0: `GET /api/v1/orders/:order_id/revisions/:revision/previews`, yêu cầu phiên đăng nhập nhân viên/chủ AI1 qua `Authorization: Bearer <staff_session>` (không nhận token trong URL).
+
+- Server đối chiếu shop, quyền, active revision, `ai0_verified_plan_manifests`, hash manifest AI3, request hash và SHA-256/kích thước **của mọi PNG**. Nếu một ảnh bị đổi, mất, sai chữ ký hoặc manifest lỗi, toàn bộ catalog thất bại, không xuất danh sách một phần với nhãn verified.
+- Chỉ trả JSON server-relative, không có đường dẫn file thật, token, tên tệp gốc hay manifest nội bộ: `{"order_id":"<uuid>","revision":2,"request_hash":"<sha256>","preview_verified":true,"preview_count":1,"previews":[{"index":0,"url":"/api/v1/orders/<uuid>/revisions/2/previews/0","content_type":"image/png"}]}`. Header `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`.
+- Lấy từng ảnh qua `GET /api/v1/orders/:order_id/revisions/:revision/previews/:index` **luôn kiểm lại** phiên/quyền/hash/revision khi tải; catalog không phải token hay bằng chứng duyệt. Frontend AI4 phải fetch ảnh với Bearer rồi tạo object URL và thu hồi khi đổi đơn/unmount, không dùng trực tiếp `<img src=...>` vì browser không tự gắn bearer. Không được chuyển preview_verified thành xác nhận khách hoặc giấy in/giao thực tế.
+- Kiểm thử `tests/integration/composition/preview.test.ts`: shop sai, role customer, stale revision, manifest/source PNG đổi, cả tình huống ảnh thứ nhất đúng nhưng ảnh thứ hai bị lỗi → catalog bị chặn. `tests/integration/composition/inbound-draft-pg.test.mjs`: Fastify+PostgreSQL, bearer 401/200, URL scope đúng, ảnh đổi → HTTP 409. Chỉ ghi PASS sau khi GitHub CI hoàn tất trên đúng HEAD.
