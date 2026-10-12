@@ -326,7 +326,8 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
       'SELECT status FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',
       [shop,bad.conversation_id])).rows[0];
     assert.equal(control.status,'HUMAN','Hash mismatch must require staff takeover');
-    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_ai_draft_proposals WHERE shop_id=$1',[shop])).rows[0].n,1);
+    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_ai_draft_proposals WHERE shop_id=$1',[shop])).rows[0].n,2,
+      'Tampered different conversation must NOT create a third draft');
     assert.equal((await runtime.tick_outbound()).disabled,true);
   } finally {
     if(app)await app.close();
