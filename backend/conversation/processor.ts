@@ -129,9 +129,13 @@ export class ConversationProcessor {
     } catch {
       return routeHuman("DOCUMENT_INSPECTION_FAILED");
     }
-    if(decision.needs_deepseek && !this.classifier)
+    // A deterministic order update or explicitly separate request must not
+    // depend on a language model being online; Core still adjudicates it.
+    const deterministicIncoming=!!this.orders.apply_incoming_batch &&
+      incoming.intent!=="clarify" && incoming.changes.length>0;
+    if(decision.needs_deepseek && !this.classifier && !deterministicIncoming)
       return routeHuman("AI_UNAVAILABLE");
-    if(decision.needs_deepseek && this.classifier) {
+    if(decision.needs_deepseek && this.classifier && !deterministicIncoming) {
       try {
         const ai=await this.classifier.classify(text);
         if(ai.result.intent==="HUMAN") {
