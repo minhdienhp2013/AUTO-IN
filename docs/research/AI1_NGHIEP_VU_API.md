@@ -211,3 +211,23 @@ const committed = await port.confirm_verified_event({...target,event_id:verified
 **Nhắc AI0 và AI2 (cần chốt contract trước wire chung):** [AI0][CODE-007][Bảo đảm `payload_json.confirmation_postback` chỉ do adapter sự kiện postback có chữ ký phát sinh và challenge đã gửi qua OA đúng khách; không dựng từ tin nhắn text, đồng thời inject trusted mapping server vào Port][Thiếu guard này không đủ bằng chứng customer][CI synthetic + negative text/wrong OA/customer/replay trên PG phải PASS]. [AI2][CODE-402][Chỉ tạo confirmation_candidate, giữ raw event signature/provenance cho AI0; không tự ghi core_confirmations][Không giả danh khách][stale và thiếu challenge phải HOLD/NEEDS_HUMAN].
 
 **Kiểm thử:** `npm ci && npm run typecheck && npm run test:core` (trên branch tích hợp); CI PostgreSQL 18.3 trên PR #33 chạy `npm run db:migrate`, `npm run check`, `node tests/acceptance/run.mjs --integration` khi có `TEST_DATABASE_URL`. `tests/integration/core/verified-confirmation-pg.test.cjs` dùng hai pg.Pool, kiểm nhấn chấp nhận rõ ràng, thiếu challenge/text OK, shop/OA/customer sai, replay/lost ACK, sửa revision, takeover, >150 tờ/quote và chỉ staff mới approve. Không dùng synthetic để tuyên bố đã xác minh chữ ký OA thật.
+
+## CODE-008 — Cùng chat, bổ sung trước staff chốt in = một order_id (12/10/2026)
+
+**Port AI1 nội bộ, AI0 phải nối:** `createOrderSupplementPort({store, trusted:{shop_id,oa_id}})` tại `backend/core/order-supplement-port.ts`. `trusted` là mapping OA/shop do server xác thực. Không mở HTTP public hoặc giả Principal khách/nhân viên. 
+
+```ts
+port.append_verified_events(verifiedProcessorOrStaff, {
+  order_id, conversation_id, customer_id, event_ids, expected_revision, idempotency_key
+})
+// {status:'appended'|'existing',order_id,revision,request_hash,requires_reconfirmation:true}
+// hoặc {status:'stale_revision',current_revision}
+```
+
+**Trong 1 PostgreSQL transaction:** `SELECT core_orders FOR UPDATE` (khóa giống `OrderService.approve`), xác minh order ↔ shop/OA/customer/conversation qua `core_ai_draft_proposals`, toàn bộ event_ids ↔ `zalo_inbound_events(oa_id,customer_id,conversation_id,kind)`; `core_order_supplement_batches` chống trùng theo tập event + idempotency key; `core_order_inbound_reviews` là journal đã đưa vào revision. Thay đổi cùng order_id, tăng active_revision, request_hash mới, chép đầy đủ event IDs xuyên nhiều batch (không dựa mốc 60 giây); `plan=NULL` bắt buộc processor kiểm lại và khách xác nhận lại. Không tạo tự động quote, confirmation, approval, print job; không thay đổi đơn đã từng duyệt/gửi/UNKNOWN. Nếu không rõ đơn đích, AI2 giữ batch ở HUMAN để nhân viên xác định; yêu cầu đơn riêng phải được khách xác thực rõ.
+
+**Chặn chốt:** `OrderService.approve` kiểm dữ liệu `zalo_inbound_events` đã cam kết cho shop/OA/customer/chat, không dựa `occurred_at` do provider khai; chỉ chấp nhận event nằm trong revision 1 ban đầu hoặc `core_order_inbound_reviews` thuộc order và revision không lớn hơn active. Tin/file chưa đối soát → DomainError `PENDING_INBOUND_REVIEW`, HTTP **409**. Cùng khóa order với append; nguồn `zalo_inbound_events` phải giữ AI0 trigger ingress khóa order ở cùng transaction để chống TOCTOU. Batch `DONE` hay file `ai0_inbound_artifact_drafts.CREATED` **không đồng nghĩa đã đưa vào revision**. Migration AI1 mới `007_active_order_inbound.sql` (core manifest 001→007) chỉ tạo bảng AI1; AI0 chịu trách nhiệm thứ tự migration chung.
+
+**P0 liên AI0 đang mở:** Trigger AI0 trong `backend/composition/migrations/004_pending_approval_gate.sql` chỉ loại event ban đầu hoặc `ai0_inbound_artifact_drafts.CREATED`, hiện chưa nhận biết event đã ghi vào `core_order_inbound_reviews`. Trên code overlay PR #35, PG 18.3 test vào đúng `service.approve` sau append + xác nhận mới bị trigger `P0001 AI0_PENDING_INBOUND_REVIEW` — **FAIL có thật**, không được gắn DONE/V1 ready và không xóa trigger/test để xanh. AI1 đã yêu cầu AI0 bổ sung ngoại lệ đã đối soát vào `004` trên PR #31 comment #6123586540; chỉ AI0 có quyền sửa composition. Sau AI0 sửa phải chạy CI lại cùng SHA tích hợp, bảo đảm tin chưa append vẫn chặn, tin đã append + processor + xác nhận mới thì cho phép staff chốt.
+
+**Kiểm thử:** `npm run check` PASS trên PR #35 overlay `54a1f9aad021e5d4a58390c9f5dd007bdc0a7d31`; PostgreSQL 18.3 **23 PASS / 1 FAIL / 0 SKIP** (AI1; lỗi duy nhất cross-owner trigger trên test mới), browser PASS. Unit `tests/unit/core/order-supplement.test.cjs` kiểm actor/inputs trước transaction. DB thật dùng hai pools, retry idempotency, nhiều batch >60s, stale revision/confirmation, pending file + future provider timestamp, duyệt vs append và bất biến sau duyệt. OA/Ricoh thật NOT RUN.
