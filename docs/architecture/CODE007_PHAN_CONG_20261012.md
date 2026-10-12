@@ -96,3 +96,17 @@ Trong **cùng OA/shop, cùng khách, cùng conversation**, mọi nội dung thu�
 - Đây là **blocker nghiệm thu nghiệp vụ**, không phải lỗi CI sản phẩm đang chạy. CI xanh chỉ chứng minh các assert đã triển khai, không được suy rộng rằng P0 đã qua.
 
 **Tình trạng:** AI0 đã giao AI1 [PR #16](https://github.com/minhdienhp2013/AUTO-IN/pull/16#issuecomment-6122650800) và AI5 [PR #18](https://github.com/minhdienhp2013/AUTO-IN/pull/18#issuecomment-6122653381) theo đúng ownership; không tự sửa AI1 Core hoặc nghiệm thu AI5. Không merge/deploy/live OA/in thật.
+
+
+## AI0 CODE-008 — PostgreSQL CHẶN CHỐT IN còn tin/file chưa đối soát (12/10/2026)
+
+**Trạng thái P0:** Đã có hàng rào **simulation-only ở tầng PostgreSQL**: `backend/composition/migrations/004_pending_approval_gate.sql` (được `scripts/database.ts` cài chỉ vào PostgreSQL test cô lập). Trigger trên `zalo_inbound_events` khóa bản ghi đơn AI2 đang mở trong cùng transaction nhận sự kiện. Trigger `BEFORE INSERT core_approvals` tra từ khóa shop/OA/customer/conversation ở **`core_ai_draft_proposals` đã tin cậy**, lấy `event_ids` trong revision AI2 đầu tiên và đối chiếu cả bản ghi tiếp nhận nguồn đã được nhân viên hoàn thành. Nếu còn bất kỳ sự kiện text/image/file **chưa thuộc revision đầu hoặc chưa được staff-link hoàn tất**, PostgreSQL trả `P0001 / AI0_PENDING_INBOUND_REVIEW` và **không lưu approval hoặc tạo print job**.
+
+**Bằng chứng:** `tests/integration/composition/preapproval-pending-pg.test.mjs` chạy signed synthetic Zalo webhook; AI2 `createAiOrderPort` tạo một draft. Một file ảnh sau đó đến cùng khách/chat, dù trường `occurred_at` tự khai trong tương lai, vẫn bị tính là đã nhận ở `received_at` của DB. Ca direct SQL approval **FAIL có chủ đích** (`P0001`), 0 approval, 0 job, 1 order, event không bị xóa; webhook phát lại idempotent, vẫn không thể chốt. Đồng thời ca một đơn Zalo→AI2→AI3→challenge→staff→DryRun còn PASS. Code commit `bfb56ac5f5df85bdff4ff36e4ed176e0436c2598`: AI0 composition **22/22 PASS**, AI1 23/23 PASS, Python 167 PASS/1 SKIP; 6/6 GitHub CI SUCCESS gồm Chromium thực.
+
+**Ranh giới tuyệt đối KHÔNG tuyên bố đã xong:**
+- Trigger chỉ có hiệu lực ở shop `mode='simulation'`, trên đơn có liên kết AI2 `core_ai_draft_proposals` và database đã cài migration này; không bảo vệ shop live hoặc đơn tạo thủ công không có mapping OA.
+- Khi còn event chờ, trigger sẽ từ chối và hiện có thể lộ ra lỗi server code `P0001` cho AI1 route; **AI1 cần map thành thông báo nghiệp vụ HTTP 409** và thực hiện append-to-order/đối soát trong giao dịch Core. Không được sửa AI1 Code ở nhánh AI0.
+- Cần test chuyên biệt **hai transaction/2 worker, ACK loss, webhook đến sát duyệt, phê duyệt cùng lúc staff-linked append**, xác định rõ thứ tự event commit khi cạnh tranh khóa.
+- Không hợp thức hóa `zalo_batches DONE/COMMITTED` là “file đã gắn vào đơn”; phải kiểm đúng event_ids/linked source/active revision. Không có đường tắt tự mark event DONE để vượt trigger.
+- V1, live Zalo OA official provider, Ricoh/Windows/iPhone, TN-037 210 đơn ≥7 ngày vẫn **NOT RUN / BLOCKED**.
