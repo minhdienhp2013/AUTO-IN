@@ -117,6 +117,12 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     assert.equal(done.state,'SIMULATED_DONE');
     assert.equal(done.mode_at_send,'simulation');
     assert.equal(Number(done.verified_sheets),0);
+    const refuseFakeEvidence=await post('/api/v1/print-jobs/'+normal.jobId+'/verify-paper',{
+      evidence_kind:'staff_inspected',physical_sheets:2,
+      note:'test fixture must not count as real paper',idempotency_key:'fake-paper-normal'
+    },login.token);
+    assert.notEqual(refuseFakeEvidence.statusCode,200);
+    assert.equal(code(refuseFakeEvidence.json()),'VERIFY_STATE');
     const refuseDelivery=await post('/api/v1/orders/'+normal.id+'/deliveries',{
       expected_revision:2,physical_sheets:1,idempotency_key:'delivery-normal'
     },login.token);
@@ -161,6 +167,12 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     assert.equal(recovery.driver_calls,0);
     assert.equal((await state(crash.jobId)).state,'UNKNOWN');
     assert.equal(Number((await state(crash.jobId)).verified_sheets),0);
+    const refuseUnknownAsPaper=await post('/api/v1/print-jobs/'+crash.jobId+'/verify-paper',{
+      evidence_kind:'staff_inspected',physical_sheets:2,
+      note:'simulation unknown cannot prove paper',idempotency_key:'fake-paper-unknown'
+    },login.token);
+    assert.notEqual(refuseUnknownAsPaper.statusCode,200);
+    assert.equal(code(refuseUnknownAsPaper.json()),'SIMULATION_NOT_PAPER');
     const noRetry=await run('python3',['-m','agents.windows.cli','--api-base-url',url,
       '--journal',journalPath],{env:pythonEnv});
     assert.equal(JSON.parse(noRetry.stdout.trim()).result.status,'NO_JOB');
