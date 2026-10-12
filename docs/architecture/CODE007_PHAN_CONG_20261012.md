@@ -53,3 +53,19 @@ Ca PG thật sử dụng webhook **fixture có chữ ký**, cố tình gửi vă
 **AI2 CODE-402:** xuất ứng viên nhận diện tin nhắn (không xác thực/ghi confirm). Bảo đảm OA transport verifier và event persisted đúng phạm vi; nếu không có challenge/credential, phải hỏi lại/chuyển nhân viên; không chuyển `OK` thành xác nhận ngầm.
 
 **AI0 CODE-007 tiếp theo:** chỉ nối hai Port khi AI1 và AI2 bàn giao SHA cùng contract chốt; sau đó thử HTTP+PG đúng SHA, xác nhận customer flow, các ca wrong OA/customer/generation, không gửi OA thật và không in thật. AI3/AI4/AI5 tiếp tục CODE-403/404/405 độc lập. Không merge/deploy; PR #31 vẫn Draft.
+
+
+## CODE-008 — Quy tắc kinh doanh đã chốt: cùng chat + cùng đợt trao đổi = MỘT đơn
+
+**Chủ cửa hàng chốt ngày 12/10/2026:** Trong phạm vi **cùng shop/OA + cùng customer_id + cùng conversation_id + cùng một đợt trao đổi về việc in**, mọi file và tin nhắn liên quan phải thuộc **một đơn in**, dù gửi thành nhiều tin, nhiều file hoặc qua hơn một lượt gom tin AI2. Không tạo mỗi tin nhắn thành một đơn.
+
+- `MessageBatcher` hiện gom tối đa 60 giây từ tin đầu và chờ 10 giây sau tin bổ sung. **Đây chỉ là cửa sổ xử lý tin, KHÔNG phải ranh giới kết thúc đơn.** Không tự tách đơn chỉ vì hết 60 giây; không tự giả định thêm một mốc 5/10 phút khi chủ chưa chốt ngưỡng.
+- Trong cùng đợt: “gửi thêm file”, “in 3 bản”, “đổi A4/A3”, “in hai mặt” là **bổ sung/cập nhật cùng order_id**, tạo `core_revisions` mới và yêu cầu xác nhận lại theo revision/request_hash và quote mới khi cần; các xác nhận cũ không được chuyển sang revision mới.
+- Tạo đơn mới khi khách **yêu cầu rõ một đơn riêng** hoặc đơn cũ đã hoàn tất/đóng và có yêu cầu mới. Đơn đã `SENDING/UNKNOWN/DONE` không được lén sửa hay tự gửi lại; chuyển nhân viên nếu có yêu cầu thêm.
+- Trường hợp có nhiều đơn cùng khách/hội thoại đang mở, tin đến sau không gắn rõ đơn nào, hoặc không rõ là bổ sung hay đơn mới: **hỏi lại/chuyển nhân viên**, không tạo/hợp nhất đơn ngầm.
+- Lưu bền liên kết hội thoại → đợt trao đổi → order_id và event_ids trong PostgreSQL, có khóa/giao dịch xử lý đồng thời giữa 2 worker, replay/idempotency. Cùng event không làm thêm file, thay đổi revision hoặc tạo đơn mới. Tuyệt đối không dùng riêng `customer_id` để gộp giữa các hội thoại hoặc OA.
+- Không coi “cùng chat” đồng nghĩa “mọi đơn từ trước tới nay là một đơn”; khi phân đoạn trao đổi không chắc chắn phải giữ dữ liệu và chờ xác nhận của khách/nhân viên.
+
+**Phân công thực hiện:** AI1 phụ trách transaction PostgreSQL/active-order lookup/link, revision/idempotency, từ chối cập nhật đơn locked/sent; AI2 nhận diện ý định bổ sung/đơn mới và giữ batch-vs-order rõ ràng, đối thoại hỏi lại; AI0 nối 2 Port và kiểm thử real PG trên một chat có nhiều đợt batch, AI5 nghiệm thu duplicate/two-worker/stale-confirmation. AI4 hiển thị đơn đang xử lý và báo khi cần xác nhận lại. AI1/AI2 không đổi hợp đồng chung nếu chưa được AI0 chốt.
+
+**Trạng thái:** yêu cầu đã chốt và giao, **CHƯA xác nhận code gộp xuyên batch hoàn thành**. Không đánh dấu V1 PASS chỉ vì một batch tạo một draft.
