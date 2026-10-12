@@ -62,6 +62,14 @@ try{
     idempotency_key:'browser-'+randomUUID()
   });
   app=buildIntegratedApp({pool:asSqlPool(pool)});
+  app.addHook('onRequest',async request=>{
+    if(request.url.startsWith('/api/v1/auth') || request.url.startsWith('/api/v1/orders'))
+      console.log('PRODUCT E2E SERVER REQUEST',request.method,request.url.split('?')[0]);
+  });
+  app.addHook('onResponse',async(request,reply)=>{
+    if(request.url.startsWith('/api/v1/auth') || request.url.startsWith('/api/v1/orders'))
+      console.log('PRODUCT E2E SERVER RESPONSE',request.method,request.url.split('?')[0],reply.statusCode);
+  });
   app.get('/',async(_request,reply)=>reply.type('text/html; charset=utf-8')
     .header('Cache-Control','no-store').send(html));
   app.get('/assets/*',staticAsset);
