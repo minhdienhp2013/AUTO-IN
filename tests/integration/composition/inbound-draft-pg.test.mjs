@@ -11,6 +11,7 @@ import {createCoreModule} from '../../../backend/core/factory.ts';
 import {ingestSyntheticArtifact} from '../../../backend/composition/synthetic-ingest.ts';
 import {createSyntheticInboundDraft} from '../../../backend/composition/inbound-draft.ts';
 import {loadVerifiedOrderPreview} from '../../../backend/composition/preview.ts';
+import {buildIntegratedApp} from '../../../backend/composition/runtime.ts';
 
 const url=process.env.TEST_DATABASE_URL;
 test('REAL PostgreSQL: verified synthetic webhook file → one staff draft → AI3 plan → staff preview, mutation blocked',{
@@ -29,10 +30,16 @@ test('REAL PostgreSQL: verified synthetic webhook file → one staff draft → A
   assert.equal(result.status,0,'Synthetic PDF/image dependencies must be installed');
   const png=await readFile(pngPath);
   const shop='auto-link-'+randomUUID(),oa='synthetic-oa-'+randomUUID();
-  const staff={id:randomUUID(),shop_id:shop,role:'staff',verified:true};
+  const ownerPassword='synthetic-test-only-'+randomUUID();
   const scope={shop_id:shop,oa_id:oa};
   const core=createCoreModule({pool:asSqlPool(pool)});
   await pool.query('INSERT INTO core_shop_settings(shop_id) VALUES($1)',[shop]);
+  await core.auth.bootstrapOwner({shop_id:shop,username:'synthetic-owner',password:ownerPassword,bootstrap_enabled:true});
+  const login=await core.auth.login(shop,'synthetic-owner',ownerPassword);
+  const staff=login.principal;
+  const app=buildIntegratedApp({pool:asSqlPool(pool),
+    syntheticArtifactIngest:{artifactRoot:inbound,scope},previewArtifactRoot:output});
+  await app.ready();
   const insertEvent=async(eventId)=>{
     const event={synthetic_fixture:true,event_id:eventId,oa_id:oa,
       customer_id:'synthetic-customer',conversation_id:'synthetic-conversation',
@@ -54,11 +61,20 @@ test('REAL PostgreSQL: verified synthetic webhook file → one staff draft → A
     {cwd:process.cwd(),encoding:'utf8',timeout:60000,env});
   const event='evt-'+randomUUID();
   assert.equal((await importEvent(event)).status,'registered');
-  const draft=await createSyntheticInboundDraft(asSqlPool(pool),core.service,inbound,scope,staff,config(event));
+  const endpoint='/internal/simulation/inbound-artifacts/'+event+'/draft';
+  const settings={paper:'A4',copies:2,duplex:false};
+  assert.equal((await app.inject({method:'POST',url:endpoint,payload:settings})).statusCode,401);
+  const response=await app.inject({method:'POST',url:endpoint,
+    headers:{authorization:'Bearer '+login.token},payload:settings});
+  assert.equal(response.statusCode,201,JSON.stringify(response.json()));
+  const draft=response.json();
   assert.equal(draft.status,'created');
   assert.equal(draft.revision,1);
   assert.equal(draft.preview_trusted,false);
-  const replay=await createSyntheticInboundDraft(asSqlPool(pool),core.service,inbound,scope,staff,config(event));
+  const replayResponse=await app.inject({method:'POST',url:endpoint,
+    headers:{authorization:'Bearer '+login.token},payload:settings});
+  assert.equal(replayResponse.statusCode,200);
+  const replay=replayResponse.json();
   assert.equal(replay.status,'existing');
   assert.equal(replay.order_id,draft.order_id);
   await assert.rejects(createSyntheticInboundDraft(asSqlPool(pool),core.service,inbound,scope,staff,{
@@ -69,6 +85,13 @@ test('REAL PostgreSQL: verified synthetic webhook file → one staff draft → A
   const published=JSON.parse(first.stdout);
   assert.equal(published.revision,2);
   assert.equal(published.requires_reconfirmation,true);
+  const previewUrl='/api/v1/orders/'+draft.order_id+'/revisions/2/previews/0';
+  assert.equal((await app.inject({method:'GET',url:previewUrl})).statusCode,401);
+  const previewResponse=await app.inject({method:'GET',url:previewUrl,
+    headers:{authorization:'Bearer '+login.token}});
+  assert.equal(previewResponse.statusCode,200,previewResponse.body.slice(0,300));
+  assert.equal(previewResponse.headers['cache-control'],'no-store');
+  assert.equal(previewResponse.headers['content-type'],'image/png');
   const view=await loadVerifiedOrderPreview(asSqlPool(pool),output,staff,draft.order_id,2,0);
   assert.deepEqual(view.subarray(0,8),Buffer.from([137,80,78,71,13,10,26,10]));
   await assert.rejects(loadVerifiedOrderPreview(asSqlPool(pool),output,
@@ -89,5 +112,6 @@ test('REAL PostgreSQL: verified synthetic webhook file → one staff draft → A
   assert.notEqual(rejected.status,0,'Modified source may never produce a plan');
   assert.equal((await pool.query('SELECT active_revision FROM core_orders WHERE id=$1',[bad.order_id])).rows[0].active_revision,1);
   assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[bad.order_id])).rows[0].n,0);
+  await app.close();
  } finally {await pool.end();await rm(root,{recursive:true,force:true});}
 });
