@@ -101,7 +101,7 @@ test('CODE-007 real HTTP/PG: AI2 signed OK pending, explicit signed button -> AI
     assert.equal((await submit({...good,oa_id:'wrong-oa'})).statusCode,422);
     assert.equal((await submit({...good,customer_id:'wrong-customer'})).statusCode,403);
     assert.equal((await submit({...good,type:'text',text:'OK'})).statusCode,422);
-    assert.equal((await submit({...good,challenge_token:'not-real'})).statusCode,403===200?200:403);
+    assert.equal((await submit(button(rc,'bad-token-'+randomUUID(),{challenge_token:'not-real'}))).statusCode,403);
     // The invalid token is signed by the fixture but rejected inside AI1.
     // It must never record a confirmation; the previous response is a 403.
     assert.equal(await count('core_confirmations'),0);
