@@ -229,11 +229,12 @@ function App() {
                 <div className="detail-tabs" role="tablist"><button role="tab" aria-selected={detailTab==='document'} className={detailTab==='document'?'on':''} onClick={()=>setDetailTab('document')}><FileText size={17}/> Tài liệu & duyệt</button><button role="tab" aria-selected={detailTab==='activity'} className={detailTab==='activity'?'on':''} onClick={()=>setDetailTab('activity')}><History size={17}/> Lịch sử ({selectedOrder.audit.length})</button></div>
                 {detailTab==='activity' ? <div className="activity-content">{selectedOrder.audit.length === 0 ? <div className="empty-panel">Chưa có dữ liệu lịch sử từ API (không tự suy đoán).</div> : selectedOrder.audit.map((row,i)=><div className="activity" key={`${row.at}-${i}`}><span className="activity-dot"/><div><strong>{row.action}</strong><p>{row.summary}</p><small>{row.actor} · {time(row.at)}</small></div></div>)}</div> : <div className="detail-scroll">
                   <div className="section-head"><h3><FileText size={18}/> Tài liệu đính kèm</h3><span>{selectedOrder.documents.length} file</span></div>
+                  {!useDemo && <VerifiedPreviewGallery key={`${selectedOrder.order_id}:${selectedOrder.revision}:${selectedOrder.request_hash}`} port={port} order={selectedOrder}/>}
                   {selectedOrder.documents.map(d=><div className="doc-box" key={d.document_id}><div className="doc-primary"><div className="file-icon"><FileText size={23}/></div><div className="doc-name"><strong>{d.filename}</strong><small>{d.format} · {d.paper} · {d.orientation==='portrait'?'Dọc':'Ngang'} · {d.duplex?'Hai mặt':'Một mặt'} · {d.copies} bản</small></div>{d.preview_trusted ? <span className="verified-label"><ShieldCheck size={15}/> Đã kiểm</span> : <span className="invalid-label"><AlertCircle size={15}/> Chưa tin cậy</span>}</div>
                     <div className="doc-stats"><div><span>Trang gốc</span><b>{d.pages ?? '—'}</b></div><div><span>Mặt in</span><b>{d.printed_faces ?? '—'}</b></div><div><span>Tờ giấy</span><b>{d.physical_sheets ?? '—'}</b></div></div>
                     <Preview url={d.preview_url} trusted={d.preview_trusted}/>{d.warnings.map((w,i)=><p className="inline-warning" key={i}><AlertCircle size={15}/> {w}</p>)}
                   </div>)}
-                  {selectedOrder.documents.length===0 && <div className="empty-panel">API hiện chưa cấp danh sách file/preview đáng tin. Kế hoạch in tổng hợp: {selectedOrder.total_sheets??'chưa xác minh'} tờ; không dùng số này thay preview để duyệt.</div>}
+                  {selectedOrder.documents.length===0 && <div className="empty-panel">API chưa cấp dữ liệu phân tách theo từng file; ảnh raster xác minh (nếu có) không phải bằng chứng khách đã xác nhận. Kế hoạch in tổng hợp: {selectedOrder.total_sheets??'chưa xác minh'} tờ; không dùng số này thay preview để duyệt.</div>}
                   {selectedOrder.warnings.length>0 && <div className="warnings"><strong><ShieldAlert size={17}/> Cảnh báo cần đọc</strong>{selectedOrder.warnings.map((w,i)=><p key={i}>• {w}</p>)}</div>}
                   <div className="section-head spaced"><h3><Wallet size={18}/> Giá & tiền</h3><span>Nhân viên xác nhận</span></div>
                   <div className="money-stats"><div><span>Giá đơn</span><strong>{money(selectedOrder.amount_vnd)}</strong></div><div><span>Đã nhận</span><strong>{money(selectedOrder.received_vnd)}</strong></div><div><span>Còn phải thu</span><strong className="accent-amount">{money(receivable(selectedOrder))}</strong></div></div>
@@ -271,6 +272,45 @@ function Stat({ icon,label,value,note,color,onClick }: { icon: ReactNode; label:
   return <button className="stat-card" onClick={onClick}><div className={`stat-icon ${color}`}>{icon}</div><span>{label}</span><strong>{value.toString().padStart(2,'0')}</strong><small>{note}</small></button>;
 }
 function Axis({title,label,warn=false}:{title:string;label:string;warn?:boolean}) {return <div className="axis-item"><span>{title}</span><strong className={warn?'warn-text':''}>{label}</strong></div>}
+/** Preview is *only* a read-only staff aid. This never sets DocumentView.preview_trusted
+ * and never changes hasValidApprovalInputs/confirmed_revision/order approval.
+ * Object URLs are ephemeral, never persisted or placed in a request URL. */
+function VerifiedPreviewGallery({port,order}:{port:PrintPort;order:OrderView}) {
+  const [urls,setUrls]=useState<string[]>([]);
+  const [status,setStatus]=useState<'loading'|'verified'|'unavailable'>('loading');
+  useEffect(()=>{
+    let cancelled=false;
+    const owned:string[]=[];
+    setUrls([]);
+    setStatus('loading');
+    void port.loadVerifiedPreviewPages(order).then(pages=>{
+      if(cancelled) return;
+      if(!pages.length){setStatus('unavailable');return;}
+      for(const page of pages) owned.push(URL.createObjectURL(page));
+      if(cancelled){owned.forEach(url=>URL.revokeObjectURL(url));return;}
+      setUrls([...owned]);
+      setStatus('verified');
+    }).catch(()=>{
+      if(!cancelled){setUrls([]);setStatus('unavailable');}
+    });
+    return ()=>{
+      cancelled=true;
+      owned.forEach(url=>URL.revokeObjectURL(url));
+    };
+  },[port,order.order_id,order.revision,order.request_hash]);
+  return <section className="verified-previews" data-testid="verified-preview-gallery" aria-label="Ảnh xem trước đã xác minh">
+    <strong><ShieldCheck size={15}/> Xem trước bản raster theo phiên bản {order.revision}</strong>
+    {status==='loading' && <p role="status">Đang kiểm tra manifest, SHA-256 và quyền đọc ảnh…</p>}
+    {status==='unavailable' && <p data-testid="preview-unavailable">Chưa thể xác minh đầy đủ ảnh xem trước. Không dùng ảnh thiếu tin cậy để duyệt in.</p>}
+    {status==='verified' && <div className="verified-preview-grid">
+      {urls.map((url,index)=><figure key={url}>
+        <img data-testid="verified-preview-image" src={url} alt={`Ảnh xem trước đã xác minh, trang ${index+1}`} loading="lazy"/>
+        <figcaption>Trang {index+1}/{urls.length} · đã kiểm tra SHA-256</figcaption>
+      </figure>)}
+    </div>}
+    <p className="preview-disclaimer">Ảnh xem trước không phải xác nhận của khách và không chứng minh đã in hoặc giao giấy thật.</p>
+  </section>;
+}
 function Preview({url,trusted}:{url:string|null;trusted:boolean}) {
   let safeUrl: string|null = null;
   if (url && trusted) { try { const candidate = new URL(url, window.location.origin); if (candidate.origin===window.location.origin && candidate.protocol===window.location.protocol) safeUrl=candidate.href; } catch {/* ignore */} }
