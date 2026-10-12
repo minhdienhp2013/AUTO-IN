@@ -20,9 +20,9 @@ const databaseUrl = process.env.TEST_DATABASE_URL;
 
 /** Real PG + AI2 durable webhook/queue + verified AI0 frozen files +
  * AI3 Python inspect + AI1 generation-locked proposal.
- * Never exercises live Zalo, customer confirmation, or a physical printer.
+ * Exercises explicit simulated customer confirmation; NEVER live Zalo or a physical printer.
  */
-test('AI0 REAL PG: signed synthetic Zalo image + frozen manifest -> AI3 verified fact -> AI2 worker -> one AI1 proposal; tamper -> HUMAN', {
+test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview -> challenge/quote -> staff DryRun UNKNOWN; tamper -> HUMAN', {
   skip: !databaseUrl ? 'TEST_DATABASE_URL missing: verified Zalo document worker NOT RUN' : false,
   timeout: 120_000
 }, async () => {
@@ -35,6 +35,7 @@ test('AI0 REAL PG: signed synthetic Zalo image + frozen manifest -> AI3 verified
   const pool = new pg.Pool({connectionString:databaseUrl, max:5, connectionTimeoutMillis:5000});
   const id = randomUUID(), shop = 'autoin-test-zalo-file-' + id, oa = 'oa-' + id;
   const key = randomUUID()+randomUUID(), ownerPassword='synthetic-owner-'+randomUUID();
+  const buttonKey=randomUUID()+randomUUID();
   const scope={shop_id:shop,oa_id:oa};
   const headers=token=>({authorization:'Bearer '+token});
   const query=(sql,args=[])=>pool.query(sql,args);
