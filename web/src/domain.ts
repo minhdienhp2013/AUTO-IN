@@ -7,6 +7,14 @@ export type ConversationState = 'ai' | 'needs_human' | 'staff';
 export type DeliveryState = 'not_ready' | 'quality_check' | 'ready' | 'partial' | 'delivered' | 'exception_closed';
 export type PaymentState = 'unpaid' | 'deposit_requested' | 'partial' | 'paid' | 'refund_pending' | 'refunded';
 
+/** AI3 renderer facts, released only after server hash/source/plan validation.
+ * Not proof of customer confirmation or physical printing. */
+export interface VerifiedFileFact {
+  index:number; label:string; format:string;
+  document_pages:number;printed_faces:number;physical_sheets:number;
+  copies:number;paper:'A4'|'A3';duplex:boolean;
+  orientation:'portrait'|'landscape';warnings:string[];
+}
 export interface DocumentView {
   document_id: string;
   filename: string;
