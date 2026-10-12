@@ -8,6 +8,7 @@ import { ingestSyntheticArtifact, type SyntheticArtifactScope } from './syntheti
 import { loadVerifiedOrderPreview, loadVerifiedOrderPreviewCatalog } from './preview.js';
 import { createSyntheticInboundDraft } from './inbound-draft.js';
 import { reconcileSyntheticInboundDraft } from './inbound-reconcile.js';
+import { createSyntheticVerifiedButtonPlugin, type SyntheticButtonScope } from './synthetic-verified-button.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
 export interface RuntimeOptions {
@@ -19,6 +20,8 @@ export interface RuntimeOptions {
   zaloWorkerConfigured?: boolean;
   syntheticArtifactIngest?: { artifactRoot: string; scope: SyntheticArtifactScope };
   previewArtifactRoot?: string;
+  /** Opt-in HMAC signed fixture endpoint; NEVER configured for live OA. */
+  syntheticVerifiedButton?: SyntheticButtonScope;
 }
 export function identityResolver(identities: readonly ServiceIdentity[]) {
   for (const identity of identities) {
@@ -165,6 +168,8 @@ export function buildIntegratedApp(options: RuntimeOptions) {
       .header('Content-Security-Policy', "default-src 'none'")
       .send(preview);
   });
+  if (options.syntheticVerifiedButton)
+    app.register(createSyntheticVerifiedButtonPlugin(options.pool,options.syntheticVerifiedButton));
   if (options.zaloWebhook) app.register(options.zaloWebhook);
   else app.post('/webhooks/zalo', async (_request, reply) => reply.code(503).send({ error: {
     code: 'FEATURE_UNAVAILABLE', message: 'Verified pipeline wiring pending', retryable: false } }));
