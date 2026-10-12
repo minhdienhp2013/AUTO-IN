@@ -1,4 +1,4 @@
-import { actionPath, depositShortfall, hasValidApprovalInputs, validMoney, type ActionKind, type Mutation, type OrderView, type Snapshot, type StaffSession, type OperationMode, type ConversationState } from './domain.ts';
+import { actionPath, depositShortfall, hasValidApprovalInputs, validMoney, type ActionKind, type Mutation, type OrderView, type Snapshot, type StaffSession, type OperationMode, type ConversationState, type VerifiedFileFact } from './domain.ts';
 import { demoOrders, demoSession } from './fixtures.ts';
 
 export class ApiFault extends Error {
@@ -11,6 +11,8 @@ export interface PrintPort {
   me(): Promise<StaffSession>;
   listOrders(): Promise<OrderView[]>;
   getOrder(id: string): Promise<OrderView>;
+  /** Verified *raster* bytes only; NOT customer confirmation or approval. */
+  loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{pages:Blob[];files:VerifiedFileFact[]}>;
   mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView>;
   mode(): Promise<OperationMode>;
 }
@@ -207,7 +209,7 @@ export class HttpPrintPort implements PrintPort {
   // Backend AI1 has bearer sessions, NOT browser cookie sessions. No persistence,
   // no localStorage and no token in URL: refreshing requires a fresh login.
   private token: string | null = null;
-  constructor(baseUrl = '', fetcher: typeof fetch = fetch) { this.baseUrl = baseUrl; this.fetcher = fetcher; }
+  constructor(baseUrl = '', fetcher: typeof fetch = globalThis.fetch.bind(globalThis)) { this.baseUrl = baseUrl; this.fetcher = fetcher; }
   private async call(path: string, options: RequestInit = {}): Promise<unknown> {
     let response: Response;
     try {
@@ -255,6 +257,79 @@ export class HttpPrintPort implements PrintPort {
   async getOrder(id: string) {
     const raw = await this.call(`/api/v1/orders/${encodeURIComponent(id)}`);
     return mapCoreOrderDetail(raw);
+  }
+  async loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{pages:Blob[];files:VerifiedFileFact[]}> {
+    const {order_id,revision,request_hash}=order;
+    if (!this.token || !/^[0-9a-f-]{36}$/i.test(order_id) ||
+        !Number.isSafeInteger(revision) || revision < 1 ||
+        !/^[0-9a-f]{64}$/.test(request_hash))
+      throw new ApiFault(409,'PREVIEW_UNVERIFIED','Không xác minh được phiên bản và hash để xem trước.');
+    const root=`/api/v1/orders/${order_id}/revisions/${revision}/previews`;
+    const catalog=asObject(await this.call(root));
+    const entries=catalog.previews;
+    if (catalog.preview_verified!==true || catalog.order_id!==order_id ||
+        catalog.revision!==revision || catalog.request_hash!==request_hash ||
+        !Number.isSafeInteger(catalog.preview_count) ||
+        (catalog.preview_count as number)<1 || (catalog.preview_count as number)>15 ||
+        !Array.isArray(entries) || entries.length!==catalog.preview_count)
+      throw new ApiFault(409,'PREVIEW_UNVERIFIED','Danh sách ảnh xem trước không khớp phiên bản hiện tại.');
+    const rawFiles=catalog.files;
+    const files:VerifiedFileFact[]=[];
+    if(rawFiles!==undefined){
+      if(!Array.isArray(rawFiles) || rawFiles.length<1 || rawFiles.length>5)
+        throw new ApiFault(409,'PREVIEW_DOCUMENTS_INVALID','Danh sách thông số file chưa được xác minh.');
+      let countSheets=0;
+      for(let i=0;i<rawFiles.length;i++){
+        const file=asObject(rawFiles[i]);
+        const integer=(value:unknown,max:number):value is number=>
+          typeof value==='number'&&Number.isSafeInteger(value)&&value>0&&value<=max;
+        if(file.index!==i||file.label!==`Tài liệu ${i+1}`||
+           typeof file.format!=='string'||!/^(PDF|PNG|JPG|JPEG|TIF|TIFF|WEBP|BMP|DOCX|ZIP)$/.test(file.format)||
+           !integer(file.document_pages,500)||!integer(file.printed_faces,5000)||
+           !integer(file.physical_sheets,5000)||!integer(file.copies,999)||
+           (file.paper!=='A4'&&file.paper!=='A3')||typeof file.duplex!=='boolean'||
+           (file.orientation!=='portrait'&&file.orientation!=='landscape')||
+           !Array.isArray(file.warnings)||file.warnings.length>10||
+           file.warnings.some(w=>typeof w!=='string'||!/^[A-Z0-9_]{1,80}$/.test(w)))
+          throw new ApiFault(409,'PREVIEW_DOCUMENTS_INVALID','Thông số file không khớp hợp đồng kiểm chứng.');
+        files.push(file as unknown as VerifiedFileFact);
+        countSheets+=file.physical_sheets;
+      }
+      if(!Number.isSafeInteger(countSheets)||countSheets<1)
+        throw new ApiFault(409,'PREVIEW_DOCUMENTS_INVALID','Tổng số tờ không đáng tin cậy.');
+    }
+    const token=this.token;
+    const pages:Blob[]=[];
+    const signature=[137,80,78,71,13,10,26,10];
+    for(let index=0;index<entries.length;index++) {
+      const entry=asObject(entries[index]);
+      const exactUrl=`${root}/${index}`;
+      if(entry.index!==index || entry.url!==exactUrl || entry.content_type!=='image/png')
+        throw new ApiFault(409,'PREVIEW_UNVERIFIED','Đường dẫn ảnh xem trước không hợp lệ.');
+      let response:Response;
+      try {
+        response=await this.fetcher(this.baseUrl+exactUrl,{
+          method:'GET',credentials:'same-origin',cache:'no-store',
+          headers:{Authorization:'Bearer '+token,Accept:'image/png'}
+        });
+      } catch {
+        throw new ApiFault(0,'PREVIEW_NETWORK','Không tải được ảnh xác minh; cần kiểm tra lại.');
+      }
+      if(!response.ok || response.headers.get('content-type')?.split(';')[0]?.trim()!=='image/png')
+        throw new ApiFault(response.status,'PREVIEW_UNAVAILABLE','Ảnh xem trước không còn hợp lệ; cần đối chiếu bản gốc.');
+      const claimed=Number(response.headers.get('content-length'));
+      if(claimed>8*1024*1024)
+        throw new ApiFault(409,'PREVIEW_TOO_LARGE','Ảnh xem trước vượt giới hạn.');
+      const buffer=await response.arrayBuffer();
+      const bytes=new Uint8Array(buffer);
+      if(bytes.length<8 || bytes.length>8*1024*1024 ||
+          !signature.every((value,n)=>bytes[n]===value))
+        throw new ApiFault(409,'PREVIEW_INVALID_PNG','Nội dung ảnh xem trước không được xác minh.');
+      pages.push(new Blob([buffer],{type:'image/png'}));
+    }
+    if(this.token!==token)
+      throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
+    return {pages,files};
   }
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView> {
     // AI1 CODE-201 routes now exist, but they require current generation from a
@@ -323,6 +398,10 @@ export class DemoPrintPort implements PrintPort {
     this.checkNetwork(); const found = this.orders.find(o => o.order_id === id);
     if (!found) throw new ApiFault(404, 'NOT_FOUND', 'Không tìm thấy đơn mô phỏng.');
     return structuredClone(found);
+  }
+  async loadVerifiedPreviewPages(): Promise<{pages:Blob[];files:VerifiedFileFact[]}> {
+    // Demo images cannot be used as verified processor proof.
+    return {pages:[],files:[]};
   }
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string) {
     this.checkNetwork();
