@@ -91,6 +91,13 @@ test('REAL PostgreSQL: owner reconciles AI1 committed draft after lost ACK; neve
     'SELECT status,order_id FROM ai0_inbound_artifact_drafts WHERE shop_id=$1 AND oa_id=$2 AND event_id=$3',
     [shop,oa,event])).rows[0];
   assert.equal(receipt.status,'CREATED');assert.equal(receipt.order_id,actualOrderId);
+  const audit=(await pool.query(
+    "SELECT actor_id,details FROM core_audit WHERE shop_id=$1 AND order_id=$2 AND action='ai0.synthetic_draft.reconciled'",
+    [shop,actualOrderId])).rows;
+  assert.equal(audit.length,1,'Owner recovery must have exactly one durable audit row');
+  assert.equal(audit[0].actor_id,owner.id);
+  assert.equal(audit[0].details.event_id,event);
+  assert.equal(audit[0].details.created_new_order,false);
   const noAI1=await fresh();
   await assert.rejects(createSyntheticInboundDraft(asSqlPool(pool),{
     async createDraft(){throw new Error('AI1_NOT_COMMITTED');}
