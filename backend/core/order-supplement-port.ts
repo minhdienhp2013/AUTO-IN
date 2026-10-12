@@ -296,6 +296,8 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
     // Receipt must be provably later than the staff approval (both the server and
     // the provider clock); otherwise a delayed older event remains pending.
     if(!opens.length&&list.rows.length&&input.intent==='append_or_create'){
+     // A bare copy/paper/duplex change after print approval is NOT a new order request.
+     if(reading.kind==='recognized')return {status:'needs_review'};
      const latest=await db.query<{approved_at:Date|null}>(
       'SELECT MAX(a.created_at) AS approved_at FROM core_approvals a JOIN core_orders o ON o.id=a.order_id '+
       'WHERE o.shop_id=$1 AND o.customer_id=$2 AND o.conversation_id=$3',
