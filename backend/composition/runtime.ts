@@ -5,6 +5,7 @@ import { DomainError, type Principal } from '../core/model.js';
 import type { SqlPool } from '../storage/database.js';
 import type { RouteRegistrar } from '../api/routes.js';
 import { ingestSyntheticArtifact, type SyntheticArtifactScope } from './synthetic-ingest.js';
+import { loadVerifiedOrderPreview } from './preview.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
 export interface RuntimeOptions {
@@ -15,6 +16,7 @@ export interface RuntimeOptions {
   zaloWebhook?: FastifyPluginAsync;
   zaloWorkerConfigured?: boolean;
   syntheticArtifactIngest?: { artifactRoot: string; scope: SyntheticArtifactScope };
+  previewArtifactRoot?: string;
 }
 export function identityResolver(identities: readonly ServiceIdentity[]) {
   for (const identity of identities) {
@@ -75,7 +77,8 @@ export function buildIntegratedApp(options: RuntimeOptions) {
     auth_configured: true, configured_operations: ['me', 'listOrders', 'approveOrder', 'claimJob', 'markSending', 'reportJob'],
     registered_routes: registered, zalo_webhook_configured: !!options.zaloWebhook,
     zalo_worker_configured: options.zaloWorkerConfigured === true,
-    processor_configured: false, synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
+    processor_configured: false, preview_configured: !!options.previewArtifactRoot,
+    synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
     integration_stage: 'core-http' }));
   app.post('/internal/simulation/inbound-artifacts', async (request, reply) => {
     if (!options.syntheticArtifactIngest) throw new DomainError('FEATURE_UNAVAILABLE', 'Synthetic import unavailable', 503);
@@ -84,6 +87,19 @@ export function buildIntegratedApp(options: RuntimeOptions) {
     const outcome = await ingestSyntheticArtifact(options.pool, options.syntheticArtifactIngest.artifactRoot,
       options.syntheticArtifactIngest.scope, actor, request.body);
     return reply.code(outcome.status === 'registered' ? 201 : 200).send(outcome);
+  });
+  app.get('/api/v1/orders/:order_id/revisions/:revision/previews/:index', async (request, reply) => {
+    if (!options.previewArtifactRoot) throw new DomainError('FEATURE_UNAVAILABLE', 'Verified preview unavailable', 503);
+    const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    const params = request.params as { order_id: string; revision: string; index: string };
+    const preview = await loadVerifiedOrderPreview(options.pool, options.previewArtifactRoot,
+      actor, params.order_id, Number(params.revision), Number(params.index));
+    return reply.header('Content-Type', 'image/png')
+      .header('Cache-Control', 'no-store')
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Content-Security-Policy', "default-src 'none'")
+      .send(preview);
   });
   if (options.zaloWebhook) app.register(options.zaloWebhook);
   else app.post('/webhooks/zalo', async (_request, reply) => reply.code(503).send({ error: {
