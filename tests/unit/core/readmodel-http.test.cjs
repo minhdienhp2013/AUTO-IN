@@ -19,6 +19,8 @@ function mockReadModel(mode, previewVerified, artifactPreview){
   approval_id:'approval1',printer_id:'RMP7000',state:'VERIFIED_DONE',
   verified_sheets:'5',mode_at_send:mode,cancelled_at:null};
  const db={query:async sql=>{
+  // Non-Zalo unit fixture: verify pending read model fails closed only for an OA-linked order.
+  if(sql.startsWith('SELECT to_regclass('))return {rows:[{proposals:null,events:null,reviews:null}]};
   if(sql.startsWith('SELECT * FROM core_revisions'))return {rows:[{revision:2,request_hash:requestHash,request_data:{},plan}]};
   if(sql.startsWith('SELECT id,order_id,revision,request_hash,approval_id,state'))return {rows:[job]};
   if(sql.startsWith('SELECT * FROM core_quotes'))return {rows:[]};
@@ -41,6 +43,8 @@ function mockReadModel(mode, previewVerified, artifactPreview){
 test('read model never counts legacy/null-mode print as verified physical paper',async()=>{
  const view=await mockReadModel(null,true,'preview/private').getOrder(staff,'order1');
  assert.equal(view.current.staff_approved,true);
+ assert.equal(view.current.pending_updates.status,'CLEAR');
+ assert.equal(view.current.pending_updates.unresolved_count,0);
  assert.equal(view.current.verified_plan.physical_sheets,5);
  assert.equal(view.current.preview_ref,'preview/private');
  assert.equal(view.jobs[0].paper_complete,false);
