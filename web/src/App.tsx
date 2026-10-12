@@ -276,7 +276,7 @@ function App() {
                     <button className="outline-btn" disabled={busy||chatLoading||!session} onClick={()=>void loadChatGroups()}>
                       {chatLoading?'Đang kiểm tra…':'Tải chi tiết theo chat'}</button></div>
                   {!chatLoaded && <p>Chỉ nhóm sau khi đọc chi tiết đơn đã xác thực. Không gộp các mã đơn dù cùng khách/chat; OA và ý định tạo đơn riêng do backend quyết định.</p>}
-                  {chatLoaded && (openChatGroups.length ? openChatGroups.map(group=><div className="chat-group" key={JSON.stringify([group.customer_id,group.conversation_id])}>
+                  {chatLoaded && apiHealthy && (openChatGroups.length ? openChatGroups.map(group=><div className="chat-group" key={JSON.stringify([group.customer_id,group.conversation_id])}>
                     <div><strong>Khách: {group.customer_id}</strong><small>Chat: {group.conversation_id} · {group.orders.length} đơn riêng đang mở</small></div>
                     {group.orders.map(o=><button key={o.order_id} className="chat-open-order" onClick={()=>doSelect(o.order_id)}>
                       Đơn {o.order_id} · phiên bản {o.revision} {requiresCustomerReconfirmation(o)?'· CẦN XÁC NHẬN LẠI':''}
@@ -301,12 +301,12 @@ function App() {
                   <strong>{selectedOrder.detail_loaded!==true?'Chưa xác minh đơn còn mở hay đã chốt':canEditRequest?'Đơn đang mở · trước khi NHÂN VIÊN chốt in':'Đã chốt / khóa yêu cầu in · không tự sửa đơn cũ'}</strong>
                   <p data-testid="code008-revision">Phiên bản đang xử lý: <b>{selectedOrder.revision}</b> · Chat: {selectedOrder.conversation_id??'chưa được server xác minh'}</p>
                   {requiresCustomerReconfirmation(selectedOrder) && <p className="inbound-warning" data-testid="code008-reconfirm">Có phiên bản đơn mới: khách cần xác nhận lại yêu cầu và giá (nếu cần). Xác nhận phiên bản cũ không có hiệu lực.</p>}
-                  {selectedOrder.pending_updates?.state==='clear'
+                  {apiHealthy && selectedOrder.pending_updates?.state==='clear'
                     ? <p data-testid="code008-clear">Máy chủ xác nhận không còn tin/file bổ sung đang chờ đối soát cho đúng phiên bản/hash hiện hành.</p>
                     : <p className="inbound-warning" data-testid="code008-blocked">Có tin/file bổ sung cần đối soát trước khi chốt in, hoặc API chưa cung cấp chứng cứ đã xử lý hết. Không coi nội dung này là đã nhập vào đơn.</p>}
-                  {selectedOrder.pending_updates && selectedOrder.pending_updates.state!=='unknown' && selectedOrder.pending_updates.state!=='clear' &&
+                  {apiHealthy && selectedOrder.pending_updates && selectedOrder.pending_updates.state!=='unknown' && selectedOrder.pending_updates.state!=='clear' &&
                     <p data-testid="code008-pending-count">Máy chủ ghi nhận {selectedOrder.pending_updates?.unresolved_count ?? 'chưa xác định'} tin/file chưa xử lý; {selectedOrder.pending_updates?.state==='needs_human'?'cần nhân viên đối soát':'đang chờ AI xử lý'}.</p>}
-                  {(selectedOrder.pending_updates?.items??[]).map((item,index)=><div className="inbound-item" key={index}>
+                  {(apiHealthy?selectedOrder.pending_updates?.items??[]:[]).map((item,index)=><div className="inbound-item" key={index}>
                     <b>{item.kind==='file'?'File bổ sung':'Tin bổ sung'}: {item.label}</b>
                     <p>{item.summary}</p>
                     {item.received_at && <small>{time(item.received_at)}</small>}
