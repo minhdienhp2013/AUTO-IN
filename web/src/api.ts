@@ -1,5 +1,6 @@
 import { actionPath, depositShortfall, hasValidApprovalInputs, validMoney, type ActionKind, type Mutation, type OrderView, type Snapshot, type StaffSession, type OperationMode, type ConversationState, type VerifiedFileFact } from './domain.ts';
 import { demoOrders, demoSession } from './fixtures.ts';
+import { canEditPrintRequest, enrichOrderWithCode008 } from './code008.ts';
 
 export class ApiFault extends Error {
   readonly status: number; readonly code: string; readonly currentRevision?: number;
@@ -196,7 +197,10 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
     payment_state: amount !== null && received >= amount ? 'paid' : received > 0 ? 'partial' : 'unpaid',
     created_at: row.created_at, warnings, documents: [],
   });
-  return normalized;
+  const enriched = enrichOrderWithCode008(raw, normalized);
+  if(enriched.pending_updates?.state !== 'clear')
+    enriched.warnings.push('Tin/file bổ sung chưa được backend xác nhận xử lý hết; cần AI/nhân viên đối soát trước khi chốt in.');
+  return enriched;
 }
 const unwrap = (payload: unknown, key: 'order' | 'orders' | 'session'): unknown => {
   const obj = asObject(payload);
@@ -339,6 +343,8 @@ export class HttpPrintPort implements PrintPort {
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView> {
     // AI1 CODE-201 routes now exist, but they require current generation from a
     // verified read model. No value supplied => fail closed, no request sent.
+    if (kind === 'quote' && !canEditPrintRequest(order))
+      throw new ApiFault(409,'ORDER_PRINT_LOCKED','Đơn đã chốt in hoặc có lệnh in; không được âm thầm sửa giá/yêu cầu.');
     if (kind === 'handover' || kind === 'return_to_ai') {
       if (order.conversation_generation === null || !order.conversation_id) throw new ApiFault(503, 'GENERATION_UNVERIFIED', 'Chưa có generation hội thoại do máy chủ xác minh, không được tiếp quản/trả AI.');
       const response = asObject(await this.call(actionPath(order,kind), {method:'POST',

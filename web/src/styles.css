@@ -37,3 +37,16 @@
 .confirmation-evidence span {font-size:.87rem;line-height:1.5;font-weight:600}
 .confirmation-evidence p {grid-column:1/-1;font-size:.78rem;margin:0;color:#596574;line-height:1.5}
 @media(max-width:760px){.confirmation-evidence{grid-template-columns:1fr}}
+
+/* CODE-008: verified chat grouping and pre-approval inbound guard */
+.chat-group-panel,.inbound-workflow{border:1px solid #d9e0e8;border-radius:12px;padding:12px;margin:10px 0;background:#f8fafc}
+.chat-group-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.chat-group-panel p,.inbound-workflow p{font-size:.83rem;line-height:1.55;margin:7px 0;color:#4e5c6b}
+.chat-group{margin:10px 0;padding:10px;border:1px solid #dce4ed;border-radius:9px;background:white}
+.chat-group small{display:block;overflow-wrap:anywhere;color:#556575}
+.chat-open-order{display:block;width:100%;border:1px solid #dce4ed;border-radius:8px;background:#f4f7fb;padding:8px;text-align:left;margin-top:6px;color:#193f65}
+.inbound-workflow{background:#fffaf3;border-color:#ead6ae}
+.inbound-warning{font-weight:700;color:#94441c!important}
+.inbound-item{border-top:1px solid #e6d9c7;padding:8px 0;overflow-wrap:anywhere}
+.inbound-item p{margin:3px 0}
+@media(max-width:760px){.chat-group-heading{align-items:stretch}.chat-group-heading button{width:100%}.chat-open-order{font-size:.82rem}}

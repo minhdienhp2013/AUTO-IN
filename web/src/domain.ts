@@ -33,6 +33,10 @@ export interface DocumentView {
 export interface AuditEntry { at: string; actor: string; action: string; summary: string }
 export interface OrderView {
   order_id: string;
+  /** Fields released only after scoped GET detail, not trusted from summary rows. */
+  customer_id?: string | null;
+  detail_loaded?: boolean;
+  pending_updates?: import('./code008.ts').PendingInboundUpdates;
   job_id?: string | null; // AI1 job eligible for physical-paper verification; never inferred from a list
   customer_name: string;
   conversation_id: string | null;
