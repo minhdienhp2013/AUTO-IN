@@ -130,7 +130,7 @@ test('forged provider occurred_at cannot override trusted PostgreSQL receive ord
  assert.equal(await p.consume(received),'processed');
  assert.equal(attempts.length,1);
  assert.deepEqual(attempts[0].event_ids,['early','late']);
- assert.equal(attempts[0].text,'In A4\\nĐổi A3');
+ assert.equal(attempts[0].text,'In A4\nĐổi A3');
  const replay={...batch(earlier,later),server_received_event_ids:['early','late']};
  assert.equal(await p.consume(replay),'processed');
  assert.equal(attempts[0].text,attempts[1].text);
