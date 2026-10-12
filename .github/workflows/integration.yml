@@ -36,10 +36,14 @@ jobs:
       - run: npm run db:migrate
         env:
           DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_305
-      - run: npm run check
+      - id: product_checks
+        run: npm run check
       - run: python -m pytest -q tests/unit/documents tests/unit/printing
       - run: node tests/acceptance/run.mjs --integration
       - name: HTTP readiness and anonymous authorization
+        # Collect HTTP evidence even when independent AI5 acceptance is RED.
+        # The acceptance step still fails the job; no continue-on-error/waiver.
+        if: ${{ !cancelled() && steps.product_checks.outcome == 'success' }}
         env:
           DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_305
         run: |

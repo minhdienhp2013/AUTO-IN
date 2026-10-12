@@ -9,6 +9,7 @@ import { loadVerifiedOrderPreview, loadVerifiedOrderPreviewCatalog } from './pre
 import { createSyntheticInboundDraft } from './inbound-draft.js';
 import { reconcileSyntheticInboundDraft } from './inbound-reconcile.js';
 import { createSyntheticVerifiedButtonPlugin, type SyntheticButtonScope } from './synthetic-verified-button.js';
+import { pendingReviewSqlPool } from './pending-review-errors.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
 export interface RuntimeOptions {
@@ -42,7 +43,7 @@ export function identityResolver(identities: readonly ServiceIdentity[]) {
 
 /** Simulation-only composition. Uses AI1 routes exactly once, not CODE-000 routes. */
 export function buildIntegratedApp(options: RuntimeOptions) {
-  const core = createCoreModule({ pool: options.pool });
+  const core = createCoreModule({ pool: pendingReviewSqlPool(options.pool) });
   const resolve = identityResolver(options.identities ?? []);
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024,
     ...(options.tls ? { https: options.tls } : {}) });

@@ -7,6 +7,7 @@ import {createCoreModule} from '../../../backend/core/factory.ts';
 import {createAiOrderPort} from '../../../backend/core/ai-order-port.ts';
 import {createSyntheticZaloIngress} from '../../../backend/composition/zalo-simulation.ts';
 import {buildIntegratedApp} from '../../../backend/composition/runtime.ts';
+import {pendingReviewSqlPool} from '../../../backend/composition/pending-review-errors.ts';
 
 const databaseUrl=process.env.TEST_DATABASE_URL;
 
@@ -45,8 +46,9 @@ test('CODE-008 real PG: unresolved signed Zalo event prevents approval despite f
       {filename:'additional.png',file_ref:'UNTRUSTED-CUSTOMER-PATH'})
   });
   try{
+    const password='isolated-'+randomUUID();
     await core.auth.bootstrapOwner({shop_id:shop,username:'owner',
-      password:'isolated-'+randomUUID(),bootstrap_enabled:true});
+      password,bootstrap_enabled:true});
     bootstrapped=true;
     const actor=(await pool.query(
       "SELECT id FROM core_users WHERE shop_id=$1 AND username='owner'",[shop])).rows[0].id;
@@ -82,6 +84,17 @@ test('CODE-008 real PG: unresolved signed Zalo event prevents approval despite f
       await conn.query('ROLLBACK');
     }finally{conn.release()}
 
+    // Synthetic plan/credential only, NOT AI3 or real customer evidence.
+    // Enough to reach the real staff admission boundary via authenticated HTTP.
+    const plan={request_hash:rev,ready:true,printer_id:'RMP7000',
+      verified_by:'TEST_ONLY_NOT_AI3',artifact_ref:'synthetic/no-real-artifact',
+      document_pages:1,printed_faces:1,physical_sheets:1};
+    await core.service.publishVerifiedPlan({id:'fixture-processor',shop_id:shop,role:'processor',verified:true},
+      orderId,{expected_revision:1,plan,idempotency_key:'plan-'+randomUUID()});
+    await core.service.confirm({id:'fixture-customer',shop_id:shop,customer_id:customer,role:'customer',verified:true},
+      orderId,{expected_revision:2,kind:'request',idempotency_key:'confirm-'+randomUUID()});
+    const session=await core.auth.login(shop,'owner',password);
+
     // A second signed file arrives BEFORE approval. The provider timestamp
     // is deliberately 60 seconds in the FUTURE; trusted received_at is NOW.
     const extraId='extra-'+randomUUID();
@@ -93,6 +106,23 @@ test('CODE-008 real PG: unresolved signed Zalo event prevents approval despite f
     assert.ok(source.received_at.getTime()<source.occurred_at.getTime());
     await assert.rejects(insert(),error=>
       error.code==='P0001'&&error.message.includes('AI0_PENDING_INBOUND_REVIEW'));
+    // Raw PostgreSQL still raises P0001. Only AI0's Core boundary translates it.
+    const boundary=pendingReviewSqlPool(asSqlPool(pool));
+    await assert.rejects(boundary.query(
+      'INSERT INTO core_approvals(id,order_id,revision,request_hash,actor_id) VALUES($1,$2,1,$3,$4)',
+      [randomUUID(),orderId,rev,actor]),error=>
+      error.code==='PENDING_INBOUND_REVIEW'&&error.status===409&&!error.retryable);
+    // Two staff requests, same real DB, must both reject with zero jobs.
+    const responses=await Promise.all([1,2].map(()=>app.inject({method:'POST',
+      url:'/api/v1/orders/'+orderId+'/approvals',
+      headers:{authorization:'Bearer '+session.token},
+      payload:{expected_revision:2,acknowledge_deposit_shortage:false,idempotency_key:'approval-'+randomUUID()}})));
+    for(const response of responses){
+      assert.equal(response.statusCode,409,response.body);
+      assert.equal(response.json().error.code,'PENDING_INBOUND_REVIEW');
+      assert.equal(response.json().error.retryable,false);
+      assert.doesNotMatch(response.body,/P0001|AI0_PENDING|DETAIL|INSERT INTO/);
+    }
     assert.equal((await pool.query(
       'SELECT count(*)::int AS n FROM core_approvals WHERE order_id=$1',
       [orderId])).rows[0].n,0);
@@ -118,6 +148,8 @@ test('CODE-008 real PG: unresolved signed Zalo event prevents approval despite f
       await pool.query('DELETE FROM zalo_inbound_events WHERE oa_id=$1',[oa]);
       await pool.query('DELETE FROM core_ai_draft_proposals WHERE shop_id=$1',[shop]);
       await pool.query('DELETE FROM core_audit WHERE shop_id=$1',[shop]);
+      await pool.query('DELETE FROM core_idempotency WHERE shop_id=$1',[shop]);
+      await pool.query('DELETE FROM core_confirmations WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',[shop]);
       await pool.query('DELETE FROM core_revisions WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',[shop]);
       await pool.query('DELETE FROM core_orders WHERE shop_id=$1',[shop]);
       await pool.query('DELETE FROM core_conversation_controls WHERE shop_id=$1',[shop]);
