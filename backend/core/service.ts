@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { assertAgent, assertOwner, assertPlan, assertProcessor, assertStaff, canAccessShop, canonical, checkRevision, dbSafeInteger, DomainError, newId, nonNegativeVnd, printingAllowed, sha, shortage, type JobRow, type OrderRow, type Principal, type PrintPlan, type QuoteRow, type RevisionRow, type SettingsRow } from './model.js';
 import { PgStore, type SqlConnection } from '../storage/database.js';
+import { readPendingUpdates } from './pending-updates.js';
 
 export class OrderService {
  constructor(private readonly store:PgStore, private readonly now:()=>Date=()=>new Date()){}
@@ -439,38 +440,12 @@ export class OrderService {
     ? (await db.query<{status:'AI'|'HUMAN';generation:string|number;claimed_by:string|null}>(
       'SELECT status,generation,claimed_by FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',[p.shop_id,o.conversation_id])).rows[0]??null
     :null;
-   // AI1 CODE-008: server-side pinned pending count; AI2 DONE/COMMITTED
-   // and provider time are not acceptance evidence.
-   const readTables=await db.query<{proposals:string|null;events:string|null;reviews:string|null}>(
-    "SELECT to_regclass('public.core_ai_draft_proposals')::text AS proposals,"+
-    "to_regclass('public.zalo_inbound_events')::text AS events,"+
-    "to_regclass('public.core_order_inbound_reviews')::text AS reviews");
-   const tables=readTables.rows[0];
-   let pendingItems:{event_id:string;kind:string;received_at:Date}[]=[];
-   const oaBinding=tables?.proposals?(await db.query('SELECT 1 FROM core_ai_draft_proposals WHERE order_id=$1 AND shop_id=$2',[id,p.shop_id])).rows.length>0:false;
-   const pendingUnknown=oaBinding&&(!tables?.events||!tables?.reviews);
-   if(oaBinding&&!pendingUnknown){
-    const entries=await db.query<{event_id:string;kind:string;received_at:Date}>(
-     "SELECT e.event_id,e.payload_json->>'kind' AS kind,e.received_at "+
-     "FROM core_ai_draft_proposals p "+
-     "JOIN core_revisions initial ON initial.order_id=p.order_id AND initial.revision=1 "+
-     "JOIN zalo_inbound_events e ON e.oa_id=p.oa_id AND e.customer_id=p.customer_id AND e.conversation_id=p.conversation_id "+
-     "WHERE p.order_id=$1 AND p.shop_id=$2 AND e.payload_json->>'kind' IN ('text','image','file') "+
-     "AND NOT COALESCE((initial.request_data->'event_ids') ? e.event_id,false) "+
-     "AND NOT EXISTS (SELECT 1 FROM core_order_inbound_reviews j JOIN core_revisions jr "+
-     "ON jr.order_id=j.order_id AND jr.revision=j.revision "+
-     "WHERE j.shop_id=p.shop_id AND j.oa_id=e.oa_id AND j.event_id=e.event_id "+
-     "AND j.order_id=p.order_id AND j.revision<=$3 "+
-     "AND COALESCE((jr.request_data->'event_ids') ? e.event_id,false)) "+
-     "ORDER BY e.received_at,e.event_id LIMIT 101",[id,p.shop_id,current.revision]);
-    pendingItems=entries.rows;
-   }
-   const pendingUpdates={
-    order_id:id,revision:current.revision,request_hash:current.request_hash,
-    status:pendingUnknown||pendingItems.length>0||verifiedPlan===null?'PENDING' as const:'CLEAR' as const,
-    unresolved_count:pendingUnknown?null:pendingItems.length,
-    items:pendingItems
-   };
+   const pendingUpdates=await readPendingUpdates(db,{
+    order_id:id,shop_id:o.shop_id,customer_id:o.customer_id,
+    conversation_id:o.conversation_id,revision:current.revision,
+    request_hash:current.request_hash,verified_plan_ready:verifiedPlan!==null,
+    created_at:o.created_at
+   });
    return {order:o,revisions:revisions.rows,jobs:jobRows,quote,received_vnd:received,
     receivable_vnd:Math.max(0,(quote?.amount_vnd??0)-received),
     refundable_vnd:Math.max(0,received-(quote?.amount_vnd??0)),
