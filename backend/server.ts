@@ -37,6 +37,7 @@ let timer: ReturnType<typeof setInterval> | undefined;
 const app = buildIntegratedApp({ pool: asSqlPool(pool), identities,
   ...(tls ? { tls } : {}), ...(zaloRuntime ? { zaloWebhook: zaloRuntime.webhook } : {}),
   zaloWorkerConfigured: tickMs > 0,
+  ...(process.env.AUTOIN_ARTIFACT_ROOT ? {previewArtifactRoot: process.env.AUTOIN_ARTIFACT_ROOT} : {}),
   ...(zaloRuntime && process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT ? {
     syntheticArtifactIngest: {
       artifactRoot: process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT,
