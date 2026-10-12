@@ -74,6 +74,18 @@ BEGIN
           AND d.event_id=e.event_id AND d.order_id=NEW.order_id
           AND d.status='CREATED'
      )
+     -- A verified AI1 supplement batch MUST be journalled AND present in
+     -- the exact reviewed revision before it can unblock approval. AI2 batch
+     -- DONE/ACK or event_ids from a webhook alone are never sufficient.
+     AND NOT EXISTS (
+        SELECT 1 FROM core_order_inbound_reviews j
+        JOIN core_revisions jr
+          ON jr.order_id=j.order_id AND jr.revision=j.revision
+        WHERE j.shop_id=p.shop_id AND j.oa_id=e.oa_id
+          AND j.event_id=e.event_id AND j.order_id=NEW.order_id
+          AND j.revision<=NEW.revision
+          AND COALESCE((jr.request_data->'event_ids') ? e.event_id,false)
+     )
   ) INTO has_pending;
   IF has_pending THEN
     RAISE EXCEPTION USING ERRCODE='P0001',
