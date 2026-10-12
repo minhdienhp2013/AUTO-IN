@@ -100,3 +100,16 @@ AI0 tiếp tục trên nhánh PR #31, sau nền eff849379. KHÔNG thay module AI
 - Bộ test AI0 mới: `tests/integration/composition/{synthetic-ingest,preview}.test.ts`. Các bảng bổ sung chỉ tạo ở DB test qua `npm run db:migrate`. Kết quả CI phải ghi đúng HEAD SHA; PASS cũ không thay PASS mới. Browser desktop/mobile, HTTPS agent end-to-end, Zalo OA thật, Ricoh thật và TN-037 vẫn NOT RUN/BLOCKED.
 
 AI4 chỉ sửa UI sử dụng route preview đã gắn quyền, không thay server. AI5 kiểm cả phép thử từ chối truy cập, mã băm sai, phiên bản cũ, PostgreSQL, browser; không coi CI green là nghiệm thu TN-037.
+
+
+## CODE-006 tiếp tục: synthetic inbound → AI1 draft → AI3 renderer → preview
+
+Chỉ chạy với PostgreSQL localhost autoin_test, shop simulation và signed synthetic fixture; không phải API tải media Zalo OA thật.
+
+- Nhân viên đăng nhập AI1 thực hiện POST /internal/simulation/inbound-artifacts/:event_id/draft với JSON {"paper":"A4","copies":2,"duplex":false} sau khi đã đăng ký file bằng POST /internal/simulation/inbound-artifacts. Server tự tra customer_id, conversation_id và source ref/hash từ bản ghi event OA/shop đã xác thực; kiểm manifest và file SHA-256, không tin đường dẫn do client đưa.
+- Migration backend/composition/migrations/003_inbound_drafts.sql tạo một reservation (shop,oa,event) và đặt PENDING trước khi AI1 createDraft; nếu crash/mất ACK thì giữ PENDING để người xử lý, KHÔNG tự tạo lại; bản CREATED gọi lại trả existing; sửa thông số từ cùng event → lỗi 409.
+- CLI npm run process:order -- <shop_id> <order_uuid> chỉ được chạy với AUTOIN_INPUT_ROOT trỏ đúng AUTOIN_DOCUMENT_ARTIFACT_ROOT, AUTOIN_ARTIFACT_ROOT làm nơi AI3 xuất artifact; AI0 kiểm nguồn/manifest SHA trước và sau khi AI3 render. Nếu hash khác, request nhiều file, file ZIP cần xử lý riêng hoặc event không được ràng buộc order → không xuất kế hoạch in.
+- Nếu AI3 READY và bằng chứng khớp, AI1 publishVerifiedPlan tăng revision, cần khách xác nhận lại và nhân viên duyệt đúng phiên bản. API xem preview PNG theo quyền vẫn là GET /api/v1/orders/:order_id/revisions/:revision/previews/:index, gắn DB manifest SHA và active revision.
+- Test tests/integration/composition/inbound-draft-pg.test.mjs dùng PostgreSQL thật, Fastify/login, AI1 draft, AI3 CLI, preview, trả về 401 khi chưa đăng nhập, chống tạo trùng, giữ PENDING sau lỗi mơ hồ, sửa source → chặn; kiểm 0 confirm và 0 print jobs. Không có TEST_DATABASE_URL thì ca này SKIP.
+
+Còn chặn: tải media OA thật, browser desktop/mobile, HTTPS Windows Agent, native Word/Excel verified preview, Ricoh thật, TN-037. Không phát lệnh in, không gửi OA, không merge/deploy.
