@@ -31,7 +31,7 @@ export interface VerifiedChallengePort {
 type EventRow={conversation_id:string;customer_id:string;occurred_at:Date;payload_json:unknown};
 type ControlRow={generation:string;status:string};
 type RevisionRow={active_revision:number;request_hash:string|null;order_id:string};
-type CandidateRow={candidate_id:string;order_id:string;request_hash:string;
+type CandidateRow={candidate_id:string;event_id:string;order_id:string;request_hash:string;
   active_revision:number;quote_revision:number|null;kind:string;challenge_id:string};
 function pending(reason:string):CandidateDecision {return {status:"pending",reason};}
 function manual(reason:string):CandidateDecision {return {status:"needs_human",reason};}
@@ -156,14 +156,14 @@ export class PostgresConfirmationCandidates implements ConfirmationCandidatePort
           challenge.quote_revision,input.expected_generation]);
       if(written.rows[0])return {status:"candidate",candidate_id:written.rows[0].candidate_id};
       const existing=await tx.query<CandidateRow>(`
-        SELECT candidate_id::text,order_id::text,request_hash,active_revision,
+        SELECT candidate_id::text,event_id,order_id::text,request_hash,active_revision,
           quote_revision,kind,challenge_id
         FROM zalo_confirmation_candidates WHERE shop_id=$1 AND oa_id=$2
           AND (event_id=$3 OR challenge_id=$4) FOR UPDATE`,
         [this.shop,this.oa,event.event_id,challenge.challenge_id]);
       const record=existing.rows[0];
       if(existing.rows.length!==1||!record||
-        record.order_id!==challenge.order_id||
+        record.event_id!==event.event_id||record.order_id!==challenge.order_id||
         record.request_hash!==challenge.request_hash||
         record.active_revision!==challenge.active_revision||
         record.quote_revision!==challenge.quote_revision||
