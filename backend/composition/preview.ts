@@ -7,7 +7,8 @@ import { assertStaff, DomainError, type Principal } from '../core/model.js';
 
 interface PlanProof {
   artifact_ref: string; manifest_sha256: string; request_hash: string;
-  plan: { artifact_ref?: string; request_hash?: string; ready?: boolean } | null;
+  plan: { artifact_ref?: string; request_hash?: string; ready?: boolean;
+    document_pages?: number; printed_faces?: number; physical_sheets?: number } | null;
   active_revision: number;
 }
 interface PreviewEntry { ref?: unknown; sha256?: unknown; bytes?: unknown }
@@ -44,16 +45,28 @@ async function secureRead(root: string, ref: string, sizeLimit: number): Promise
   finally { await handle?.close(); }
 }
 
-/** Only server-anchored, AI3-rendered PNGs; never return original PDFs/documents. */
-export async function loadVerifiedOrderPreview(
+interface VerifiedPreviewManifest {
+  proof: PlanProof;
+  entries: PreviewEntry[];
+  prefix: string;
+}
+function validPreviewEntry(root: string, entry: PreviewEntry | undefined, prefix: string): entry is PreviewEntry & {ref:string;sha256:string;bytes:number} {
+  if (!entry || typeof entry.ref !== 'string' ||
+      !entry.ref.endsWith('.png') || typeof entry.sha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(entry.sha256) ||
+      typeof entry.bytes !== 'number' || !Number.isSafeInteger(entry.bytes) ||
+      entry.bytes < 8 || entry.bytes > 8*1024*1024) return false;
+  checkedRef(root, entry.ref, prefix);
+  return true;
+}
+async function readVerifiedManifest(
   pool: SqlPool, artifactRoot: string, actor: Principal,
-  orderId: string, revision: number, previewIndex: number
-): Promise<Buffer> {
+  orderId: string, revision: number
+): Promise<VerifiedPreviewManifest> {
   assertStaff(actor);
-  if (!/^[a-f0-9-]{36}$/i.test(orderId) || !Number.isSafeInteger(revision) ||
-      revision < 1 || !Number.isSafeInteger(previewIndex) ||
-      previewIndex < 0 || previewIndex > 14) return denied('INVALID_PREVIEW_REQUEST',422);
-  const result = await pool.query<PlanProof>(
+  if (!/^[a-f0-9-]{36}$/i.test(orderId) || !Number.isSafeInteger(revision) || revision < 1)
+    return denied('INVALID_PREVIEW_REQUEST',422);
+  const result=await pool.query<PlanProof>(
     'SELECT e.artifact_ref,e.manifest_sha256,e.request_hash,r.plan,o.active_revision ' +
     'FROM ai0_verified_plan_manifests e ' +
     'JOIN core_orders o ON o.id=e.order_id AND o.shop_id=e.shop_id ' +
@@ -61,38 +74,74 @@ export async function loadVerifiedOrderPreview(
     'WHERE e.shop_id=$1 AND e.order_id=$2 AND e.revision=$3',
     [actor.shop_id,orderId,revision]
   );
-  const proof = result.rows[0];
+  const proof=result.rows[0];
   if (!proof) return denied('PREVIEW_NOT_AVAILABLE',404);
   if (proof.active_revision !== revision || proof.plan?.ready !== true ||
       proof.plan.artifact_ref !== proof.artifact_ref ||
       proof.plan.request_hash !== proof.request_hash ||
       !/^[a-f0-9]{64}$/.test(proof.manifest_sha256))
     return denied('STALE_OR_UNVERIFIED_PREVIEW');
-  const manifestBytes = await secureRead(artifactRoot,proof.artifact_ref,256*1024);
-  if (digest(manifestBytes) !== proof.manifest_sha256)
+  const manifestBytes=await secureRead(artifactRoot,proof.artifact_ref,256*1024);
+  if (digest(manifestBytes)!==proof.manifest_sha256)
     return denied('PREVIEW_MANIFEST_CHANGED');
-  let manifest: unknown;
-  try { manifest = JSON.parse(manifestBytes.toString('utf8')); }
-  catch { return denied('PREVIEW_MANIFEST_INVALID'); }
-  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest))
+  let parsed:unknown;
+  try {parsed=JSON.parse(manifestBytes.toString('utf8'));}
+  catch {return denied('PREVIEW_MANIFEST_INVALID');}
+  if (!parsed || typeof parsed!=='object' || Array.isArray(parsed))
     return denied('PREVIEW_MANIFEST_INVALID');
-  const value = manifest as {schema?:unknown;request_hash?:unknown;previews?:unknown};
-  if (value.schema !== 'ai3.document_bridge.v1' ||
-      value.request_hash !== proof.request_hash || !Array.isArray(value.previews) ||
-      value.previews.length < 1 || value.previews.length > 15)
+  const manifest=parsed as {schema?:unknown;request_hash?:unknown;previews?:unknown};
+  if (manifest.schema!=='ai3.document_bridge.v1' ||
+      manifest.request_hash!==proof.request_hash || !Array.isArray(manifest.previews) ||
+      manifest.previews.length < 1 || manifest.previews.length > 15)
     return denied('PREVIEW_MANIFEST_INVALID');
-  const entry = value.previews[previewIndex] as PreviewEntry | undefined;
-  const dir = proof.artifact_ref.split('/')[0]!;
-  if (!entry || typeof entry.ref !== 'string' ||
-      !entry.ref.endsWith('.png') || typeof entry.sha256 !== 'string' ||
-      !/^[a-f0-9]{64}$/.test(entry.sha256) ||
-      typeof entry.bytes !== 'number' || !Number.isSafeInteger(entry.bytes) ||
-      entry.bytes < 8 || entry.bytes > 8*1024*1024)
-    return denied('PREVIEW_NOT_AVAILABLE',404);
-  checkedRef(artifactRoot,entry.ref,dir);
-  const preview = await secureRead(artifactRoot,entry.ref,8*1024*1024);
-  if (preview.length !== entry.bytes || digest(preview) !== entry.sha256 ||
-      !preview.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))
+  const prefix=proof.artifact_ref.split('/')[0]!;
+  const entries=manifest.previews as PreviewEntry[];
+  if (entries.some(entry=>!validPreviewEntry(artifactRoot,entry,prefix)))
+    return denied('PREVIEW_MANIFEST_INVALID');
+  return {proof,entries,prefix};
+}
+async function verifiedImage(root:string, entry:PreviewEntry & {ref:string;sha256:string;bytes:number}):Promise<Buffer> {
+  const bytes=await secureRead(root,entry.ref,8*1024*1024);
+  if (bytes.length!==entry.bytes || digest(bytes)!==entry.sha256 ||
+      !bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))
     return denied('PREVIEW_BYTES_CHANGED');
-  return preview;
+  return bytes;
+}
+
+/** A catalog is advertised only when EVERY current raster preview byte still
+ * matches the server-anchored AI3 manifest. No raw filesystem paths or bearer
+ * credentials are returned, and fetching each page checks rights again. */
+export async function loadVerifiedOrderPreviewCatalog(
+  pool: SqlPool, artifactRoot: string, actor: Principal,
+  orderId: string, revision: number
+): Promise<{order_id:string;revision:number;request_hash:string;
+  preview_verified:true;preview_count:number;
+  previews:{index:number;url:string;content_type:'image/png'}[]}> {
+  const {proof,entries}=await readVerifiedManifest(pool,artifactRoot,actor,orderId,revision);
+  for (const entry of entries) await verifiedImage(artifactRoot,
+    entry as PreviewEntry & {ref:string;sha256:string;bytes:number});
+  return {
+    order_id:orderId,revision,request_hash:proof.request_hash,
+    preview_verified:true,preview_count:entries.length,
+    previews:entries.map((_,index)=>({
+      index,url:'/api/v1/orders/'+orderId+'/revisions/'+revision+'/previews/'+index,
+      content_type:'image/png' as const
+    }))
+  };
+}
+
+/** Only server-anchored, AI3-rendered PNGs; never return original PDFs/documents.
+ * Deliberately re-checks active revision, scoped staff rights and the hash on
+ * EVERY retrieval; a previous catalog response is never an authorization. */
+export async function loadVerifiedOrderPreview(
+  pool: SqlPool, artifactRoot: string, actor: Principal,
+  orderId: string, revision: number, previewIndex: number
+): Promise<Buffer> {
+  if (!Number.isSafeInteger(previewIndex) || previewIndex<0 || previewIndex>14)
+    return denied('INVALID_PREVIEW_REQUEST',422);
+  const {entries}=await readVerifiedManifest(pool,artifactRoot,actor,orderId,revision);
+  const entry=entries[previewIndex];
+  if (!entry) return denied('PREVIEW_NOT_AVAILABLE',404);
+  return verifiedImage(artifactRoot,
+    entry as PreviewEntry & {ref:string;sha256:string;bytes:number});
 }
