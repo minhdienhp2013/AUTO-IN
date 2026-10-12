@@ -80,8 +80,19 @@ try{
   const pageRef=relativeDir+'/page-1.png',manifestRef=relativeDir+'/manifest.json';
   const pngPath=join(previewRoot,pageRef);
   await writeFile(pngPath,png,{mode:0o400});
+  // Synthetic per-file manifest matches AI3's released metadata shape, but
+  // remains explicitly a test fixture (not a false claim of AI3 rendering).
+  const sourceRef=relativeDir+'/source-000-'+digest(png)+'.png';
+  await writeFile(join(previewRoot,sourceRef),png,{mode:0o400});
   const manifest=Buffer.from(JSON.stringify({
     schema:'ai3.document_bridge.v1',request_hash:withPreview.request_hash,
+    files:[{source_artifact_ref:sourceRef,size_bytes:png.length,
+      file_sha256:digest(png),document_pages:1,printed_faces:1,
+      physical_sheets:1,warnings:[]}],
+    paper_plan:[{file_sha256:digest(png),document_pages:1,
+      printed_faces:1,physical_sheets:1,copies:1,paper:'A4',
+      duplex:false,orientation:'portrait',separate_each_file_and_copy:true}],
+    counts:{document_pages:1,printed_faces:1,physical_sheets:1},
     previews:[{ref:pageRef,sha256:digest(png),bytes:png.length}]
   }));
   await writeFile(join(previewRoot,manifestRef),manifest,{mode:0o400});
