@@ -118,10 +118,14 @@ export function createIncomingBatchPort(options:{
    // same row order, then generation row, then revisions/journals. No pre-read
    // in another transaction can authorize an append.
    const events=await verified(db,conv,customer,ids);
-   const matches=await matchingOrders(db,conv,customer,true);
-   if(matches.some(x=>x.proposal_id===null))return {status:'ambiguous'};
+   // Lock candidate orders first (approval and verified-confirmation lock these rows first).
+   // Re-read under the generation lock: another legacy worker may have created an
+   // order while we were acquiring it. No unlocked candidate list is authoritative.
+   await matchingOrders(db,conv,customer,true);
    if(!await activeControl(db,conv,input.expected_generation))
     return {status:'stale_generation'};
+   const matches=await matchingOrders(db,conv,customer,true);
+   if(matches.some(x=>x.proposal_id===null))return {status:'ambiguous'};
    const oldProposal=await db.query<{order_id:string;content_hash:string;event_fingerprint:string}>(
     'SELECT order_id,content_hash,event_fingerprint FROM core_ai_draft_proposals WHERE shop_id=$1 AND oa_id=$2 AND (event_fingerprint=$3 OR idempotency_key=$4) FOR UPDATE',
     [shop,oa,fingerprint,key]);
@@ -173,11 +177,12 @@ export function createIncomingBatchPort(options:{
     if(!rev?.request_data||typeof rev.request_data!=='object'||Array.isArray(rev.request_data))
      return {status:'needs_human'};
     const data=rev.request_data as Record<string,unknown>;
-    if(!Array.isArray(data.event_ids)||data.event_ids.some(e=>typeof e!=='string')||
-       ids.some(e=>data.event_ids?.includes(e)))return {status:'needs_human'};
+    const previousIds=data.event_ids;
+    if(!Array.isArray(previousIds)||previousIds.some(e=>typeof e!=='string')||
+       ids.some(e=>previousIds.includes(e)))return {status:'needs_human'};
     if(!Number.isSafeInteger(target.active_revision+1))throw new DomainError('REVISION_OVERFLOW','Revision exhausted',409);
     const revision=target.active_revision+1;
-    const nextData={...data,event_ids:[...data.event_ids,...ids],
+    const nextData={...data,event_ids:[...previousIds,...ids],
       incoming_batches:[...(Array.isArray(data.incoming_batches)?data.incoming_batches:[]),
        {event_ids:ids,changes:input.changes,source:'verified_inbound'}]};
     const hash=sha(canonical(nextData));
