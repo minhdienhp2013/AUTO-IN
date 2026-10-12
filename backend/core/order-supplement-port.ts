@@ -2,6 +2,32 @@ import { canonical, dbSafeInteger, DomainError, newId, sha, assertStaff, assertP
 import type { Principal } from './model.js';
 import type { PgStore, SqlConnection } from '../storage/database.js';
 
+
+type PrintSetting = {copies:number}|{paper_size:'A3'|'A4'|'A5'}|{duplex:boolean};
+type ParameterReading = {kind:'none'}|{kind:'needs_review'}|{kind:'recognized';change:PrintSetting};
+/** Accept a single, unambiguous Vietnamese print-parameter instruction only. */
+function parsePrintSetting(text:string):ParameterReading {
+ const literal=text.trim().toLocaleLowerCase('vi-VN').replace(/[.!?]+$/u,'').trim();
+ const copies=/^(?:(?:in|đổi|sửa|lấy|cho)\s+)?(\d{1,3})\s+bản(?:\s+in)?(?:\s+(?:nhé|ạ|thôi))?$/u.exec(literal);
+ if(copies){
+  const n=Number(copies[1]);
+  return n>=1&&n<=500?{kind:'recognized',change:{copies:n}}:{kind:'needs_review'};
+ }
+ const paper=/^(?:(?:đổi|chuyển|in)\s+)?(?:(?:sang|khổ|giấy|khổ giấy|in khổ)\s+)*(a[345])(?:\s+(?:nhé|ạ|thôi))?$/u.exec(literal);
+ if(paper){
+  const p=paper[1]?.toUpperCase();
+  if(p==='A3'||p==='A4'||p==='A5')return {kind:'recognized',change:{paper_size:p}};
+ }
+ const sides=/^(?:(?:in|đổi|chuyển|chuyển sang|đổi sang)\s+)?(một|hai|1|2)\s+mặt(?:\s+(?:nhé|ạ|thôi))?$/u.exec(literal);
+ if(sides){
+  const v=sides[1];return {kind:'recognized',change:{duplex:v==='hai'||v==='2'}};
+ }
+ // Reject unclear variants, contradictions or multi-parameter updates; never ACK an unparsed change.
+ if(/(?:\d+\s*bản|(?:một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mấy|vài|số)\s+bản|khổ|a[345]|mặt|duplex|copies|paper.?size)/iu.test(literal))
+  return {kind:'needs_review'};
+ return {kind:'none'};
+}
+
 export interface TrustedSupplementScope { readonly shop_id:string; readonly oa_id:string; }
 export interface AppendVerifiedEventsInput {
   order_id:string; conversation_id:string; customer_id:string;
@@ -55,7 +81,7 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
    const fingerprint=sha(canonical({order_id:id,event_ids:ids}));
    return store.tx(db=>appendInside(db,actor,{id,conv,customer,ids,key,fingerprint,expected_revision:input.expected_revision}));
   }
-  async function appendInside(db:SqlConnection,actor:Principal,values:{id:string;conv:string;customer:string;ids:string[];key:string;fingerprint:string;expected_revision:number}):Promise<AppendVerifiedEventsResult>{
+  async function appendInside(db:SqlConnection,actor:Principal,values:{id:string;conv:string;customer:string;ids:string[];key:string;fingerprint:string;expected_revision:number;setting?:PrintSetting}):Promise<AppendVerifiedEventsResult>{
    const {id,conv,customer,ids,key,fingerprint}=values;
    const input={expected_revision:values.expected_revision};
     // Lock the same row as staff approve; no update can race between approval and revision.
@@ -108,7 +134,7 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
      throw new DomainError('SUPPLEMENT_NEEDS_HUMAN','Untrusted original event list',409);
     if(ids.some(e=>originalIds.includes(e)))throw new DomainError('SUPPLEMENT_EVENT_ALREADY_USED','Event already in order',409);
     const supplements=Array.isArray(data.supplements)?data.supplements:[];
-    const nextData={...data,event_ids:[...originalIds,...ids],
+    const nextData={...data,...(values.setting??{}),event_ids:[...originalIds,...ids],
      supplements:[...supplements,{event_ids:ids,source:'verified_zalo_inbound',kinds:events.rows.map(e=>e.kind)}]};
     const hash=sha(canonical(nextData));
     const revision=order.active_revision+1;
@@ -155,8 +181,9 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
     // creation/selection by AI2 workers, then order row lock serializes staff approve.
     await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1::text,0))',
      [JSON.stringify([shopId,oaId,customer,conv])]);
-    const trustedEvents=await db.query<{event_id:string;customer_id:string;conversation_id:string;kind:string}>(
-     "SELECT event_id,customer_id,conversation_id,payload_json->>'kind' AS kind FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=ANY($2::text[]) FOR SHARE",
+    const trustedEvents=await db.query<{event_id:string;customer_id:string;conversation_id:string;kind:string;received_at:Date;occurred_at:Date;persisted_text:string|null}>(
+     "SELECT event_id,customer_id,conversation_id,payload_json->>'kind' AS kind,received_at,occurred_at,payload_json->>'text' AS persisted_text "+
+     "FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=ANY($2::text[]) FOR SHARE",
      [oaId,ids]);
     if(trustedEvents.rows.length!==ids.length||trustedEvents.rows.some(e=>e.customer_id!==customer||
        e.conversation_id!==conv||!['text','image','file'].includes(e.kind)))
@@ -190,6 +217,11 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
      if(checked.rows.length)return {status:'closed'};
      target.active_revision=actual.active_revision;
     }
+    // A verified first batch may initialize generation 0; both workers share the
+    // advisory mutex and the database PK. Never create controls for stale future generations.
+    if(input.expected_generation===0)
+     await db.query('INSERT INTO core_conversation_controls(shop_id,conversation_id) VALUES($1,$2) ON CONFLICT DO NOTHING',
+      [shopId,conv]);
     const control=await db.query<{status:string;generation:string|number}>(
      'SELECT status,generation FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2 FOR UPDATE',
      [shopId,conv]);
@@ -219,6 +251,26 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
      return {status:'existing',order_id:match.order_id,revision,
       request_hash:record.rows[0].request_hash,requires_reconfirmation:true};
     }
+    // An event RECEIVED before a staff approval cannot be quietly attached
+    // to a later order even if another draft is now open in the same chat.
+    // Original first-batch replays are already handled above; other old events HOLD.
+    if(list.rows.some(o=>o.approved)){
+     const latest=await db.query<{approved_at:Date|null}>(
+      'SELECT MAX(a.created_at) AS approved_at FROM core_approvals a JOIN core_orders o ON o.id=a.order_id '+
+      'WHERE o.shop_id=$1 AND o.customer_id=$2 AND o.conversation_id=$3',
+      [shopId,customer,conv]);
+     const approvedAt=latest.rows[0]?.approved_at;
+     if(approvedAt){
+      const threshold=new Date(approvedAt).getTime();
+      const delayed=trustedEvents.rows.some(e=>{
+       const received=new Date(e.received_at).getTime();
+       const occurred=new Date(e.occurred_at).getTime();
+       return !Number.isFinite(received)||!Number.isFinite(occurred)||
+        received<=threshold||occurred<=threshold;
+      });
+      if(delayed)return {status:'needs_review'};
+     }
+    }
     if(input.intent==='append_or_create'&&opens.length>1)return {status:'ambiguous'};
     if(input.intent==='append_or_create'&&target&&!target.oa_linked)return {status:'needs_review',order_id:target.id};
     if(input.intent==='append_or_create'&&opens.length===0&&list.rows.some(o=>!o.approved&&
@@ -242,6 +294,14 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
       [shopId,oaId,customer,conv,media.map(e=>e.event_id)]);
      if(stored.rows.length!==media.length)return {status:'needs_review',...(target?{order_id:target.id}:{})};
     }
+    // A print-setting revision can only use exact, trusted persisted customer text.
+    const reading=parsePrintSetting(content);
+    if(reading.kind==='needs_review')return {status:'needs_review',...(target?{order_id:target.id}:{})};
+    if(reading.kind==='recognized'){
+     const matching=trustedEvents.rows.filter(e=>e.kind==='text'&&e.persisted_text?.trim()===content.trim());
+     if(matching.length!==1||trustedEvents.rows.length!==1)
+      return {status:'needs_review',...(target?{order_id:target.id}:{})};
+    }
     const selected=target;
     // Replays must be checked under the same row lock before revision CAS:
     // an append committed with lost ACK must return EXISTING, not STALE.
@@ -249,10 +309,31 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
      if(input.materialized!==true)return {status:'needs_review',order_id:selected.id};
      const fingerprint=sha(canonical({order_id:selected.id,event_ids:ids}));
      return appendInside(db,actor,{id:selected.id,conv,customer,ids,key,fingerprint,
-       expected_revision:input.expected_revision??selected.active_revision});
+       expected_revision:input.expected_revision??selected.active_revision,
+       ...(reading.kind==='recognized'?{setting:reading.change}:{})});
     }
-    // Explicit new order only after verified intent or no current open order.
-    if(list.rows.length>0&&input.intent!=='explicit_separate')return {status:'closed'};
+    // A fresh, distinct customer request after approval starts a NEW order.
+    // Receipt must be provably later than the staff approval (both the server and
+    // the provider clock); otherwise a delayed older event remains pending.
+    if(!opens.length&&list.rows.length&&input.intent==='append_or_create'){
+     // A bare copy/paper/duplex change after print approval is NOT a new order request.
+     if(reading.kind==='recognized')return {status:'needs_review'};
+     const latest=await db.query<{approved_at:Date|null}>(
+      'SELECT MAX(a.created_at) AS approved_at FROM core_approvals a JOIN core_orders o ON o.id=a.order_id '+
+      'WHERE o.shop_id=$1 AND o.customer_id=$2 AND o.conversation_id=$3',
+      [shopId,customer,conv]);
+     const approvedAt=latest.rows[0]?.approved_at;
+     if(!approvedAt)return {status:'closed'};
+     const threshold=new Date(approvedAt).getTime();
+     if(trustedEvents.rows.some(e=>{
+       const received=new Date(e.received_at).getTime();
+       const occurred=new Date(e.occurred_at).getTime();
+       return !Number.isFinite(received)||!Number.isFinite(occurred)||
+         received<=threshold||occurred<=threshold;
+     }))return {status:'needs_review'};
+    }
+    if(opens.length===0&&list.rows.some(o=>!o.approved&&(o.manual_lock||o.print_closed)))
+     return {status:'closed'};
     const fingerprint=sha(canonical({conversation_id:conv,event_ids:ids}));
     const replay=await db.query<{order_id:string;event_fingerprint:string;content_hash:string}>(
      'SELECT order_id,event_fingerprint,content_hash FROM core_ai_draft_proposals WHERE shop_id=$1 AND oa_id=$2 AND (event_fingerprint=$3 OR idempotency_key=$4) FOR UPDATE',

@@ -90,23 +90,6 @@ export function createSyntheticZaloRuntime(pool: pg.Pool, input: unknown, option
     }),
     async apply_incoming_batch(request) {
       if (request.scope.oa_id !== registry.oa_id) return {status:'needs_human'};
-      // AI1 currently journals changes but does not apply copies/paper/duplex
-      // to request_data. Its existing first-draft Port preserves the initial
-      // customer text. The guard atomically prevents a second draft when an
-      // order is already open; later parameter changes stay HELD.
-      if (request.changes.some(change =>
-        change === 'copies' || change === 'paper' || change === 'duplex')) {
-        if (request.intent === 'explicit_separate') return {status:'needs_human'};
-        const draft = await guardedOrders.suggest_draft({
-          conversation_id:request.scope.conversation_id,
-          customer_id:request.scope.customer_id,
-          expected_generation:request.expected_generation,
-          event_ids:request.event_ids,
-          text:request.text.trim() ? request.text : attachmentOnlyText,
-          idempotency_key:request.idempotency_key
-        });
-        return draft;
-      }
       const result = await supplements.apply_incoming_batch({
         conversation_id: request.scope.conversation_id,
         customer_id: request.scope.customer_id,
@@ -125,22 +108,6 @@ export function createSyntheticZaloRuntime(pool: pg.Pool, input: unknown, option
       if (result.status === 'appended')
         return {status:'appended',order_id:result.order_id,
           active_revision:result.revision,requires_reconfirmation:true};
-      if ((result.status === 'closed' ||
-           (result.status === 'stale_generation' && request.expected_generation === 0)) &&
-          request.intent === 'append_or_create') {
-        // AI1's new Port requires an existing conversation control, and
-        // currently returns CLOSED even for a genuinely new post-approval
-        // request. The existing first-draft guard serializes selection and
-        // verifies the server receipt is strictly after the last approval.
-        return guardedOrders.suggest_draft({
-          conversation_id:request.scope.conversation_id,
-          customer_id:request.scope.customer_id,
-          expected_generation:request.expected_generation,
-          event_ids:request.event_ids,
-          text:request.text.trim() ? request.text : attachmentOnlyText,
-          idempotency_key:request.idempotency_key
-        });
-      }
       if (result.status === 'stale_generation' || result.status === 'closed' ||
           result.status === 'ambiguous') return {status:result.status};
       return {status:'needs_human'};

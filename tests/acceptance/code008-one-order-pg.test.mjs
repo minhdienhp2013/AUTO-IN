@@ -10,6 +10,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import pg from 'pg';
+import {mkdtemp,mkdir,readFile,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {spawnSync} from 'node:child_process';
+import {PgStore} from '../../backend/storage/database.ts';
+import {createSyntheticZaloRuntime} from '../../backend/composition/zalo-simulation.ts';
+import {createTrustedDocumentFactsPort} from '../../backend/composition/document-facts.ts';
 import {asSqlPool,assertIsolatedSimulationDatabase} from '../../backend/composition/postgres.ts';
 import {createCoreModule} from '../../backend/core/factory.ts';
 import {createAiOrderPort} from '../../backend/core/ai-order-port.ts';
@@ -44,7 +51,7 @@ const count=async(pool,table,shop)=>(await pool.query(
  'SELECT count(*)::int AS n FROM '+table+' WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',
  [shop])).rows[0].n;
 
-async function withSignedConversation(fn){
+async function withSignedConversation(fn,{durableWorker=false}={}){
  requireIsolatedPgEnv();
  requireExactCode405Checkout(process.env.AUTOIN_INTEGRATION_SHA);
  const url=process.env.AUTOIN_TEST_DATABASE_URL;
@@ -56,7 +63,7 @@ async function withSignedConversation(fn){
  const tag=rand(),shop='autoin-test-code008-'+tag,oa='oa-'+tag;
  const customer='customer-'+tag,conversation='conversation-'+tag,key=rand()+rand();
  const scope={shop_id:shop,oa_id:oa},core=createCoreModule({pool:asSqlPool(pool)});
- let app,bootstrapped=false;
+ let app,bootstrapped=false,runtime,scratch,artifactRoot,imageBytes;
  try{
   const password='fixture-'+rand();
   await core.auth.bootstrapOwner({shop_id:shop,username:'owner',password,bootstrap_enabled:true});
@@ -66,9 +73,28 @@ async function withSignedConversation(fn){
   const ownerSession=await core.auth.login(shop,'owner',password);
   const customerCredential={id:'fixture-customer-'+tag,shop_id:shop,customer_id:customer,role:'customer',verified:true};
   const processor={id:'fixture-processor-'+tag,shop_id:shop,role:'processor',verified:true};
-  app=buildIntegratedApp({pool:asSqlPool(pool),zaloWebhook:createSyntheticZaloIngress(pool,{
-   kind:'synthetic_fixture',...scope,fixture_key:key
-  })});
+  if(durableWorker){
+   scratch=await mkdtemp(join(tmpdir(),'autoin-code008-worker-'));
+   artifactRoot=join(scratch,'documents');
+   await mkdir(artifactRoot,{mode:0o700});
+   const image=join(scratch,'verified-fixture.png');
+   const python=process.env.AUTOIN_PYTHON??'python3';
+   const generated=spawnSync(python,['-c',
+    'from PIL import Image;import sys;Image.new("RGB",(95,137),"white").save(sys.argv[1])',
+    image],{timeout:15000,encoding:'utf8'});
+   assert.equal(generated.status,0,'CODE008 requires AI3-compatible REAL PNG fixture: '+generated.stderr);
+   imageBytes=await readFile(image);
+   runtime=createSyntheticZaloRuntime(pool,{kind:'synthetic_fixture',...scope,fixture_key:key},
+    {store:new PgStore(asSqlPool(pool)),artifactRoot,python});
+  }
+  app=buildIntegratedApp({pool:asSqlPool(pool),
+   zaloWebhook:runtime?.webhook??createSyntheticZaloIngress(pool,{
+    kind:'synthetic_fixture',...scope,fixture_key:key
+   }),
+   ...(durableWorker?{
+    zaloWorkerConfigured:true,
+    syntheticArtifactIngest:{artifactRoot,scope}
+   }:{})});
   await app.ready();
   const port=guardedSyntheticConversationOrders(pool,scope,
    createAiOrderPort({store:core.store,trusted:scope}));
@@ -86,9 +112,54 @@ async function withSignedConversation(fn){
    conversation_id:conversation,customer_id:customer,event_ids:[event_id],
    text,idempotency_key:'proposal-'+event_id,expected_generation:0
   });
+  const workerBatch=async({twoWorkers=false}={})=>{
+   assert.ok(runtime,'CODE008 requires real AI2 worker, not direct manual append');
+   // AI2 has its own durable event queue; first tick ingests and groups.
+   const ingested=await runtime.tick_inbound();
+   assert.equal(ingested.ingested,1,JSON.stringify(ingested));
+   await pool.query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' "+
+    "WHERE oa_id=$1 AND status='OPEN'",[oa]);
+   const outcomes=twoWorkers?
+    await Promise.all([runtime.tick_inbound(),runtime.tick_inbound()]):
+    [await runtime.tick_inbound()];
+   assert.equal(outcomes.reduce((n,x)=>n+(x.processed??0),0),1,
+    'Exactly one real durable worker may commit the signed batch: '+JSON.stringify(outcomes));
+   // Lost ACK/restart retry cannot apply the same batch twice.
+   const retry=await runtime.tick_inbound();
+   assert.equal(retry.processed,0,'Re-running AI2 worker after ACK loss must be idempotent');
+  };
+  const workerTickNoop=async()=>{
+   assert.ok(runtime,'Require actual AI2 durable worker');
+   return runtime.tick_inbound();
+  };
+  const verifiedImage=async eventId=>{
+   assert.ok(runtime&&artifactRoot,'Do not pretend image-only event was materialized');
+   const imported=await app.inject({method:'POST',url:'/internal/simulation/inbound-artifacts',
+    headers:{authorization:'Bearer '+ownerSession.token},
+    payload:{event_id:eventId,filename:'more-file.png',
+     content_base64:imageBytes.toString('base64')}});
+   assert.equal(imported.statusCode,201,'Signed event requires registered real bytes: '+imported.body);
+   assert.equal(imported.json().status,'registered');
+   const proof=createTrustedDocumentFactsPort(pool,scope,
+    {artifactRoot,python:process.env.AUTOIN_PYTHON??'python3'});
+   const facts=await proof.inspect({key:'code008-'+eventId,first_at:0,deadline_at:0,
+    events:[{event_id:eventId,oa_id:oa,customer_id:customer,conversation_id:conversation,
+     occurred_at:new Date().toISOString(),kind:'image',filename:'more-file.png'}]});
+   assert.deepEqual(facts,[{kind:'image',preview_trusted:true}],
+    'AI3 must independently decode DB-bound immutable artifact before AI2 append');
+  };
   const original=async()=>{
    const id='first-'+rand();
    assert.equal((await webhook(id)).status,'accepted');
+   if(durableWorker){
+    await workerBatch();
+    const rows=(await pool.query(
+     'SELECT order_id FROM core_ai_draft_proposals WHERE shop_id=$1 AND oa_id=$2',
+     [shop,oa])).rows;
+    assert.equal(rows.length,1,'AI2 real worker must create the one initial order');
+    assert.equal(await count(pool,'core_orders',shop),1);
+    return {eventId:id,orderId:rows[0].order_id};
+   }
    const receipt=await propose(id);
    assert.equal(receipt.status,'created',JSON.stringify(receipt));
    assert.equal(await count(pool,'core_orders',shop),1);
@@ -111,12 +182,18 @@ async function withSignedConversation(fn){
    return 2;
   };
   await fn({app,pool,shop,oa,customer,conversation,webhook,propose,original,
-   revision,count:table=>count(pool,table,shop),confirm,core,staff,staffToken:ownerSession.token});
+   revision,count:table=>count(pool,table,shop),confirm,core,staff,
+   staffToken:ownerSession.token,workerBatch,workerTickNoop,verifiedImage});
  }finally{
   if(app)await app.close();
   if(bootstrapped){
    // Test-only synthetic shop; no real customer data. CI is isolated.
    const stmts=[
+    'DELETE FROM ai0_inbound_artifact_drafts WHERE shop_id=$1',
+    'DELETE FROM ai0_inbound_document_artifacts WHERE shop_id=$1',
+    'DELETE FROM core_order_inbound_reviews WHERE shop_id=$1',
+    'DELETE FROM core_order_supplement_batches WHERE shop_id=$1',
+    'DELETE FROM core_idempotency WHERE shop_id=$1',
     'DELETE FROM core_print_jobs WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',
     'DELETE FROM core_approvals WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',
     'DELETE FROM core_confirmations WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',
@@ -137,6 +214,7 @@ async function withSignedConversation(fn){
    });
   }
   await pool.end();
+  if(scratch)await rm(scratch,{recursive:true,force:true});
  }
 }
 
@@ -161,25 +239,62 @@ test('C008-PG-01: signed files >60s apart in distinct batches do NOT mint second
  assert.equal((await f.pool.query('SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1',[f.oa])).rows[0].n,3);
 }));
 
-test('C008-PG-02 REQUIRED RED until AI1/AI2 append Port: pre-approval file must create NEW revision and invalidate old confirmation',{skip,timeout},()=>withSignedConversation(async f=>{
- const first=await f.original();
- await f.confirm(first.orderId); // TEST-ONLY synthetic credential at revision 2.
- assert.equal(await f.revision(first.orderId),2);
- const next='append-'+rand();
+test('C008-PG-02 REQUIRED: signed image + AI3 verified artifact + AI2 durable worker -> AI1 atomic append, same order and fresh confirmation',{skip,timeout},()=>withSignedConversation(async f=>{
+ const first=await f.original(); // INITIAL order created by AI2 durable worker (not propose()).
+ await f.confirm(first.orderId); // Test-only credential, NEVER treated as real Zalo consent.
+ const before=await f.revision(first.orderId);
+ assert.equal(before,2);
+ const next='supplemental-image-'+rand();
  assert.equal((await f.webhook(next,{kind:'image'})).status,'accepted');
- await f.propose(next,'[SYSTEM ATTACHMENT ONLY]');
- assert.equal(await f.count('core_orders'),1);
- // This MUST be RED while AI2 only parks the event; it must NOT be passed
- // by silently labelling an unreviewed file as already adopted.
- const rev=await f.revision(first.orderId);
- assert.ok(rev>=3,'CODE008 P0: file arrived pre-approval but active revision was NOT incremented; printing could omit it');
+ await f.verifiedImage(next); // REAL AI3 inspect on bytes bound to DB artifact hash.
+ // Until the worker applies this signed file, a CURRENT confirmation cannot be approved.
+ await assert.rejects(f.core.service.approve(f.staff,first.orderId,{
+  expected_revision:before,acknowledge_deposit_shortage:false,
+  idempotency_key:'before-worker-'+rand()
+ }),isPendingCoreConflict);
  assert.equal(await f.count('core_approvals'),0);
  assert.equal(await f.count('core_print_jobs'),0);
- const old=(await f.pool.query('SELECT count(*)::int AS n FROM core_confirmations WHERE order_id=$1 AND revision=2',[first.orderId])).rows[0].n;
- assert.equal(old,1,'Historical confirmation remains audited, NEVER transferred to new revision');
- const current=(await f.pool.query('SELECT count(*)::int AS n FROM core_confirmations WHERE order_id=$1 AND revision=$2',[first.orderId,rev])).rows[0].n;
- assert.equal(current,0,'A new active revision requires fresh customer confirmation');
-}));
+ await f.workerBatch({twoWorkers:true}); // ACTUAL AI2 worker, no manual append.
+ assert.equal(await f.count('core_orders'),1,'Two batches must map to the SAME order_id');
+ const current=await f.revision(first.orderId);
+ assert.ok(current>before,'CODE008 P0: real worker failed to append file to the same order revision');
+ const rev=(await f.pool.query(
+  'SELECT request_hash,request_data,plan FROM core_revisions WHERE order_id=$1 AND revision=$2',
+  [first.orderId,current])).rows[0];
+ assert.ok(rev?.request_hash,'Must have durable new revision and request hash');
+ assert.ok(rev.request_data?.event_ids?.includes(first.eventId),'Original event must stay in revision');
+ assert.ok(rev.request_data?.event_ids?.includes(next),'AI3-verified image must be INCLUDED in active revision');
+ assert.equal(rev.plan,null,'New file must invalidate old verified print plan');
+ const reviews=(await f.pool.query(
+  'SELECT order_id,revision FROM core_order_inbound_reviews WHERE oa_id=$1 AND event_id=$2',
+  [f.oa,next])).rows;
+ assert.equal(reviews.length,1,'Actual AI1 append requires durable reviewed-event journal');
+ assert.equal(reviews[0].order_id,first.orderId);
+ assert.equal(reviews[0].revision,current);
+ const old=(await f.pool.query(
+  'SELECT count(*)::int AS n FROM core_confirmations WHERE order_id=$1 AND revision=$2',
+  [first.orderId,before])).rows[0].n;
+ const now=(await f.pool.query(
+  'SELECT count(*)::int AS n FROM core_confirmations WHERE order_id=$1 AND revision=$2',
+  [first.orderId,current])).rows[0].n;
+ assert.equal(old,1,'Old test-only customer confirmation must remain historical, never auto-forwarded');
+ assert.equal(now,0,'New revision REQUIRES fresh independently verified customer confirmation');
+ await assert.rejects(f.core.service.approve(f.staff,first.orderId,{
+  expected_revision:before,acknowledge_deposit_shortage:false,
+  idempotency_key:'stale-confirm-'+rand()
+ }),e=>e.code==='STALE_REVISION','Previous approval cannot be reused after file append');
+ assert.equal(await f.count('core_approvals'),0);
+ assert.equal(await f.count('core_print_jobs'),0);
+ // A replayed webhook and worker tick must NEVER change the order revision/job.
+ assert.equal((await f.webhook(next,{kind:'image'})).status,'duplicate');
+ // Duplicate transport event must not enqueue a fresh batch or re-apply revision.
+ // workerBatch() is only for a newly accepted event; replay has none.
+ const noReplay=await f.workerTickNoop();
+ assert.equal(noReplay.processed,0);
+ assert.equal(await f.revision(first.orderId),current);
+ assert.equal(await f.count('core_orders'),1);
+ assert.equal(await f.count('core_print_jobs'),0);
+},{durableWorker:true}));
 
 test('C008-HTTP-03: Core business PENDING_INBOUND_REVIEW HTTP409 plus independent raw SQL P0001 gate',{skip,timeout},()=>withSignedConversation(async f=>{
  const first=await f.original();
