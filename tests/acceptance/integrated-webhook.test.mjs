@@ -6,7 +6,7 @@ import {resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {assertSafeDatabase} from './product-adapter.mjs';
 import {requireIsolatedPgEnv} from './integration-preflight.mjs';
-import {assertVerifiedTapSummary} from './code405-subprocess-evidence.mjs';
+import {assertVerifiedTapSummary,isolatedTestChildEnv} from './code405-subprocess-evidence.mjs';
 const enabled=process.env.AUTOIN_RUN_PRODUCT_ACCEPTANCE==='1';
 test('HTTP-PG-ZALO-02: synthetic raw Fastify webhook writes/dedupes real PostgreSQL',{
  skip:enabled?false:'NOT RUN: integration PostgreSQL must be enabled'
@@ -21,7 +21,7 @@ test('HTTP-PG-ZALO-02: synthetic raw Fastify webhook writes/dedupes real Postgre
  assert.equal(existsSync(path),true,'Missing AI0 synthetic raw webhook composition test');
  const r=spawnSync(process.execPath,['--import','tsx','--test','--test-reporter=tap',path],{
   cwd:root,encoding:'utf8',timeout:120000,maxBuffer:3*1024*1024,
-  env:{...process.env,TEST_DATABASE_URL:url,FORCE_COLOR:'0'}
+  env:isolatedTestChildEnv({TEST_DATABASE_URL:url,FORCE_COLOR:'0'})
  });
  const output=(r.stdout||'')+'\n'+(r.stderr||'');
  assert.equal(r.error,undefined,'Child synthetic webhook test could not start');
