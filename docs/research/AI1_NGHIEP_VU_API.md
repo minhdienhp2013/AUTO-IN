@@ -231,3 +231,41 @@ port.append_verified_events(verifiedProcessorOrStaff, {
 **P0 liên AI0 đang mở:** Trigger AI0 trong `backend/composition/migrations/004_pending_approval_gate.sql` chỉ loại event ban đầu hoặc `ai0_inbound_artifact_drafts.CREATED`, hiện chưa nhận biết event đã ghi vào `core_order_inbound_reviews`. Trên code overlay PR #35, PG 18.3 test vào đúng `service.approve` sau append + xác nhận mới bị trigger `P0001 AI0_PENDING_INBOUND_REVIEW` — **FAIL có thật**, không được gắn DONE/V1 ready và không xóa trigger/test để xanh. AI1 đã yêu cầu AI0 bổ sung ngoại lệ đã đối soát vào `004` trên PR #31 comment #6123586540; chỉ AI0 có quyền sửa composition. Sau AI0 sửa phải chạy CI lại cùng SHA tích hợp, bảo đảm tin chưa append vẫn chặn, tin đã append + processor + xác nhận mới thì cho phép staff chốt.
 
 **Kiểm thử:** `npm run check` PASS trên PR #35 overlay `54a1f9aad021e5d4a58390c9f5dd007bdc0a7d31`; PostgreSQL 18.3 **23 PASS / 1 FAIL / 0 SKIP** (AI1; lỗi duy nhất cross-owner trigger trên test mới), browser PASS. Unit `tests/unit/core/order-supplement.test.cjs` kiểm actor/inputs trước transaction. DB thật dùng hai pools, retry idempotency, nhiều batch >60s, stale revision/confirmation, pending file + future provider timestamp, duyệt vs append và bất biến sau duyệt. OA/Ricoh thật NOT RUN.
+
+## CODE-008 — Hợp đồng Port nguyên tử AI1 → AI2/AI0 (12/10/2026)
+
+**Port mới dùng một PostgreSQL transaction; cấm đọc đơn ở transaction A rồi append ở transaction B:**
+
+```ts
+const port=createOrderSupplementPort({
+ store: core.store,
+ trusted: {shop_id: trustedServerShop, oa_id: verifiedServerOa},
+ processor: serverAuthenticatedProcessor,
+ verifyExplicitSeparate: async (db, scope) => verifyPersistedSeparateRequest(db, scope)
+});
+const result=await port.apply_incoming_batch({
+ conversation_id, customer_id, event_ids, text, idempotency_key,
+ expected_generation, expected_revision, intent:'append_or_create', materialized:true
+});
+```
+
+**Contract:** `apply_incoming_batch(input)` không nhận Principal từ AI2. Server inject processor đã xác thực lúc tạo Port. `trusted` OA/shop cũng do server cấp. `verifyExplicitSeparate(db,scope)` là callback AI0 xác thực chứng cứ khách thực sự yêu cầu đơn riêng từ sự kiện OA đã lưu; không lấy nhãn AI classifier làm chứng cứ. `event_ids` phải tồn tại trong `zalo_inbound_events`, cùng đúng OA/khách/chat, duy nhất 1–100 ID. `expected_generation` số nguyên an toàn không âm; `expected_revision` là CAS tùy chọn; `idempotency_key` phải ổn định qua retry.
+
+| Status | Ý nghĩa |
+| --- | --- |
+| `appended` | Đúng một đơn mở: giữ order_id, thêm revision/hash; plan=NULL; yêu cầu processor kiểm lại và khách xác nhận lại |
+| `existing` | Retry/mất ACK: cùng order đã commit, không tạo order/revision mới |
+| `created` | Không có đơn trước đó, hoặc đơn riêng có chứng cứ từ callback server |
+| `stale_generation` | Takeover/generation thay đổi; HOLD, không ghi dữ liệu |
+| `stale_revision` | Phiên bản đơn cũ, không ghi dữ liệu |
+| `ambiguous` | Nhiều đơn mở, nhờ nhân viên xác định, không đoán |
+| `closed` | Không được sửa đơn đã chốt/in/khóa |
+| `needs_review` | Thiếu artifact bất biến hoặc xác thực intent; HOLD, không tự đánh dấu DONE |
+
+**Transaction/locking:** `pg_advisory_xact_lock` theo tuple (shop,OA,customer,chat), kiểm bằng chứng từng event + shop. Chọn duy nhất order đang mở, khóa `core_orders FOR UPDATE` cùng thứ tự thao tác duyệt in, khóa `core_conversation_controls FOR UPDATE` và kiểm generation trong transaction, sau đó CAS revision và idempotency trước INSERT order/revision/journal. Khi đã có đơn nháp hoặc event cập nhật cùng fingerprint, trả `existing` cả khi ACK thất lạc. File/image ngoài cờ `materialized=true` còn bắt buộc hiện diện trong bảng server-owned `ai0_inbound_document_artifacts`; thiếu thì `needs_review`. Không chuyển xác nhận cũ sang revision mới, không gắn plan ready giả.
+
+**Duyệt & UI:** `OrderService.approve` đối soát event đã nhận với revision đầu và `core_order_inbound_reviews` có shop/OA/event/revision/hash hợp lệ; nếu thiếu thì `PENDING_INBOUND_REVIEW` HTTP409 và 0 job. Trigger AI0 ingress tiếp tục khóa order theo thứ tự commit. `getOrder.current.pending_updates={order_id,revision,request_hash,status,unresolved_count,items}` do backend pin theo active revision; không lấy AI2 batch DONE làm bằng chứng CLEAR. AI0/AI4 có thể đọc shape hiện có.
+
+**Tích hợp bắt buộc do AI0/AI2:** AI0 cấp mapping server, processor và callback xác minh đơn riêng; AI2 gọi `apply_incoming_batch(input)` trực tiếp trong product pipeline sau signed ingest, không đọc core order trong transaction riêng để suy luận rồi gọi append. Các kết quả stale/ambiguous/needs_review phải HELD/NEEDS_HUMAN. AI0 gỡ nhánh guard cũ đang trả stale_generation thay vì append và nối real worker, không chỉnh code AI1. AI5 C008-PG-02 còn RED đến khi luồng thật gọi Port; C008-HTTP-03, C008-PG-07 cần kỳ vọng lỗi nghiệp vụ 409 ở Core (chỉ direct SQL trigger mới là P0001).
+
+**Thực chứng:** PR #39 SHA `65a4c9bf28c58fe44f8b5a9ceb0364d9f34fb662`: TypeScript strict, Chromium và PostgreSQL 18.3 AI1 **27 PASS / 0 FAIL / 0 SKIP**. Ca `tests/integration/core/atomic-incoming-batch-pg.test.cjs` dùng hai pool độc lập, kiểm >60s, retry/mất ACK, materialization thiếu, explicit separate, ambiguous, stale revision và takeover. Acceptance toàn tích hợp **88 PASS / 3 FAIL / 19 SKIP** do chưa nối đường AI0/AI2 và kỳ vọng AI5 chưa cập nhật; không tính CODE008 P0 toàn luồng đã DONE. Không chạy Zalo/Ricoh thật hoặc deploy.

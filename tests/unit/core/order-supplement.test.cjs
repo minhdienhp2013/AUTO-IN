@@ -34,3 +34,23 @@ test('CODE-008 Port rejects fabricated actor, foreign shop, malformed event and 
   e=>e.code==='INVALID_INBOUND_SUPPLEMENT');
  assert.equal(store.count(),0);
 });
+
+test('CODE-008 atomic batch requires server-bound verified processor and rejects untrusted request before DB',async()=>{
+ const store=fakeStore();
+ const shape={conversation_id:'conversation',customer_id:'customer',event_ids:['event-1'],
+   text:'Print one',idempotency_key:'batch-idem',expected_generation:0,
+   intent:'append_or_create',materialized:true};
+ const without=createOrderSupplementPort({store,trusted});
+ await assert.rejects(without.apply_incoming_batch(shape),
+   e=>e.code==='VERIFIED_PROCESSOR_REQUIRED');
+ const port=createOrderSupplementPort({store,trusted,processor:actor});
+ await assert.rejects(port.apply_incoming_batch({...shape,event_ids:['event-1','event-1']}),
+   e=>e.code==='DUPLICATE_INBOUND_EVENTS');
+ await assert.rejects(port.apply_incoming_batch({...shape,expected_generation:-1}),
+   e=>e.code==='INVALID_AI_GENERATION');
+ await assert.rejects(port.apply_incoming_batch({...shape,intent:'AI_guessed_separate'}),
+   e=>e.code==='UNVERIFIED_SEPARATE_INTENT');
+ await assert.rejects(port.apply_incoming_batch({...shape,expected_revision:0}),
+   e=>e.code==='INVALID_SUPPLEMENT_REVISION');
+ assert.equal(store.count(),0);
+});
