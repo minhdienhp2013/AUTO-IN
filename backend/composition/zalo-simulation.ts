@@ -6,6 +6,7 @@ import type { PgStore } from '../storage/database.js';
 import type { OrderDraftPort, DocumentFactsPort } from '../conversation/processor.js';
 import { createTrustedDocumentFactsPort } from './document-facts.js';
 import { createZaloRawWebhook } from './zalo-http.js';
+import {guardedSyntheticConversationOrders} from './conversation-order-guard.js';
 
 /** Local test registry. Never populate these values from webhook bytes or headers. */
 export interface SyntheticZaloRegistry {
@@ -82,7 +83,9 @@ export function createSyntheticZaloRuntime(pool: pg.Pool, input: unknown, option
     }),
     route_human: request => orders.route_human(request)
   };
-  const pipeline = compose(pool, registry, safeOrders, documents);
+  const pipeline = compose(pool, registry,
+    guardedSyntheticConversationOrders(pool,
+      {shop_id:registry.shop_id,oa_id:registry.oa_id},safeOrders),documents);
   return { trustedScope: { shop_id: registry.shop_id, oa_id: registry.oa_id },
     webhook: createZaloRawWebhook(pipeline), tick_inbound: pipeline.tick_inbound,
     tick_outbound: pipeline.tick_outbound };
