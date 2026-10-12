@@ -120,6 +120,33 @@ export class OrderService {
   return this.store.tx(db=>this.store.once(db,p,`orders.${id}.approve`,input.idempotency_key,input,async()=>{
    const o=await this.order(db,id,p);checkRevision(input.expected_revision,o.active_revision);
    if(o.manual_lock||o.print_closed)throw new DomainError('ORDER_LOCKED','Đơn bị khóa/đóng',409);
+   // CODE-008: inbound receipt and staff approval serialize on this order row.
+   // Initial event_ids and explicitly appended reviews alone can close the gap.
+   // AI2 batch DONE or an AI0 artifact draft is NOT evidence of inclusion in this revision.
+   const pendingTables=await db.query<{reviews:string|null;events:string|null;proposals:string|null}>(
+    "SELECT to_regclass('public.core_order_inbound_reviews')::text AS reviews,to_regclass('public.zalo_inbound_events')::text AS events,to_regclass('public.core_ai_draft_proposals')::text AS proposals");
+   const tables=pendingTables.rows[0];
+   if(tables?.proposals){
+    const source=await db.query('SELECT 1 FROM core_ai_draft_proposals WHERE order_id=$1 LIMIT 1',[id]);
+    if(source.rows.length && (!tables.events||!tables.reviews))
+     throw new DomainError('PENDING_INBOUND_REVIEW','Không đủ bảng đối soát tin/file, cấm chốt in',409);
+    if(source.rows.length){
+     const pending=await db.query<{event_id:string}>(
+      "SELECT e.event_id FROM core_ai_draft_proposals p "+
+      "JOIN core_revisions initial ON initial.order_id=p.order_id AND initial.revision=1 "+
+      "JOIN zalo_inbound_events e ON e.oa_id=p.oa_id AND e.customer_id=p.customer_id AND e.conversation_id=p.conversation_id "+
+      "WHERE p.order_id=$1 AND e.payload_json->>'kind' IN ('text','image','file') "+
+      "AND NOT COALESCE((initial.request_data->'event_ids') ? e.event_id,false) "+
+      "AND NOT EXISTS (SELECT 1 FROM core_order_inbound_reviews r JOIN core_revisions recorded "+
+      "ON recorded.order_id=r.order_id AND recorded.revision=r.revision "+
+      "WHERE r.shop_id=p.shop_id AND r.oa_id=e.oa_id AND r.event_id=e.event_id "+
+      "AND r.order_id=p.order_id AND r.revision<=$2 "+
+      "AND COALESCE((recorded.request_data->'event_ids') ? e.event_id,false)) LIMIT 1",
+      [id,o.active_revision]);
+     if(pending.rows.length)
+      throw new DomainError('PENDING_INBOUND_REVIEW','Còn tin/file khách gửi chưa đối soát vào phiên bản hiện tại',409);
+    }
+   }
    const rev=await this.revision(db,o);if(!rev.plan)throw new DomainError('PRINT_NOT_READY','Chưa có kế hoạch in tin cậy');assertPlan(rev.plan,rev.request_hash);
    // Keep the FIRST valid customer confirmation: retries/duplicate messages must not delay queue position.
    const confirmation=await db.query<{confirmed_at:Date|null}>("SELECT MIN(created_at) AS confirmed_at FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND kind='request'",[id,rev.revision,rev.request_hash]);
@@ -327,7 +354,9 @@ export class OrderService {
    const c=await this.conversation(db,p,conversation_id);
    checkRevision(input.expected_generation,c.generation);
    if(c.status==='HUMAN'){
-    if(c.claimed_by!==p.id&&p.role!=='owner')throw new DomainError('CONVERSATION_TAKEN','Nhân viên khác đang tiếp quản',409);
+    // An AI route leaves HUMAN unclaimed; the first real staff member may accept it.
+    // Never manufacture a staff actor to mark an AI-initiated handover.
+    if(c.claimed_by!==null&&c.claimed_by!==p.id&&p.role!=='owner')throw new DomainError('CONVERSATION_TAKEN','Nhân viên khác đang tiếp quản',409);
     if(c.claimed_by===p.id)return {conversation_id,generation:c.generation,status:'HUMAN' as const,claimed_by:p.id};
    }
    const generation=c.generation+1;
@@ -410,12 +439,44 @@ export class OrderService {
     ? (await db.query<{status:'AI'|'HUMAN';generation:string|number;claimed_by:string|null}>(
       'SELECT status,generation,claimed_by FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',[p.shop_id,o.conversation_id])).rows[0]??null
     :null;
+   // AI1 CODE-008: server-side pinned pending count; AI2 DONE/COMMITTED
+   // and provider time are not acceptance evidence.
+   const readTables=await db.query<{proposals:string|null;events:string|null;reviews:string|null}>(
+    "SELECT to_regclass('public.core_ai_draft_proposals')::text AS proposals,"+
+    "to_regclass('public.zalo_inbound_events')::text AS events,"+
+    "to_regclass('public.core_order_inbound_reviews')::text AS reviews");
+   const tables=readTables.rows[0];
+   let pendingItems:{event_id:string;kind:string;received_at:Date}[]=[];
+   const oaBinding=tables?.proposals?(await db.query('SELECT 1 FROM core_ai_draft_proposals WHERE order_id=$1 AND shop_id=$2',[id,p.shop_id])).rows.length>0:false;
+   const pendingUnknown=oaBinding&&(!tables?.events||!tables?.reviews);
+   if(oaBinding&&!pendingUnknown){
+    const entries=await db.query<{event_id:string;kind:string;received_at:Date}>(
+     "SELECT e.event_id,e.payload_json->>'kind' AS kind,e.received_at "+
+     "FROM core_ai_draft_proposals p "+
+     "JOIN core_revisions initial ON initial.order_id=p.order_id AND initial.revision=1 "+
+     "JOIN zalo_inbound_events e ON e.oa_id=p.oa_id AND e.customer_id=p.customer_id AND e.conversation_id=p.conversation_id "+
+     "WHERE p.order_id=$1 AND p.shop_id=$2 AND e.payload_json->>'kind' IN ('text','image','file') "+
+     "AND NOT COALESCE((initial.request_data->'event_ids') ? e.event_id,false) "+
+     "AND NOT EXISTS (SELECT 1 FROM core_order_inbound_reviews j JOIN core_revisions jr "+
+     "ON jr.order_id=j.order_id AND jr.revision=j.revision "+
+     "WHERE j.shop_id=p.shop_id AND j.oa_id=e.oa_id AND j.event_id=e.event_id "+
+     "AND j.order_id=p.order_id AND j.revision<=$3 "+
+     "AND COALESCE((jr.request_data->'event_ids') ? e.event_id,false)) "+
+     "ORDER BY e.received_at,e.event_id LIMIT 101",[id,p.shop_id,current.revision]);
+    pendingItems=entries.rows;
+   }
+   const pendingUpdates={
+    order_id:id,revision:current.revision,request_hash:current.request_hash,
+    status:pendingUnknown||pendingItems.length>0||verifiedPlan===null?'PENDING' as const:'CLEAR' as const,
+    unresolved_count:pendingUnknown?null:pendingItems.length,
+    items:pendingItems
+   };
    return {order:o,revisions:revisions.rows,jobs:jobRows,quote,received_vnd:received,
     receivable_vnd:Math.max(0,(quote?.amount_vnd??0)-received),
     refundable_vnd:Math.max(0,received-(quote?.amount_vnd??0)),
     current:{
      revision:current.revision,request_hash:current.request_hash,
-     verified_plan:verifiedPlan,preview_ref:previewRef,
+     pending_updates:pendingUpdates,verified_plan:verifiedPlan,preview_ref:previewRef,
      request_confirmation:requestConfirmation,price_confirmation:priceConfirmation,
      requires_price_confirmation:needsPrice,approval:approval?{...approval,deposit_short_vnd:dbSafeInteger(approval.deposit_short_vnd,'approval.deposit_short_vnd')}:null,
      queue_confirmed_at:existingActiveJob?.confirmed_at??null,

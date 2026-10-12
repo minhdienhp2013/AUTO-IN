@@ -11,6 +11,8 @@ export function releaseGate(r){
  if(!Number.isInteger(r?.load_orders_per_day)||r.load_orders_per_day<100)blockers.push('Missing simulation at 100 orders/day');
  if(!Number.isFinite(r?.recognition_rate)||r.recognition_rate<.90||r.recognition_rate>1)blockers.push('Recognition <90%');
  if(!Number.isFinite(r?.conversation_rate)||r.conversation_rate<.80||r.conversation_rate>1)blockers.push('Conversation success <80%');
+ if(r?.evidence?.zalo_oa_verification_source!=='official_live_oa')
+  blockers.push('Synthetic Fastify/PG webhook is NOT proof of official live Zalo OA');
  for(const name of ['postgres_concurrency','oa_verified','ricoh_verified','iphone_verified','all_p0_rechecked','reviewed_by_owner']){
   if(r?.evidence?.[name]!==true)blockers.push('Missing evidence: '+name);
  }

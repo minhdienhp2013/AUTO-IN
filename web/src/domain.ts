@@ -7,6 +7,14 @@ export type ConversationState = 'ai' | 'needs_human' | 'staff';
 export type DeliveryState = 'not_ready' | 'quality_check' | 'ready' | 'partial' | 'delivered' | 'exception_closed';
 export type PaymentState = 'unpaid' | 'deposit_requested' | 'partial' | 'paid' | 'refund_pending' | 'refunded';
 
+/** AI3 renderer facts, released only after server hash/source/plan validation.
+ * Not proof of customer confirmation or physical printing. */
+export interface VerifiedFileFact {
+  index:number; label:string; format:string;
+  document_pages:number;printed_faces:number;physical_sheets:number;
+  copies:number;paper:'A4'|'A3';duplex:boolean;
+  orientation:'portrait'|'landscape';warnings:string[];
+}
 export interface DocumentView {
   document_id: string;
   filename: string;
@@ -25,6 +33,10 @@ export interface DocumentView {
 export interface AuditEntry { at: string; actor: string; action: string; summary: string }
 export interface OrderView {
   order_id: string;
+  /** Fields released only after scoped GET detail, not trusted from summary rows. */
+  customer_id?: string | null;
+  detail_loaded?: boolean;
+  pending_updates?: import('./code008.ts').PendingInboundUpdates;
   job_id?: string | null; // AI1 job eligible for physical-paper verification; never inferred from a list
   customer_name: string;
   conversation_id: string | null;
@@ -75,6 +87,15 @@ export const hasValidApprovalInputs = (order: OrderView): boolean => {
   const mustConfirmPrice = order.total_sheets !== null && order.total_sheets > 150 || order.large_cost_flag;
   return !mustConfirmPrice || order.amount_vnd !== null && order.quote_revision !== null && order.confirmed_quote_revision === order.quote_revision;
 };
+/** Only the paper physically evidenced by the server is eligible for delivery.
+ * AI1 allows inspected partial paper on an UNKNOWN job; UNKNOWN still means
+ * reconciliation is needed and never means that printing completed. */
+export const availableVerifiedSheets = (order: OrderView): number => {
+  if (order.print_state !== 'VERIFIED_DONE' && order.print_state !== 'UNKNOWN') return 0;
+  if (!Number.isSafeInteger(order.verified_sheets) || !Number.isSafeInteger(order.delivered_sheets) ||
+      order.verified_sheets === null || order.verified_sheets < 0 || order.delivered_sheets < 0) return 0;
+  return Math.max(0, order.verified_sheets - order.delivered_sheets);
+};
 export const depositShortfall = (o: OrderView): number => Math.max(0, o.required_deposit_vnd - o.received_vnd);
 export const receivable = (o: OrderView): number | null => o.amount_vnd === null ? null : Math.max(0, o.amount_vnd - o.received_vnd);
 export const isPrintUncertain = (s: PrintState): boolean => ['SENDING', 'SENT_UNVERIFIED', 'UNKNOWN'].includes(s);
@@ -93,4 +114,27 @@ export const actionPath = (order: OrderView, kind: ActionKind): string => {
     approve: 'approvals', quote: 'quote', payment: 'payments', delivery: 'deliveries', manual: 'manual',
   };
   return `${prefix}/orders/${encodeURIComponent(order.order_id)}/${suffix[kind]}`;
+};
+
+/** CODE-404. These are display facts, not permission to confirm on behalf of a customer. */
+export type ConfirmationStep = 'missing' | 'confirmed';
+export type PriceConfirmationStep = 'not_required' | 'missing' | 'confirmed';
+export type StaffReviewStep = 'waiting_customer' | 'waiting_price' | 'waiting_preview' | 'waiting_staff' | 'already_approved' | 'blocked';
+export interface ConfirmationReadiness {
+  request: ConfirmationStep;
+  price: PriceConfirmationStep;
+  staff: StaffReviewStep;
+}
+export const confirmationReadiness = (order: OrderView): ConfirmationReadiness => {
+  const request: ConfirmationStep = order.revision > 0 && order.request_hash.length > 0 &&
+    order.confirmed_revision === order.revision ? 'confirmed' : 'missing';
+  const priceNeeded = order.large_cost_flag || order.total_sheets !== null && order.total_sheets > 150;
+  const price: PriceConfirmationStep = !priceNeeded ? 'not_required' :
+    (order.quote_revision !== null && order.amount_vnd !== null &&
+    order.confirmed_quote_revision === order.quote_revision ? 'confirmed' : 'missing');
+  const staff: StaffReviewStep = order.order_state === 'approved' ? 'already_approved' :
+    order.manual_lock || order.print_state !== 'NOT_SENT' ? 'blocked' :
+    request === 'missing' ? 'waiting_customer' : price === 'missing' ? 'waiting_price' :
+    !hasValidApprovalInputs(order) ? 'waiting_preview' : 'waiting_staff';
+  return {request,price,staff};
 };

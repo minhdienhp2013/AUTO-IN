@@ -1,5 +1,6 @@
-import { actionPath, depositShortfall, hasValidApprovalInputs, validMoney, type ActionKind, type Mutation, type OrderView, type Snapshot, type StaffSession, type OperationMode, type ConversationState } from './domain.ts';
+import { actionPath, depositShortfall, hasValidApprovalInputs, validMoney, type ActionKind, type Mutation, type OrderView, type Snapshot, type StaffSession, type OperationMode, type ConversationState, type VerifiedFileFact } from './domain.ts';
 import { demoOrders, demoSession } from './fixtures.ts';
+import { canEditPrintRequest, enrichOrderWithCode008 } from './code008.ts';
 
 export class ApiFault extends Error {
   readonly status: number; readonly code: string; readonly currentRevision?: number;
@@ -11,6 +12,8 @@ export interface PrintPort {
   me(): Promise<StaffSession>;
   listOrders(): Promise<OrderView[]>;
   getOrder(id: string): Promise<OrderView>;
+  /** Verified *raster* bytes only; NOT customer confirmation or approval. */
+  loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{pages:Blob[];files:VerifiedFileFact[]}>;
   mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView>;
   mode(): Promise<OperationMode>;
 }
@@ -80,9 +83,9 @@ export function mapOrderSummary(raw: unknown): OrderView {
     warnings: ['Danh sách chỉ là dữ liệu tổng hợp; mở đơn để tải trạng thái từ server.'],
   });
 }
-/** AI1 getOrder returns {order,revisions,jobs,quote,received_vnd,...}.
- * Confirmations, audit, conversation state and file preview are not exposed; all are
- * deliberately unknown until AI0/AI1 publish a server-authored read model. */
+/** AI1 CODE-006 getOrder returns {order,revisions,jobs,quote,received_vnd,
+ * current,print_progress,conversation_control}. The server supplies current
+ * confirmation/plan/conversation facts, but does NOT expose per-file preview URLs. */
 export function mapCoreOrderDetail(raw: unknown): OrderView {
   const data = asObject(raw), row = asObject(data.order);
   const id = asString(row.id), revision = row.active_revision;
@@ -127,7 +130,7 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
   const latest = data.jobs.map(asObject).filter(j => asNum(j.revision) === revision && (!nested || j.request_hash === rev.request_hash) && !j.cancelled_at);
   const states = latest.map(j => j.state);
   // Ambiguous attempts override all completed ones; no automatic resend.
-  const print_state = latest.length === 0 ? 'NOT_SENT' : states.includes('UNKNOWN') ? 'UNKNOWN' :
+  const reportedPrintState = latest.length === 0 ? 'NOT_SENT' : states.includes('UNKNOWN') ? 'UNKNOWN' :
     states.includes('SENDING') ? 'SENDING' : states.includes('SENT_UNVERIFIED') ? 'SENT_UNVERIFIED' :
     states.includes('SIMULATED_DONE') ? 'SIMULATED_DONE' :
     states.every(x => x === 'VERIFIED_DONE') ? 'VERIFIED_DONE' :
@@ -138,7 +141,8 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
   const delivered = asNum(row.delivered_sheets) ?? 0;
   const amount = asNum(quote.amount_vnd), received = asNum(data.received_vnd) ?? 0;
   const realEvidenceJobs = latest.filter(j =>
-    (j.state === 'VERIFIED_DONE' || (j.state === 'UNKNOWN' && j.evidence_kind === 'staff_inspected')) &&
+    ((j.state === 'VERIFIED_DONE' && (j.evidence_kind === 'staff_inspected' || j.evidence_kind === 'device_verified')) ||
+     (j.state === 'UNKNOWN' && j.evidence_kind === 'staff_inspected')) &&
     (j.mode_at_send === 'controlled_test' || j.mode_at_send === 'production'));
   const evidenceCounts = realEvidenceJobs.map(j => asNum(j.verified_sheets));
   const knownVerified = evidenceCounts.length > 0 && evidenceCounts.every(n => n !== null);
@@ -153,9 +157,14 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
     ? (safeEvidenceTotal !== null && count !== null && serverVerified !== null &&
        serverVerified <= count && serverVerified <= safeEvidenceTotal ? serverVerified : null)
     : legacyVerified;
-  const physicallyComplete = count !== null && verifiedSheets !== null &&
-    verifiedSheets >= count && delivered <= verifiedSheets && print_state === 'VERIFIED_DONE' &&
-    (!nested || progress.fully_verified === true && progress.requires_manual_reconciliation !== true);
+  // A job's status alone (or a spooler acknowledgment) is not physical paper.
+  // Contradictory/missing evidence can NEVER produce a VERIFIED_DONE label.
+  const completeEvidence = count !== null && verifiedSheets !== null && verifiedSheets >= count &&
+    delivered <= verifiedSheets && (!nested ||
+      (progress.fully_verified === true && progress.requires_manual_reconciliation === false));
+  const print_state = reportedPrintState === 'VERIFIED_DONE' && !completeEvidence
+    ? 'UNKNOWN' : reportedPrintState;
+  const physicallyComplete = print_state === 'VERIFIED_DONE' && completeEvidence;
   const control = asObject(data.conversation_control);
   const controlStatus = control.status === 'AI' ? 'ai' : control.status === 'HUMAN' ? 'staff' : 'needs_human';
   const controlGeneration = (control.status === 'AI' || control.status === 'HUMAN') && row.conversation_id
@@ -163,7 +172,7 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
   const warnings = [
     'Chưa có danh sách file/URL preview được cấp quyền: không thể duyệt chỉ bằng kế hoạch tổng hợp.',
     ...(latest.some(j => j.state === 'UNKNOWN') ? ['Có lệnh UNKNOWN, cần đối soát; không tự gửi lại.'] : []),
-    ...(print_state === 'VERIFIED_DONE' && !physicallyComplete ? ['Giấy thật đã xác minh chưa đủ hoặc chưa có số tờ kiểm chứng; không đánh dấu in/giao đủ.'] : []),
+    ...(reportedPrintState === 'VERIFIED_DONE' && !completeEvidence ? ['Trạng thái in hoàn tất không khớp bằng chứng giấy thật; cần đối soát, không đánh dấu in/giao đủ.'] : []),
   ];
   if (!trustedPlan) warnings.push('Kế hoạch in chưa có bằng chứng processor đáng tin.');
   if (nested && current.preview_ref && !candidate.preview_verified) warnings.push('Preview chưa được processor xác minh.');
@@ -188,7 +197,10 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
     payment_state: amount !== null && received >= amount ? 'paid' : received > 0 ? 'partial' : 'unpaid',
     created_at: row.created_at, warnings, documents: [],
   });
-  return normalized;
+  const enriched = enrichOrderWithCode008(raw, normalized);
+  if(enriched.pending_updates?.state !== 'clear')
+    enriched.warnings.push('Tin/file bổ sung chưa được backend xác nhận xử lý hết; cần AI/nhân viên đối soát trước khi chốt in.');
+  return enriched;
 }
 const unwrap = (payload: unknown, key: 'order' | 'orders' | 'session'): unknown => {
   const obj = asObject(payload);
@@ -201,7 +213,7 @@ export class HttpPrintPort implements PrintPort {
   // Backend AI1 has bearer sessions, NOT browser cookie sessions. No persistence,
   // no localStorage and no token in URL: refreshing requires a fresh login.
   private token: string | null = null;
-  constructor(baseUrl = '', fetcher: typeof fetch = fetch) { this.baseUrl = baseUrl; this.fetcher = fetcher; }
+  constructor(baseUrl = '', fetcher: typeof fetch = globalThis.fetch.bind(globalThis)) { this.baseUrl = baseUrl; this.fetcher = fetcher; }
   private async call(path: string, options: RequestInit = {}): Promise<unknown> {
     let response: Response;
     try {
@@ -250,9 +262,89 @@ export class HttpPrintPort implements PrintPort {
     const raw = await this.call(`/api/v1/orders/${encodeURIComponent(id)}`);
     return mapCoreOrderDetail(raw);
   }
+  async loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{pages:Blob[];files:VerifiedFileFact[]}> {
+    const {order_id,revision,request_hash}=order;
+    if (!this.token || !/^[0-9a-f-]{36}$/i.test(order_id) ||
+        !Number.isSafeInteger(revision) || revision < 1 ||
+        !/^[0-9a-f]{64}$/.test(request_hash))
+      throw new ApiFault(409,'PREVIEW_UNVERIFIED','Không xác minh được phiên bản và hash để xem trước.');
+    const sessionToken=this.token;
+    const root=`/api/v1/orders/${order_id}/revisions/${revision}/previews`;
+    const catalog=asObject(await this.call(root));
+    if(this.token!==sessionToken) throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
+    const entries=catalog.previews;
+    if (catalog.preview_verified!==true || catalog.order_id!==order_id ||
+        catalog.revision!==revision || catalog.request_hash!==request_hash ||
+        !Number.isSafeInteger(catalog.preview_count) ||
+        (catalog.preview_count as number)<1 || (catalog.preview_count as number)>15 ||
+        !Array.isArray(entries) || entries.length!==catalog.preview_count)
+      throw new ApiFault(409,'PREVIEW_UNVERIFIED','Danh sách ảnh xem trước không khớp phiên bản hiện tại.');
+    const rawFiles=catalog.files;
+    const files:VerifiedFileFact[]=[];
+    if(rawFiles!==undefined){
+      if(!Array.isArray(rawFiles) || rawFiles.length<1 || rawFiles.length>5)
+        throw new ApiFault(409,'PREVIEW_DOCUMENTS_INVALID','Danh sách thông số file chưa được xác minh.');
+      let countSheets=0;
+      for(let i=0;i<rawFiles.length;i++){
+        const file=asObject(rawFiles[i]);
+        const integer=(value:unknown,max:number):value is number=>
+          typeof value==='number'&&Number.isSafeInteger(value)&&value>0&&value<=max;
+        if(file.index!==i||file.label!==`Tài liệu ${i+1}`||
+           typeof file.format!=='string'||!/^(PDF|PNG|JPG|JPEG|TIF|TIFF|WEBP|BMP|DOCX|ZIP)$/.test(file.format)||
+           !integer(file.document_pages,500)||!integer(file.printed_faces,5000)||
+           !integer(file.physical_sheets,5000)||!integer(file.copies,999)||
+           (file.paper!=='A4'&&file.paper!=='A3')||typeof file.duplex!=='boolean'||
+           (file.orientation!=='portrait'&&file.orientation!=='landscape')||
+           !Array.isArray(file.warnings)||file.warnings.length>10||
+           file.warnings.some(w=>typeof w!=='string'||!/^[A-Z0-9_]{1,80}$/.test(w)))
+          throw new ApiFault(409,'PREVIEW_DOCUMENTS_INVALID','Thông số file không khớp hợp đồng kiểm chứng.');
+        files.push(file as unknown as VerifiedFileFact);
+        countSheets+=file.physical_sheets;
+      }
+      if(!Number.isSafeInteger(countSheets)||countSheets<1)
+        throw new ApiFault(409,'PREVIEW_DOCUMENTS_INVALID','Tổng số tờ không đáng tin cậy.');
+    }
+    const token=sessionToken;
+    const pages:Blob[]=[];
+    const signature=[137,80,78,71,13,10,26,10];
+    for(let index=0;index<entries.length;index++) {
+      if(this.token!==token) throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
+      const entry=asObject(entries[index]);
+      const exactUrl=`${root}/${index}`;
+      if(entry.index!==index || entry.url!==exactUrl || entry.content_type!=='image/png')
+        throw new ApiFault(409,'PREVIEW_UNVERIFIED','Đường dẫn ảnh xem trước không hợp lệ.');
+      let response:Response;
+      try {
+        response=await this.fetcher(this.baseUrl+exactUrl,{
+          method:'GET',credentials:'same-origin',cache:'no-store',
+          headers:{Authorization:'Bearer '+token,Accept:'image/png'}
+        });
+      } catch {
+        throw new ApiFault(0,'PREVIEW_NETWORK','Không tải được ảnh xác minh; cần kiểm tra lại.');
+      }
+      if(response.status===401) this.token=null;
+      if(!response.ok || response.headers.get('content-type')?.split(';')[0]?.trim()!=='image/png')
+        throw new ApiFault(response.status,'PREVIEW_UNAVAILABLE','Ảnh xem trước không còn hợp lệ; cần đối chiếu bản gốc.');
+      const claimed=Number(response.headers.get('content-length'));
+      if(claimed>8*1024*1024)
+        throw new ApiFault(409,'PREVIEW_TOO_LARGE','Ảnh xem trước vượt giới hạn.');
+      const buffer=await response.arrayBuffer();
+      const bytes=new Uint8Array(buffer);
+      if(bytes.length<8 || bytes.length>8*1024*1024 ||
+          !signature.every((value,n)=>bytes[n]===value))
+        throw new ApiFault(409,'PREVIEW_INVALID_PNG','Nội dung ảnh xem trước không được xác minh.');
+      if(this.token!==token) throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
+      pages.push(new Blob([buffer],{type:'image/png'}));
+    }
+    if(this.token!==token)
+      throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
+    return {pages,files};
+  }
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView> {
     // AI1 CODE-201 routes now exist, but they require current generation from a
     // verified read model. No value supplied => fail closed, no request sent.
+    if (kind === 'quote' && !canEditPrintRequest(order))
+      throw new ApiFault(409,'ORDER_PRINT_LOCKED','Đơn đã chốt in hoặc có lệnh in; không được âm thầm sửa giá/yêu cầu.');
     if (kind === 'handover' || kind === 'return_to_ai') {
       if (order.conversation_generation === null || !order.conversation_id) throw new ApiFault(503, 'GENERATION_UNVERIFIED', 'Chưa có generation hội thoại do máy chủ xác minh, không được tiếp quản/trả AI.');
       const response = asObject(await this.call(actionPath(order,kind), {method:'POST',
@@ -273,9 +365,24 @@ export class HttpPrintPort implements PrintPort {
     const raw = await this.call(actionPath(order, kind), { method: 'POST', body: JSON.stringify(body), headers: { 'Idempotency-Key': key } });
     const receipt = asObject(raw);
     if (kind !== 'payment' && kind !== 'verify_paper' && receipt.order_id !== order.order_id) throw new ApiFault(503, 'INVALID_MUTATION_RECEIPT', 'API thiếu mã đơn trong biên nhận; cần đối soát.');
-    if (kind === 'verify_paper' && (receipt.job_id !== order.job_id || receipt.state !== 'VERIFIED_DONE')) throw new ApiFault(503, 'INVALID_MUTATION_RECEIPT', 'API không xác minh đúng job và giấy thật.');
-    // A 2xx receipt is NOT an order snapshot, and re-fetch can fail. Never show a
-    // success unless the server reports the updated real state.
+    if (kind === 'verify_paper') {
+      // AI1 returns UNKNOWN when staff inspected *part* of a real job.
+      // UNKNOWN is NEVER a completed print, but the confirmed sheets matter.
+      const sheets = asNum(receipt.verified_sheets), requested = asNum(payload.physical_sheets);
+      if (receipt.job_id !== order.job_id ||
+          (receipt.state !== 'VERIFIED_DONE' && receipt.state !== 'UNKNOWN') ||
+          sheets === null || requested === null || sheets !== requested ||
+          asNum(receipt.planned_sheets) === null || sheets > (asNum(receipt.planned_sheets) ?? 0)) {
+        throw new ApiFault(503, 'INVALID_MUTATION_RECEIPT', 'Biên nhận kiểm giấy không đủ bằng chứng hoặc không khớp job/số tờ; phải đối soát.');
+      }
+      const fresh = await this.getOrder(order.order_id);
+      if (fresh.print_state !== receipt.state || fresh.verified_sheets === null ||
+          fresh.verified_sheets < sheets) {
+        throw new ApiFault(503, 'PAPER_READMODEL_MISMATCH', 'Đọc lại đơn chưa khớp giấy đã kiểm chứng; phải đối soát.');
+      }
+      return fresh;
+    }
+    // A 2xx receipt is NOT an order snapshot; always re-read the server.
     return this.getOrder(order.order_id);
   }
   async mode(): Promise<OperationMode> {
@@ -302,6 +409,10 @@ export class DemoPrintPort implements PrintPort {
     this.checkNetwork(); const found = this.orders.find(o => o.order_id === id);
     if (!found) throw new ApiFault(404, 'NOT_FOUND', 'Không tìm thấy đơn mô phỏng.');
     return structuredClone(found);
+  }
+  async loadVerifiedPreviewPages(): Promise<{pages:Blob[];files:VerifiedFileFact[]}> {
+    // Demo images cannot be used as verified processor proof.
+    return {pages:[],files:[]};
   }
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string) {
     this.checkNetwork();

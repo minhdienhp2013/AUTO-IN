@@ -90,16 +90,23 @@ test('network failure on refresh or payment gives error and does not invent succ
  await assert.rejects(()=>port.mutate(mapCoreOrderDetail(coreDetail()),'payment',{amount_vnd:1000,method:'cash',direction:'received'},'pay-1'),isFault('NETWORK'));
 });
 
-test('paper verification is a staff-inspected receipt for exactly one uncertain real job',async()=>{
- const d=coreDetail();d.jobs=[{id:'job-uncertain',revision:3,state:'SENT_UNVERIFIED',printer_id:'RMP7000'}] as typeof d.jobs;
+test('paper verification refreshes a matching real-paper receipt from AI1',async()=>{
+ const d=coreDetail();d.jobs=[{id:'job-uncertain',revision:3,request_hash:'req-hash',state:'SENT_UNVERIFIED',printer_id:'RMP7000',mode_at_send:'controlled_test'}] as typeof d.jobs;
  const order=mapCoreOrderDetail(d);const calls:Array<{url:string;body:Record<string,unknown>}>=[];
  const fetcher=async(url:RequestInfo|URL,options?:RequestInit):Promise<Response>=>{
   if (options?.method==='POST'){
    calls.push({url:String(url),body:JSON.parse(String(options.body)) as Record<string,unknown>});
-   return json({job_id:'job-uncertain',state:'VERIFIED_DONE'});
+   return json({job_id:'job-uncertain',state:'VERIFIED_DONE',verified_sheets:180,planned_sheets:180,missing_sheets:0});
   }
-  const updated=coreDetail();updated.jobs=[{id:'job-uncertain',revision:3,state:'VERIFIED_DONE',printer_id:'RMP7000'}] as typeof updated.jobs;
-  return json(updated);
+  return json({
+   ...coreDetail(),
+   jobs:[{id:'job-uncertain',revision:3,request_hash:'req-hash',state:'VERIFIED_DONE',mode_at_send:'controlled_test',
+     evidence_kind:'staff_inspected',verified_sheets:180,printer_id:'RMP7000'}],
+   current:{revision:3,request_hash:'req-hash',verified_plan:coreDetail().revisions[1].plan,
+     request_confirmation:null,price_confirmation:null,approval:null,preview_ref:null},
+   print_progress:{planned_sheets:180,verified_sheets:180,missing_sheets:0,delivered_sheets:0,
+     fully_verified:true,requires_manual_reconciliation:false},
+  });
  };
  const result=await new HttpPrintPort('',fetcher as typeof fetch).mutate(order,'verify_paper',{
    physical_sheets:180,evidence_kind:'staff_inspected',note:'Đã trực tiếp kiểm và đếm giấy'
@@ -107,5 +114,38 @@ test('paper verification is a staff-inspected receipt for exactly one uncertain 
  assert.equal(calls[0].url,'/api/v1/print-jobs/job-uncertain/verify-paper');
  assert.equal(calls[0].body.evidence_kind,'staff_inspected');
  assert.equal(calls[0].body.physical_sheets,180);
- assert.equal(result.print_state,'VERIFIED_DONE');
+ assert.equal(result.print_state,'VERIFIED_DONE');assert.equal(result.verified_sheets,180);
+});
+
+test('AI1 partial staff-inspected paper returns UNKNOWN with actual verified quantity',async()=>{
+ const d=coreDetail();d.jobs=[{id:'job-uncertain',revision:3,request_hash:'req-hash',state:'UNKNOWN',
+   mode_at_send:'controlled_test',verified_sheets:0,printer_id:'RMP7000'}] as typeof d.jobs;
+ const port=new HttpPrintPort('',(async(_url:RequestInfo|URL,opts?:RequestInit)=>{
+   if(opts?.method==='POST')return json({job_id:'job-uncertain',state:'UNKNOWN',verified_sheets:30,
+     planned_sheets:180,missing_sheets:150,requires_manual_reconciliation:true});
+   return json({...d,
+     jobs:[{id:'job-uncertain',revision:3,request_hash:'req-hash',state:'UNKNOWN',
+       mode_at_send:'controlled_test',evidence_kind:'staff_inspected',verified_sheets:30,printer_id:'RMP7000'}],
+     current:{revision:3,request_hash:'req-hash',verified_plan:d.revisions[1].plan,preview_ref:null,
+       request_confirmation:null,price_confirmation:null,approval:null},
+     print_progress:{planned_sheets:180,verified_sheets:30,missing_sheets:150,delivered_sheets:0,
+       fully_verified:false,requires_manual_reconciliation:true}});
+ }) as typeof fetch);
+ const view=await port.mutate(mapCoreOrderDetail(d),'verify_paper',{
+   physical_sheets:30,evidence_kind:'staff_inspected',note:'Đếm trực tiếp 30 tờ'},'partial-1');
+ assert.equal(view.print_state,'UNKNOWN');assert.equal(view.verified_sheets,30);
+ assert.notEqual(view.delivery_state,'delivered');
+});
+
+test('paper receipt without counted proof and stale reread are rejected',async()=>{
+ const d=coreDetail();d.jobs=[{id:'job-uncertain',revision:3,request_hash:'req-hash',state:'UNKNOWN',
+   mode_at_send:'controlled_test',printer_id:'RMP7000'}] as typeof d.jobs;
+ const order=mapCoreOrderDetail(d);
+ const port=new HttpPrintPort('',(async()=>json({job_id:'job-uncertain',state:'VERIFIED_DONE'})) as typeof fetch);
+ await assert.rejects(()=>port.mutate(order,'verify_paper',{
+   physical_sheets:180,evidence_kind:'staff_inspected',note:'Đã kiểm'},'bad'),isFault('INVALID_MUTATION_RECEIPT'));
+ const port2=new HttpPrintPort('',(async(_url:RequestInfo|URL,opts?:RequestInit)=>
+   opts?.method==='POST'?json({job_id:'job-uncertain',state:'UNKNOWN',verified_sheets:20,planned_sheets:180}):json(d)) as typeof fetch);
+ await assert.rejects(()=>port2.mutate(order,'verify_paper',{
+   physical_sheets:20,evidence_kind:'staff_inspected',note:'Đã kiểm'},'stale'),isFault('PAPER_READMODEL_MISMATCH'));
 });

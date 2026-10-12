@@ -1,9 +1,15 @@
 import Fastify, { type FastifyPluginAsync } from 'fastify';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createCoreModule } from '../core/factory.js';
-import { DomainError, type Principal } from '../core/model.js';
+import { assertStaff, DomainError, type Principal } from '../core/model.js';
 import type { SqlPool } from '../storage/database.js';
 import type { RouteRegistrar } from '../api/routes.js';
+import { ingestSyntheticArtifact, type SyntheticArtifactScope } from './synthetic-ingest.js';
+import { loadVerifiedOrderPreview, loadVerifiedOrderPreviewCatalog } from './preview.js';
+import { createSyntheticInboundDraft } from './inbound-draft.js';
+import { reconcileSyntheticInboundDraft } from './inbound-reconcile.js';
+import { createSyntheticVerifiedButtonPlugin, type SyntheticButtonScope } from './synthetic-verified-button.js';
+import { pendingReviewSqlPool } from './pending-review-errors.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
 export interface RuntimeOptions {
@@ -12,6 +18,11 @@ export interface RuntimeOptions {
   tls?: { key: Buffer; cert: Buffer };
   /** Only AI2's verifier/pipeline may be injected; absent means explicit 503. */
   zaloWebhook?: FastifyPluginAsync;
+  zaloWorkerConfigured?: boolean;
+  syntheticArtifactIngest?: { artifactRoot: string; scope: SyntheticArtifactScope };
+  previewArtifactRoot?: string;
+  /** Opt-in HMAC signed fixture endpoint; NEVER configured for live OA. */
+  syntheticVerifiedButton?: SyntheticButtonScope;
 }
 export function identityResolver(identities: readonly ServiceIdentity[]) {
   for (const identity of identities) {
@@ -32,7 +43,7 @@ export function identityResolver(identities: readonly ServiceIdentity[]) {
 
 /** Simulation-only composition. Uses AI1 routes exactly once, not CODE-000 routes. */
 export function buildIntegratedApp(options: RuntimeOptions) {
-  const core = createCoreModule({ pool: options.pool });
+  const core = createCoreModule({ pool: pendingReviewSqlPool(options.pool) });
   const resolve = identityResolver(options.identities ?? []);
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024,
     ...(options.tls ? { https: options.tls } : {}) });
@@ -71,8 +82,95 @@ export function buildIntegratedApp(options: RuntimeOptions) {
   app.get('/health', async () => ({ status: 'ok', mode: 'simulation', live_enabled: false,
     auth_configured: true, configured_operations: ['me', 'listOrders', 'approveOrder', 'claimJob', 'markSending', 'reportJob'],
     registered_routes: registered, zalo_webhook_configured: !!options.zaloWebhook,
-    zalo_worker_configured: false,
-    processor_configured: false, integration_stage: 'core-http' }));
+    zalo_worker_configured: options.zaloWorkerConfigured === true,
+    processor_configured: false, preview_configured: !!options.previewArtifactRoot,
+    synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
+    integration_stage: 'core-http' }));
+  // Authenticated server-owned operation truth for the AI4 product adapter.
+  // Never infer this from the browser environment or anonymous /health.
+  app.get('/api/v1/runtime-status', async (request, reply) => {
+    const token = request.headers.authorization?.startsWith('Bearer ')
+      ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    assertStaff(actor);
+    const settings = await options.pool.query<{mode:string;manual_lock:boolean}>(
+      'SELECT mode,manual_lock FROM core_shop_settings WHERE shop_id=$1',
+      [actor.shop_id]);
+    if (settings.rows.length!==1 || settings.rows[0]?.mode!=='simulation')
+      throw new DomainError('SIMULATION_REQUIRED','Only isolated simulation is configured',409);
+    return reply.header('Cache-Control','no-store')
+      .header('X-Content-Type-Options','nosniff')
+      .send({
+        server_verified: true,
+        mode: 'simulation',
+        live_enabled: false,
+        physical_print_enabled: false,
+        manual_lock: settings.rows[0].manual_lock,
+        preview_configured: !!options.previewArtifactRoot,
+        synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest
+      });
+  });
+  app.post('/internal/simulation/inbound-artifacts', async (request, reply) => {
+    if (!options.syntheticArtifactIngest) throw new DomainError('FEATURE_UNAVAILABLE', 'Synthetic import unavailable', 503);
+    const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    const outcome = await ingestSyntheticArtifact(options.pool, options.syntheticArtifactIngest.artifactRoot,
+      options.syntheticArtifactIngest.scope, actor, request.body);
+    return reply.code(outcome.status === 'registered' ? 201 : 200).send(outcome);
+  });
+  app.post('/internal/simulation/inbound-artifacts/:event_id/draft', async (request, reply) => {
+    if (!options.syntheticArtifactIngest) throw new DomainError('FEATURE_UNAVAILABLE', 'Synthetic draft unavailable', 503);
+    const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    const eventId = (request.params as {event_id:string}).event_id;
+    const body = request.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      throw new DomainError('INVALID_INPUT', 'JSON object required', 422);
+    const result = await createSyntheticInboundDraft(options.pool,core.service,
+      options.syntheticArtifactIngest.artifactRoot,options.syntheticArtifactIngest.scope,
+      actor,{...body,event_id:eventId});
+    return reply.code(result.status==='created'?201:200).send(result);
+  });
+  app.post('/internal/simulation/inbound-artifacts/:event_id/reconcile', async (request, reply) => {
+    if (!options.syntheticArtifactIngest) throw new DomainError('FEATURE_UNAVAILABLE', 'Synthetic reconciliation unavailable', 503);
+    const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    const eventId = (request.params as {event_id:string}).event_id;
+    const body = request.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      throw new DomainError('INVALID_INPUT', 'JSON object required', 422);
+    const outcome = await reconcileSyntheticInboundDraft(options.pool,
+      options.syntheticArtifactIngest.artifactRoot,options.syntheticArtifactIngest.scope,
+      actor,{...body,event_id:eventId});
+    return reply.code(200).send(outcome);
+  });
+  app.get('/api/v1/orders/:order_id/revisions/:revision/previews', async (request, reply) => {
+    if (!options.previewArtifactRoot) throw new DomainError('FEATURE_UNAVAILABLE', 'Verified preview unavailable', 503);
+    const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    const params = request.params as {order_id:string;revision:string};
+    const catalog = await loadVerifiedOrderPreviewCatalog(options.pool,
+      options.previewArtifactRoot,actor,params.order_id,Number(params.revision));
+    return reply.header('Cache-Control','no-store')
+      .header('X-Content-Type-Options','nosniff')
+      .header('Content-Security-Policy',"default-src 'none'")
+      .send(catalog);
+  });
+  app.get('/api/v1/orders/:order_id/revisions/:revision/previews/:index', async (request, reply) => {
+    if (!options.previewArtifactRoot) throw new DomainError('FEATURE_UNAVAILABLE', 'Verified preview unavailable', 503);
+    const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    const params = request.params as { order_id: string; revision: string; index: string };
+    const preview = await loadVerifiedOrderPreview(options.pool, options.previewArtifactRoot,
+      actor, params.order_id, Number(params.revision), Number(params.index));
+    return reply.header('Content-Type', 'image/png')
+      .header('Cache-Control', 'no-store')
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Content-Security-Policy', "default-src 'none'")
+      .send(preview);
+  });
+  if (options.syntheticVerifiedButton)
+    app.register(createSyntheticVerifiedButtonPlugin(options.pool,options.syntheticVerifiedButton));
   if (options.zaloWebhook) app.register(options.zaloWebhook);
   else app.post('/webhooks/zalo', async (_request, reply) => reply.code(503).send({ error: {
     code: 'FEATURE_UNAVAILABLE', message: 'Verified pipeline wiring pending', retryable: false } }));

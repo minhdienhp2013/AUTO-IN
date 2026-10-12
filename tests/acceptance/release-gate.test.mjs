@@ -40,3 +40,12 @@ test('CODE305: contradictory integrated SHA must not pass release gate',()=>{
  assert.equal(result.allowed,false);
  assert.ok(result.blockers.some(x=>x.includes('integrated CODE-006 SHA')));
 });
+
+test('CODE305: synthetic webhook cannot satisfy live Zalo OA evidence gate',()=>{
+ const r=releaseGate({mode:'controlled_test',critical_failures:0,passing_orders:210,
+  clean_test_days:7,load_orders_per_day:100,recognition_rate:.96,conversation_rate:.9,
+  synthetic_dataset:false,evidence:{integration_sha:'15c1ac75859914b2cc07d5a98bf57c18973cbbb2',
+    oa_verified:true,zalo_oa_verification_source:'synthetic_fastify_pg'}});
+ assert.equal(r.allowed,false);
+ assert.ok(r.blockers.some(b=>b.includes('NOT proof of official live Zalo OA')));
+});

@@ -2,7 +2,8 @@ import pg from 'pg';
 import { readFile } from 'node:fs/promises';
 import { buildIntegratedApp, type ServiceIdentity } from './composition/runtime.js';
 import { asSqlPool, assertIsolatedSimulationDatabase } from './composition/postgres.js';
-import { createSyntheticZaloIngress } from './composition/zalo-simulation.js';
+import { createCoreModule } from './core/factory.js';
+import { createSyntheticZaloRuntime } from './composition/zalo-simulation.js';
 if ((process.env.AUTO_IN_MODE ?? 'simulation') !== 'simulation') throw new Error('Only simulation is available');
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL required; run db:migrate and db:bootstrap first');
@@ -21,13 +22,43 @@ const tls = keyFile && certFile ? { key: await readFile(keyFile), cert: await re
 const registry = process.env.AUTOIN_ZALO_SYNTHETIC_REGISTRY
   ? JSON.parse(await readFile(process.env.AUTOIN_ZALO_SYNTHETIC_REGISTRY, 'utf8')) as unknown : undefined;
 const pool = new pg.Pool({ connectionString: url, connectionTimeoutMillis: 5000 });
-const zaloWebhook = registry === undefined ? undefined : createSyntheticZaloIngress(pool, registry);
+const core = createCoreModule({ pool: asSqlPool(pool) });
+const zaloRuntime = registry === undefined ? undefined : createSyntheticZaloRuntime(pool, registry, {
+  store: core.store,
+  ...(process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT
+    ? { artifactRoot: process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT } : {})
+});
+const configuredTick = process.env.AUTOIN_ZALO_SYNTHETIC_TICK_MS;
+const tickMs = configuredTick === undefined ? 0 : Number(configuredTick);
+if (configuredTick !== undefined && (!zaloRuntime || !Number.isInteger(tickMs) || tickMs < 1000 || tickMs > 60000))
+  throw new Error('Synthetic inbound worker requires a registry and interval 1000..60000');
+let ticking = false;
+let timer: ReturnType<typeof setInterval> | undefined;
 const app = buildIntegratedApp({ pool: asSqlPool(pool), identities,
-  ...(tls ? { tls } : {}), ...(zaloWebhook ? { zaloWebhook } : {}) });
-app.addHook('onClose', async () => { await pool.end(); });
+  ...(tls ? { tls } : {}), ...(zaloRuntime ? { zaloWebhook: zaloRuntime.webhook } : {}),
+  zaloWorkerConfigured: tickMs > 0,
+  ...(process.env.AUTOIN_ARTIFACT_ROOT ? {previewArtifactRoot: process.env.AUTOIN_ARTIFACT_ROOT} : {}),
+  ...(zaloRuntime && process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT ? {
+    syntheticArtifactIngest: {
+      artifactRoot: process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT,
+      scope: zaloRuntime.trustedScope
+    }
+  } : {}) });
+app.addHook('onClose', async () => { if (timer) clearInterval(timer); await pool.end(); });
 try {
   await pool.query('SELECT 1 FROM core_shop_settings LIMIT 1');
+  if (tickMs) {
+    await pool.query('SELECT 1 FROM core_ai_draft_proposals LIMIT 1');
+    await pool.query('SELECT 1 FROM ai0_inbound_document_artifacts LIMIT 1');
+  }
   await app.listen({ host, port });
+  if (tickMs && zaloRuntime) timer = setInterval(() => {
+    if (ticking) return;
+    ticking = true;
+    void zaloRuntime.tick_inbound().catch(() => {
+      console.error('Synthetic inbound worker failed; batch remains durable');
+    }).finally(() => { ticking = false; });
+  }, tickMs);
   console.info('AUTO-IN core HTTP ready in simulation mode');
 } catch {
   await app.close();
