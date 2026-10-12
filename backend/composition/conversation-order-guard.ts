@@ -33,6 +33,12 @@ export function guardedSyntheticConversationOrders(
     throw new Error('CONVERSATION_ORDER_GUARD_UNCONFIGURED');
   return {
     route_human:request=>orders.route_human(request),
+    // Core resolves the open order and locks its revision and generation in
+    // one transaction. Do not hold a separate guard transaction around it.
+    ...(orders.apply_incoming_batch ? {
+      apply_incoming_batch: (input:Parameters<NonNullable<OrderDraftPort['apply_incoming_batch']>>[0]) =>
+        orders.apply_incoming_batch!(input)
+    } : {}),
     async suggest_draft(input){
       if(!nonempty(input.conversation_id,256)||!nonempty(input.customer_id,256)||
          !Array.isArray(input.event_ids)||input.event_ids.length<1||

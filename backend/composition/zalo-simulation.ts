@@ -2,6 +2,7 @@ import type pg from 'pg';
 import { createZaloComposition } from '../integrations/zalo/wiring.js';
 import { SyntheticFixtureNormalizer, SyntheticTestVerifier } from '../integrations/zalo/protocol.js';
 import { createAiOrderPort } from '../core/ai-order-port.js';
+import { createOrderSupplementPort } from '../core/order-supplement-port.js';
 import type { PgStore } from '../storage/database.js';
 import type { OrderDraftPort, DocumentFactsPort } from '../conversation/processor.js';
 import { createTrustedDocumentFactsPort } from './document-facts.js';
@@ -67,6 +68,12 @@ export function createSyntheticZaloRuntime(pool: pg.Pool, input: unknown, option
   const registry = parseRegistry(input);
   const orders = createAiOrderPort({ store: options.store,
     trusted: { shop_id: registry.shop_id, oa_id: registry.oa_id } });
+  const supplements = createOrderSupplementPort({store: options.store,
+    trusted: {shop_id: registry.shop_id, oa_id: registry.oa_id},
+    // This identity exists only in the isolated synthetic transport. It is
+    // never a customer credential and cannot authorize approval or printing.
+    processor: {id: 'synthetic:zalo:'+registry.oa_id, role: 'processor',
+      shop_id: registry.shop_id, verified: true}});
   const documents = createTrustedDocumentFactsPort(pool,
     { shop_id: registry.shop_id, oa_id: registry.oa_id },
     { ...(options.artifactRoot ? { artifactRoot: options.artifactRoot } : {}),
@@ -81,6 +88,36 @@ export function createSyntheticZaloRuntime(pool: pg.Pool, input: unknown, option
       ...request,
       text: request.text.trim() ? request.text : attachmentOnlyText
     }),
+    async apply_incoming_batch(request) {
+      if (request.scope.oa_id !== registry.oa_id) return {status:'needs_human'};
+      // The AI1 Port currently journals events/files, but does not apply
+      // changed copy count, paper size or duplex settings to request_data.
+      // Keep those changes pending rather than acknowledge an incomplete order.
+      if (request.changes.some(change =>
+        change === 'copies' || change === 'paper' || change === 'duplex'))
+        return {status:'needs_human'};
+      const result = await supplements.apply_incoming_batch({
+        conversation_id: request.scope.conversation_id,
+        customer_id: request.scope.customer_id,
+        event_ids: request.event_ids,
+        text: request.text.trim() ? request.text : attachmentOnlyText,
+        idempotency_key: request.idempotency_key,
+        expected_generation: request.expected_generation,
+        intent: request.intent,
+        // AI2 has completed AI3 document inspection before invoking this Port.
+        // AI1 independently verifies durable ingress and artifact binding.
+        materialized: true
+      });
+      if (result.status === 'created' || result.status === 'existing')
+        return {status: result.status, order_id: result.order_id,
+          active_revision: result.revision};
+      if (result.status === 'appended')
+        return {status:'appended',order_id:result.order_id,
+          active_revision:result.revision,requires_reconfirmation:true};
+      if (result.status === 'stale_generation' || result.status === 'closed' ||
+          result.status === 'ambiguous') return {status:result.status};
+      return {status:'needs_human'};
+    },
     route_human: request => orders.route_human(request)
   };
   const pipeline = compose(pool, registry,
