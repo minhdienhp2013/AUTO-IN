@@ -26,7 +26,7 @@ export interface SyntheticDraftResult {
   order_id: string; revision: 1; requires_customer_confirmation: true;
   preview_trusted: false;
 }
-function parseSettings(input: unknown): DraftSettings {
+export function parseSettings(input: unknown): DraftSettings {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('INVALID_DRAFT_SETTINGS',422);
   const i=input as Record<string,unknown>;
   if (Object.keys(i).sort().join(',') !== 'copies,duplex,event_id,paper' ||
@@ -110,6 +110,17 @@ export async function verifiedSyntheticSource(
     artifact_ref:row.artifact_ref,sha256:row.sha256};
 }
 
+export async function prepareSyntheticInboundDraft(
+  pool: SqlPool, root: string, scope: SyntheticArtifactScope, untrustedInput: unknown
+): Promise<{settings:DraftSettings;source:Awaited<ReturnType<typeof verifiedSyntheticSource>>;
+  request_data:{documents:{artifact_name:string;copies:number;duplex:boolean;paper:'A4'|'A3'}[]};
+  settingsHash:string;idempotencyKey:string}> {
+  const {settings,source,request_data,settingsHash,idempotencyKey}=
+    await prepareSyntheticInboundDraft(pool,root,scope,untrustedInput);
+  const idempotencyKey='synthetic:'+hash(scope.shop_id+':'+scope.oa_id+':'+settings.event_id);
+  return {settings,source,request_data,settingsHash,idempotencyKey};
+}
+
 /** Explicit staff decision only; never an AI-generated/customer-confirmed order.
  * The durable PENDING reservation is intentional: ambiguity goes to a human,
  * and never causes automatic creation of a second draft after a crash. */
@@ -147,7 +158,7 @@ export async function createSyntheticInboundDraft(
   // If this call fails, PENDING remains and needs explicit manual reconciliation.
   const result=await service.createDraft(actor,{
     customer_id:source.customer_id,conversation_id:source.conversation_id,
-    request_data,idempotency_key:'synthetic:'+hash(scope.shop_id+':'+scope.oa_id+':'+settings.event_id)
+    request_data,idempotency_key:idempotencyKey
   });
   const stored=await pool.query(
     'UPDATE ai0_inbound_artifact_drafts SET status=\'CREATED\',order_id=$4,completed_at=now() '+
