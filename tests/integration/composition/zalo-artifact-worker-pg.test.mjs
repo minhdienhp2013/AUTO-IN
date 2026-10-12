@@ -128,6 +128,33 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     assert.equal((await runtime.tick_inbound()).processed,0,'Restart/re-tick cannot duplicate AI1 proposal');
     assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_ai_draft_proposals WHERE shop_id=$1',[shop])).rows[0].n,1);
 
+    // CODE-008: a second FILE batch >60s later, same OA/customer/conversation,
+    // is still the same OPEN order, never a second automatic draft. Keep the
+    // later event in durable NEEDS_HUMAN until AI1 supports staff-reviewed
+    // append/revision in its own transaction.
+    const nextEventId='followup-'+randomUUID();
+    const followup=fixture(nextEventId,customer,conversation);
+    followup.occurred_at=new Date(Date.now()+90_000).toISOString();
+    assert.equal((await send(followup)).json().status,'accepted');
+    assert.equal((await register(nextEventId,png)).statusCode,201);
+    assert.equal((await runtime.tick_inbound()).ingested,1);
+    await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' "+
+      "WHERE oa_id=$1 AND status='OPEN'",[oa]);
+    const followResult=await runtime.tick_inbound();
+    assert.equal(followResult.held,1,JSON.stringify(followResult));
+    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_orders WHERE shop_id=$1',[shop])).rows[0].n,1,
+      'More than 60 seconds does NOT close order or authorize a second one');
+    const followBatch=(await query(
+      'SELECT status FROM zalo_batches WHERE oa_id=$1 AND status=$2',
+      [oa,'NEEDS_HUMAN'])).rows;
+    assert.equal(followBatch.length,1,'Additional batch must remain durable for staff');
+    const sourceEvent=(await query(
+      'SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',
+      [oa,nextEventId])).rows[0];
+    assert.equal(sourceEvent.n,1);
+    assert.equal((await runtime.tick_inbound()).processed,0,
+      'Re-tick/restart cannot duplicate the open order');
+
     // One and the SAME AI2-created order goes through staff-bound source choice,
     // real AI3 rendering and the two independently authenticated customer gates.
     // Staff alone may choose printing settings; neither AI nor a webhook may
