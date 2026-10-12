@@ -101,6 +101,31 @@ test('REAL PostgreSQL CODE-008: atomic batch two-worker replay, separate, ambigu
   await a.query("INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,'staff','fixture-only','staff')",[staffId,shop]);
   const staff={id:staffId,role:'staff',shop_id:shop,verified:true};
   const core=new OrderService(storeA);
+  // A manual draft in the same shop/customer/chat is also an open order;
+  // the AI worker must not silently select the AI2 draft from two candidates.
+  const manualConv=k('manual-chat'),manualInitial=k('manual-first'),manualExtra=k('manual-extra');
+  await event(a,oa,manualConv,customer,manualInitial);
+  const aiBound=await draftPort.suggest_draft({conversation_id:manualConv,customer_id:customer,
+   event_ids:[manualInitial],text:'Đơn AI',idempotency_key:k('ai-bound'),expected_generation:0});
+  assert.equal(aiBound.status,'created');
+  const manual=await core.createDraft(staff,{customer_id:customer,conversation_id:manualConv,
+   request_data:{source:'staff',text:'Đơn nhân viên riêng'},idempotency_key:k('manual-draft')});
+  assert.notEqual(manual.order_id,aiBound.order_id);
+  await event(a,oa,manualConv,customer,manualExtra);
+  const cannotGuess=await portA.apply_incoming_batch({
+   conversation_id:manualConv,customer_id:customer,event_ids:[manualExtra],
+   text:'Nội dung chưa rõ đơn',idempotency_key:k('unresolved-manual'),
+   intent:'append_or_create',materialized:true,expected_generation:0});
+  assert.equal(cannotGuess.status,'ambiguous');
+  const foreign=k('foreign-customer'),foreignEvent=k('foreign-event');
+  await event(a,oa,manualConv,foreign,foreignEvent);
+  await assert.rejects(portB.apply_incoming_batch({
+   conversation_id:manualConv,customer_id:foreign,event_ids:[foreignEvent],
+   text:'Không phải khách cũ',idempotency_key:k('wrong-customer'),
+   intent:'append_or_create',materialized:true,expected_generation:0}),
+   e=>e.code==='SUPPLEMENT_CONVERSATION_CUSTOMER_CONFLICT');
+  assert.equal((await a.query('SELECT count(*)::int AS n FROM core_orders WHERE shop_id=$1 AND conversation_id=$2',
+    [shop,manualConv])).rows[0].n,2,'ambiguous/manual scope cannot create a third order');
   const takeover=await core.handover(staff,conv,{expected_generation:0,idempotency_key:k('handover')});
   assert.equal(takeover.generation,1);
   const afterTakeover=await portB.apply_incoming_batch({...update,event_ids:[ambiguity],idempotency_key:k('after-takeover')});

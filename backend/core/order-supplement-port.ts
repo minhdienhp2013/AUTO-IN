@@ -163,10 +163,20 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
      throw new DomainError('SUPPLEMENT_EVENTS_UNVERIFIED','Event scope/source mismatch',403);
     const binding=await db.query('SELECT 1 FROM core_shop_settings WHERE shop_id=$1 FOR SHARE',[shopId]);
     if(!binding.rows.length)throw new DomainError('SUPPLEMENT_SHOP_FORBIDDEN','Unknown shop',403);
-    const list=await db.query<{id:string;active_revision:number;manual_lock:boolean;print_closed:boolean;approved:boolean}>(
-     "SELECT o.id,o.active_revision,o.manual_lock,o.print_closed,EXISTS(SELECT 1 FROM core_approvals a WHERE a.order_id=o.id) AS approved "+
-     "FROM core_orders o JOIN core_ai_draft_proposals p ON p.order_id=o.id AND p.shop_id=o.shop_id "+
-     "WHERE p.shop_id=$1 AND p.oa_id=$2 AND p.customer_id=$3 AND p.conversation_id=$4 "+
+    const foreignCustomer=await db.query(
+     'SELECT 1 FROM core_ai_draft_proposals WHERE shop_id=$1 AND oa_id=$2 AND conversation_id=$3 AND customer_id<>$4 LIMIT 1',
+     [shopId,oaId,conv,customer]);
+    if(foreignCustomer.rows.length)
+     throw new DomainError('SUPPLEMENT_CONVERSATION_CUSTOMER_CONFLICT','Conversation linked to a different verified customer',403);
+    // Include unbound manual orders in the same verified chat when deciding uniqueness.
+    // Never silently append to one AI draft while a second staff draft is open.
+    const list=await db.query<{id:string;active_revision:number;manual_lock:boolean;print_closed:boolean;approved:boolean;oa_linked:boolean}>(
+     "SELECT o.id,o.active_revision,o.manual_lock,o.print_closed,"+
+     "EXISTS(SELECT 1 FROM core_approvals a WHERE a.order_id=o.id) AS approved,"+
+     "(p.order_id IS NOT NULL) AS oa_linked "+
+     "FROM core_orders o LEFT JOIN core_ai_draft_proposals p ON p.order_id=o.id AND p.shop_id=o.shop_id "+
+     "WHERE o.shop_id=$1 AND o.customer_id=$3 AND o.conversation_id=$4 "+
+     "AND (p.order_id IS NULL OR (p.oa_id=$2 AND p.customer_id=$3 AND p.conversation_id=$4)) "+
      "ORDER BY o.created_at DESC,o.id DESC",[shopId,oaId,customer,conv]);
     const opens=list.rows.filter(o=>!o.approved&&!o.manual_lock&&!o.print_closed);
     // Resolve first, then lock order before conversation generation (same order as Core approve).
@@ -210,6 +220,7 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
       request_hash:record.rows[0].request_hash,requires_reconfirmation:true};
     }
     if(input.intent==='append_or_create'&&opens.length>1)return {status:'ambiguous'};
+    if(input.intent==='append_or_create'&&target&&!target.oa_linked)return {status:'needs_review',order_id:target.id};
     if(input.intent==='append_or_create'&&opens.length===0&&list.rows.some(o=>!o.approved&&
        (o.manual_lock||o.print_closed)))return {status:'closed'};
     if(input.intent==='explicit_separate'){
