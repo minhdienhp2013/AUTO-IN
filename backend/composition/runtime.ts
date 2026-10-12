@@ -4,6 +4,7 @@ import { createCoreModule } from '../core/factory.js';
 import { DomainError, type Principal } from '../core/model.js';
 import type { SqlPool } from '../storage/database.js';
 import type { RouteRegistrar } from '../api/routes.js';
+import { ingestSyntheticArtifact, type SyntheticArtifactScope } from './synthetic-ingest.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
 export interface RuntimeOptions {
@@ -13,6 +14,7 @@ export interface RuntimeOptions {
   /** Only AI2's verifier/pipeline may be injected; absent means explicit 503. */
   zaloWebhook?: FastifyPluginAsync;
   zaloWorkerConfigured?: boolean;
+  syntheticArtifactIngest?: { artifactRoot: string; scope: SyntheticArtifactScope };
 }
 export function identityResolver(identities: readonly ServiceIdentity[]) {
   for (const identity of identities) {
@@ -73,7 +75,16 @@ export function buildIntegratedApp(options: RuntimeOptions) {
     auth_configured: true, configured_operations: ['me', 'listOrders', 'approveOrder', 'claimJob', 'markSending', 'reportJob'],
     registered_routes: registered, zalo_webhook_configured: !!options.zaloWebhook,
     zalo_worker_configured: options.zaloWorkerConfigured === true,
-    processor_configured: false, integration_stage: 'core-http' }));
+    processor_configured: false, synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
+    integration_stage: 'core-http' }));
+  app.post('/internal/simulation/inbound-artifacts', async (request, reply) => {
+    if (!options.syntheticArtifactIngest) throw new DomainError('FEATURE_UNAVAILABLE', 'Synthetic import unavailable', 503);
+    const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    const outcome = await ingestSyntheticArtifact(options.pool, options.syntheticArtifactIngest.artifactRoot,
+      options.syntheticArtifactIngest.scope, actor, request.body);
+    return reply.code(outcome.status === 'registered' ? 201 : 200).send(outcome);
+  });
   if (options.zaloWebhook) app.register(options.zaloWebhook);
   else app.post('/webhooks/zalo', async (_request, reply) => reply.code(503).send({ error: {
     code: 'FEATURE_UNAVAILABLE', message: 'Verified pipeline wiring pending', retryable: false } }));
