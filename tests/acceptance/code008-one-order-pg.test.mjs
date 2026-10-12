@@ -24,6 +24,20 @@ const enabled=process.env.AUTOIN_RUN_PRODUCT_ACCEPTANCE==='1';
 const skip=enabled?false:'CODE-008 product NOT RUN: require --integration, exact integrated SHA and real isolated PostgreSQL';
 const timeout=120000;
 const rand=()=>randomUUID();
+// Exercise the database trigger independently of the Core business rejection.
+// A Core 409 is NOT evidence that the PostgreSQL trigger was exercised.
+async function assertDirectSqlPendingBlock(pool,orderId,actorId){
+ const rev=(await pool.query(
+  'SELECT revision,request_hash FROM core_revisions WHERE order_id=$1 ORDER BY revision DESC LIMIT 1',
+  [orderId])).rows[0];
+ assert.ok(rev?.request_hash,'Expected an immutable test revision before raw SQL gate');
+ await assert.rejects(pool.query(
+  'INSERT INTO core_approvals(id,order_id,revision,request_hash,actor_id) VALUES($1,$2,$3,$4,$5)',
+  [rand(),orderId,rev.revision,rev.request_hash,actorId]),
+  e=>e?.code==='P0001'&&String(e.message).includes('AI0_PENDING_INBOUND_REVIEW'),
+  'A direct SQL insert must remain rejected by PostgreSQL P0001 even when Core emits HTTP 409');
+}
+const isPendingCoreConflict=e=>e?.code==='PENDING_INBOUND_REVIEW'&&e?.status===409;
 const count=async(pool,table,shop)=>(await pool.query(
  table==='core_orders'?
  'SELECT count(*)::int AS n FROM core_orders WHERE shop_id=$1':
@@ -167,7 +181,7 @@ test('C008-PG-02 REQUIRED RED until AI1/AI2 append Port: pre-approval file must 
  assert.equal(current,0,'A new active revision requires fresh customer confirmation');
 }));
 
-test('C008-HTTP-03 REQUIRED RED until AI1 maps P0001: pending file before approval must respond HTTP 409',{skip,timeout},()=>withSignedConversation(async f=>{
+test('C008-HTTP-03: Core business PENDING_INBOUND_REVIEW HTTP409 plus independent raw SQL P0001 gate',{skip,timeout},()=>withSignedConversation(async f=>{
  const first=await f.original();
  await f.confirm(first.orderId);
  const event='preapproval-'+rand();
@@ -175,16 +189,18 @@ test('C008-HTTP-03 REQUIRED RED until AI1 maps P0001: pending file before approv
  const result=await f.app.inject({method:'POST',url:'/api/v1/orders/'+first.orderId+'/approvals',
   headers:{authorization:'Bearer '+f.staffToken},
   payload:{expected_revision:2,acknowledge_deposit_shortage:false,idempotency_key:'approval-'+rand()}});
- // Required RED on the current runtime: raw database P0001 is mapped as 500.
- // The product must return a proper 409, preserving 0 approvals/jobs, not hide an internal error.
+ // Core must return a machine-readable business HTTP 409, not raw SQL P0001/HTTP 500.
  assert.equal(result.statusCode,409,'P0 CODE008: signed pending inbound must return HTTP409, NOT internal 500: '+JSON.stringify(result.json()));
- assert.ok(['AI0_PENDING_INBOUND_REVIEW','PENDING_INBOUND_REVIEW'].includes(result.json()?.error?.code),
-  'Machine-readable business error for unresolved file is required');
+ assert.equal(result.json()?.error?.code,'PENDING_INBOUND_REVIEW',
+  'Core must expose the exact business error for unresolved file');
  await assert.rejects(f.core.service.approve(f.staff,first.orderId,{
   expected_revision:2,acknowledge_deposit_shortage:false,idempotency_key:'core-attempt-'+rand()
- }),error=>error.code==='P0001'&&error.message.includes('AI0_PENDING_INBOUND_REVIEW'),
- 'Pending pre-approval event must block actual AI1 Core DB transaction');
- assert.equal(await f.count('core_approvals'),0);assert.equal(await f.count('core_print_jobs'),0);
+ }),isPendingCoreConflict,'Core must reject pending inbound as business DomainError HTTP409');
+ await assertDirectSqlPendingBlock(f.pool,first.orderId,f.staff.id);
+ assert.equal(await f.count('core_approvals'),0);
+ assert.equal(await f.count('core_print_jobs'),0);
+ assert.equal((await f.pool.query('SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',
+  [f.oa,event])).rows[0].n,1,'Blocked approval may NOT discard signed unreviewed event');
 }));
 
 test('C008-PG-04: duplicate webhook, lost ACK and two independent AI2 workers cannot split order',{skip,timeout},()=>withSignedConversation(async f=>{
@@ -247,9 +263,10 @@ test('C008-PG-07: two independent approval workers cannot bypass a committed pre
  })));
  assert.equal(results.length,2);
  assert.equal(results.filter(x=>x.status==='fulfilled').length,0,'NO worker may approve ahead of pending event');
- for(const r of results)assert.ok(r.status==='rejected'&&r.reason?.code==='P0001'&&
-  String(r.reason?.message).includes('AI0_PENDING_INBOUND_REVIEW'),
-  'Expected durable PostgreSQL transaction admission blocker');
+ for(const r of results)assert.ok(r.status==='rejected'&&isPendingCoreConflict(r.reason),
+  'Both independent Core approval transactions must return PENDING_INBOUND_REVIEW HTTP409');
+ // A separate direct SQL attempt still MUST hit the PostgreSQL trigger (P0001).
+ await assertDirectSqlPendingBlock(f.pool,original.orderId,f.staff.id);
  assert.equal(await f.count('core_orders'),1);
  assert.equal(await f.count('core_approvals'),0);
  assert.equal(await f.count('core_print_jobs'),0);
@@ -292,7 +309,7 @@ test('C008-PG-09: racing signed file ingress against staff approval obeys DB com
  const stored=(await f.pool.query('SELECT received_at FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',[f.oa,eid])).rows;
  assert.equal(stored.length,1,'Inbound event must not be lost during approval transaction');
  if(approval.status==='rejected'){
-  assert.equal(approval.reason?.code,'P0001','Only trusted pending-inbound transaction block is permitted');
+  assert.ok(isPendingCoreConflict(approval.reason),'Core must reject a committed pending inbound with business HTTP409');
   assert.equal(await f.count('core_approvals'),0);
   assert.equal(await f.count('core_print_jobs'),0);
   assert.equal(await f.count('core_orders'),1);
