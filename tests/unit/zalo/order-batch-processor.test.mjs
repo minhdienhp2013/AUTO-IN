@@ -114,3 +114,36 @@ test('standalone OK remains confirmation candidate and never reaches order Port'
    async apply_incoming_batch(){assert.fail('not append')}};
  assert.equal(await processor(orders).consume(batch(evt('ok','OK'))),'held');
 });
+
+test('forged provider occurred_at cannot override trusted PostgreSQL receive order',async()=>{
+ const attempts=[],orders={
+   async suggest_draft(){assert.fail('legacy not used')},
+   async route_human(){assert.fail('unexpected handover')},
+   async apply_incoming_batch(input){
+     attempts.push(input);return {status:'created',order_id:'one'};
+   }
+ };
+ const earlier=evt('early','In A4',{occurred_at:'2035-01-01T00:00:00Z'});
+ const later=evt('late','Đổi A3',{occurred_at:'2020-01-01T00:00:00Z'});
+ const received={...batch(later,earlier),server_received_event_ids:['early','late']};
+ const p=processor(orders);
+ assert.equal(await p.consume(received),'processed');
+ assert.equal(attempts.length,1);
+ assert.deepEqual(attempts[0].event_ids,['early','late']);
+ assert.equal(attempts[0].text,'In A4\\nĐổi A3');
+ const replay={...batch(earlier,later),server_received_event_ids:['early','late']};
+ assert.equal(await p.consume(replay),'processed');
+ assert.equal(attempts[0].text,attempts[1].text);
+ assert.equal(attempts[0].idempotency_key,attempts[1].idempotency_key);
+});
+test('corrupt DB receive provenance never emits an order or reply',async()=>{
+ let writes=0;const orders={
+   async suggest_draft(){writes++},
+   async route_human(){writes++},
+   async apply_incoming_batch(){writes++}
+ };
+ const p=processor(orders);
+ await assert.rejects(p.consume({...batch(evt('a','In A4')),server_received_event_ids:['foreign']}),
+   /INVALID_SERVER_EVENT_ORDER/);
+ assert.equal(writes,0);
+});
