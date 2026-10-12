@@ -112,6 +112,16 @@ test('REAL PostgreSQL: verified synthetic webhook file → one staff draft → A
   assert.notEqual(rejected.status,0,'Modified source may never produce a plan');
   assert.equal((await pool.query('SELECT active_revision FROM core_orders WHERE id=$1',[bad.order_id])).rows[0].active_revision,1);
   assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[bad.order_id])).rows[0].n,0);
+  // Ambiguous AI1 failure must remain durable PENDING; never auto-create twice.
+  const uncertain='evt-'+randomUUID();
+  await importEvent(uncertain);
+  await assert.rejects(createSyntheticInboundDraft(asSqlPool(pool),{
+    async createDraft(){throw new Error('synthetic AI1 response lost');}
+  },inbound,scope,staff,config(uncertain)),/synthetic AI1 response lost/);
+  await assert.rejects(createSyntheticInboundDraft(asSqlPool(pool),core.service,
+    inbound,scope,staff,config(uncertain)),{code:'DRAFT_PENDING_NEEDS_HUMAN'});
+  assert.equal((await pool.query('SELECT status FROM ai0_inbound_artifact_drafts WHERE shop_id=$1 AND oa_id=$2 AND event_id=$3',
+    [shop,oa,uncertain])).rows[0].status,'PENDING');
   await app.close();
  } finally {await pool.end();await rm(root,{recursive:true,force:true});}
 });
