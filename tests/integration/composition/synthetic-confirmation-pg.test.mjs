@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHmac,randomUUID} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
+import {mkdir,mkdtemp,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {loadVerifiedOrderPreviewCatalog} from '../../../backend/composition/preview.ts';
 import pg from 'pg';
 import {asSqlPool,assertIsolatedSimulationDatabase} from '../../../backend/composition/postgres.ts';
 import {createCoreModule} from '../../../backend/core/factory.ts';
@@ -16,11 +21,14 @@ test('CODE-007 real HTTP/PG: AI2 signed OK pending, explicit signed button -> AI
 },async()=>{
   assertIsolatedSimulationDatabase(url);
   const pool=new pg.Pool({connectionString:url,connectionTimeoutMillis:5000,max:9});
+  const scratch=await mkdtemp(join(tmpdir(),'autoin-code007-button-'));
+  const inputRoot=join(scratch,'input'),artifactRoot=join(scratch,'artifacts');
+  await mkdir(inputRoot,{mode:0o700});await mkdir(artifactRoot,{mode:0o700});
   const sql=asSqlPool(pool),core=createCoreModule({pool:sql});
   const shop='autoin-test-button-'+randomUUID(),oa='oa-'+randomUUID();
   const conv='conv-'+randomUUID(),customer='customer-'+randomUUID();
   const inboundKey=randomUUID()+randomUUID(),buttonKey=randomUUID()+randomUUID();
-  const printer='NO_REAL_PRINTER';
+  const printer='RMP7000'; // AI3 plan printer ID; never attached to a real device
   const textId='ok-'+randomUUID();
   let app,orderId,created=false;
   const count=async table=>Number((await pool.query(
@@ -43,21 +51,34 @@ test('CODE-007 real HTTP/PG: AI2 signed OK pending, explicit signed button -> AI
     created=true;
     const user=(await pool.query("SELECT id FROM core_users WHERE shop_id=$1 AND username='owner'",[shop])).rows[0].id;
     const staff={id:user,shop_id:shop,role:'owner',verified:true};
-    const processor={id:'processor-synthetic',shop_id:shop,role:'processor',verified:true};
     const agent={id:'agent-synthetic',shop_id:shop,role:'print_agent',
       verified:true,printer_ids:[printer]};
     const draft=await core.service.createDraft(staff,{
       customer_id:customer,conversation_id:conv,
-      request_data:{files:[{file_id:'fixture/public/print-A4.png',copies:151}]},
+      request_data:{documents:[{artifact_name:'fixture.png',
+        copies:151,paper:'A4',duplex:false,orientation:'portrait'}]},
       idempotency_key:'draft-'+randomUUID()
     });
     orderId=draft.order_id;
-    const plan={request_hash:draft.request_hash,physical_sheets:151,document_pages:151,
-      printed_faces:151,ready:true,printer_id:printer,artifact_ref:'fixture-only-no-physical-print',
-      verified_by:processor.id};
-    const revision=await core.service.publishVerifiedPlan(processor,orderId,{
-      expected_revision:1,plan,idempotency_key:'plan-'+randomUUID()});
+    // Exercise the REAL AI3 processor and SHA-anchored manifest/preview
+    // with a generated local PNG, not a manually fabricated print plan.
+    const fixturePath=join(inputRoot,'fixture.png');
+    execFileSync('python3',['-c',
+      'from PIL import Image;import sys;Image.new("RGB",(120,160),"white").save(sys.argv[1])',
+      fixturePath],{timeout:15000});
+    const run=execFileSync(process.execPath,['--import','tsx','scripts/process-order.ts',shop,orderId],{
+      cwd:process.cwd(),encoding:'utf8',timeout:85000,maxBuffer:1024*1024,
+      env:{...process.env,DATABASE_URL:url,AUTOIN_INPUT_ROOT:inputRoot,
+        AUTOIN_ARTIFACT_ROOT:artifactRoot,AUTOIN_PROCESSOR_ID:'ai0-verified-e2e',
+        AUTOIN_PYTHON:'python3'}
+    });
+    const revision=JSON.parse(run);
     assert.equal(revision.revision,2);
+    assert.equal(revision.requires_reconfirmation,true);
+    const catalog=await loadVerifiedOrderPreviewCatalog(sql,artifactRoot,staff,orderId,2);
+    assert.equal(catalog.preview_verified,true);
+    assert.equal(catalog.files?.[0]?.physical_sheets,151);
+    assert.ok(catalog.preview_count>=1,'AI3 must render a verifiable preview');
     const quote=await core.service.setQuote(staff,orderId,{
       expected_revision:2,amount_vnd:30000,deposit_required_vnd:6000,
       significant_cost:false,idempotency_key:'quote-'+randomUUID()});
@@ -172,5 +193,6 @@ test('CODE-007 real HTTP/PG: AI2 signed OK pending, explicit signed button -> AI
       await pool.query('DELETE FROM core_shop_settings WHERE shop_id=$1',[shop]);
     }
     await pool.end();
+    await rm(scratch,{recursive:true,force:true});
   }
 });
