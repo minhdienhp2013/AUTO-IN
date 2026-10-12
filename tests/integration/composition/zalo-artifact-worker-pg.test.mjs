@@ -13,6 +13,7 @@ import { asSqlPool, assertIsolatedSimulationDatabase } from '../../../backend/co
 import { createSyntheticZaloRuntime } from '../../../backend/composition/zalo-simulation.ts';
 import { createTrustedDocumentFactsPort } from '../../../backend/composition/document-facts.ts';
 import { prepareSyntheticInboundDraft } from '../../../backend/composition/inbound-draft.ts';
+import { adoptSyntheticSuggestedSource } from '../../../backend/composition/synthetic-suggestion-adopt.ts';
 import { createVerifiedConfirmationPort } from '../../../backend/core/verified-confirmation-port.ts';
 import { loadVerifiedOrderPreviewCatalog } from '../../../backend/composition/preview.ts';
 
@@ -137,11 +138,17 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     assert.equal(prepared.source.conversation_id,conversation);
     assert.notEqual(prepared.source.artifact_ref,good.file_ref);
     const staff=session.principal;
-    const revised=await core.service.revise(staff,orderId,{
-      expected_revision:1,request_data:prepared.request_data,
-      idempotency_key:'staff-adopts-verified-source-'+id
-    });
-    assert.equal(revised.revision,2);
+    const adopted=await adoptSyntheticSuggestedSource(asSqlPool(pool),core.service,
+      root,scope,staff,{order_id:orderId,...settings});
+    assert.equal(adopted.revision,2);
+    assert.equal(adopted.order_id,orderId);
+    assert.equal(adopted.status,'adopted');
+    await assert.rejects(
+      adoptSyntheticSuggestedSource(asSqlPool(pool),core.service,root,scope,staff,
+        {order_id:orderId,...settings}),
+      e=>e.code==='SOURCE_ADOPTION_PROVENANCE_MISMATCH',
+      'No automatic second revision or order after an already finalized source'
+    );
     assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_orders WHERE shop_id=$1',[shop])).rows[0].n,1,
       'Source adoption MUST NOT create a second order');
     const processor=spawnSync(process.execPath,
@@ -166,7 +173,7 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     assert.equal(quote.quote_revision,1);
     const confirm=createVerifiedConfirmationPort({
       store:new PgStore(asSqlPool(pool)),trusted:scope});
-    const target={order_id:orderId,expected_revision:3,request_hash:revised.request_hash,
+    const target={order_id:orderId,expected_revision:3,request_hash:(await query('SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=3',[orderId])).rows[0].request_hash,
       kind:'request',expected_generation:0};
     const requestChallenge=await confirm.issue_challenge(target);
     assert.equal(requestChallenge.status,'issued');
