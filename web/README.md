@@ -134,3 +134,11 @@ không đủ điều kiện. Không merge/deploy, không bật in hoặc OA th�
 - CODE-404 thêm ba trục hiển thị riêng **khách xác nhận đúng revision/hash / yêu cầu báo giá / chờ nhân viên duyệt** lấy từ nested read model. Nhân viên KHÔNG có nút xác nhận thay khách, không tự duyệt, và preview không biến giấy mô phỏng/UNKNOWN thành giấy thật.
 - Session token được chụp *trước* GET catalog; logout/đổi tài khoản trong lúc tải khiến mọi ảnh bị từ chối, PNG 401 xóa token. 409, 401, offline khiến thao tác duyệt bị khóa cho tới khi GET hiện hành thành công.
 - Test mới: `tests/ui/confirmation-readiness.test.ts` (6 case), `tests/ui/code404-preview-security.test.ts` (5 case); dùng fixture synthetic, không Zalo/Ricoh. Xem bàn giao PR #15 cho SHA và phân loại npm/build/browser thực tế.
+
+## CODE-008 — cùng chat trước khi chốt in (AI4, 12/10/2026)
+
+- **Chỉ hiển thị**, không tự gộp đơn. Nút "Tải chi tiết theo chat" dùng staff Bearer đọc từng GET chi tiết (tối đa bốn request cùng lúc), nhóm theo `customer_id+conversation_id` trong shop đã xác thực; mỗi `order_id` vẫn riêng. API danh sách AI1 chưa trả conversation_id, nên không đoán nhóm từ tóm tắt.
+- **Hợp đồng còn cần AI0/AI1:** `GET /api/v1/orders/:id` trả `current.pending_updates={order_id,revision,request_hash,status:'clear'|'processing'|'needs_human',unresolved_count,items:[{kind:'file'|'message',label,summary,received_at}]}`. `clear` phải có count=0/items=[] và được khóa theo active revision/hash; nếu thiếu/sai/stale thì UI `unknown`, **khóa duyệt**. Backend vẫn PHẢI CAS/transaction kiểm tin chưa xử lý trong thao tác approval, kể cả khi UI đã đọc clear; UI không thể chống race một mình.
+- Batch Zalo 60 giây không phải chốt đơn. `NEEDS_HUMAN`/PENDING không được hiển thị là đã nhập đơn. Chỉ AI1/AI2/AI0 mới nối sự kiện vào revision và xác nhận danh tính; UI chỉ thông báo khách cần xác nhận lại khi revision tăng và chưa có current confirmation.
+- Sau `approved`, `manual_lock`, `closed`, hoặc print_state khác NOT_SENT, thao tác **sửa giá/yêu cầu in** bị khóa ở UI và HTTP port. Thanh toán/giao hàng tách riêng, không suy ra đã in thật.
+- Kiểm thử `tests/ui/code008-open-orders.test.ts` cho thiếu read model, CLEAR đúng phiên, pending, sai hash/revision, SYSTEM metadata, chat nhiều đơn, khóa sau chốt; không test OA/Ricoh thật. Chromium cần bundle thật và backend simulation đúng SHA.

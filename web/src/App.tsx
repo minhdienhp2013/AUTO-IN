@@ -14,6 +14,8 @@ import {
   type ActionKind, type OrderView, type OperationMode, type StaffSession, type VerifiedFileFact
 } from './domain.ts';
 import { notificationCapability, orderFromNavigation, requestLocalNotifications } from './notifications.ts';
+import { canApproveAfterInboundReview, canEditPrintRequest, groupOpenOrdersByChat, hasClearPendingInbound,
+  requiresCustomerReconfirmation } from './code008.ts';
 
 type View = 'orders' | 'overview' | 'settings';
 type DetailTab = 'document' | 'activity';
@@ -37,6 +39,9 @@ function App() {
   const [mobileDetail, setMobileDetail] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatLoaded, setChatLoaded] = useState(false);
+  const requestEpoch = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -60,6 +65,8 @@ function App() {
   const selectedOrder = orders.find(o => o.order_id === selected) ?? null;
   useEffect(() => { selectedIdRef.current = selected; }, [selected]);
   const load = useCallback(async (onlyOrders = false) => {
+    requestEpoch.current++;
+    setChatLoaded(false);
     setError(null);
     try {
       const snapshot = onlyOrders ? null : await snapshotFromPort(port);
@@ -111,12 +118,50 @@ function App() {
   }, [selected, session?.actor_id]);
   const filtered = useMemo(() => orders.filter(o => {
     const term = query.trim().toLocaleLowerCase('vi-VN');
-    if (term && !`${o.order_id} ${o.customer_name} ${o.documents.map(d => d.filename).join(' ')}`.toLocaleLowerCase('vi-VN').includes(term)) return false;
+    if (term && !`${o.order_id} ${o.customer_name} ${o.conversation_id??''} ${o.documents.map(d => d.filename).join(' ')}`.toLocaleLowerCase('vi-VN').includes(term)) return false;
     if (filter === 'approval') return o.order_state === 'confirmed';
     if (filter === 'attention') return o.urgent || o.conversation_state === 'needs_human' || isPrintUncertain(o.print_state);
     if (filter === 'delivery') return ['ready','partial','quality_check'].includes(o.delivery_state);
     return true;
   }).sort((a,b) => (Number(b.urgent)-Number(a.urgent)) || b.created_at.localeCompare(a.created_at)), [orders, query, filter]);
+  const openChatGroups = useMemo(() => chatLoaded ? groupOpenOrdersByChat(orders) : [],
+    [chatLoaded,orders]);
+  const loadChatGroups = async () => {
+    if(useDemo || !session || busy || chatLoading) return;
+    const epoch=++requestEpoch.current;
+    setChatLoaded(false);
+    setChatLoading(true);
+    setError(null);
+    try {
+      // AI1 list endpoint does not expose conversation_id. Load each scoped
+      // detail before grouping; never equate two orders by customer_id alone.
+      const summaries=await port.listOrders();
+      const detailed:OrderView[]=[];
+      for(let i=0;i<summaries.length;i+=4){
+        const batch=await Promise.all(summaries.slice(i,i+4).map(o=>port.getOrder(o.order_id)));
+        for(let j=0;j<batch.length;j++){
+          const item=summaries[i+j];
+          if(batch[j].order_id!==item.order_id || batch[j].revision<item.revision)
+            throw new ApiFault(409,'CHAT_DETAIL_STALE','Danh sách và chi tiết đơn không còn cùng phiên bản.');
+        }
+        detailed.push(...batch);
+        if(requestEpoch.current!==epoch) return;
+      }
+      if(requestEpoch.current!==epoch) return;
+      setOrders(detailed);
+      setChatLoaded(true);
+      setApiHealthy(true);
+    } catch(e){
+      if(requestEpoch.current!==epoch) return;
+      const fault=e as ApiFault;
+      setChatLoaded(false);
+      setApiHealthy(false);
+      if(fault.status===401){setSession(null);setOrders([]);setSelected(null);}
+      setError(fault.message||'Không thể đọc đủ đơn theo khách và chat; không nhóm dữ liệu thiếu.');
+    } finally {
+      if(requestEpoch.current===epoch)setChatLoading(false);
+    }
+  };
   const totals = useMemo(() => ({
     waiting: orders.filter(o => o.order_state === 'confirmed').length,
     attention: orders.filter(o => o.urgent || o.print_state === 'UNKNOWN' || o.conversation_state === 'needs_human').length,
@@ -126,6 +171,12 @@ function App() {
 
   const act = async (kind: ActionKind, payload: Record<string, string|number|boolean|null> = {}, reason = 'Đã lưu thao tác') => {
     if (!selectedOrder || lock.current) return;
+    if(kind==='quote' && !canEditPrintRequest(selectedOrder)){
+      setError('Đơn đã chốt in hoặc có lệnh in: không sửa giá/yêu cầu trên đơn cũ.');return;
+    }
+    if(kind==='approve' && !useDemo && !canApproveAfterInboundReview(selectedOrder)){
+      setError('Chưa có chứng cứ tin/file đã được xử lý hết hoặc thiếu xác nhận/preview; không được chốt in.');return;
+    }
     lock.current = true; setBusy(true); setToast(null); setError(null);
     try {
       const changed = await port.mutate(selectedOrder, kind, payload, newMutationKey());
@@ -144,12 +195,16 @@ function App() {
     } finally { lock.current = false; setBusy(false); }
   };
   const doLogin = async (ev: FormEvent) => {
+    requestEpoch.current++;
+    setChatLoaded(false);setChatLoading(false);
     ev.preventDefault(); setBusy(true); setError(null);
     try { setSession(await port.login(loginShop, loginUser, loginPassword)); await load(true); setLoginPassword(''); }
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   };
   const doLogout = async () => {
+    requestEpoch.current++;
+    setChatLoaded(false);setChatLoading(false);
     setError(null);
     try { await port.logout(); }
     catch (e) { setError('Phiên cục bộ đã hủy. Có thể chưa thông báo được server: ' + (e as Error).message); }
@@ -168,7 +223,9 @@ function App() {
     void act(kind, kind === 'payment' ? { amount_vnd: v, method: paymentMethod, direction: 'received' } : { amount_vnd: v, deposit_required_vnd: dep, significant_cost: significantCost }, kind === 'quote' ? 'Đã ghi giá nhân viên nhập' : 'Đã ghi khoản thực nhận');
   };
   const canWork = Boolean(session?.can_approve && apiHealthy);
-  const canApprove = Boolean(canWork && selectedOrder && hasValidApprovalInputs(selectedOrder));
+  const canApprove = Boolean(canWork && selectedOrder &&
+    (useDemo ? hasValidApprovalInputs(selectedOrder) : canApproveAfterInboundReview(selectedOrder)));
+  const canEditRequest = Boolean(selectedOrder && canEditPrintRequest(selectedOrder));
   const printAttention = selectedOrder ? isPrintUncertain(selectedOrder.print_state) : false;
   const confirmation = selectedOrder ? confirmationReadiness(selectedOrder) : null;
 
@@ -213,10 +270,23 @@ function App() {
                 <div className="panel-head"><div><h2>Danh sách đơn</h2><p>{filtered.length} đơn phù hợp</p></div><button className="small-icon" title="Làm mới" onClick={()=>void load(true)} disabled={busy}><MoreHorizontal size={22}/></button></div>
                 <div className="order-controls"><div className="searchbox"><Search size={17}/><input aria-label="Tìm theo mã đơn, khách, tên file" placeholder="Tìm mã đơn, khách, tên file…" value={query} onChange={e=>setQuery(e.target.value)}/></div><button className="small-icon" title="Bộ lọc" aria-label="Bộ lọc"><SlidersHorizontal size={19}/></button></div>
                 <div className="filters" role="group" aria-label="Lọc đơn">{([['all','Tất cả'],['approval','Chờ duyệt'],['attention','Cần xử lý'],['delivery','Chờ giao']] as [Filter,string][]).map(([key,text])=><button key={key} className={filter===key?'selected':''} onClick={()=>setFilter(key)}>{text}</button>)}</div>
+                {!useDemo && <div className="chat-group-panel" data-testid="chat-open-orders">
+                  <div className="chat-group-heading"><strong>Đơn đang mở theo khách / cuộc chat</strong>
+                    <button className="outline-btn" disabled={busy||chatLoading||!session} onClick={()=>void loadChatGroups()}>
+                      {chatLoading?'Đang kiểm tra…':'Tải chi tiết theo chat'}</button></div>
+                  {!chatLoaded && <p>Chỉ nhóm sau khi đọc chi tiết đơn đã xác thực. Không gộp các mã đơn dù cùng khách/chat; OA và ý định tạo đơn riêng do backend quyết định.</p>}
+                  {chatLoaded && (openChatGroups.length ? openChatGroups.map(group=><div className="chat-group" key={JSON.stringify([group.customer_id,group.conversation_id])}>
+                    <div><strong>Khách: {group.customer_id}</strong><small>Chat: {group.conversation_id} · {group.orders.length} đơn riêng đang mở</small></div>
+                    {group.orders.map(o=><button key={o.order_id} className="chat-open-order" onClick={()=>doSelect(o.order_id)}>
+                      Đơn {o.order_id} · phiên bản {o.revision} {requiresCustomerReconfirmation(o)?'· CẦN XÁC NHẬN LẠI':''}
+                    </button>)}
+                  </div>) : <p>Không tìm thấy đơn đang mở có đủ mã khách và chat trong dữ liệu chi tiết; không tự suy đoán liên kết thiếu.</p>)}
+                </div>}
                 <div data-testid="order-list" className="order-scroll">{filtered.length === 0 ? <div className="empty-panel">Không có đơn phù hợp.</div> : filtered.map(order=><button key={order.order_id} onClick={()=>doSelect(order.order_id)} className={`order-card ${selected===order.order_id?'selected':''}`} aria-current={selected===order.order_id?'true':undefined}>
                   <div className="order-row"><span className="order-id">{order.order_id}</span><span className="order-time"><Clock3 size={12}/>{time(order.created_at)}</span></div>
                   <div className="order-customer">{order.customer_name} {order.urgent && <span className="urgent-label">ƯU TIÊN</span>}</div>
-                  <div className="order-description">{order.documents.length ? `${order.documents.length} tài liệu · ${order.total_sheets ?? '?'} tờ` : 'Chưa có tài liệu'}</div>
+                  <div className="order-description">{order.documents.length ? `${order.documents.length} tài liệu · ${order.total_sheets ?? '?'} tờ` : 'Tài liệu chưa được API liệt kê'}</div>
+                  {order.conversation_id && <small>Chat: {order.conversation_id} · phiên bản {order.revision}</small>}
                   <div className="order-row footer"><span className={`state-chip ${statusTone(order)}`}>{order.print_state === 'UNKNOWN' ? printLabels.UNKNOWN : orderLabels[order.order_state]}</span><ChevronRight size={16}/></div>
                 </button>)}</div>
                 <div className="panel-foot"><span className="dot-legend"/> Dữ liệu {useDemo?'mô phỏng, không có khách thật':'trả về từ server'}</div>
@@ -226,13 +296,29 @@ function App() {
                 {useDemo && <div className="simulation-note"><AlertCircle size={17}/> <strong>DEMO:</strong> mọi thao tác trong trang chỉ thay đổi dữ liệu giả lập. Không gửi Zalo, không in hoặc thu tiền thật.</div>}
                 {printAttention && <div className="risk-note"><ShieldAlert size={20}/><div><strong>Lệnh in cần đối soát</strong><p>{printLabels[selectedOrder.print_state]}. Không tự gửi lại; chỉ chủ cửa hàng duyệt in lại sau kiểm tra thực tế.</p></div></div>}
                 <div className="detail-customer"><div className="person-icon"><UserRound size={20}/></div><div><strong>{selectedOrder.customer_name}</strong><small>Khách hàng · {selectedOrder.conversation_id ?? 'Chưa có hội thoại'}</small></div><span className="muted-date">{time(selectedOrder.created_at)}</span></div>
+                {!useDemo && <section className="inbound-workflow" data-testid="code008-inbound" aria-label="Tin và file bổ sung trước khi chốt in">
+                  <strong>{canEditRequest?'Đơn đang mở · trước khi NHÂN VIÊN chốt in':'Đã chốt / khóa yêu cầu in · không tự sửa đơn cũ'}</strong>
+                  <p data-testid="code008-revision">Phiên bản đang xử lý: <b>{selectedOrder.revision}</b> · Chat: {selectedOrder.conversation_id??'chưa được server xác minh'}</p>
+                  {requiresCustomerReconfirmation(selectedOrder) && <p className="inbound-warning" data-testid="code008-reconfirm">Có phiên bản đơn mới: khách cần xác nhận lại yêu cầu và giá (nếu cần). Xác nhận phiên bản cũ không có hiệu lực.</p>}
+                  {selectedOrder.pending_updates?.state==='clear'
+                    ? <p data-testid="code008-clear">Máy chủ xác nhận không còn tin/file bổ sung đang chờ đối soát cho đúng phiên bản/hash hiện hành.</p>
+                    : <p className="inbound-warning" data-testid="code008-blocked">Có tin/file bổ sung cần đối soát trước khi chốt in, hoặc API chưa cung cấp chứng cứ đã xử lý hết. Không coi nội dung này là đã nhập vào đơn.</p>}
+                  {selectedOrder.pending_updates?.state!=='unknown' && selectedOrder.pending_updates?.state!=='clear' &&
+                    <p data-testid="code008-pending-count">Máy chủ ghi nhận {selectedOrder.pending_updates?.unresolved_count ?? 'chưa xác định'} tin/file chưa xử lý; {selectedOrder.pending_updates?.state==='needs_human'?'cần nhân viên đối soát':'đang chờ AI xử lý'}.</p>}
+                  {(selectedOrder.pending_updates?.items??[]).map((item,index)=><div className="inbound-item" key={index}>
+                    <b>{item.kind==='file'?'File bổ sung':'Tin bổ sung'}: {item.label}</b>
+                    <p>{item.summary}</p>
+                    {item.received_at && <small>{time(item.received_at)}</small>}
+                  </div>)}
+                  {selectedOrder.pending_updates?.state==='unknown' && <small>Backend hiện chưa có hợp đồng pending_updates theo order/revision/hash. Đã khóa duyệt an toàn; chờ AI0/AI1 cấp API.</small>}
+                </section>}
                 <div className="axis-grid" aria-label="Năm trạng thái độc lập"><Axis title="Hội thoại" label={conversationLabels[selectedOrder.conversation_state]}/><Axis title="Đơn hàng" label={orderLabels[selectedOrder.order_state]}/><Axis title="In giấy" label={selectedOrder.print_state==='VERIFIED_DONE' && selectedOrder.total_sheets!==null && (selectedOrder.verified_sheets===null || selectedOrder.verified_sheets < selectedOrder.total_sheets) ? 'Giấy thật chưa xác minh đủ' : printLabels[selectedOrder.print_state]} warn={printAttention || selectedOrder.print_state==='SIMULATED_DONE'}/><Axis title="Giao giấy" label={deliveryLabels[selectedOrder.delivery_state]}/><Axis title="Thanh toán" label={paymentLabels[selectedOrder.payment_state]}/></div>
                 {!useDemo && confirmation && <section className="confirmation-evidence" data-testid="confirmation-evidence" aria-label="Bằng chứng xác nhận khách và duyệt in">
                   <div><strong>Yêu cầu khách</strong><span data-testid="confirmation-request">{confirmation.request==='confirmed'?'Khách đã xác nhận đúng phiên bản/hash':'Chưa có xác nhận khách đúng phiên bản/hash'}</span></div>
                   <div><strong>Xác nhận giá</strong><span data-testid="confirmation-price">{confirmation.price==='not_required'?'Không cần xác nhận giá riêng':confirmation.price==='confirmed'?'Đã xác nhận đúng phiên bản báo giá':'Chưa xác nhận giá cho đơn trên 150 tờ hoặc chi phí đáng kể'}</span></div>
                   <div><strong>Duyệt của nhân viên</strong><span data-testid="confirmation-staff">{({
                     waiting_customer:'Chờ xác nhận từ khách',waiting_price:'Chờ khách xác nhận giá',waiting_preview:'Cần bản xem trước/file đã kiểm chứng trước khi duyệt',
-                    waiting_staff:'Sẵn sàng để NHÂN VIÊN duyệt',already_approved:'Nhân viên đã duyệt trên máy chủ',
+                    waiting_staff:hasClearPendingInbound(selectedOrder)?'Sẵn sàng để NHÂN VIÊN duyệt':'Chờ đối soát tin/file trước khi NHÂN VIÊN duyệt',already_approved:'Nhân viên đã duyệt trên máy chủ',
                     blocked:'Chưa thể duyệt: lệnh đã gửi/chưa rõ hoặc đơn bị khóa'
                   } as const)[confirmation.staff]}</span></div>
                   <p>Chỉ máy chủ xác thực khách và ghi nhận đúng phiên bản. Nhân viên không thể tự xác nhận thay khách; xem trước không phải bằng chứng đã in.</p>
@@ -251,8 +337,8 @@ function App() {
                   <div className="money-stats"><div><span>Giá đơn</span><strong>{money(selectedOrder.amount_vnd)}</strong></div><div><span>Đã nhận</span><strong>{money(selectedOrder.received_vnd)}</strong></div><div><span>Còn phải thu</span><strong className="accent-amount">{money(receivable(selectedOrder))}</strong></div></div>
                   {depositShortfall(selectedOrder)>0 && <div className="deposit-alert"><AlertCircle size={17}/><span>Chưa đủ cọc: thiếu <b>{money(depositShortfall(selectedOrder))}</b>. Nhân viên có quyền vẫn có thể duyệt sau khi xác nhận đã đọc cảnh báo.</span></div>}
                   <div className="forms-grid"><div className="input-group"><label htmlFor="amount">Giá mới / khoản tiền (VND)</label><input id="amount" inputMode="numeric" type="number" min="0" step="1" placeholder="Nhập số VND" value={value} onChange={e=>setValue(e.target.value)} disabled={busy}/></div><div className="input-group"><label htmlFor="paymentMethod">Phương thức nhận tiền</label><select id="paymentMethod" value={paymentMethod} onChange={e=>setPaymentMethod(e.target.value as 'cash'|'bank_transfer')} disabled={busy}><option value="cash">Tiền mặt</option><option value="bank_transfer">Chuyển khoản đã kiểm tra</option></select></div></div>
-                  <div className="forms-grid" style={{marginTop: 12}}><div className="input-group"><label htmlFor="deposit">Yêu cầu đặt cọc (VND)</label><input id="deposit" inputMode="numeric" type="number" min="0" step="1" value={depositValue} onChange={e=>setDepositValue(e.target.value)} disabled={busy}/></div><label className="acknowledge"><input type="checkbox" checked={significantCost} onChange={e=>setSignificantCost(e.target.checked)} disabled={busy}/> Chi phí đáng kể — cần khách xác nhận giá</label></div>
-                  <div className="action-row"><button className="outline-btn" disabled={busy||!canWork||printAttention} onClick={()=>submitAmount('quote')}><CreditCard size={16}/> Ghi giá nhân viên</button><button className="outline-btn" disabled={busy||!canWork} onClick={()=>submitAmount('payment')}><Wallet size={16}/> Ghi tiền thực nhận</button></div>
+                  <div className="forms-grid" style={{marginTop: 12}}><div className="input-group"><label htmlFor="deposit">Yêu cầu đặt cọc (VND)</label><input id="deposit" inputMode="numeric" type="number" min="0" step="1" value={depositValue} onChange={e=>setDepositValue(e.target.value)} disabled={busy||!canEditRequest}/></div><label className="acknowledge"><input type="checkbox" checked={significantCost} onChange={e=>setSignificantCost(e.target.checked)} disabled={busy||!canEditRequest}/> Chi phí đáng kể — cần khách xác nhận giá</label></div>
+                  <div className="action-row"><button className="outline-btn" disabled={busy||!canWork||!canEditRequest} onClick={()=>submitAmount('quote')}><CreditCard size={16}/> Ghi giá nhân viên</button><button className="outline-btn" disabled={busy||!canWork} onClick={()=>submitAmount('payment')}><Wallet size={16}/> Ghi tiền thực nhận</button></div>
                   <div className="section-head spaced"><h3><PackageCheck size={18}/> Kiểm giấy & giao hàng</h3></div>
                   {!useDemo && selectedOrder.job_id && ['SENT_UNVERIFIED','UNKNOWN'].includes(selectedOrder.print_state) && <div className="paper-verification">
                     <strong>Đối soát giấy thật — tác vụ {selectedOrder.job_id}</strong>
@@ -268,7 +354,7 @@ function App() {
                   <div className="manual-line"><label>Lý do khóa tự động (bắt buộc)<input className="sheets-input" style={{width:'100%',marginTop:8}} value={manualReason} onChange={e=>setManualReason(e.target.value)} placeholder="Ví dụ: chuyển nhân viên xử lý ngoài app" disabled={busy}/></label><label><input type="checkbox" checked={confirmManual} onChange={e=>setConfirmManual(e.target.checked)} /> Tôi đã kiểm tra lệnh chưa gửi, xác nhận khóa tự động trước khi in ngoài ứng dụng.</label><button className="outline-btn danger-outline" disabled={!confirmManual||!manualReason.trim()||busy||!canWork||selectedOrder.print_state!=='NOT_SENT'||selectedOrder.manual_lock} onClick={()=>void act('manual',{reason:manualReason.trim()},'Đã đặt khóa xử lý thủ công')}><LockKeyhole size={16}/> Xử lý thủ công</button></div>
                   <div className="owner-note"><ShieldCheck size={17}/> In lại/in bổ sung và đóng ngoại lệ đã in/có cọc chỉ dành cho chủ; chờ API riêng và đối soát, không có lối tắt trên giao diện.</div>
                 </div>}
-                {detailTab==='document' && <div className="approve-footer"><div className="approval-copy"><strong>Phê duyệt phiên bản {selectedOrder.revision}</strong><small>{selectedOrder.confirmed_revision===selectedOrder.revision?'Khách đã xác nhận đúng phiên bản':useDemo?'Khách chưa xác nhận phiên bản hiện tại':'API chưa cung cấp bằng chứng khách xác nhận'} · cần preview đủ tin cậy</small>
+                {detailTab==='document' && <div className="approve-footer"><div className="approval-copy"><strong>Phê duyệt phiên bản {selectedOrder.revision}</strong><small>{selectedOrder.confirmed_revision===selectedOrder.revision?'Khách đã xác nhận đúng phiên bản':useDemo?'Khách chưa xác nhận phiên bản hiện tại':'Khách cần xác nhận phiên bản hiện hành'} · cần preview tin cậy và hàng đợi bổ sung đã đối soát</small>
                   {depositShortfall(selectedOrder)>0 && <label className="acknowledge"><input type="checkbox" checked={depositAck} onChange={e=>setDepositAck(e.target.checked)}/> Đã đọc cảnh báo thiếu cọc {money(depositShortfall(selectedOrder))}</label>}</div>
                   <button data-testid="approve-action" className="primary approve" disabled={!canApprove || busy || (depositShortfall(selectedOrder)>0&&!depositAck)} onClick={()=>void act('approve',{acknowledge_deposit_shortage:depositAck,...(selectedOrder.quote_revision!==null?{quote_revision:selectedOrder.quote_revision}:{})},'Đã duyệt đúng phiên bản')}><ShieldCheck size={19}/> {busy?'Đang xử lý…':'Duyệt lệnh in'}</button>
                 </div>}
