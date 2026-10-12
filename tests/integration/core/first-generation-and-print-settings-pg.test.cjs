@@ -106,7 +106,7 @@ test('REAL PostgreSQL CODE-008 P0: first generation, parameter revisions, approv
   const postApprovalSetting=await portA.apply_incoming_batch({...initial,
    event_ids:[parameterOnly],text:'in 2 bản',idempotency_key:key('post-approval-setting')});
   assert.equal(postApprovalSetting.status,'needs_review','cannot assume a post-approval setting update is a new order');
-  assert.equal((await a.query('SELECT count(*)::int n FROM core_orders WHERE shop_id=$1 AND conversation_id=$2',[shop,conv])).rows[0].n,2);
+  assert.equal((await a.query('SELECT count(*)::int n FROM core_orders WHERE shop_id=$1 AND conversation_id=$2',[shop,conv])).rows[0].n,1);
   const newEvent=key('after-approval');await event(a,oa,conv,customer,newEvent,'In thêm tài liệu mới');
   const fresh=await portB.apply_incoming_batch({...initial,event_ids:[newEvent],
    expected_revision:undefined,text:'In thêm tài liệu mới',idempotency_key:key('fresh-order')});
