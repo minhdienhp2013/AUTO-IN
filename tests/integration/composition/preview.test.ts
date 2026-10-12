@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadVerifiedOrderPreview } from '../../../backend/composition/preview.js';
+import { loadVerifiedOrderPreview, loadVerifiedOrderPreviewCatalog } from '../../../backend/composition/preview.js';
 import type { SqlPool, QueryResult } from '../../../backend/storage/database.js';
 import type { Principal } from '../../../backend/core/model.js';
 
@@ -43,15 +43,30 @@ test('AI0 serves only current, staff-scoped, hashed raster previews',async()=>{
     await writeFile(join(root,manifestRef),manifest);
     const bytes=await loadVerifiedOrderPreview(pool,root,actor,orderId,2,0);
     assert.deepEqual(bytes,image);
+    const catalog=await loadVerifiedOrderPreviewCatalog(pool,root,actor,orderId,2);
+    assert.deepEqual(catalog,{
+      order_id:orderId,revision:2,request_hash:requestHash,
+      preview_verified:true,preview_count:1,
+      previews:[{index:0,url:'/api/v1/orders/'+orderId+'/revisions/2/previews/0',
+        content_type:'image/png'}]
+    });
+    assert.ok(!JSON.stringify(catalog).includes(dir),'Catalog must not expose private artifact refs');
+    await assert.rejects(loadVerifiedOrderPreviewCatalog(pool,root,
+      {...actor,role:'customer'},orderId,2),{code:'FORBIDDEN'});
+    await assert.rejects(loadVerifiedOrderPreviewCatalog(pool,root,
+      {...actor,shop_id:'other'},orderId,2),{code:'PREVIEW_NOT_AVAILABLE'});
     await assert.rejects(loadVerifiedOrderPreview(pool,root,{...actor,shop_id:'other'},orderId,2,0),{code:'PREVIEW_NOT_AVAILABLE'});
     await assert.rejects(loadVerifiedOrderPreview(pool,root,{...actor,role:'customer'},orderId,2,0),{code:'FORBIDDEN'});
     await assert.rejects(loadVerifiedOrderPreview(pool,root,actor,orderId,2,1),{code:'PREVIEW_NOT_AVAILABLE'});
     revision=3;
     await assert.rejects(loadVerifiedOrderPreview(pool,root,actor,orderId,2,0),{code:'STALE_OR_UNVERIFIED_PREVIEW'});
+    await assert.rejects(loadVerifiedOrderPreviewCatalog(pool,root,actor,orderId,2),{code:'STALE_OR_UNVERIFIED_PREVIEW'});
     revision=2;
     await writeFile(join(root,previewRef),Buffer.from('modified PNG'));
     await assert.rejects(loadVerifiedOrderPreview(pool,root,actor,orderId,2,0),{code:'PREVIEW_BYTES_CHANGED'});
+    await assert.rejects(loadVerifiedOrderPreviewCatalog(pool,root,actor,orderId,2),{code:'PREVIEW_BYTES_CHANGED'});
     await writeFile(join(root,manifestRef),Buffer.from('mutated manifest'));
     await assert.rejects(loadVerifiedOrderPreview(pool,root,actor,orderId,2,0),{code:'PREVIEW_MANIFEST_CHANGED'});
+    await assert.rejects(loadVerifiedOrderPreviewCatalog(pool,root,actor,orderId,2),{code:'PREVIEW_MANIFEST_CHANGED'});
   } finally {await rm(root,{recursive:true,force:true});}
 });
