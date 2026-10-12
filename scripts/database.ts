@@ -20,9 +20,11 @@ try {
       await connection.query('SELECT pg_advisory_xact_lock(630006)');
       for (const file of CORE_MIGRATIONS.filter(file => file !== '005_ai_order_port.sql'))
         await connection.query(await readFile(new URL(`../backend/storage/migrations/${file}`, import.meta.url), 'utf8'));
-      for (const file of ['001_zalo_durable.sql', '002_zalo_oa_scope.sql'])
+      for (const file of ['001_zalo_durable.sql', '002_zalo_oa_scope.sql', '003_confirmation_candidates.sql'])
         await connection.query(await readFile(new URL(`../backend/integrations/zalo/migrations/${file}`, import.meta.url), 'utf8'));
       // AI1's draft Port verifies events in AI2's durable inbound table.
+      // CODE-401 challenge migration (006) is in CORE_MIGRATIONS; CODE-402
+      // candidate table (AI2 003) is pending review only, never confirmation.
       await connection.query(await readFile(new URL('../backend/storage/migrations/005_ai_order_port.sql', import.meta.url), 'utf8'));
       await connection.query(await readFile(new URL('../backend/composition/migrations/001_document_artifacts.sql', import.meta.url), 'utf8'));
       await connection.query(await readFile(new URL('../backend/composition/migrations/002_plan_previews.sql', import.meta.url), 'utf8'));
