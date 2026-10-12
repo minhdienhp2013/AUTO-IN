@@ -1,5 +1,30 @@
 # CODE-008 — AI5 nghiệm thu quy tắc một đơn trước chốt in (12/10/2026)
 
+## CẬP NHẬT 13/10/2026 — C008-PG-02 GREEN trên pipeline worker tích hợp, đúng SHA staging
+
+**Đây là trạng thái mới hơn báo cáo RED bên dưới.** Đã xác nhận AI0 PR #31 HEAD `faa0668c326393cc6a49cfa74fe682a606aeddb1` (Draft). AI5 giữ nguyên nhánh/PR #18, chỉ sửa `tests/acceptance/code008-one-order-pg.test.mjs`, không sửa sản phẩm. Tạo nhánh staging độc lập `ai5/code008-atomic-worker-staging-20261013`, HEAD **`0730cbd14f5386a431f74593ba0e4e49c8518490` = AI0 `faa0668c326393cc6a49cfa74fe682a606aeddb1` + một file acceptance AI5**. Hai workflow **PUSH đúng SHA staging** đều SUCCESS: [CODE checks #38283185322](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38283185322) và [Simulation integration #38283185321](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38283185321) gồm PostgreSQL 18.3 và Chromium desktop/mobile.
+
+**C008-PG-02 PASS trực tiếp trên PostgreSQL cô lập:** fixture tạo đơn ban đầu qua **AI2 durable worker** (không gọi `propose()` cho ca này), ký webhook synthetic, đăng ký file PNG thực trên endpoint nội bộ bằng staff test-session, `createTrustedDocumentFactsPort.inspect` gọi **AI3 Python thực** xác minh hash/artifact đã neo DB; hai AI2 worker đồng thời tick batch đã hết hạn, qua `createSyntheticZaloRuntime` → `apply_incoming_batch` → AI1 transaction atomically append. Khẳng định **chỉ 1 `order_id`**, `active_revision` tăng từ 2 lên bản mới, `request_data.event_ids` chứa cả hai event, `core_order_inbound_reviews` liên kết đúng revision; plan bị invalidated (NULL), customer test-only confirmation của revision 2 vẫn là lịch sử, **0 confirmation của revision mới**, staff không thể tái duyệt revision cũ, **0 approval / 0 print job**. Webhook trùng và worker retry không sinh thêm revision. Trong lúc file chưa đối soát, Core 409 chặn staff approve. Không gọi manual append, không giả customer credential Zalo thật.
+
+| Nhóm chạy đúng SHA staging | PASS | FAIL | SKIP |
+|---|---:|---:|---:|
+| 9 ca CODE-008 trực tiếp, gồm C008-PG-02 tự động append | **9** | 0 | 0 |
+| 2 wrapper CODE-008 composition AI0 | **2** | 0 | 0 |
+| Toàn AI5 `run.mjs --integration`, PostgreSQL/DryRun | **91** | **0** | **19** |
+| Toàn AI5 `run.mjs --http` (ca nào không bật sẽ SKIP) | **54** | **0** | **63** |
+| AI1 Core (CI) | **28** | 0 | 0 |
+| AI2 (CI) | **74** | 0 | 0 |
+| AI0 composition (CI) | **25** | 0 | 0 |
+| AI3 Python | **167** | 0 | **1** |
+| Chromium product desktop 1440×900/mobile 390×844 | **PASS** | 0 | 0 |
+
+**Ranh giới bằng chứng:** Đây là chạy integration **staging** được tạo từ AI0 SHA `faa0668c326393cc6a49cfa74fe682a606aeddb1`, không phải CI mới trên nhánh AI5 hoặc chính HEAD PR #31. Các ca kiểm thử synthetic/PG không chứng minh tin nhắn Zalo OA thật, máy Ricoh thật, iPhone vật lý hoặc TN-037. Tỷ lệ ≥90% nhận diện, ≥80% hội thoại, 100 đơn/ngày, ≥210 đơn/7 ngày vẫn **NOT RUN/BLOCKED**. Một số ca legacy trong runner bị **19/63 SKIP** và **1 SKIP AI3**, giữ riêng, không cộng vào PASS.
+
+**AI0 cần nhận:** import file test AI5 HEAD chứa bản này vào một **SHA tích hợp mới**, CI PUSH đúng SHA mới rồi kiểm toàn PG/HTTP/browser; xác minh mọi Port update/latest AI1/AI2 vẫn tương thích. PR #31 và V1 chưa được tự đánh dấu DONE; không merge/deploy/OA/Ricoh thật.
+
+---
+
+
 ## Tách nguồn code, fixture và kết luận
 
 - **AI0 PR #31:** base tích hợp được kiểm `c88fa3b570e360c6fb013930392e00c7dc81d3d0` (có `conversation-order-guard.ts` và migration PostgreSQL simulation-only `004_pending_approval_gate.sql`). HEAD PR31 tại lúc ghi ma trận: `c88fa3b570e360c6fb013930392e00c7dc81d3d0`.

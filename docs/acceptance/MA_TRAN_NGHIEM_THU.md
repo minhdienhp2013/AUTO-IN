@@ -1,5 +1,16 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
 
+## CODE-008 — MỚI NHẤT, 13/10/2026 (PG staging GREEN, V1 chưa DONE)
+
+**AI0 PR #31 HEAD `faa0668c326393cc6a49cfa74fe682a606aeddb1`**, AI5 test-only staging **`0730cbd14f5386a431f74593ba0e4e49c8518490`**, hai workflow push [checks](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38283185322) / [integration](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38283185321) đều **SUCCESS**. [Bằng chứng chi tiết C008-PG-02](CODE008_NGHIEM_THU_20261012.md).
+
+- **C008-PG-02 PASS** trên real PostgreSQL: signed synthetic webhook → artifact image registered + AI3 verification → AI2 durable worker ×2 → AI1 atomic `apply_incoming_batch` → **cùng order_id, revision mới, 0 approval/print job, không chuyển xác nhận cũ**, replay idempotent. Không manual append.
+- **CODE-008 mới: 11/11 PASS**, CI AI5 `--integration` **91 PASS/0 FAIL/19 SKIP**, `--http` **54 PASS/0 FAIL/63 SKIP**; AI3 167 PASS/1 SKIP. Chromium desktop/mobile PASS.
+- **Chưa nghiệm thu:** CI trên **SHA tích hợp PR31 mới có test AI5**, OA/Ricoh/iPhone thật, TN-037/210 đơn 7 ngày **NOT RUN/BLOCKED**. Kết quả RED bên dưới là lịch sử của pipeline chỉ gọi guarded propose() và **không** chạy worker.
+
+---
+
+
 ## CODE-008 — HIỆN HÀNH (12/10/2026), P0 BLOCKED
 
 AI5 đã viết/chạy độc lập PostgreSQL trên staging **`7dfefc4e51f0e603c38411f2ed85ac3ac90cc489`** dựa từ AI0 `c88fa3b`, **không sửa product**. [Ma trận/evidence chi tiết](CODE008_NGHIEM_THU_20261012.md) · [PG CI](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38245126219/job/114796979545).
