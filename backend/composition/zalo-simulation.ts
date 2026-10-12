@@ -71,6 +71,7 @@ export function createSyntheticZaloRuntime(pool: pg.Pool, input: unknown, option
     { ...(options.artifactRoot ? { artifactRoot: options.artifactRoot } : {}),
       ...(options.python ? { python: options.python } : {}) });
   const pipeline = compose(pool, registry, orders, documents);
-  return { webhook: createZaloRawWebhook(pipeline), tick_inbound: pipeline.tick_inbound,
+  return { trustedScope: { shop_id: registry.shop_id, oa_id: registry.oa_id },
+    webhook: createZaloRawWebhook(pipeline), tick_inbound: pipeline.tick_inbound,
     tick_outbound: pipeline.tick_outbound };
 }
