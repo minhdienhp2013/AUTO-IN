@@ -70,7 +70,19 @@ export function createSyntheticZaloRuntime(pool: pg.Pool, input: unknown, option
     { shop_id: registry.shop_id, oa_id: registry.oa_id },
     { ...(options.artifactRoot ? { artifactRoot: options.artifactRoot } : {}),
       ...(options.python ? { python: options.python } : {}) });
-  const pipeline = compose(pool, registry, orders, documents);
+  // AI2 intentionally preserves an empty customer text for image/file-only
+  // requests. AI1's trusted suggest_draft contract requires nonempty text.
+  // Supply an EXPLICIT SYSTEM provenance marker, never invented customer words.
+  // AI1 still verifies each event binding and generation under a PG row lock.
+  const attachmentOnlyText='[AUTO-IN SYSTEM: ATTACHMENT_ONLY; NO_CUSTOMER_TEXT]';
+  const safeOrders: OrderDraftPort = {
+    suggest_draft: request => orders.suggest_draft({
+      ...request,
+      text: request.text.trim() ? request.text : attachmentOnlyText
+    }),
+    route_human: request => orders.route_human(request)
+  };
+  const pipeline = compose(pool, registry, safeOrders, documents);
   return { trustedScope: { shop_id: registry.shop_id, oa_id: registry.oa_id },
     webhook: createZaloRawWebhook(pipeline), tick_inbound: pipeline.tick_inbound,
     tick_outbound: pipeline.tick_outbound };
