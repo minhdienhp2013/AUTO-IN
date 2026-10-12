@@ -11,6 +11,8 @@ export interface PrintPort {
   me(): Promise<StaffSession>;
   listOrders(): Promise<OrderView[]>;
   getOrder(id: string): Promise<OrderView>;
+  /** Verified *raster* bytes only; NOT customer confirmation or approval. */
+  loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<Blob[]>;
   mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView>;
   mode(): Promise<OperationMode>;
 }
@@ -256,6 +258,54 @@ export class HttpPrintPort implements PrintPort {
     const raw = await this.call(`/api/v1/orders/${encodeURIComponent(id)}`);
     return mapCoreOrderDetail(raw);
   }
+  async loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<Blob[]> {
+    const {order_id,revision,request_hash}=order;
+    if (!this.token || !/^[0-9a-f-]{36}$/i.test(order_id) ||
+        !Number.isSafeInteger(revision) || revision < 1 ||
+        !/^[0-9a-f]{64}$/.test(request_hash))
+      throw new ApiFault(409,'PREVIEW_UNVERIFIED','Không xác minh được phiên bản và hash để xem trước.');
+    const root=`/api/v1/orders/${order_id}/revisions/${revision}/previews`;
+    const catalog=asObject(await this.call(root));
+    const entries=catalog.previews;
+    if (catalog.preview_verified!==true || catalog.order_id!==order_id ||
+        catalog.revision!==revision || catalog.request_hash!==request_hash ||
+        !Number.isSafeInteger(catalog.preview_count) ||
+        (catalog.preview_count as number)<1 || (catalog.preview_count as number)>15 ||
+        !Array.isArray(entries) || entries.length!==catalog.preview_count)
+      throw new ApiFault(409,'PREVIEW_UNVERIFIED','Danh sách ảnh xem trước không khớp phiên bản hiện tại.');
+    const token=this.token;
+    const pages:Blob[]=[];
+    const signature=[137,80,78,71,13,10,26,10];
+    for(let index=0;index<entries.length;index++) {
+      const entry=asObject(entries[index]);
+      const exactUrl=`${root}/${index}`;
+      if(entry.index!==index || entry.url!==exactUrl || entry.content_type!=='image/png')
+        throw new ApiFault(409,'PREVIEW_UNVERIFIED','Đường dẫn ảnh xem trước không hợp lệ.');
+      let response:Response;
+      try {
+        response=await this.fetcher(this.baseUrl+exactUrl,{
+          method:'GET',credentials:'same-origin',cache:'no-store',
+          headers:{Authorization:'Bearer '+token,Accept:'image/png'}
+        });
+      } catch {
+        throw new ApiFault(0,'PREVIEW_NETWORK','Không tải được ảnh xác minh; cần kiểm tra lại.');
+      }
+      if(!response.ok || response.headers.get('content-type')?.split(';')[0]?.trim()!=='image/png')
+        throw new ApiFault(response.status,'PREVIEW_UNAVAILABLE','Ảnh xem trước không còn hợp lệ; cần đối chiếu bản gốc.');
+      const claimed=Number(response.headers.get('content-length'));
+      if(claimed>8*1024*1024)
+        throw new ApiFault(409,'PREVIEW_TOO_LARGE','Ảnh xem trước vượt giới hạn.');
+      const buffer=await response.arrayBuffer();
+      const bytes=new Uint8Array(buffer);
+      if(bytes.length<8 || bytes.length>8*1024*1024 ||
+          !signature.every((value,n)=>bytes[n]===value))
+        throw new ApiFault(409,'PREVIEW_INVALID_PNG','Nội dung ảnh xem trước không được xác minh.');
+      pages.push(new Blob([buffer],{type:'image/png'}));
+    }
+    if(this.token!==token)
+      throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
+    return pages;
+  }
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView> {
     // AI1 CODE-201 routes now exist, but they require current generation from a
     // verified read model. No value supplied => fail closed, no request sent.
@@ -323,6 +373,10 @@ export class DemoPrintPort implements PrintPort {
     this.checkNetwork(); const found = this.orders.find(o => o.order_id === id);
     if (!found) throw new ApiFault(404, 'NOT_FOUND', 'Không tìm thấy đơn mô phỏng.');
     return structuredClone(found);
+  }
+  async loadVerifiedPreviewPages(): Promise<Blob[]> {
+    // Demo images cannot be used as verified processor proof.
+    return [];
   }
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string) {
     this.checkNetwork();
