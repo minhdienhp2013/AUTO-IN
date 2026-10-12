@@ -235,6 +235,18 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
       expected_revision:3,quote_revision:1,acknowledge_deposit_shortage:false,
       idempotency_key:'deposit-warning-'+id
     }),e=>e.code==='DEPOSIT_WARNING_REQUIRED');
+    // This event is RECEIVED before staff approval, but its provider timestamp
+    // is in the future. Delaying worker processing must NOT create another order.
+    const delayedId='late-before-approval-'+randomUUID();
+    const delayedBeforeApproval={...fixture(delayedId,customer,conversation),
+      occurred_at:new Date(Date.now()+60000).toISOString()};
+    assert.equal((await send(delayedBeforeApproval)).json().status,'accepted');
+    assert.equal((await register(delayedId,png)).statusCode,201);
+    const durableReceipt=(await query(
+      'SELECT received_at FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',
+      [oa,delayedId])).rows[0].received_at;
+    assert.ok(durableReceipt instanceof Date);
+
     const approved=await core.service.approve(staff,orderId,{
       expected_revision:3,quote_revision:1,acknowledge_deposit_shortage:true,
       idempotency_key:'staff-approve-'+id
@@ -263,11 +275,13 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
       printer_id:'RMP7000',idempotency_key:'no-resend-'+id
     }),{job:null});
 
-    // An OLD event received after staff approval must not be interpreted as a
-    // fresh order: transport delivery time cannot override event provenance.
-    const delayedId='late-before-approval-'+randomUUID();
-    assert.equal((await send(fixture(delayedId,customer,conversation))).json().status,'accepted');
-    assert.equal((await register(delayedId,png)).statusCode,201);
+    // Worker ingests this event only AFTER approval. Its occurred_at is FUTURE
+    // and thus would fool a provider-clock-only test; DB received_at is trusted.
+    const staffApprovalTime=(await query(
+      'SELECT created_at FROM core_approvals WHERE order_id=$1',
+      [orderId])).rows[0].created_at;
+    assert.ok(durableReceipt.getTime()<staffApprovalTime.getTime(),
+      'fixture must prove event arrived in DB before staff approval');
     assert.equal((await runtime.tick_inbound()).ingested,1);
     await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' "+
       "WHERE oa_id=$1 AND status='OPEN'",[oa]);
