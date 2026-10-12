@@ -49,6 +49,10 @@ test('CODE-007 real HTTP/PG: AI2 signed OK pending, explicit signed button -> AI
     await core.auth.bootstrapOwner({shop_id:shop,username:'owner',
       password:'isolated-test-password-'+randomUUID(),bootstrap_enabled:true});
     created=true;
+    // This isolated synthetic shop tests consent/approval/UNKNOWN, not hours.
+    // Real schedule gate stays enabled with a fixture-only all-day window.
+    await pool.query('UPDATE core_shop_settings SET open_at=$2,close_at=$3 WHERE shop_id=$1',
+      [shop,'00:00','24:00']);
     const user=(await pool.query("SELECT id FROM core_users WHERE shop_id=$1 AND username='owner'",[shop])).rows[0].id;
     const staff={id:user,shop_id:shop,role:'owner',verified:true};
     const agent={id:'agent-synthetic',shop_id:shop,role:'print_agent',
