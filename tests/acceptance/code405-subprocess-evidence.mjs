@@ -8,6 +8,17 @@ import assert from 'node:assert/strict';
  * Call subprocesses with --test-reporter=tap; Node 24 otherwise prints
  * "ℹ tests N" / "✔" (spec) and old regexes silently saw null counters.
  */
+/** Node's parent test worker exports NODE_TEST_CONTEXT=child-v8.
+ * Passing this to another "node --test" makes Node skip running the child
+ * files with status 0 and an empty stdout (!). Delete it in every nested
+ * child, while preserving the isolated PG URL, exact-SHA proof and opt-ins.
+ */
+export function isolatedTestChildEnv(extra={},source=process.env) {
+  const env={...source,...extra};
+  delete env.NODE_TEST_CONTEXT;
+  return env;
+}
+
 export function assertVerifiedTapSummary(output,label) {
   assert.equal(typeof output,'string','TAP product output must be text');
   assert.ok(output.length > 0,'TAP product output must not be empty');
