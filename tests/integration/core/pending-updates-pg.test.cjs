@@ -140,6 +140,14 @@ test('REAL PostgreSQL: current.pending_updates trustworthy journal, boundaries, 
   assert.deepEqual(approvals.map(x=>x.status),['rejected','rejected']);
   assert.ok(approvals.every(x=>x.reason?.code==='PENDING_INBOUND_REVIEW'));
   assert.equal(await count(a,'core_print_jobs',id),0);
+  // Count every pending event without exposing raw payloads; response items are capped.
+  for(let i=0;i<15;i++)await inbound(b,oa,conv,customer,k('extra-pending'),'text');
+  const many=(await service.getOrder(staff,id)).current.pending_updates;
+  assert.equal(many.status,'processing');
+  assert.equal(many.unresolved_count,16);
+  assert.equal(many.items.length,12);
+  assert.ok(many.items.every(x=>x.kind==='file'||x.kind==='message'));
+  assert.ok(!JSON.stringify(many).includes('PRIVATE-CUSTOMER-SECRET'));
 
   // Multiple concurrent open orders create ambiguity even with valid journal.
   const manual=await service.createDraft(staff,{customer_id:customer,conversation_id:conv,
@@ -168,5 +176,20 @@ test('REAL PostgreSQL: current.pending_updates trustworthy journal, boundaries, 
   const historical=(await service.getOrder(staff,closed.order_id)).current.pending_updates;
   assert.equal(historical.status,'clear');
   assert.equal(historical.unresolved_count,0);
+  // Inserted after staff approval, but its trusted received_at proves it belongs
+  // before approval. Never silently hide such a late-persisted old event.
+  const cutoff=(await a.query('SELECT created_at FROM core_approvals WHERE order_id=$1',
+   [closed.order_id])).rows[0].created_at;
+  const lateId=k('delayed-old-receipt');
+  await inbound(b,oa,closedConv,customer,lateId,'file',
+   new Date(new Date(cutoff).getTime()-20000));
+  const late=(await service.getOrder(staff,closed.order_id)).current.pending_updates;
+  assert.equal(late.status,'processing');
+  assert.equal(late.unresolved_count,1);
+  // Missing source provenance is not CLEAR even when current JSON claims it.
+  await b.query('DELETE FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',[oa,closedEvent]);
+  const missing=(await service.getOrder(staff,closed.order_id)).current.pending_updates;
+  assert.equal(missing.status,'needs_human');
+  assert.equal(missing.order_id,closed.order_id);
  }finally{await Promise.all([a.end(),b.end()]);}
 });
