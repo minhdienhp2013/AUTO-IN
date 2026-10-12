@@ -34,6 +34,6 @@ test('HTTP-PG-ZALO-02: synthetic raw Fastify webhook writes/dedupes real Postgre
   const matches=[...output.matchAll(new RegExp('^\\s*(?:#|ℹ)\\s*'+label+'\\s+(\\d+)\\s*$','gm'))];
   values[kind]=matches.length?Number(matches.at(-1)[1]):null;
  }
- assert.deepEqual(values,{tests:1,pass:1,fail:0,skipped:0},
+ assert.deepEqual(values,{tests:2,pass:2,fail:0,skipped:0},
    'No skipped Fastify -> real PG webhook test may be treated as PASS');
 });
