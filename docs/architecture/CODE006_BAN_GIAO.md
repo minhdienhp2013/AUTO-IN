@@ -125,3 +125,16 @@ Còn chặn: tải media OA thật, browser desktop/mobile, HTTPS Windows Agent,
 - Tài khoản chủ, khách, agent, máy `RMP7000`, đơn hàng, file ảnh, chứng chỉ và journal trong ca này đều là fixture synthetic cô lập. Quyền in thật, gửi Zalo OA, deploy và merge vẫn khóa.
 
 **Tiếp theo**: AI4 browser desktop/mobile dùng backend simulation và preview theo bearer; AI5 ghi bằng chứng mới trên SHA tích hợp hiện hành, không tính SKIP là nghiệm thu; AI3/AI1 phối hợp kiểm thử Agent Windows HTTPS trên máy dự kiến sau khi có thiết bị/môi trường thử riêng và được chủ duyệt. Chưa đạt TN-037.
+
+
+## CODE-006 — Đối soát bản nháp synthetic PENDING do mất ACK
+
+Khi quá trình tạo nháp của AI1 đã COMMIT nhưng việc ghi phản hồi/tham chiếu vào bảng AI0 gặp lỗi, trạng thái `PENDING` **không được thử tạo lại**. AI0 cung cấp thao tác chỉ chủ cửa hàng (role `owner`) và chỉ trong shop `simulation`:
+
+- `POST /internal/simulation/inbound-artifacts/:event_id/reconcile` với bearer **phiên chủ** AI1; JSON chỉ gồm `{"paper":"A4","copies":1,"duplex":false}` (cùng tham số lần tạo ban đầu). Event và OA lấy theo fixture scope của server.
+- Kiểm tra SHA của file & manifest đã đăng ký, trùng toàn bộ settings hash trong reservation, actor_id ban đầu, idempotency key và payload hash của AI1 `core_idempotency`, response phải đủ id/request hash, kiểm tra `core_orders` + revision 1/customer/conversation/request data đúng hash. Tất cả đọc/ghi khóa row PostgreSQL trong giao dịch.
+- Khi chứng minh được **đơn thật đã có**, đổi PENDING → CREATED và ghi vào `core_audit` hành động `ai0.synthetic_draft.reconciled` trong **cùng transaction**. Trả `{"status":"recovered","order_id":"…","revision":1,"requires_customer_confirmation":true,"preview_trusted":false,"created_new_order":false}`. Đối soát lần 2 trả `existing` và không ghi audit mới.
+- Khi không có chứng cứ đã COMMIT, hash lệch, sai shop/quyền, hoặc nguồn lưu trữ thay đổi: trả 403/404/409, giữ nguyên PENDING cho xử lý thủ công. **Không có nhánh nào gọi createDraft/new order**, không xác nhận thay khách, không duyệt in, không tạo job in.
+- Test `tests/integration/composition/inbound-reconcile-pg.test.mjs` trên PostgreSQL thật: mất ACK sau AI1 COMMIT, chủ khôi phục; cấm nhân viên; sai thông số; mất ACK trước COMMIT vẫn giữ PENDING; hai lời gọi đồng thời chỉ cập nhật một lần; kiểm DB có đúng một audit và không tạo thêm đơn. Nếu thiếu TEST_DATABASE_URL thì báo SKIP, không đánh dấu PASS.
+
+Lưu ý: đây là quy trình *simulation-only*, không dùng token nhân viên để phục hồi, không cho phép tạo đơn mới thay vì phục hồi. Sau khi liên kết phải tiếp tục quy trình xác nhận/preview/duyệt đúng revision đã kiểm chứng.
