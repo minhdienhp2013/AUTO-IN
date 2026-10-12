@@ -91,14 +91,16 @@ export class PostgresConversationQueue {
           lease_token=$2::uuid,lease_until=now()+($3::int*interval '1 second'),
           attempts=attempts+1 WHERE id=$1`,[row.id,token,leaseSeconds]);
         if(changed.rowCount!==1) throw new Error("BATCH_LEASE_UNCERTAIN");
-        const items=await tx.query<{payload_json:unknown}>(`
-          SELECT e.payload_json FROM zalo_batch_items i
+        const items=await tx.query<{payload_json:unknown;event_id:string}>(`
+          SELECT e.payload_json,e.event_id FROM zalo_batch_items i
           JOIN zalo_inbound_events e USING(oa_id,event_id)
-          WHERE i.batch_id=$1 ORDER BY e.occurred_at,e.event_id`,[row.id]);
+          -- Provider occurred_at can be delayed or forged; server DB receipt wins.
+          WHERE i.batch_id=$1 ORDER BY e.received_at,e.event_id`,[row.id]);
         claimed.push({batch_id:String(row.id),lease_token:token,attempts:row.attempts+1,
           key:row.batch_key,first_at:new Date(row.first_at).getTime(),
           deadline_at:new Date(row.deadline_at).getTime(),
-          events:items.rows.map(item=>normalized(item.payload_json))});
+          events:items.rows.map(item=>normalized(item.payload_json)),
+          server_received_event_ids:items.rows.map(item=>item.event_id)});
       }
       return claimed;
     });
