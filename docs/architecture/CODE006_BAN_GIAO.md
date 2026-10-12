@@ -113,3 +113,15 @@ Chỉ chạy với PostgreSQL localhost autoin_test, shop simulation và signed 
 - Test tests/integration/composition/inbound-draft-pg.test.mjs dùng PostgreSQL thật, Fastify/login, AI1 draft, AI3 CLI, preview, trả về 401 khi chưa đăng nhập, chống tạo trùng, giữ PENDING sau lỗi mơ hồ, sửa source → chặn; kiểm 0 confirm và 0 print jobs. Không có TEST_DATABASE_URL thì ca này SKIP.
 
 Còn chặn: tải media OA thật, browser desktop/mobile, HTTPS Windows Agent, native Word/Excel verified preview, Ricoh thật, TN-037. Không phát lệnh in, không gửi OA, không merge/deploy.
+
+
+## CODE-006 tiếp tục: PostgreSQL thật + Fastify HTTPS + Windows Python DryRun (12/10/2026)
+
+- SHA mã kiểm thử AI0: `414be3e6eb04d5313928422292aa8f6436a190fa`. Phần mới: `tests/integration/composition/https-agent-product-pg.test.mjs` (không sửa AI1/AI2/AI3/AI4/AI5).
+- Test bắt buộc `TEST_DATABASE_URL` là PostgreSQL test localhost. Chứng chỉ localhost tự ký dùng riêng cho test, được Python tin qua `SSL_CERT_FILE`, không đưa khóa TLS, token hay hồ sơ khách vào Git.
+- Bằng chứng đã chạy: CODE checks push/PR **SUCCESS**, Simulation integration PostgreSQL push/PR **SUCCESS** trên đúng SHA. PostgreSQL composition **15 PASS/0 FAIL/0 SKIP**, AI3 Python **140 PASS/1 SKIP**, AI5 integration **58 PASS/19 SKIP**, AI5 HTTP **43 PASS/41 SKIP**.
+- Hai đơn độc lập được tạo qua AI1 HTTP staff: AI3 CLI sinh plan revision 2, thử duyệt trước khi khách xác nhận phải từ chối; khách dùng server-scoped verified credential xác nhận request; nhân viên mới duyệt. Agent `python3 -m agents.windows.cli` chạy qua HTTPS localhost tới Fastify/PostgreSQL, duy nhất `DryRunDriver`; kết quả `SIMULATED_DONE`, `verified_sheets=0`, ghi giao giấy bị từ chối, chạy agent lại phải `NO_JOB`.
+- Đơn khác mô phỏng crash sau `mark_sending` và trước driver; journal SQLite bền vững, chạy Python process khác gọi `recover()` chuyển PG thành `UNKNOWN` với **0 driver calls**; gọi lại agent phải `NO_JOB`; không có job in lại hay giấy verified. Đây là bài test thực qua mạng HTTPS localhost và PostgreSQL; **không** phải test máy Ricoh thật hoặc môi trường Windows thật.
+- Tài khoản chủ, khách, agent, máy `RMP7000`, đơn hàng, file ảnh, chứng chỉ và journal trong ca này đều là fixture synthetic cô lập. Quyền in thật, gửi Zalo OA, deploy và merge vẫn khóa.
+
+**Tiếp theo**: AI4 browser desktop/mobile dùng backend simulation và preview theo bearer; AI5 ghi bằng chứng mới trên SHA tích hợp hiện hành, không tính SKIP là nghiệm thu; AI3/AI1 phối hợp kiểm thử Agent Windows HTTPS trên máy dự kiến sau khi có thiết bị/môi trường thử riêng và được chủ duyệt. Chưa đạt TN-037.
