@@ -263,6 +263,43 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
       printer_id:'RMP7000',idempotency_key:'no-resend-'+id
     }),{job:null});
 
+    // An OLD event received after staff approval must not be interpreted as a
+    // fresh order: transport delivery time cannot override event provenance.
+    const delayedId='late-before-approval-'+randomUUID();
+    assert.equal((await send(fixture(delayedId,customer,conversation))).json().status,'accepted');
+    assert.equal((await register(delayedId,png)).statusCode,201);
+    assert.equal((await runtime.tick_inbound()).ingested,1);
+    await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' "+
+      "WHERE oa_id=$1 AND status='OPEN'",[oa]);
+    const delayedResult=await runtime.tick_inbound();
+    assert.equal(delayedResult.held,1,'Pre-approval event delivered late must be held');
+    assert.equal((await query('SELECT count(*)::int AS n FROM core_orders WHERE shop_id=$1',
+      [shop])).rows[0].n,1);
+
+    // A genuinely NEW print request after the first staff approval is a
+    // different order in the same Zalo chat, never an append to UNKNOWN.
+    const newEventId='new-after-approval-'+randomUUID();
+    const newRequest={...fixture(newEventId,customer,conversation),
+      occurred_at:new Date(Date.now()+2000).toISOString()};
+    assert.equal((await send(newRequest)).json().status,'accepted');
+    assert.equal((await register(newEventId,png)).statusCode,201);
+    assert.equal((await runtime.tick_inbound()).ingested,1);
+    await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' "+
+      "WHERE oa_id=$1 AND status='OPEN'",[oa]);
+    const newResult=await runtime.tick_inbound();
+    assert.equal(newResult.processed,1,JSON.stringify(newResult));
+    assert.equal((await query('SELECT count(*)::int AS n FROM core_orders WHERE shop_id=$1',
+      [shop])).rows[0].n,2,'After staff approval a NEW request can open a NEW order');
+    const newest=(await query(
+      'SELECT order_id FROM core_ai_draft_proposals WHERE shop_id=$1 AND event_fingerprint<>$2',
+      [shop,'unmatched-fixture-fingerprint'])).rows.map(x=>x.order_id);
+    assert.equal(newest.length,2);
+    assert.equal(new Set(newest).size,2);
+    const newOrderId=newest.find(x=>x!==orderId);
+    assert.ok(newOrderId);
+    assert.equal((await query('SELECT count(*)::int AS n FROM core_print_jobs WHERE order_id=$1',
+      [newOrderId])).rows[0].n,0,'No new order auto-approved/printed');
+
     // A different conversation has a valid event and sealed manifest, but the
     // frozen source is changed after registration. The worker must route HUMAN,
     // never convert its customer-provided file_ref into a trusted draft.
