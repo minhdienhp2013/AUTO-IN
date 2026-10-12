@@ -1,5 +1,23 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305
 
+## CODE-405 — trạng thái hiện hành 2026-10-12
+
+**AI0 PR #31 HEAD `e16f69ace72f41b82bd7438cc97b0c275fc57f64`** (CODE-007 giao ngày 12/10). Bằng chứng **push đúng SHA**: CODE checks #38212405872 SUCCESS; Simulation integration #38212405914 SUCCESS, PostgreSQL và product-browser jobs cùng SUCCESS. Check PR runs tách riêng. Báo cáo chi tiết: [CODE405_NGHIEM_THU_20261012.md](CODE405_NGHIEM_THU_20261012.md).
+
+| Hạng mục TN | Đã chạy / chứng cứ | SKIP/NOT RUN |
+|---|---|---|
+| TN-007/012/017/019/026/027/033/035/036 | AI1 core 20 PASS; composition 19 PASS; AI5 integration 58 PASS CI simulation/PG | AI5 runner còn 19 SKIP |
+| TN-001/002/005/006/012/022 (synthetic) | AI2 43 PASS; signed synthetic OA/AI3 document fact verified, tamper → HUMAN | **OA thật NOT RUN** |
+| TN-011/025/034 source/preview | Real AI3-derived preview PG tests; SHA/manifest/tamper verified | Thiết bị/giấy thật NOT RUN |
+| TN-008/010/032 Chromium | AI0 product-browser job PASS 1440×900/390×844, real Fastify/PG staff session | iPhone thật NOT RUN |
+| CODE-405 customer confirmation | New 5 PG direct-service cases written; candidate→verified-event Port chưa nối | **New tests NOT RUN, verified OA confirm NOT RUN** |
+| CODE-405 replay/two workers/ACK/DryRun | New 5 composition wrappers written | **New wrappers NOT RUN on new SHA** |
+| TN-015/021/037 | Không có báo cáo thực địa đủ mẫu | **BLOCKED, chưa đạt nghiệm thu V1** |
+
+**Những bảng CODE-105/CODE-305 bên dưới là lịch sử; các số của SHA cũ không thay bằng chứng SHA mới.**
+
+---
+
 ## Trạng thái hiện hành — xác minh lại 2026-10-12
 
 **HEAD mới nhất PR AI0 #25:** `d3e53461a5cc71d0b96b24b069b5240ca9dcd71e` (Draft, chưa merge). **Không có SHA tích hợp mới hơn** ở thời điểm kiểm tra. Bằng chứng dưới đây lấy từ GitHub Actions **PUSH đúng SHA**; AI5 đọc lại job log, không tự nhận đã chạy PostgreSQL mới trong container.
