@@ -52,6 +52,7 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
  function who(actor='staff'){
   if(actor==='anonymous')return {id:'anonymous',shop_id:shop,role:'customer',verified:false};
   if(actor==='other-customer')return principal('other',shop,'customer',{customer_id:'other'});
+  if(actor==='foreign-customer')return principal('other-foreign','autoin-test-other-'+uuid(),'customer',{customer_id:'foreign'});
   return actors[actor]??actors.staff;
  }
  function oid(b){return b?.order_id?.startsWith?.('synthetic-')?order_id:(b?.order_id??order_id);}
@@ -114,6 +115,7 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
  async function invoke(action,b={},actor='staff',service=svc){
   const p=who(actor),id=oid(b);
   switch(action){
+   case 'confirm':return service.confirm(p,id,{expected_revision:b.expected_revision,kind:b.kind??'request',quote_revision:b.quote_revision,idempotency_key:b.idempotency_key??key('customer-confirm')});
    case 'claim':return service.claim(p,{printer_id:b.printer_id??'RMP7000',idempotency_key:b.idempotency_key??key('claim')});
    case 'preflight':return service.preflight(p,b.job_id,{expected_revision:b.expected_revision,lease_token:b.lease_token});
    case 'mark_sending':return service.markSending(p,b.job_id,{expected_revision:b.expected_revision,lease_token:b.lease_token,idempotency_key:b.idempotency_key??key('send')});
@@ -134,6 +136,14 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
   const pid=(await ownPool.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
   const ownService=new OrderService(new PgStore(ownPool));
   return {connection_id:String(pid),act:(action,b={})=>result(()=>invoke(action,b,name,ownService))};
+ }
+ async function confirmationCounts(){
+  const current=(await pool.query('SELECT active_revision FROM core_orders WHERE id=$1',[order_id])).rows[0].active_revision;
+  const request=(await pool.query("SELECT count(*)::int AS n FROM core_confirmations WHERE order_id=$1 AND kind='request'",[order_id])).rows[0].n;
+  const quote=(await pool.query("SELECT count(*)::int AS n FROM core_confirmations WHERE order_id=$1 AND kind='quote'",[order_id])).rows[0].n;
+  const approved=(await pool.query('SELECT count(*)::int AS n FROM core_approvals WHERE order_id=$1',[order_id])).rows[0].n;
+  const jobs=(await pool.query('SELECT count(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[order_id])).rows[0].n;
+  return {active_revision:current,request,quote,approved,jobs};
  }
  async function snapshot(){
   const row=(await pool.query('SELECT * FROM core_orders WHERE id=$1',[order_id])).rows[0];
@@ -238,6 +248,6 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
   await svc.report(actors.agent,job.job_id,{expected_revision:job.revision,lease_token:job.lease_token,result:'simulated_done',evidence_kind:'simulated',idempotency_key:key('dry-report')});
   return {status:'SIMULATED_DONE',job_id:job.job_id,evidence_kind:'simulated'};
  }
- return {environment:{type:'product-backed',database:'postgresql',print_driver:'DryRunDriver',scope:'isolated-test',source:'AI1-Service+AI3-Journal'},reset,act,snapshot,newAgent,dryrunOnce,dryrunCrashAfterMark,checkConfirmedQueue,checkGenerationGate,checkConcurrentHandover,
+ return {environment:{type:'product-backed',database:'postgresql',print_driver:'DryRunDriver',scope:'isolated-test',source:'AI1-Service+AI3-Journal'},reset,act,snapshot,confirmationCounts,newAgent,dryrunOnce,dryrunCrashAfterMark,checkConfirmedQueue,checkGenerationGate,checkConcurrentHandover,
   async dispose(){for(const p of agents)await p.end();if(journalDir)await rm(journalDir,{recursive:true,force:true});await pool.end();}};
 }
