@@ -131,7 +131,7 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     // real AI3 rendering and the two independently authenticated customer gates.
     // Staff alone may choose printing settings; neither AI nor a webhook may
     // promote the customer's arbitrary file_ref into an authoritative path.
-    const settings={event_id:goodId,paper:'A4',copies:151,duplex:false};
+    const settings={event_id:goodId,paper:'A4',copies:2,duplex:false};
     const prepared=await prepareSyntheticInboundDraft(asSqlPool(pool),root,scope,settings);
     assert.equal(prepared.source.customer_id,customer);
     assert.equal(prepared.source.conversation_id,conversation);
@@ -156,12 +156,12 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     assert.equal(done.revision,3);
     const catalog=await loadVerifiedOrderPreviewCatalog(asSqlPool(pool),renderedRoot,staff,orderId,3);
     assert.equal(catalog.preview_verified,true);
-    assert.equal(catalog.files?.[0]?.physical_sheets,151);
+    assert.equal(catalog.files?.[0]?.physical_sheets,2);
     assert.ok(catalog.preview_count>=1);
 
     const quote=await core.service.setQuote(staff,orderId,{
       expected_revision:3,amount_vnd:32000,deposit_required_vnd:8000,
-      significant_cost:false,idempotency_key:'staff-quote-'+id
+      significant_cost:true,idempotency_key:'staff-quote-'+id
     });
     assert.equal(quote.quote_revision,1);
     const confirm=createVerifiedConfirmationPort({
