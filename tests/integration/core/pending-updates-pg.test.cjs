@@ -1,7 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const path=require('node:path');
-const fs=require('node:fs');
 const {randomUUID}=require('node:crypto');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../../.ai1-build/backend');
 const {PgStore}=require(path.join(root,'storage/database.js'));
@@ -27,7 +26,9 @@ test('REAL PostgreSQL: current.pending_updates trustworthy journal, boundaries, 
   assert.match((await a.query('SELECT current_database() db')).rows[0].db,/test/i);
   const [pa,pb]=await Promise.all([a.query('SELECT pg_backend_pid() pid'),b.query('SELECT pg_backend_pid() pid')]);
   assert.notEqual(pa.rows[0].pid,pb.rows[0].pid);
-  await a.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/007_active_order_inbound.sql'),'utf8'));
+  // CI applies migrations before tests; never run DDL concurrently with legacy core fixture.
+  const journal=(await a.query("SELECT to_regclass('public.core_order_inbound_reviews')::text AS table_name")).rows[0];
+  assert.ok(journal.table_name,'Migration 007 must be present before this test');
   const shop=k('pending-shop'),oa=k('pending-oa'),conv=k('pending-chat'),customer=k('pending-customer'),staffId=randomUUID();
   await a.query('INSERT INTO core_shop_settings(shop_id) VALUES($1)',[shop]);
   await a.query("INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,'staff','fixture-only','staff')",[staffId,shop]);
