@@ -1,5 +1,23 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
 
+## CODE-008 — HIỆN HÀNH (12/10/2026), P0 BLOCKED
+
+AI5 đã viết/chạy độc lập PostgreSQL trên staging **`7dfefc4e51f0e603c38411f2ed85ac3ac90cc489`** dựa từ AI0 `c88fa3b`, **không sửa product**. [Ma trận/evidence chi tiết](CODE008_NGHIEM_THU_20261012.md) · [PG CI](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38245126219/job/114796979545).
+
+| Phạm vi | PASS | FAIL | SKIP / NOT RUN |
+|---|---:|---:|---|
+| 9 ca CODE-008 direct PG (hai file >60s, revision, HTTP, race/replay, post-approve) | **7** | **2 P0** | 0 |
+| 2 wrapper AI0 composition PG dùng TAP, đúng SHA | **2** | 0 | 0 |
+| Toàn AI5 `--integration`, PG 18.3 | **89** | **2** | **19 SKIP** |
+| Chromium React/Fastify PG desktop 1440×900 + mobile 390×844 | PASS | 0 | 0 |
+| `--http` riêng | — | — | **NOT RUN** (PG step FAIL trước) |
+| OA official, Ricoh, iPhone, explicit separate-order Port, TN-037 | — | — | **NOT RUN/BLOCKED** |
+
+**Hai blocker bắt buộc chưa hoàn tất:** (1) file signed đến trước staff approve **chưa làm tăng active revision**; (2) trigger PG `AI0_PENDING_INBOUND_REVIEW` chặn chốt đúng nhưng Fastify **500 thay vì 409**. Bảo vệ giữ HELD, chống chia đơn/auto-print **không tương đương** tự nối đầy đủ file. Không waiver, không DONE V1.
+
+---
+
+
 ## CODE-405 — AI5 đã đồng bộ patch 7 lỗi, xác minh đúng SHA (12/10/2026)
 
 **AI5 PR #18** giữ nhánh `ai5/dot3-integrated-acceptance`, không reset/sửa sản phẩm. Bản sửa nghiệm thu được đồng bộ **nguyên blob từ AI0 commit `823237342dd9b6d0c1db5430e72b311d197056d9`**: `code405-composition-pg.test.mjs`, `integrated-webhook.test.mjs`, `code405-subprocess-evidence.mjs`, `code405-subprocess-evidence.test.mjs`, `run.mjs`. Không xóa ca test; 7 lỗi cũ là 6 wrapper composition và 1 webhook nested test.
