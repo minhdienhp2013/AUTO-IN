@@ -125,7 +125,7 @@ export function createSyntheticVerifiedButtonPlugin(pool:SqlPool,scope:Synthetic
         order_id:challenge.order_id,expected_revision:challenge.revision,
         request_hash:challenge.request_hash,expected_generation:generation,
         kind:challenge.kind,
-        ...(challenge.kind==='quote'?{quote_revision:challenge.quote_revision??undefined}:{}),
+        ...(challenge.kind==='quote' && challenge.quote_revision!==null ? {quote_revision:challenge.quote_revision} : {}),
         event_id:b.event_id
       });
       return reply.code(result.status==='confirmed'?201:200)
