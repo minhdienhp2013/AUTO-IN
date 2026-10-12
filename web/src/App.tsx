@@ -11,7 +11,7 @@ import { ApiFault, isDemo, makePort, newMutationKey, snapshotFromPort, type Prin
 import {
   availableVerifiedSheets, conversationLabels, deliveryLabels, depositShortfall, hasValidApprovalInputs, isPrintUncertain, money,
   orderLabels, paymentLabels, printLabels, receivable,
-  type ActionKind, type OrderView, type OperationMode, type StaffSession
+  type ActionKind, type OrderView, type OperationMode, type StaffSession, type VerifiedFileFact
 } from './domain.ts';
 import { notificationCapability, orderFromNavigation, requestLocalNotifications } from './notifications.ts';
 
@@ -277,21 +277,24 @@ function Axis({title,label,warn=false}:{title:string;label:string;warn?:boolean}
  * Object URLs are ephemeral, never persisted or placed in a request URL. */
 function VerifiedPreviewGallery({port,order}:{port:PrintPort;order:OrderView}) {
   const [urls,setUrls]=useState<string[]>([]);
+  const [facts,setFacts]=useState<VerifiedFileFact[]>([]);
   const [status,setStatus]=useState<'loading'|'verified'|'unavailable'>('loading');
   useEffect(()=>{
     let cancelled=false;
     const owned:string[]=[];
     setUrls([]);
+    setFacts([]);
     setStatus('loading');
-    void port.loadVerifiedPreviewPages(order).then(pages=>{
+    void port.loadVerifiedPreviewPages(order).then(({pages,files})=>{
       if(cancelled) return;
       if(!pages.length){setStatus('unavailable');return;}
       for(const page of pages) owned.push(URL.createObjectURL(page));
       if(cancelled){owned.forEach(url=>URL.revokeObjectURL(url));return;}
+      setFacts(files);
       setUrls([...owned]);
       setStatus('verified');
     }).catch(()=>{
-      if(!cancelled){setUrls([]);setStatus('unavailable');}
+      if(!cancelled){setFacts([]);setUrls([]);setStatus('unavailable');}
     });
     return ()=>{
       cancelled=true;
@@ -302,6 +305,22 @@ function VerifiedPreviewGallery({port,order}:{port:PrintPort;order:OrderView}) {
     <strong><ShieldCheck size={15}/> Xem trước bản raster theo phiên bản {order.revision}</strong>
     {status==='loading' && <p role="status">Đang kiểm tra manifest, SHA-256 và quyền đọc ảnh…</p>}
     {status==='unavailable' && <p data-testid="preview-unavailable">Chưa thể xác minh đầy đủ ảnh xem trước. Không dùng ảnh thiếu tin cậy để duyệt in.</p>}
+    {status==='verified' && facts.length>0 && <div className="verified-document-list" data-testid="verified-document-list">
+      <h4>Thông số từng file do AI3 xác minh</h4>
+      {facts.map(f=><div className="verified-document-row" data-testid="verified-document-row" key={f.index}>
+        <div className="verified-document-title"><FileText size={16}/> <b>{f.label}</b> <small>{f.format}</small></div>
+        <div className="verified-document-metrics">
+          <span>Trang gốc <b>{f.document_pages}</b></span>
+          <span>Mặt in <b>{f.printed_faces}</b></span>
+          <span>Tờ giấy <b>{f.physical_sheets}</b></span>
+          <span>Số bản <b>{f.copies}</b></span>
+          <span>Khổ <b>{f.paper}</b></span>
+          <span>{f.duplex?'Hai mặt':'Một mặt'} · {f.orientation==='landscape'?'Ngang':'Dọc'}</span>
+        </div>
+        {f.warnings.length>0 && <p>AI3 khuyến nghị nhân viên kiểm tra nội dung trước khi duyệt.</p>}
+      </div>)}
+    </div>}
+    {status==='verified' && facts.length===0 && <p data-testid="document-facts-unavailable">Chưa có thông số từng file đã được AI3 xác minh; không suy đoán số trang hoặc số tờ.</p>}
     {status==='verified' && <div className="verified-preview-grid">
       {urls.map((url,index)=><figure key={url}>
         <img data-testid="verified-preview-image" src={url} alt={`Ảnh xem trước đã xác minh, trang ${index+1}`} loading="lazy"/>
