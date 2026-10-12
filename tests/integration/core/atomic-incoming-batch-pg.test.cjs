@@ -75,6 +75,11 @@ test('REAL PostgreSQL CODE-008: atomic batch two-worker replay, separate, ambigu
   assert.equal((await a.query('SELECT active_revision FROM core_orders WHERE id=$1',[id])).rows[0].active_revision,2);
 
   const other=k('new-order');await event(a,oa,conv,customer,other);
+  const unproven=createOrderSupplementPort({store:storeB,trusted:{shop_id:shop,oa_id:oa},processor:actor});
+  const notSeparate=await unproven.apply_incoming_batch({...update,event_ids:[other],
+   text:'Đơn khác, in riêng',expected_revision:undefined,
+   intent:'explicit_separate',idempotency_key:k('unproven-separate')});
+  assert.equal(notSeparate.status,'needs_review','AI2 classification without trusted customer evidence cannot create order');
   const separate=await portA.apply_incoming_batch({...update,event_ids:[other],text:'Đơn khác, in riêng',
    expected_revision:undefined,intent:'explicit_separate',idempotency_key:k('new-order')});
   assert.equal(separate.status,'created');
@@ -101,5 +106,27 @@ test('REAL PostgreSQL CODE-008: atomic batch two-worker replay, separate, ambigu
   const afterTakeover=await portB.apply_incoming_batch({...update,event_ids:[ambiguity],idempotency_key:k('after-takeover')});
   assert.equal(afterTakeover.status,'stale_generation');
   assert.equal((await a.query('SELECT count(*)::int AS n FROM core_order_supplement_batches WHERE order_id=$1',[id])).rows[0].n,1);
+
+  // Two distinct PostgreSQL pools: real staff takeover may race an incoming append.
+  // Exactly one serial ordering is allowed: append then takeover OR takeover then stale.
+  const raceConv=k('takeover-race'),raceFirst=k('r-first'),raceFollow=k('r-follow');
+  await event(a,oa,raceConv,customer,raceFirst);
+  const raceDraft=await draftPort.suggest_draft({conversation_id:raceConv,customer_id:customer,
+   event_ids:[raceFirst],text:'In trang đầu',idempotency_key:k('race-initial'),expected_generation:0});
+  assert.equal(raceDraft.status,'created');
+  await event(a,oa,raceConv,customer,raceFollow);
+  const raceInput={conversation_id:raceConv,customer_id:customer,event_ids:[raceFollow],
+   text:'In thêm trang',idempotency_key:k('race-update'),intent:'append_or_create',
+   materialized:true,expected_generation:0,expected_revision:1};
+  const [raceAppend,raceTakeover]=await Promise.all([
+   portB.apply_incoming_batch(raceInput),
+   core.handover(staff,raceConv,{expected_generation:0,idempotency_key:k('race-takeover')})
+  ]);
+  assert.equal(raceTakeover.generation,1);
+  assert.ok(['appended','stale_generation'].includes(raceAppend.status));
+  const raceRevision=(await a.query('SELECT active_revision FROM core_orders WHERE id=$1',[raceDraft.order_id])).rows[0].active_revision;
+  assert.equal(raceRevision,raceAppend.status==='appended'?2:1);
+  assert.deepEqual(await portA.apply_incoming_batch({...raceInput,idempotency_key:k('after-race')}),
+   {status:'stale_generation'});
  }finally{await Promise.all([a.end(),b.end()]);}
 });
