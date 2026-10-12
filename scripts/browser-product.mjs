@@ -2,10 +2,11 @@
  * E2E session transport: never use customer/agent credentials, send live Zalo or print.
  * CI must build web with VITE_DEMO_MODE=false before executing this harness.
  */
-import { randomUUID } from 'node:crypto';
+import { randomUUID,createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { readFile, stat } from 'node:fs/promises';
-import { resolve, extname, sep } from 'node:path';
+import { readFile, stat, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { resolve, extname, sep, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import pg from 'pg';
 import {createCoreModule} from '../backend/core/factory.ts';
 import {buildIntegratedApp} from '../backend/composition/runtime.ts';
@@ -24,6 +25,8 @@ if (!lock.isFile() || !html.includes('/assets/'))
 
 const pool=new pg.Pool({connectionString:db,connectionTimeoutMillis:5000});
 let app;
+const previewRoot=await mkdtemp(join(tmpdir(),'autoin-browser-verified-'));
+const digest=value=>createHash('sha256').update(value).digest('hex');
 const mime={
   '.js':'application/javascript; charset=utf-8',
   '.css':'text/css; charset=utf-8',
@@ -61,7 +64,39 @@ try{
     }]},
     idempotency_key:'browser-'+randomUUID()
   });
-  app=buildIntegratedApp({pool:asSqlPool(pool)});
+  // A second order has a synthetic server-anchored raster proof, to test
+  // REAL authenticated PNG loading in Chrome. This is NOT AI3-render evidence
+  // or customer confirmation; AI3 end-to-end is tested separately in PG CI.
+  const withPreview=await core.service.createDraft(login.principal,{
+    customer_id:'synthetic-preview-customer',
+    conversation_id:'synthetic-preview-conversation',
+    request_data:{documents:[{artifact_name:'server-fixture-only.png',copies:1,paper:'A4',duplex:false}]},
+    idempotency_key:'browser-preview-'+randomUUID()
+  });
+  const relativeDir='doc-browserpreview123';
+  const folder=join(previewRoot,relativeDir);
+  await mkdir(folder,{mode:0o700});
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64');
+  const pageRef=relativeDir+'/page-1.png',manifestRef=relativeDir+'/manifest.json';
+  const pngPath=join(previewRoot,pageRef);
+  await writeFile(pngPath,png,{mode:0o400});
+  const manifest=Buffer.from(JSON.stringify({
+    schema:'ai3.document_bridge.v1',request_hash:withPreview.request_hash,
+    previews:[{ref:pageRef,sha256:digest(png),bytes:png.length}]
+  }));
+  await writeFile(join(previewRoot,manifestRef),manifest,{mode:0o400});
+  const verifiedPlan={
+    request_hash:withPreview.request_hash,physical_sheets:1,document_pages:1,
+    printed_faces:1,ready:true,printer_id:'SYNTHETIC_NO_PRINTER',
+    artifact_ref:manifestRef,verified_by:'synthetic-browser-hash-fixture'
+  };
+  await pool.query('UPDATE core_revisions SET plan=$1::jsonb WHERE order_id=$2 AND revision=1',
+    [JSON.stringify(verifiedPlan),withPreview.order_id]);
+  await pool.query(
+    'INSERT INTO ai0_verified_plan_manifests (shop_id,order_id,revision,request_hash,artifact_ref,manifest_sha256) '+
+    'VALUES ($1,$2,1,$3,$4,$5)',
+    [shop,withPreview.order_id,withPreview.request_hash,manifestRef,digest(manifest)]);
+  app=buildIntegratedApp({pool:asSqlPool(pool),previewArtifactRoot:previewRoot});
   app.addHook('onRequest',async request=>{
     if(request.url.startsWith('/api/v1/auth') || request.url.startsWith('/api/v1/orders'))
       console.log('PRODUCT E2E SERVER REQUEST',request.method,request.url.split('?')[0]);
@@ -83,7 +118,8 @@ try{
   const url='http://127.0.0.1:'+address.port+'/';
   const env={...process.env,AUTOIN_BROWSER_URL:url,AUTOIN_BROWSER_SHOP:shop,
     AUTOIN_BROWSER_USER:'owner',AUTOIN_BROWSER_PASSWORD:password,
-    AUTOIN_BROWSER_ORDER:proposal.order_id};
+    AUTOIN_BROWSER_ORDER:proposal.order_id,
+    AUTOIN_BROWSER_PREVIEW_ORDER:withPreview.order_id};
   const status=await new Promise((resolveStatus,reject)=>{
     const child=spawn('python3',['scripts/browser-product.py'],{
       cwd:process.cwd(),env,stdio:['ignore','inherit','inherit']
@@ -102,7 +138,21 @@ try{
   if(!row||row.confirms!==0||row.approvals!==0||row.print_jobs!==0||row.deliveries!==0)
     throw Error('Browser UI performed an unauthorized order/print/delivery mutation');
   console.log('PASS real Fastify/PostgreSQL browser UI; staff session; NO customer approval/print job/delivery');
+  // Tamper an already-registered preview without touching the sealed manifest.
+  // The very same browser UI must now REFUSE that page on both viewports.
+  await writeFile(pngPath,Buffer.from('CORRUPT_AFTER_PUBLISH'));
+  const badResult=await new Promise((resolveStatus,reject)=>{
+    const child=spawn('python3',['scripts/browser-product.py'],{
+      cwd:process.cwd(),
+      env:{...env,AUTOIN_BROWSER_EXPECT_TAMPER:'1'},
+      stdio:['ignore','inherit','inherit']
+    });
+    child.on('error',reject);child.on('close',resolveStatus);
+  });
+  if(badResult!==0)throw Error('Tampered preview browser fail-closed check failed');
+  console.log('PASS real browser rejected tampered PNG on desktop and mobile');
 }finally{
   if(app)await app.close();
   await pool.end();
+  await rm(previewRoot,{recursive:true,force:true});
 }
