@@ -176,8 +176,10 @@ export class ConversationProcessor {
         if(!result||typeof result!=="object")throw new Error("AI1_APPEND_PORT_INVALID_RESULT");
         if(result.status==="stale_generation"||result.status==="needs_human"||
            result.status==="closed"||result.status==="ambiguous")return "held";
-        if(!["created","existing","appended"].includes(result.status)||
-           typeof result.order_id!=="string"||!result.order_id)
+        if(result.status!=="created"&&result.status!=="existing"&&
+           result.status!=="appended")
+          throw new Error("AI1_APPEND_PORT_INVALID_RESULT");
+        if(typeof result.order_id!=="string"||!result.order_id)
           throw new Error("AI1_APPEND_PORT_INVALID_RESULT");
         if(result.status==="appended"&&
            (!Number.isSafeInteger(result.active_revision)||result.active_revision<1||
