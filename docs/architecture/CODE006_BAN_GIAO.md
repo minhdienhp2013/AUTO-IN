@@ -87,3 +87,16 @@ Nhánh `ai0/code006-ports-integration` nhập mã AI1/AI2/AI3/AI4/AI5 đã bàn 
 Đã tạo `web/package-lock.json` từ npm registry thật: `npm ci`, test, typecheck, build đều đạt cục bộ; workflow CODE checks cũng chạy cài sạch/build web. Python AI3 đạt 140 PASS, 1 SKIP cục bộ. Browser desktop/mobile chưa kiểm được do Chromium trong môi trường này không khởi động. PostgreSQL trên SHA mới cần xác nhận qua Simulation integration CI. Bài thử AI2 `route_human` được đồng bộ với hợp đồng CAS của AI1: generation cũ trả `stale_generation`.
 
 Chưa có đường ingest an toàn để ghi artifact registry, HTTPS agent sản phẩm, browser, OA thật hoặc in thật. Không coi các mục đó là V1 đã nghiệm thu.
+
+
+## CODE-006 tiếp quản 12/10/2026 — đường tài liệu simulation, chưa vận hành thật
+
+AI0 tiếp tục trên nhánh PR #31, sau nền eff849379. KHÔNG thay module AI1–AI5, không merge/deploy.
+
+- AI0 tạo `backend/composition/synthetic-ingest.ts`: staff đăng nhập bằng AuthService của AI1 mới được POST `/internal/simulation/inbound-artifacts`; body JSON `{event_id,filename,content_base64}`. Có thêm server registry trusted OA/shop, DB shop chỉ `simulation`, sự kiện đã được AI2 ký/nhận có `filename` khớp. Chỉ fixture, KHÔNG xác minh file tải từ Zalo thật. Dung lượng tối đa 600 KiB; ảnh/PDF/định dạng khác AI3 vẫn tự đánh giá an toàn. Chống idempotent khác SHA, snapshot riêng 0700 với `source-000-<sha>.<ext>` và `manifest.json` dạng `ai3.upload_snapshot.v1`, DB `ai0_inbound_document_artifacts`. Không lấy ref/hash từ webhook.
+- AI0 tạo `backend/composition/migrations/002_plan_previews.sql`: hash manifest AI3 gắn shop/order/revision trong `ai0_verified_plan_manifests`. CLI `npm run process:order` được chặn DB khác localhost test, sau AI1 publishVerifiedPlan mới ghi hash; publication vẫn yêu cầu khách xác nhận/nhân viên duyệt lại. Không tự in.
+- AI0 tạo `backend/composition/preview.ts`: `GET /api/v1/orders/:order_id/revisions/:revision/previews/:index` khi `AUTOIN_ARTIFACT_ROOT` cấu hình, chỉ staff đã xác thực cùng shop, revision hiện hành, manifest SHA khớp DB, PNG SHA khớp manifest, file private không symlink. Trả PNG có no-store/nosniff, không mở PDF gốc hoặc kết luận đã in. Không có evidence → 404/409 an toàn.
+- `AUTOIN_DOCUMENT_ARTIFACT_ROOT` phục vụ intake synthetic AI2; `AUTOIN_ARTIFACT_ROOT` phục vụ processor CLI/preview AI3. Hai nguồn không tự động liên kết với nhau. Chưa có đường tải trực tiếp tài liệu OA thật, tự map file vào request_data đơn hoặc frontend upload; tài liệu Word/Excel chưa có preview đáng tin cậy phải chuyển nhân viên.
+- Bộ test AI0 mới: `tests/integration/composition/{synthetic-ingest,preview}.test.ts`. Các bảng bổ sung chỉ tạo ở DB test qua `npm run db:migrate`. Kết quả CI phải ghi đúng HEAD SHA; PASS cũ không thay PASS mới. Browser desktop/mobile, HTTPS agent end-to-end, Zalo OA thật, Ricoh thật và TN-037 vẫn NOT RUN/BLOCKED.
+
+AI4 chỉ sửa UI sử dụng route preview đã gắn quyền, không thay server. AI5 kiểm cả phép thử từ chối truy cập, mã băm sai, phiên bản cũ, PostgreSQL, browser; không coi CI green là nghiệm thu TN-037.
