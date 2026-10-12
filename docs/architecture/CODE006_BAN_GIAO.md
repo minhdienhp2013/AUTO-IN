@@ -176,3 +176,14 @@ Bằng chứng **đúng SHA `1d3ef7f157ea903d6d6bd91dc14334e9866ee1e7`**:
 - GitHub job tham chiếu: product-browser `https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38208761685/job/114678010061`; PostgreSQL `https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38208761685/job/114678009933`; checks `https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38208761749/job/114678010257`.
 
 **Không suy diễn thành V1 RELEASE:** Zalo OA thật, máy Ricoh/Windows thật, end-to-end in vật lý và tiêu chí TN-037 210 đơn/≥7 ngày vẫn NOT RUN/BLOCKED. V1/PR #31 vẫn Draft; không merge/deploy/in thật khi chưa có phê duyệt.
+
+
+## CODE-006 — Zalo synthetic file-only: AI3 facts → AI2 durable worker → AI1 draft (12/10/2026)
+
+**ĐÃ CHẠY PostgreSQL/AI3 Python thật ở môi trường test**, không phải mock. `tests/integration/composition/zalo-artifact-worker-pg.test.mjs` dùng OA/shop fixture có secret riêng, Fastify nhận webhook chữ ký tổng hợp, AI0 nhập file PNG test và đóng băng nguồn+SHA-256+manifest, AI3 `fact_inspect` thực sự decode file, AI2 worker lấy queue PostgreSQL và gọi AI1 Port tạo draft đúng một lần. Kết quả AI1 revision 1, chưa quote/chưa khách xác nhận/chưa approval/chưa print job, sender Zalo thật disabled. Webhook trùng, worker tick lại đều không tạo proposal trùng.
+
+**Lỗi liên module tìm và sửa:** Khi khách chỉ gửi attachment, AI2 giữ `text:''` (chính xác, không bịa lời khách); AI1 `suggest_draft` yêu cầu `text` khác rỗng. Trước sửa, worker `retry=1` và giữ hàng đợi dù tài liệu đã được AI3 kiểm chứng. Adapter AI0 ở `backend/composition/zalo-simulation.ts` bổ sung **metadata do hệ thống tạo** `[AUTO-IN SYSTEM: ATTACHMENT_ONLY; NO_CUSTOMER_TEXT]` vào đúng boundary AI2→AI1 **chỉ khi** `text.trim()` rỗng; giữ nguyên mọi text khách thật, event IDs, shop/OA, expected_generation và khóa idempotency. AI1 vẫn ràng buộc event với conversation/customer và kiểm generation trong PostgreSQL. Không được diễn giải metadata đó thành lời khách đã gửi; request revision không chứa `file_ref` do khách tự cung cấp.
+
+**Ca đối chứng fail-closed:** Một sự kiện image khác được đăng ký manifest hợp lệ, sau đó thay bytes nguồn → AI3 trả `unknown/preview_trusted:false` → AI2 chuyển `HUMAN`, không tạo đơn nháp mới, không thể in/tạo approval tự động. Không cho webhook đính kèm đường dẫn tự nhận làm artifact chuẩn.
+
+SHA tích hợp đã qua 6/6 CI `1c7465c38db9663e135618070fa17859eb76613b`: `CODE checks`, `Simulation integration / postgres` và `product-browser` đều SUCCESS trên push và PR. Composition **19/19 PASS**, AI3 Python 140 PASS/1 SKIP, AI5 integration 58 PASS/19 SKIP và HTTP 43 PASS/41 SKIP. PostgreSQL evidence: https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38209565593/job/114680474511 . Kiểm thử dùng file/khách tổng hợp trên database autoin_test riêng, KHÔNG thử OA thật hoặc Windows/Ricoh thật, không đáp ứng TN-037; PR tiếp tục Draft/partial, chưa merge/deploy.
