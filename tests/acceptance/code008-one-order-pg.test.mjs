@@ -44,10 +44,12 @@ async function withSignedConversation(fn){
  const scope={shop_id:shop,oa_id:oa},core=createCoreModule({pool:asSqlPool(pool)});
  let app,bootstrapped=false;
  try{
-  await core.auth.bootstrapOwner({shop_id:shop,username:'owner',password:'fixture-'+rand(),bootstrap_enabled:true});
+  const password='fixture-'+rand();
+  await core.auth.bootstrapOwner({shop_id:shop,username:'owner',password,bootstrap_enabled:true});
   bootstrapped=true;
   const actor=(await pool.query("SELECT id FROM core_users WHERE shop_id=$1 AND username='owner'",[shop])).rows[0].id;
   const staff={id:actor,shop_id:shop,role:'owner',verified:true};
+  const ownerSession=await core.auth.login(shop,'owner',password);
   const customerCredential={id:'fixture-customer-'+tag,shop_id:shop,customer_id:customer,role:'customer',verified:true};
   const processor={id:'fixture-processor-'+tag,shop_id:shop,role:'processor',verified:true};
   app=buildIntegratedApp({pool:asSqlPool(pool),zaloWebhook:createSyntheticZaloIngress(pool,{
@@ -95,7 +97,7 @@ async function withSignedConversation(fn){
    return 2;
   };
   await fn({app,pool,shop,oa,customer,conversation,webhook,propose,original,
-   revision,count:table=>count(pool,table,shop),confirm,core,staff});
+   revision,count:table=>count(pool,table,shop),confirm,core,staff,staffToken:ownerSession.token});
  }finally{
   if(app)await app.close();
   if(bootstrapped){
@@ -116,7 +118,7 @@ async function withSignedConversation(fn){
     'DELETE FROM core_sessions WHERE user_id IN (SELECT id FROM core_users WHERE shop_id=$1)',
     'DELETE FROM core_users WHERE shop_id=$1','DELETE FROM core_shop_settings WHERE shop_id=$1'
    ];
-   for(const sql of stmts)await pool.query(sql,[shop,oa]).catch(error=>{
+   for(const sql of stmts)await pool.query(sql,sql.includes('$2')?[shop,oa]:[shop]).catch(error=>{
     throw Error('CODE008 fixture cleanup failed at '+sql+': '+error.message);
    });
   }
@@ -166,20 +168,18 @@ test('C008-HTTP-03 REQUIRED RED until AI1 maps P0001: pending file before approv
  const event='preapproval-'+rand();
  assert.equal((await f.webhook(event,{kind:'image',occurred_at:new Date(Date.now()+60000).toISOString()})).status,'accepted');
  const result=await f.app.inject({method:'POST',url:'/api/v1/orders/'+first.orderId+'/approvals',
-  headers:{authorization:'Bearer bad-test-only-token'},
+  headers:{authorization:'Bearer '+f.staffToken},
   payload:{expected_revision:2,acknowledge_deposit_shortage:false,idempotency_key:'approval-'+rand()}});
- // The unauthorized request MUST not be accepted; verified staff auth checked below via Core.
- assert.equal(result.statusCode,401);
+ // Required RED on the current runtime: raw database P0001 is mapped as 500.
+ // The product must return a proper 409, preserving 0 approvals/jobs, not hide an internal error.
+ assert.equal(result.statusCode,409,'P0 CODE008: signed pending inbound must return HTTP409, NOT internal 500: '+JSON.stringify(result.json()));
+ assert.ok(['AI0_PENDING_INBOUND_REVIEW','PENDING_INBOUND_REVIEW'].includes(result.json()?.error?.code),
+  'Machine-readable business error for unresolved file is required');
  await assert.rejects(f.core.service.approve(f.staff,first.orderId,{
   expected_revision:2,acknowledge_deposit_shortage:false,idempotency_key:'core-attempt-'+rand()
  }),error=>error.code==='P0001'&&error.message.includes('AI0_PENDING_INBOUND_REVIEW'),
  'Pending pre-approval event must block actual AI1 Core DB transaction');
  assert.equal(await f.count('core_approvals'),0);assert.equal(await f.count('core_print_jobs'),0);
- // Run authenticated Fastify call through the actual test-owner session.
- const passwordless=f.staff; assert.ok(passwordless.id);
- // HTTP must expose a retryable business conflict, NOT a generic 500; no fake owner token.
- // Authenticated integration HTTP status is independently exercised in C008-HTTP-04 when
- // fixture's owner token is available (use the session setup below).
 }));
 
 test('C008-PG-04: duplicate webhook, lost ACK and two independent AI2 workers cannot split order',{skip,timeout},()=>withSignedConversation(async f=>{
