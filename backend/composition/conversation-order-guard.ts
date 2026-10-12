@@ -6,7 +6,7 @@ export interface ConversationGuardScope {
   readonly shop_id:string;
   readonly oa_id:string;
 }
-type Verified={event_id:string;customer_id:string;conversation_id:string;occurred_at:Date};
+type Verified={event_id:string;customer_id:string;conversation_id:string;occurred_at:Date;received_at:Date};
 type OpenRow={id:string;approved:boolean;print_closed:boolean;manual_lock:boolean};
 type OldProposal={order_id:string};
 type ClockRow={latest_approved_at:Date|null};
@@ -55,7 +55,7 @@ export function guardedSyntheticConversationOrders(
         if(mode.rows[0]?.mode!=='simulation')
           throw new DomainError('SIMULATION_REQUIRED','Live order guard disabled',409);
         const events=await conn.query<Verified>(
-          'SELECT event_id,customer_id,conversation_id,occurred_at '+
+          'SELECT event_id,customer_id,conversation_id,occurred_at,received_at '+
           'FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=ANY($2::text[]) FOR SHARE',
           [scope.oa_id,[...input.event_ids]]
         );
@@ -88,8 +88,9 @@ export function guardedSyntheticConversationOrders(
             await conn.query('COMMIT');ended=true;
             return {status:'stale_generation'};
           }
-          // A delayed event originating before staff approved the latest order
-          // must NOT create a new order after approval. Send it to HUMAN.
+          // Both the provider event time and the DB-owned receipt time matter.
+          // A client-controlled occurred_at in the future CANNOT turn a
+          // pre-approval message into a fresh post-approval order.
           const prev=await conn.query<ClockRow>(
             'SELECT max(a.created_at) AS latest_approved_at FROM core_approvals a '+
             'JOIN core_orders o ON o.id=a.order_id '+
@@ -97,9 +98,12 @@ export function guardedSyntheticConversationOrders(
             [scope.shop_id,input.customer_id,input.conversation_id]
           );
           const closedAt=prev.rows[0]?.latest_approved_at?.getTime();
-          if(closedAt!==undefined&&events.rows.some(e=>
-            !Number.isFinite(new Date(e.occurred_at).getTime())||
-            new Date(e.occurred_at).getTime()<=closedAt)){
+          if(closedAt!==undefined&&events.rows.some(e=>{
+            const occurredAt=new Date(e.occurred_at).getTime();
+            const receivedAt=new Date(e.received_at).getTime();
+            return !Number.isFinite(occurredAt)||!Number.isFinite(receivedAt)||
+              occurredAt<=closedAt||receivedAt<=closedAt;
+          })){
             await conn.query('COMMIT');ended=true;
             return {status:'stale_generation'};
           }
