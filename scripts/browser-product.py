@@ -33,6 +33,7 @@ def scenario(browser, width: int, height: int) -> None:
         is_mobile=mobile, has_touch=mobile, locale="vi-VN"
     )
     page = context.new_page()
+    print(f"PRODUCT BROWSER {width}x{height}: start", flush=True)
     runtime_errors: list[str] = []
     page.on("pageerror", lambda error: runtime_errors.append(str(error)))
     try:
@@ -41,6 +42,7 @@ def scenario(browser, width: int, height: int) -> None:
         page.goto(URL, wait_until="networkidle", timeout=30_000)
         login = page.locator('[data-testid="staff-login"]')
         login.wait_for(state="visible", timeout=15_000)
+        print(f"PRODUCT BROWSER {width}x{height}: staff login form visible", flush=True)
         assert page.locator('[data-testid="order-list"]').count() == 0, (
             "Cannot reveal product orders before staff login"
         )
@@ -50,8 +52,20 @@ def scenario(browser, width: int, height: int) -> None:
         inputs.nth(1).fill(USER)
         inputs.nth(2).fill(PASSWORD)
         login.locator("button[type=submit],button").first.click()
+        print(f"PRODUCT BROWSER {width}x{height}: login submitted", flush=True)
         cards = page.locator('[data-testid="order-list"] .order-card')
-        cards.filter(has_text=ORDER).wait_for(state="visible", timeout=20_000)
+        try:
+            cards.filter(has_text=ORDER).wait_for(state="visible", timeout=12_000)
+        except Exception:
+            alert = page.locator('[data-testid="api-error"]')
+            messages = alert.all_inner_texts()
+            print(f"PRODUCT BROWSER {width}x{height}: order list unavailable; "
+                  f"login_form_visible={login.is_visible()} "
+                  f"order_list_present={page.locator('[data-testid=order-list]').count()} "
+                  f"order_cards={cards.count()} "
+                  f"safe_error_messages={messages[:2]}", flush=True)
+            raise
+        print(f"PRODUCT BROWSER {width}x{height}: real PG order visible", flush=True)
         mode = page.locator('[data-testid="operation-mode"]').inner_text()
         assert "CHƯA XÁC MINH" in mode, (
             "AI4 must fail closed until authoritative staff-mode API is wired"
