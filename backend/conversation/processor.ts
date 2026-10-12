@@ -112,8 +112,18 @@ export class ConversationProcessor {
     const {event_ids,key}=batchIdentity(batch);
     // Processing payload is canonical even if a retry reconstructs a batch in a
     // different insertion order. AI1 once() rejects same key with different text.
-    const ordered=[...batch.events].sort((a,b)=>
-      Date.parse(a.occurred_at)-Date.parse(b.occurred_at)||a.event_id.localeCompare(b.event_id));
+    const serverOrder=batch.server_received_event_ids;
+    // A durable claim supplies server DB receipt ordering; provider occurred_at
+    // may be backdated/future-dated. Validate provenance against this batch.
+    if(serverOrder!==undefined && (serverOrder.length!==batch.events.length||
+      new Set(serverOrder).size!==serverOrder.length||
+      serverOrder.some(id=>!batch.events.some(e=>e.event_id===id))))
+      throw new Error("INVALID_SERVER_EVENT_ORDER");
+    const positions=serverOrder===undefined?undefined:new Map(serverOrder.map((id,index)=>[id,index]));
+    const ordered=[...batch.events].sort((a,b)=>positions
+      ? (positions.get(a.event_id)??Number.MAX_SAFE_INTEGER)-
+        (positions.get(b.event_id)??Number.MAX_SAFE_INTEGER)
+      : Date.parse(a.occurred_at)-Date.parse(b.occurred_at)||a.event_id.localeCompare(b.event_id));
     const text=ordered.filter(e=>e.kind==="text").map(e=>e.text??"").join("\n");
     const routeHuman=async(reason:string):Promise<"human"|"held">=>{
       if(!await this.current(snap,batch))return "held";
