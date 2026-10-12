@@ -209,6 +209,21 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
    throw Error('Concurrent handover did not serialize generation exactly once');
   return {grants:1,rejected_stale:1};
  }
+ async function checkConcurrentCustomerConfirmation(){
+  // TEST-ONLY verified synthetic customer credential. NOT sourced from Zalo text.
+  const idem=key('two-connection-confirm'),current=(await pool.query(
+   'SELECT active_revision FROM core_orders WHERE id=$1',[order_id])).rows[0].active_revision;
+  const temp=await Promise.all([0,1].map(async n=>{
+   const p=new pg.Pool({connectionString:databaseUrl,max:1,application_name:'autoin_ai5_customer_'+n});
+   agents.push(p);return {pool:p,service:new OrderService(new PgStore(p)),
+    connection_id:String((await p.query('SELECT pg_backend_pid() AS pid')).rows[0].pid)};
+  }));
+  if(temp[0].connection_id===temp[1].connection_id)throw Error('PG confirmation race needs distinct backend connections');
+  const payload={expected_revision:current,kind:'request',idempotency_key:idem};
+  const receipts=await Promise.allSettled(temp.map(x=>x.service.confirm(actors.customer,order_id,payload)));
+  return {connection_ids:temp.map(x=>x.connection_id),receipts,
+   counts:await confirmationCounts()};
+ }
  async function dryrunCrashAfterMark(){
   // An explicit crash-boundary acceptance test. Never invoke the printer driver.
   const c=await svc.claim(actors.agent,{printer_id:'RMP7000',idempotency_key:key('crash-claim')});
@@ -248,6 +263,6 @@ export async function createAcceptanceAdapter({databaseUrl,mode='simulation',pri
   await svc.report(actors.agent,job.job_id,{expected_revision:job.revision,lease_token:job.lease_token,result:'simulated_done',evidence_kind:'simulated',idempotency_key:key('dry-report')});
   return {status:'SIMULATED_DONE',job_id:job.job_id,evidence_kind:'simulated'};
  }
- return {environment:{type:'product-backed',database:'postgresql',print_driver:'DryRunDriver',scope:'isolated-test',source:'AI1-Service+AI3-Journal'},reset,act,snapshot,confirmationCounts,newAgent,dryrunOnce,dryrunCrashAfterMark,checkConfirmedQueue,checkGenerationGate,checkConcurrentHandover,
+ return {environment:{type:'product-backed',database:'postgresql',print_driver:'DryRunDriver',scope:'isolated-test',source:'AI1-Service+AI3-Journal'},reset,act,snapshot,confirmationCounts,checkConcurrentCustomerConfirmation,newAgent,dryrunOnce,dryrunCrashAfterMark,checkConfirmedQueue,checkGenerationGate,checkConcurrentHandover,
   async dispose(){for(const p of agents)await p.end();if(journalDir)await rm(journalDir,{recursive:true,force:true});await pool.end();}};
 }
