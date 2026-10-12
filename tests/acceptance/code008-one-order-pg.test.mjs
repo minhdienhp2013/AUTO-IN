@@ -271,3 +271,41 @@ test('C008-PG-08: ambiguous multi-open same conversation stays HELD, not silentl
  assert.equal((await f.pool.query('SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',
  [f.oa,eid])).rows[0].n,1);
 }));
+
+
+test('C008-PG-09: racing signed file ingress against staff approval obeys DB commit ordering',{skip,timeout},()=>withSignedConversation(async f=>{
+ const first=await f.original();await f.confirm(first.orderId);
+ const eid='simultaneous-'+rand();
+ const [inbound,approval]=await Promise.allSettled([
+  f.webhook(eid,{kind:'image',occurred_at:new Date(Date.now()+90000).toISOString()}),
+  f.core.service.approve(f.staff,first.orderId,{
+   expected_revision:2,acknowledge_deposit_shortage:false,idempotency_key:'race-approve-'+rand()
+  })
+ ]);
+ assert.equal(inbound.status,'fulfilled','Signed ingress must persist even when staff approves simultaneously');
+ assert.equal(inbound.value.status,'accepted');
+ const stored=(await f.pool.query('SELECT received_at FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',[f.oa,eid])).rows;
+ assert.equal(stored.length,1,'Inbound event must not be lost during approval transaction');
+ if(approval.status==='rejected'){
+  assert.equal(approval.reason?.code,'P0001','Only trusted pending-inbound transaction block is permitted');
+  assert.equal(await f.count('core_approvals'),0);
+  assert.equal(await f.count('core_print_jobs'),0);
+  assert.equal(await f.count('core_orders'),1);
+ }else{
+  // An approval may succeed ONLY if it won the row lock *before* signed
+  // webhook was durably received; user-controlled occurred_at cannot decide.
+  const ordering=(await f.pool.query(
+   'SELECT e.received_at <= a.created_at AS inbound_not_later FROM zalo_inbound_events e '+
+   'JOIN core_approvals a ON a.order_id=$1 WHERE e.oa_id=$2 AND e.event_id=$3',
+   [first.orderId,f.oa,eid])).rows[0];
+  assert.equal(ordering?.inbound_not_later,false,
+   'P0 LOST FILE: staff approved while signed file had already been committed to PG');
+  assert.equal(await f.count('core_approvals'),1);
+  assert.equal(await f.count('core_print_jobs'),1);
+  const next=await f.propose(eid,'[SYSTEM ATTACHMENT ONLY]');
+  assert.equal(next.status,'created','Actual post-approval file must start a distinct unapproved order');
+  assert.notEqual(next.order_id,first.orderId);
+  assert.equal(await f.count('core_orders'),2);
+  assert.equal((await f.pool.query('SELECT count(*)::int AS n FROM core_approvals WHERE order_id=$1',[next.order_id])).rows[0].n,0);
+ }
+}));
