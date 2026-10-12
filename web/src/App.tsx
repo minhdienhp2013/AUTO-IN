@@ -67,6 +67,7 @@ function App() {
   const load = useCallback(async (onlyOrders = false) => {
     requestEpoch.current++;
     setChatLoaded(false);
+    setChatLoading(false);
     setError(null);
     try {
       const snapshot = onlyOrders ? null : await snapshotFromPort(port);
@@ -297,13 +298,13 @@ function App() {
                 {printAttention && <div className="risk-note"><ShieldAlert size={20}/><div><strong>Lệnh in cần đối soát</strong><p>{printLabels[selectedOrder.print_state]}. Không tự gửi lại; chỉ chủ cửa hàng duyệt in lại sau kiểm tra thực tế.</p></div></div>}
                 <div className="detail-customer"><div className="person-icon"><UserRound size={20}/></div><div><strong>{selectedOrder.customer_name}</strong><small>Khách hàng · {selectedOrder.conversation_id ?? 'Chưa có hội thoại'}</small></div><span className="muted-date">{time(selectedOrder.created_at)}</span></div>
                 {!useDemo && <section className="inbound-workflow" data-testid="code008-inbound" aria-label="Tin và file bổ sung trước khi chốt in">
-                  <strong>{canEditRequest?'Đơn đang mở · trước khi NHÂN VIÊN chốt in':'Đã chốt / khóa yêu cầu in · không tự sửa đơn cũ'}</strong>
+                  <strong>{selectedOrder.detail_loaded!==true?'Chưa xác minh đơn còn mở hay đã chốt':canEditRequest?'Đơn đang mở · trước khi NHÂN VIÊN chốt in':'Đã chốt / khóa yêu cầu in · không tự sửa đơn cũ'}</strong>
                   <p data-testid="code008-revision">Phiên bản đang xử lý: <b>{selectedOrder.revision}</b> · Chat: {selectedOrder.conversation_id??'chưa được server xác minh'}</p>
                   {requiresCustomerReconfirmation(selectedOrder) && <p className="inbound-warning" data-testid="code008-reconfirm">Có phiên bản đơn mới: khách cần xác nhận lại yêu cầu và giá (nếu cần). Xác nhận phiên bản cũ không có hiệu lực.</p>}
                   {selectedOrder.pending_updates?.state==='clear'
                     ? <p data-testid="code008-clear">Máy chủ xác nhận không còn tin/file bổ sung đang chờ đối soát cho đúng phiên bản/hash hiện hành.</p>
                     : <p className="inbound-warning" data-testid="code008-blocked">Có tin/file bổ sung cần đối soát trước khi chốt in, hoặc API chưa cung cấp chứng cứ đã xử lý hết. Không coi nội dung này là đã nhập vào đơn.</p>}
-                  {selectedOrder.pending_updates?.state!=='unknown' && selectedOrder.pending_updates?.state!=='clear' &&
+                  {selectedOrder.pending_updates && selectedOrder.pending_updates.state!=='unknown' && selectedOrder.pending_updates.state!=='clear' &&
                     <p data-testid="code008-pending-count">Máy chủ ghi nhận {selectedOrder.pending_updates?.unresolved_count ?? 'chưa xác định'} tin/file chưa xử lý; {selectedOrder.pending_updates?.state==='needs_human'?'cần nhân viên đối soát':'đang chờ AI xử lý'}.</p>}
                   {(selectedOrder.pending_updates?.items??[]).map((item,index)=><div className="inbound-item" key={index}>
                     <b>{item.kind==='file'?'File bổ sung':'Tin bổ sung'}: {item.label}</b>
