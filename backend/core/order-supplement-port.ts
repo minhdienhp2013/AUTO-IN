@@ -13,7 +13,7 @@ function parsePrintSetting(text:string):ParameterReading {
   const n=Number(copies[1]);
   return n>=1&&n<=500?{kind:'recognized',change:{copies:n}}:{kind:'needs_review'};
  }
- const paper=/^(?:(?:đổi|chuyển)\s+)?(?:(?:sang|khổ|giấy|khổ giấy|in khổ)\s+)*(a[345])(?:\s+(?:nhé|ạ|thôi))?$/u.exec(literal);
+ const paper=/^(?:(?:đổi|chuyển|in)\s+)?(?:(?:sang|khổ|giấy|khổ giấy|in khổ)\s+)*(a[345])(?:\s+(?:nhé|ạ|thôi))?$/u.exec(literal);
  if(paper){
   const p=paper[1]?.toUpperCase();
   if(p==='A3'||p==='A4'||p==='A5')return {kind:'recognized',change:{paper_size:p}};
@@ -23,7 +23,7 @@ function parsePrintSetting(text:string):ParameterReading {
   const v=sides[1];return {kind:'recognized',change:{duplex:v==='hai'||v==='2'}};
  }
  // Reject unclear variants, contradictions or multi-parameter updates; never ACK an unparsed change.
- if(/(?:\d+\s*bản|số bản|khổ|a[345]|mặt|duplex|copies|paper.?size)/iu.test(literal))
+ if(/(?:\d+\s*bản|(?:một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mấy|vài|số)\s+bản|khổ|a[345]|mặt|duplex|copies|paper.?size)/iu.test(literal))
   return {kind:'needs_review'};
  return {kind:'none'};
 }
