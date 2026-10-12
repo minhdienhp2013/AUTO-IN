@@ -91,6 +91,10 @@ def smoke(browser, url: str, width: int, height: int) -> None:
             "UNKNOWN/manual lock must block approval"
         )
 
+        if mobile:
+            detail.locator(".back-mobile").click()
+            cards.first.wait_for(state="visible")
+
         # Unsupported Word preview must stay explicitly untrusted and cannot
         # enable the approval button, irrespective of stale/mock metadata.
         cards.filter(has_text="MD-260002").click()
