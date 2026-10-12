@@ -1,4 +1,31 @@
-# AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305
+# AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
+
+## CODE-405 — cập nhật kết quả CI SHA mới nhất (12/10/2026)
+
+**AI0 PR #31 đã tiến lên HEAD `fb4af186d62adc3d91848f1306576f07cf35f4ee`.** Bằng chứng của `e16f69a` bên dưới trở thành lịch sử; không lấy kết quả cũ thế chỗ. Các lượt **PUSH đúng SHA mới** đã xác minh:
+
+- [CODE checks #38213694609](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38213694609): SUCCESS.
+- [Simulation integration #38213694522](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38213694522): SUCCESS; PostgreSQL job `114693400470` và product-browser job `114693400167` đều SUCCESS.
+- PR-triggered CI cũng SUCCESS nhưng chạy trên merge ref, không tính thay push; log checkout Git HEAD của cả hai job chính khớp `fb4af186d62adc3d91848f1306576f07cf35f4ee`.
+
+| Hạng mục trên đúng SHA này | PASS | FAIL | SKIP/NOT RUN |
+|---|---:|---:|---|
+| AI1 core/PostgreSQL | 20 | 0 | 0 |
+| AI2 synthetic | 43 | 0 | 0 |
+| AI0 composition PG (có signed `OK` candidate preflight) | 20 | 0 | 0 |
+| AI3 Python | 140 | 0 | 1 SKIP |
+| AI5 existing `--integration` | 58 | 0 | 19 SKIP |
+| AI5 existing `--http` | 43 | 0 | 41 SKIP |
+| Chromium product Fastify/PG 1440×900 + 390×844 | PASS cả hai viewport | 0 | 0 |
+| **6 wrapper composition CODE-405 mới** | — | — | **NOT RUN** trên SHA tích hợp mới |
+| 5 PG confirmation cases CODE-405 + browser wrapper mới | — | — | **NOT RUN** trên SHA tích hợp mới |
+| OA/Ricoh/iPhone thật, TN-037 | — | — | **NOT RUN/BLOCKED** |
+
+Ca signed synthetic Zalo `OK` của AI0 trả **`candidate_requires_credential` với `customer_credential_verified:false`** và **0 core_confirmations/approvals/print_jobs**. Sai OA/shop/customer, stale revision/hash/generation, quote cũ và HUMAN takeover bị chặn; **không chứng minh đã có customer confirmation hợp lệ**. CODE-405 bây giờ có wrapper gọi đúng bài PG `confirmation-candidate-pg.test.mjs` nhưng wrapper mới vẫn chưa có CI.
+
+**V1/TN-037 vẫn BLOCKED.** Khi AI1/AI2 bàn giao Port sự kiện chứng thực và AI0 tích hợp test AI5, phải chạy lại trên SHA tích hợp kế tiếp. 210 đơn ≥7 ngày, OA/Ricoh/iPhone thật chưa thực hiện.
+
+---
 
 ## CODE-405 — trạng thái hiện hành 2026-10-12
 

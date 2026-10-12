@@ -134,3 +134,9 @@ node tests/acceptance/run.mjs --browser-product
 Các test `C405-PG-*` dùng test-only credential Principal từ fixture/DB, **không phải** customer đã xác thực qua webhook. Các wrapper `C405-*` spawn chính test sản phẩm AI0 đã có, yêu cầu **1 PASS / 0 FAIL / 0 SKIP** mỗi bài. Nếu chưa có customer event verification Port chính thức từ CODE-401/402: ghi **NOT RUN** phần OA→customer-confirm; không tự giả Principal Zalo. Browser product script chỉ phục vụ localhost/PG isolated, xác minh tamper, không in thật.
 
 **Hiện tại** 3 self-test provenance PASS cục bộ; test mới PG/browser/HTTP sản phẩm **NOT RUN** vì AI0 chưa nhập test CODE405 vào SHA mới. Vẫn có bằng chứng CI hiện có trên SHA `e16f69ace72f41b82bd7438cc97b0c275fc57f64` tại PR #31 cho PostgreSQL/Chromium trước CODE-405. Chuyển lỗi về đúng AI1/AI2/AI3/AI4/AI0; tuyệt đối không merge/deploy.
+
+## CODE-405 — latest integration HEAD recheck
+
+PR #31 đã chuyển sang `fb4af186d62adc3d91848f1306576f07cf35f4ee`. CODE checks PUSH [38213694609](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38213694609) và Simulation integration PUSH [38213694522](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38213694522) đều SUCCESS. PG composition **20/20 PASS** gồm signed synthetic `OK` candidate **không** ghi customer confirmation, AI3 140 PASS/1 SKIP, AI5 hiện hữu 58 PASS/19 SKIP integration và 43 PASS/41 SKIP HTTP; Chromium product PASS desktop/mobile. **Đây là kết quả CI trước khi test AI5 CODE-405 mới được nhập.**
+
+Trong nhóm wrapper CODE-405 mới phải chạy `confirmation-candidate-pg.test.mjs` cùng signed wrong OA, artifact, lost-ACK reconcile, preview tamper và HTTPS agent. Mọi wrapper chưa chạy đúng SHA tích hợp có file AI5 phải báo **NOT RUN**. Không bao giờ đổi `candidate_requires_credential` thành xác nhận khách. Từ chối mọi cách giả identity, OA thật hay driver Ricoh thật.
