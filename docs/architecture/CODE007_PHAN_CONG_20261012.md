@@ -38,3 +38,18 @@
 4. 6 AI không tự merge/deploy, không phát lệnh in thật, không nhắn OA thật. Chỉ chủ cửa hàng được duyệt mở vận hành/in thử thiết bị thật.
 
 **Lưu ý:** Bình luận GitHub giúp bàn giao nhiệm vụ và lưu audit; **không tự khởi chạy agent ChatGPT**. Chủ phải gửi prompt cho từng phiên AI1–AI5 hoặc dùng hệ điều phối có khả năng kích hoạt các phiên đó.
+
+
+## AI0 CODE-007 — điểm nối kiểm tra sự kiện trước xác thực (bàn giao 12/10/2026)
+
+**Code thực tế:** `backend/composition/confirmation-candidate.ts` và `tests/integration/composition/confirmation-candidate-pg.test.mjs`, commit `c6cafa147f3db53e06a3e127bd4d0548b8afb9a6`; PostgreSQL và Chromium product-browser SUCCESS tại [job PG](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38213473519/job/114692700169). **AI0 composition tăng lên 20/20 PASS**.
+
+Hợp đồng tạm: `preflightSyntheticConfirmationCandidate(SqlPool, trustedScope, input)` chỉ chấp nhận `trustedScope={kind:'synthetic_fixture',shop_id,oa_id}` do server cấu hình, `input={order_id,event_id,expected_revision,expected_request_hash,expected_generation,kind,quote_revision?}`. Kiểm dữ liệu Zalo sự kiện chữ đã được ingress ghi bền, liên kết chính xác shop/OA/customer/conversation/order, control AI (không bị tiếp quản), active revision/hash, verified plan và quote_revision nếu `kind='quote'`. Trả `blocked` với lý do an toàn hoặc `candidate_requires_credential` chứa `customer_credential_verified:false` — **đây không phải xác nhận hoặc quyền duyệt**, không cấp `Principal` và không viết DB.
+
+Ca PG thật sử dụng webhook **fixture có chữ ký**, cố tình gửi văn bản `OK`, kết quả vẫn **0 customer confirmation, 0 approval, 0 print job**. Webhook trùng chỉ lưu một lần; sai khách/OA/shop, stale generation/revision/hash, thiếu plan/quote, HUMAN takeover, khóa thủ công đều fail-closed. Đây là tiền kiểm *read-only*, không thể thay thế giao dịch cùng row lock trong AI1 và không tự khẳng định danh tính khách được xác thực bởi OA thật.
+
+**AI1 CODE-401:** xuất Port ghi nhận xác nhận có **verified credential/challenge/token** và sự kiện nguồn gốc, kiểm lặp lại tất cả điều kiện bên trong **cùng giao dịch PostgreSQL** trước INSERT; không coi kết quả tiền kiểm là quyền ghi.
+
+**AI2 CODE-402:** xuất ứng viên nhận diện tin nhắn (không xác thực/ghi confirm). Bảo đảm OA transport verifier và event persisted đúng phạm vi; nếu không có challenge/credential, phải hỏi lại/chuyển nhân viên; không chuyển `OK` thành xác nhận ngầm.
+
+**AI0 CODE-007 tiếp theo:** chỉ nối hai Port khi AI1 và AI2 bàn giao SHA cùng contract chốt; sau đó thử HTTP+PG đúng SHA, xác nhận customer flow, các ca wrong OA/customer/generation, không gửi OA thật và không in thật. AI3/AI4/AI5 tiếp tục CODE-403/404/405 độc lập. Không merge/deploy; PR #31 vẫn Draft.
