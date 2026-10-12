@@ -101,6 +101,12 @@ test('REAL PostgreSQL CODE-008 P0: first generation, parameter revisions, approv
   const done=await service.approve(staff,orderId,{
    expected_revision:approvedRevision,acknowledge_deposit_shortage:true,idempotency_key:key('staff-approve')});
   assert.ok(done.job_id);
+  const parameterOnly=key('after-approved-parameter');
+  await event(a,oa,conv,customer,parameterOnly,'in 2 bản');
+  const postApprovalSetting=await portA.apply_incoming_batch({...initial,
+   event_ids:[parameterOnly],text:'in 2 bản',idempotency_key:key('post-approval-setting')});
+  assert.equal(postApprovalSetting.status,'needs_review','cannot assume a post-approval setting update is a new order');
+  assert.equal((await a.query('SELECT count(*)::int n FROM core_orders WHERE shop_id=$1 AND conversation_id=$2',[shop,conv])).rows[0].n,2);
   const newEvent=key('after-approval');await event(a,oa,conv,customer,newEvent,'In thêm tài liệu mới');
   const fresh=await portB.apply_incoming_batch({...initial,event_ids:[newEvent],
    expected_revision:undefined,text:'In thêm tài liệu mới',idempotency_key:key('fresh-order')});
@@ -108,12 +114,6 @@ test('REAL PostgreSQL CODE-008 P0: first generation, parameter revisions, approv
   assert.notEqual(fresh.order_id,orderId);
   assert.equal((await a.query('SELECT count(*)::int n FROM core_orders WHERE shop_id=$1 AND conversation_id=$2',[shop,conv])).rows[0].n,2);
   assert.equal((await a.query('SELECT count(*)::int n FROM core_print_jobs WHERE order_id=$1',[fresh.order_id])).rows[0].n,0);
-  const parameterOnly=key('after-approved-parameter');
-  await event(a,oa,conv,customer,parameterOnly,'in 2 bản');
-  const postApprovalSetting=await portA.apply_incoming_batch({...initial,
-   event_ids:[parameterOnly],text:'in 2 bản',idempotency_key:key('post-approval-setting')});
-  assert.equal(postApprovalSetting.status,'needs_review','cannot assume a post-approval setting update is a new order');
-  assert.equal((await a.query('SELECT count(*)::int n FROM core_orders WHERE shop_id=$1 AND conversation_id=$2',[shop,conv])).rows[0].n,2);
   // A provider-clock-future event whose trusted receipt time predates staff approval
   // is a delayed OLD request, not another new order.
   const lagged=key('delayed');
