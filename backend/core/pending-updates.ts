@@ -12,7 +12,6 @@ export interface PendingUpdatesReadModel {
 export interface PendingUpdatesScope {
  order_id:string;shop_id:string;customer_id:string;conversation_id:string|null;
  revision:number;request_hash:string;verified_plan_ready:boolean;
- created_at:Date|string;
 }
 type RelationRow={proposals:string|null;events:string|null;reviews:string|null;revisions:string|null;approvals:string|null};
 type BindingRow={shop_id:string;oa_id:string;customer_id:string;conversation_id:string};
@@ -66,10 +65,12 @@ export async function readPendingUpdates(db:SqlConnection,scope:PendingUpdatesSc
    'FROM core_revisions initial JOIN core_revisions current ON current.order_id=initial.order_id '+
    'WHERE initial.order_id=$1 AND initial.revision=1 AND current.revision=$2',[scope.order_id,scope.revision]);
   const rev=history.rows[0];
-  if(!rev||history.rows.length!==1||rev.revision!==scope.revision||rev.request_hash!==scope.request_hash||
-     !Array.isArray(rev.initial_ids)||!Array.isArray(rev.current_ids)||
-     rev.initial_ids.some(x=>typeof x!=='string')||rev.current_ids.some(x=>typeof x!=='string')||
-     rev.initial_ids.some(x=>!rev.current_ids.includes(x)))
+  if(!rev||history.rows.length!==1||rev.revision!==scope.revision||rev.request_hash!==scope.request_hash)
+   return unknown();
+  const initialIds=rev.initial_ids,currentIds=rev.current_ids;
+  if(!Array.isArray(initialIds)||!Array.isArray(currentIds)||
+     initialIds.some(x=>typeof x!=='string')||currentIds.some(x=>typeof x!=='string')||
+     initialIds.some(x=>!currentIds.includes(x)))
    return unknown();
   // Distinguish two unapproved orders in one chat (including manual staff drafts).
   // The server verifies tenant/customer/conversation, never the browser's selected order.
@@ -77,12 +78,12 @@ export async function readPendingUpdates(db:SqlConnection,scope:PendingUpdatesSc
    'SELECT '+
    '(SELECT MAX(a.created_at) FROM core_approvals a JOIN core_orders old ON old.id=a.order_id '+
    'WHERE old.shop_id=$2 AND old.customer_id=$3 AND old.conversation_id=$4 AND old.id<>$1 '+
-   'AND a.created_at <=$5::timestamptz) AS previous_approved_at,'+
+   'AND a.created_at <=(SELECT created_at FROM core_orders WHERE id=$1)) AS previous_approved_at,'+
    '(SELECT MIN(a.created_at) FROM core_approvals a WHERE a.order_id=$1) AS approved_at,'+
    '(SELECT COUNT(*)::int FROM core_orders o WHERE o.shop_id=$2 AND o.customer_id=$3 '+
    'AND o.conversation_id=$4 AND o.manual_lock=false AND o.print_closed=false '+
    'AND NOT EXISTS(SELECT 1 FROM core_approvals a WHERE a.order_id=o.id)) AS open_count',
-   [scope.order_id,scope.shop_id,scope.customer_id,scope.conversation_id,scope.created_at]);
+   [scope.order_id,scope.shop_id,scope.customer_id,scope.conversation_id]);
   const window=boundary.rows[0];if(!window)return unknown();
   const openCount=dbSafeInteger(window.open_count,'pending.open_count');
   if(openCount>1)return unknown();
@@ -94,7 +95,7 @@ export async function readPendingUpdates(db:SqlConnection,scope:PendingUpdatesSc
     "SELECT count(*)::int AS n FROM zalo_inbound_events e "+
     "WHERE e.oa_id=$1 AND e.customer_id=$2 AND e.conversation_id=$3 "+
     "AND e.event_id=ANY($4::text[]) AND e.received_at<=$5::timestamptz",
-    [binding.oa_id,binding.customer_id,binding.conversation_id,rev.current_ids,window.previous_approved_at]);
+    [binding.oa_id,binding.customer_id,binding.conversation_id,currentIds,window.previous_approved_at]);
    if(!old.rows[0]||dbSafeInteger(old.rows[0].n,'pending.old_events')>0)return unknown();
   }
   // Current revision must contain every inbound event it claims was reviewed.

@@ -443,8 +443,7 @@ export class OrderService {
    const pendingUpdates=await readPendingUpdates(db,{
     order_id:id,shop_id:o.shop_id,customer_id:o.customer_id,
     conversation_id:o.conversation_id,revision:current.revision,
-    request_hash:current.request_hash,verified_plan_ready:verifiedPlan!==null,
-    created_at:o.created_at
+    request_hash:current.request_hash,verified_plan_ready:verifiedPlan!==null
    });
    return {order:o,revisions:revisions.rows,jobs:jobRows,quote,received_vnd:received,
     receivable_vnd:Math.max(0,(quote?.amount_vnd??0)-received),
