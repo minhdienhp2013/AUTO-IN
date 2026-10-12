@@ -99,6 +99,21 @@ test('REAL PostgreSQL: verified synthetic webhook file → one staff draft → A
   assert.equal(catalog.previews.length,catalog.preview_count);
   assert.equal(catalog.previews[0].index,0);
   assert.equal(catalog.previews[0].content_type,'image/png');
+  assert.ok(Array.isArray(catalog.files),'AI3 must supply verified per-file document facts');
+  assert.equal(catalog.files.length,1);
+  const fact=catalog.files[0];
+  assert.deepEqual({
+    index:fact.index,label:fact.label,format:fact.format,
+    document_pages:fact.document_pages,printed_faces:fact.printed_faces,
+    physical_sheets:fact.physical_sheets,copies:fact.copies,
+    paper:fact.paper,duplex:fact.duplex,orientation:fact.orientation
+  },{
+    index:0,label:'Tài liệu 1',format:'PNG',
+    document_pages:1,printed_faces:2,physical_sheets:2,copies:2,
+    paper:'A4',duplex:false,orientation:'portrait'
+  });
+  assert.ok(!JSON.stringify(catalog.files).includes('doc-'),
+    'Verified per-file response must not expose private source paths or hashes');
   assert.equal(catalog.previews[0].url,
     '/api/v1/orders/'+draft.order_id+'/revisions/2/previews/0');
   assert.ok(!JSON.stringify(catalog).includes('/doc-'),'Catalog cannot expose source/manifest paths');
@@ -118,6 +133,20 @@ test('REAL PostgreSQL: verified synthetic webhook file → one staff draft → A
     [draft.order_id])).rows[0];
   const manifest=JSON.parse(await readFile(join(output,metadata.artifact_ref),'utf8'));
   const rendered=join(output,manifest.previews[0].ref);
+  // Even if preview PNG is still intact, mutated SOURCE invalidates per-file
+  // verified counts and rejects the complete catalog.
+  const outputSource=join(output,manifest.files[0].source_artifact_ref);
+  const originalSource=await readFile(outputSource);
+  await chmod(outputSource,0o600);
+  await writeFile(outputSource,Buffer.from('CORRUPTED_VERIFIED_SOURCE'));
+  const changedSource=await app.inject({method:'GET',url:catalogUrl,
+    headers:{authorization:'Bearer '+login.token}});
+  assert.equal(changedSource.statusCode,409);
+  assert.equal(changedSource.json().error.code,'DOCUMENT_SOURCE_CHANGED');
+  await writeFile(outputSource,originalSource);
+  const restored=await app.inject({method:'GET',url:catalogUrl,
+    headers:{authorization:'Bearer '+login.token}});
+  assert.equal(restored.statusCode,200);
   await chmod(rendered,0o600);await writeFile(rendered,Buffer.from('broken after verified plan'));
   const brokenCatalog=await app.inject({method:'GET',url:catalogUrl,
     headers:{authorization:'Bearer '+login.token}});
