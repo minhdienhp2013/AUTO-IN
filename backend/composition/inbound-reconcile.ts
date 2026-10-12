@@ -1,5 +1,5 @@
 import { assertOwner, canonical, idempotencyHash, DomainError, sha, type Principal } from '../core/model.js';
-import type { SqlPool, SqlConnection } from '../storage/database.js';
+import type { SqlPool } from '../storage/database.js';
 import type { SyntheticArtifactScope } from './synthetic-ingest.js';
 import { prepareSyntheticInboundDraft } from './inbound-draft.js';
 
