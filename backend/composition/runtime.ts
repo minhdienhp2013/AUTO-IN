@@ -5,7 +5,7 @@ import { DomainError, type Principal } from '../core/model.js';
 import type { SqlPool } from '../storage/database.js';
 import type { RouteRegistrar } from '../api/routes.js';
 import { ingestSyntheticArtifact, type SyntheticArtifactScope } from './synthetic-ingest.js';
-import { loadVerifiedOrderPreview } from './preview.js';
+import { loadVerifiedOrderPreview, loadVerifiedOrderPreviewCatalog } from './preview.js';
 import { createSyntheticInboundDraft } from './inbound-draft.js';
 import { reconcileSyntheticInboundDraft } from './inbound-reconcile.js';
 
@@ -115,6 +115,18 @@ export function buildIntegratedApp(options: RuntimeOptions) {
       options.syntheticArtifactIngest.artifactRoot,options.syntheticArtifactIngest.scope,
       actor,{...body,event_id:eventId});
     return reply.code(200).send(outcome);
+  });
+  app.get('/api/v1/orders/:order_id/revisions/:revision/previews', async (request, reply) => {
+    if (!options.previewArtifactRoot) throw new DomainError('FEATURE_UNAVAILABLE', 'Verified preview unavailable', 503);
+    const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    const params = request.params as {order_id:string;revision:string};
+    const catalog = await loadVerifiedOrderPreviewCatalog(options.pool,
+      options.previewArtifactRoot,actor,params.order_id,Number(params.revision));
+    return reply.header('Cache-Control','no-store')
+      .header('X-Content-Type-Options','nosniff')
+      .header('Content-Security-Policy',"default-src 'none'")
+      .send(catalog);
   });
   app.get('/api/v1/orders/:order_id/revisions/:revision/previews/:index', async (request, reply) => {
     if (!options.previewArtifactRoot) throw new DomainError('FEATURE_UNAVAILABLE', 'Verified preview unavailable', 503);
