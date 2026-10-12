@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { assertOwner, canonical, idempotencyHash, DomainError, sha, type Principal } from '../core/model.js';
 import type { SqlPool } from '../storage/database.js';
 import type { SyntheticArtifactScope } from './synthetic-ingest.js';
@@ -98,6 +99,12 @@ export async function reconcileSyntheticInboundDraft(
       'AND status=\'PENDING\' AND order_id IS NULL RETURNING order_id',
       [scope.shop_id,scope.oa_id,settings.event_id,result.order_id]);
     if (updated.rowCount!==1) return conflict('DRAFT_RESERVATION_CONFLICT');
+    await conn.query(
+      'INSERT INTO core_audit(id,shop_id,actor_id,action,order_id,details) '+
+      'VALUES($1,$2,$3,$4,$5,$6::jsonb)',
+      [randomUUID(),scope.shop_id,actor.id,'ai0.synthetic_draft.reconciled',
+        result.order_id,JSON.stringify({oa_id:scope.oa_id,event_id:settings.event_id,
+          original_actor_id:reservation.actor_id,created_new_order:false})]);
     await conn.query('COMMIT');
     return {status:'recovered',order_id:result.order_id,
       revision:order.active_revision,requires_customer_confirmation:true,
