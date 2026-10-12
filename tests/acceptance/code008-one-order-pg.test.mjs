@@ -230,3 +230,44 @@ test('C008-PG-06: delayed old event with forged future provider clock cannot cre
  assert.equal(await f.count('core_orders'),1);
  assert.equal(await f.count('core_print_jobs'),1,'No implicit second print from old delayed message');
 }));
+
+
+test('C008-PG-07: two independent approval workers cannot bypass a committed pre-approval signed file',{skip,timeout},()=>withSignedConversation(async f=>{
+ const original=await f.original();await f.confirm(original.orderId);
+ const eid='committed-pending-'+rand();
+ assert.equal((await f.webhook(eid,{kind:'image',occurred_at:new Date(Date.now()+180000).toISOString()})).status,'accepted');
+ // Each Core tx gets its own PostgreSQL connection through its Pool.
+ const results=await Promise.allSettled([0,1].map(n=>f.core.service.approve(f.staff,original.orderId,{
+  expected_revision:2,acknowledge_deposit_shortage:false,idempotency_key:'worker-'+n+'-'+rand()
+ })));
+ assert.equal(results.length,2);
+ assert.equal(results.filter(x=>x.status==='fulfilled').length,0,'NO worker may approve ahead of pending event');
+ for(const r of results)assert.ok(r.status==='rejected'&&r.reason?.code==='P0001'&&
+  String(r.reason?.message).includes('AI0_PENDING_INBOUND_REVIEW'),
+  'Expected durable PostgreSQL transaction admission blocker');
+ assert.equal(await f.count('core_orders'),1);
+ assert.equal(await f.count('core_approvals'),0);
+ assert.equal(await f.count('core_print_jobs'),0);
+ assert.equal((await f.pool.query('SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',
+  [f.oa,eid])).rows[0].n,1);
+}));
+
+test('C008-PG-08: ambiguous multi-open same conversation stays HELD, not silently merged or approved',{skip,timeout},()=>withSignedConversation(async f=>{
+ await f.original();
+ const second=await f.core.service.createDraft(f.staff,{
+  customer_id:f.customer,conversation_id:f.conversation,
+  request_data:{documents:[{filename:'explicit-separate-staff-order.pdf',copies:1}]},
+  idempotency_key:'staff-created-separate-'+rand()
+ });
+ assert.ok(second.order_id);
+ assert.equal(await f.count('core_orders'),2);
+ const eid='ambiguous-'+rand();
+ assert.equal((await f.webhook(eid,{text:'Thêm một bản'})).status,'accepted');
+ const result=await f.propose(eid,'Thêm một bản');
+ assert.equal(result.status,'stale_generation','Ambiguous event is held for HUMAN identification');
+ assert.equal(await f.count('core_orders'),2);
+ assert.equal(await f.count('core_approvals'),0);
+ assert.equal(await f.count('core_print_jobs'),0);
+ assert.equal((await f.pool.query('SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',
+ [f.oa,eid])).rows[0].n,1);
+}));
