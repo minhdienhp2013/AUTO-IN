@@ -13,11 +13,10 @@ const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 
 /** Only invoked for requests pointing to a private AI0 synthetic snapshot.
  * Native/manual processor tests with ordinary local fixture filenames remain independent. */
-export async function verifyBoundSourceForPlan(
-  pool: SqlPool, scope: {shop_id:string;order_id:string}, requestData: unknown,
-  inputRoot: string, artifactRoot: string,
-  artifactRef: string, expectedManifestSha: string
-): Promise<void> {
+async function resolveBoundSource(
+  pool: SqlPool, scope: {shop_id:string;order_id:string},
+  requestData: unknown, inputRoot: string
+): Promise<{sha256:string}> {
   if (!requestData || typeof requestData !== 'object' || Array.isArray(requestData)) return fail();
   const documents=(requestData as {documents?:unknown}).documents;
   if (!Array.isArray(documents) || documents.length!==1 ||
@@ -39,6 +38,23 @@ export async function verifyBoundSourceForPlan(
   if (frozen.customer_id!==linked.customer_id ||
       frozen.conversation_id!==linked.conversation_id ||
       ref!==frozen.artifact_ref) return fail();
+  return {sha256:frozen.sha256};
+}
+/** Must verify the registered input before invoking an image/PDF parser. */
+export async function verifyBoundSourceBeforeRender(
+  pool: SqlPool, scope: {shop_id:string;order_id:string},
+  requestData: unknown, inputRoot: string
+): Promise<void> {
+  await resolveBoundSource(pool,scope,requestData,inputRoot);
+}
+/** Repeat source verification after rendering and compare AI3's output digest.
+ * Source mutation mid-render must never reach AI1 publishVerifiedPlan. */
+export async function verifyBoundSourceForPlan(
+  pool: SqlPool, scope: {shop_id:string;order_id:string}, requestData: unknown,
+  inputRoot: string, artifactRoot: string,
+  artifactRef: string, expectedManifestSha: string
+): Promise<void> {
+  const frozen=await resolveBoundSource(pool,scope,requestData,inputRoot);
   if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(artifactRef) ||
       artifactRef.includes('..') || !/^[a-f0-9]{64}$/.test(expectedManifestSha))
     return fail();
