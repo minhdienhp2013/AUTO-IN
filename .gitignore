@@ -1,0 +1,32 @@
+# Secrets and local/customer data
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+data/
+uploads/
+customer-files/
+*.log
+
+# Runtime/build/cache
+node_modules/
+dist/
+build/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+coverage/
+.DS_Store
+Thumbs.db
+
+
+# CODE-000 build/development outputs
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example

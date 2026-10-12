@@ -1,0 +1,47 @@
+{
+  "job_id": "job_demo",
+  "order_id": "order_demo",
+  "revision": 1,
+  "request_hash": "565ec8c44b818f116999c10f89872d14876581d7eed53176a5ae96b1430df12c",
+  "approval_id": "approval_demo",
+  "printer_id": "RMP7000",
+  "mode": "simulation",
+  "state": "SIMULATED_DONE",
+  "counts": {
+    "document_pages": 3,
+    "printed_faces": 3,
+    "physical_sheets": 2
+  },
+  "manifest": {
+    "documents": [
+      {
+        "document_id": "document_demo",
+        "original_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "format": "pdf",
+        "settings": {
+          "printer_id": "RMP7000",
+          "paper": "A4",
+          "orientation": "portrait",
+          "copies": 1,
+          "sides": "duplex",
+          "flip_edge": "long",
+          "scaling": "shrink_to_fit",
+          "color": "monochrome",
+          "page_ranges": [
+            {
+              "from": 1,
+              "to": 3
+            }
+          ],
+          "separate_files": true,
+          "separate_copies": true
+        }
+      }
+    ]
+  },
+  "evidence": {
+    "evidence_kind": "simulated",
+    "journal_id": "journal_demo",
+    "observed_at": "2026-10-11T00:00:00Z"
+  }
+}
