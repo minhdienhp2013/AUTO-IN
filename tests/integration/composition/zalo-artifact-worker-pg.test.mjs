@@ -102,6 +102,15 @@ test('AI0 REAL PG: signed synthetic Zalo image + frozen manifest -> AI3 verified
       [orderId,shop])).rows[0];
     assert.equal(order.active_revision,1);
     assert.equal(order.customer_id,customer);
+    const revision=(await query(
+      'SELECT request_data FROM core_revisions WHERE order_id=$1 AND revision=1',
+      [orderId])).rows[0].request_data;
+    assert.equal(revision.source,'zalo_ai_suggestion');
+    assert.deepEqual(revision.event_ids,[goodId]);
+    assert.equal(revision.text,'[AUTO-IN SYSTEM: ATTACHMENT_ONLY; NO_CUSTOMER_TEXT]',
+      'The system marker must never be presented as actual customer text');
+    assert.ok(!JSON.stringify(revision).includes(good.file_ref),
+      'Client-controlled Zalo file_ref must never become a trusted order path');
     assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_confirmations WHERE order_id=$1',[orderId])).rows[0].n,0);
     assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_approvals WHERE order_id=$1',[orderId])).rows[0].n,0);
     assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[orderId])).rows[0].n,0);
