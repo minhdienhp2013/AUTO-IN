@@ -4,7 +4,7 @@ import {dirname,resolve} from 'node:path';import {fileURLToPath} from 'node:url'
 import {assertSafeDatabase} from './product-adapter.mjs';
 import {requireIsolatedPgEnv} from './integration-preflight.mjs';
 import {requireExactCode405Checkout} from './code405-exact-sha.mjs';
-import {assertVerifiedTapSummary} from './code405-subprocess-evidence.mjs';
+import {assertVerifiedTapSummary,isolatedTestChildEnv} from './code405-subprocess-evidence.mjs';
 const active=process.env.AUTOIN_RUN_PRODUCT_ACCEPTANCE==='1';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
 const cases=[
@@ -25,7 +25,7 @@ for(const [label,name] of cases)test(label,{
  assert.equal(existsSync(filepath),true,'Required AI0 product test missing: '+name);
  const r=spawnSync(process.execPath,['--import','tsx','--test','--test-reporter=tap',filepath],{
   cwd:root,encoding:'utf8',timeout:150000,maxBuffer:4*1024*1024,
-  env:{...process.env,TEST_DATABASE_URL:url,FORCE_COLOR:'0'}
+  env:isolatedTestChildEnv({TEST_DATABASE_URL:url,FORCE_COLOR:'0'})
  });
  const output=(r.stdout??'')+'\n'+(r.stderr??'');
  assert.equal(r.error,undefined,'CODE405 real product test failed to start');
