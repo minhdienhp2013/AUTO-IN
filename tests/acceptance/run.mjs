@@ -20,7 +20,7 @@ const dir=dirname(fileURLToPath(import.meta.url));
 if(productBrowser){try{requireIsolatedPgEnv();requireAi4Build(resolve(dir,'../..'))}catch(e){console.error('BLOCKED exit2: '+e.message);process.exit(2)}}
 if(browser){try{requireAi4Build(resolve(dir,'../..'))}catch(e){console.error('BLOCKED exit2: '+e.message);process.exit(2)}}
 const names=['verify.test.mjs','fixtures.test.mjs','metrics.test.mjs','release-gate.test.mjs',
- 'security.test.mjs','local-http-guard.test.mjs','integration-preflight.test.mjs','browser-build-guard.test.mjs','https-agent-fixture.test.mjs','code405-exact-sha.test.mjs','product-adapter.test.mjs','code405-confirmation-pg.test.mjs','code405-composition-pg.test.mjs','product-205.test.mjs','integrated-webhook.test.mjs'];
+ 'security.test.mjs','local-http-guard.test.mjs','integration-preflight.test.mjs','browser-build-guard.test.mjs','https-agent-fixture.test.mjs','code405-exact-sha.test.mjs','code405-subprocess-evidence.test.mjs','product-adapter.test.mjs','code405-confirmation-pg.test.mjs','code405-composition-pg.test.mjs','product-205.test.mjs','integrated-webhook.test.mjs'];
 if(http)names.push('http-readiness.test.mjs','http-auth.test.mjs','http-webhook.test.mjs');
 if(browser)names.push('browser.test.mjs');
 if(productBrowser)names.push('code405-browser-product.test.mjs');
