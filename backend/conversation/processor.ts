@@ -82,7 +82,9 @@ export class ConversationProcessor {
     if(confirmationIntent(batch)) {
       if(!this.confirmations)return "held";
       const c=await this.confirmations.consider({batch,expected_generation:snap.generation});
-      if(c.status==="candidate"||c.status==="existing")return "processed";
+      if(!c||typeof c!=="object")throw new Error("INVALID_CONFIRMATION_CANDIDATE_RESULT");
+      if((c.status==="candidate"||c.status==="existing")&&
+        typeof c.candidate_id==="string"&&c.candidate_id.length>0)return "processed";
       if(c.status==="pending"||c.status==="needs_human"||
          c.status==="stale_generation")return "held";
       throw new Error("INVALID_CONFIRMATION_CANDIDATE_RESULT");
