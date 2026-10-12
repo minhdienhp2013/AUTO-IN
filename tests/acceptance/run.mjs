@@ -31,7 +31,9 @@ delete env.AUTOIN_RUN_LEGACY_P0;
 if(http)env.AUTOIN_RUN_HTTP_ACCEPTANCE='1';else delete env.AUTOIN_RUN_HTTP_ACCEPTANCE;
 if(!browser)delete env.AUTOIN_WEB_URL;
 if(productBrowser)env.AUTOIN_RUN_CODE405_BROWSER_PRODUCT='1';else delete env.AUTOIN_RUN_CODE405_BROWSER_PRODUCT;
-const r=spawnSync(process.execPath,['--test',...names.map(n=>resolve(dir,n))],{stdio:'inherit',env});
+// Product-backed CODE-008 tests import AI0/AI1/AI2 .ts modules. The root project
+// already pins tsx; without it nested Node v24 fails to import Core .js specifiers.
+const r=spawnSync(process.execPath,['--import','tsx','--test',...names.map(n=>resolve(dir,n))],{stdio:'inherit',env});
 console.log('CODE-205 PG/DRYRUN: '+(integration?'REQUESTED':'NOT RUN'));
 console.log('HTTP: '+(http?'REQUESTED on local integrated simulation':'NOT RUN'));
 console.log('BROWSER: '+(browser?'REQUESTED Chromium only':'NOT RUN'));
