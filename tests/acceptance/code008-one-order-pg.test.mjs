@@ -128,6 +128,10 @@ async function withSignedConversation(fn,{durableWorker=false}={}){
    const retry=await runtime.tick_inbound();
    assert.equal(retry.processed,0,'Re-running AI2 worker after ACK loss must be idempotent');
   };
+  const workerTickNoop=async()=>{
+   assert.ok(runtime,'Require actual AI2 durable worker');
+   return runtime.tick_inbound();
+  };
   const verifiedImage=async eventId=>{
    assert.ok(runtime&&artifactRoot,'Do not pretend image-only event was materialized');
    const imported=await app.inject({method:'POST',url:'/internal/simulation/inbound-artifacts',
@@ -179,7 +183,7 @@ async function withSignedConversation(fn,{durableWorker=false}={}){
   };
   await fn({app,pool,shop,oa,customer,conversation,webhook,propose,original,
    revision,count:table=>count(pool,table,shop),confirm,core,staff,
-   staffToken:ownerSession.token,workerBatch,verifiedImage});
+   staffToken:ownerSession.token,workerBatch,workerTickNoop,verifiedImage});
  }finally{
   if(app)await app.close();
   if(bootstrapped){
@@ -283,7 +287,10 @@ test('C008-PG-02 REQUIRED: signed image + AI3 verified artifact + AI2 durable wo
  assert.equal(await f.count('core_print_jobs'),0);
  // A replayed webhook and worker tick must NEVER change the order revision/job.
  assert.equal((await f.webhook(next,{kind:'image'})).status,'duplicate');
- await f.workerBatch({twoWorkers:true}); // expect NO new intake: asserted below by tick.
+ // Duplicate transport event must not enqueue a fresh batch or re-apply revision.
+ // workerBatch() is only for a newly accepted event; replay has none.
+ const noReplay=await f.workerTickNoop();
+ assert.equal(noReplay.processed,0);
  assert.equal(await f.revision(first.orderId),current);
  assert.equal(await f.count('core_orders'),1);
  assert.equal(await f.count('core_print_jobs'),0);
