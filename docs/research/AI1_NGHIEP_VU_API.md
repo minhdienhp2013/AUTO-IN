@@ -280,3 +280,23 @@ const result=await port.apply_incoming_batch({
 - **Bất biến:** Chỉ một PostgreSQL transaction xử lý danh tính, thời gian nguồn, tìm đúng đơn, khóa order + generation, idempotency, revision; không đổi đơn đã có approval, không kế thừa customer confirmation/quote approval từ revision cũ. `OrderService.approve` vẫn trả `PENDING_INBOUND_REVIEW` HTTP409 và tạo 0 print job khi có dữ liệu chưa đối soát. Không sửa AI0 SQL trigger, tests AI5 hay pipeline AI2.
 - **Test thật:** `tests/integration/core/first-generation-and-print-settings-pg.test.cjs`: 2 `pg.Pool`/PIDs độc lập, generation 7 chưa có control => stale + không tạo control, generation0 hai worker => một đơn, retry/lost ACK, tăng revision cho 3 bản/A3/hai mặt, text không rõ => HOLD, plan/null, approval theo revision và xác nhận thật (fixture credential), đơn mới sau chốt, sự kiện có server receipt trước chốt + provider clock tương lai => HOLD. Staging PR #40 trên AI0 `faa0668c326393cc6a49cfa74fe682a606aeddb1` chạy CI strict+PG; chỉ tính PASS theo đúng SHA CI.
 - **Giao AI0/AI2:** AI0 tiếp tục gọi Port ở đúng signed-worker path sau khi artifact immutable có chứng cứ; AI2 giữ nguyên `needs_review` thành HOLD/NEEDS_HUMAN. AI5 `C008-PG-02` phải nghiệm thu đúng worker tự động, không bỏ test. Chưa có live OA hoặc Ricoh.
+
+## CODE-008 — Read model `current.pending_updates` cho AI4 (13/10/2026)
+
+API sẵn có `GET /api/v1/orders/:order_id`, không thêm HTTP endpoint và không nhận status pending từ client. `OrderService.getOrder` trả thêm `current.pending_updates` được suy ra trong transaction của đơn đang `FOR UPDATE`:
+
+```ts
+current.pending_updates = {
+  order_id: string, revision: number, request_hash: string,
+  status: 'clear' | 'processing' | 'needs_human',
+  unresolved_count: number,
+  items: Array<{kind:'file'|'message';label:string;summary:string;received_at:string|null}>
+}
+```
+
+- `clear`: chỉ sau khi scope OA/server shop/customer/conversation được chứng minh từ `core_ai_draft_proposals`, tất cả ID trong current revision có nguồn `zalo_inbound_events` đúng OA/khách/chat, không có event text/image/file chưa đối soát và print plan của current revision đã được xác minh. Chỉ initial event_ids hoặc `core_order_inbound_reviews` cùng shop/OA/order, đúng revision và event tồn tại trong **reviewed revision** lẫn **current request_data.event_ids** mới được chấp nhận; batch DONE không phải chứng cứ.
+- `processing`: còn event đã nhận bền trước chốt chưa được đưa vào revision hiện tại, hoặc plan chưa được processor xác minh. `unresolved_count` là tổng số event chưa đối soát (không phải số item hiển thị), `items` tối đa 12. Kind/label/summary là nhãn chung do backend tạo, không bao giờ bao gồm nội dung chat, event ID, tên file, path/URL hoặc customer metadata; `received_at` là timestamp của DB hoặc null.
+- `needs_human`: thiếu link shop/OA, conversation không có nguồn, nhiều đơn đang mở cùng shop/khách/chat, không tồn tại bảng source/revision/journal hoặc lịch sử revision sai/mất event nguồn; API không được tự suy đoán `clear`. Lỗi SQL/query trả DomainError `PENDING_READ_UNAVAILABLE` HTTP503, **không** trả trạng thái CLEAR giả. Sự kiện đã nhận bền sau thời điểm staff approve đầu tiên của đơn cũ không quay lại trạng thái pending của chính đơn đó. Với đơn mở tiếp theo, so biên `received_at` với approval của đơn trước để chặn gộp nhầm sự kiện cũ.
+- Read model chỉ hỗ trợ UI và được ghim theo `order_id`, `active_revision`, `request_hash` tại cùng snapshot/row lock; **không** tạo quyền duyệt. `OrderService.approve` và trigger AI0 vẫn kiểm lại ở transaction ghi approval, trả nghiệp vụ `PENDING_INBOUND_REVIEW` (HTTP409) khi còn file/tin chưa đối soát, đảm bảo 0 print job. Không sửa migration hay module AI0/AI2/AI4/AI5.
+- Kiểm chứng AI1: `tests/unit/core/pending-updates.test.cjs` chứng minh sanitize, fail-closed no schema/sai shop/sai revision/SQL failure; `tests/integration/core/pending-updates-pg.test.cjs` chạy hai `pg.Pool` thật với signed-persisted synthetic events, scope OA, journal cũ không hợp lệ, revision/hash mới, pending -> approved gate 409/0-job, race ingress/read và staff approval, nhiều đơn mơ hồ, event sau duyệt, event nhận trước duyệt nhưng lưu chậm, thiếu nguồn, tổng hơn 12 mục bị giới hạn hiển thị. Dùng dữ liệu thử tổng hợp, không gửi Zalo/Ricoh thật.
+- AI0 chỉ cần nhập 2 file sản phẩm AI1 (`backend/core/pending-updates.ts`, `backend/core/service.ts`) và tests sau khi SHA staging pass; API route chi tiết đơn hiện có tự đưa trường mới ra, không thay schema JSON chung khi chưa AI0 phê duyệt. AI4 nên coi `needs_human` và `processing` là khóa nút duyệt; ngay cả `clear` vẫn cần guard duyệt từ server.
