@@ -57,9 +57,9 @@ test('ambiguous and mixed OA, customer or chat never reach a write Port',async()
  };
  const p=processor(orders);
  assert.equal(await p.consume(batch(evt('a','Gửi thêm file, tạo đơn riêng in A4'))),'held');
- assert.equal(await p.consume(batch(evt('a','In A4'),evt('b','In A3',{oa_id:'other'})),'held');
- assert.equal(await p.consume(batch(evt('a','In A4'),evt('b','In A3',{customer_id:'other'})),'held');
- assert.equal(await p.consume(batch(evt('a','In A4'),evt('b','In A3',{conversation_id:'other'})),'held');
+ assert.equal(await p.consume(batch(evt('a','In A4'),evt('b','In A3',{oa_id:'other'}))),'held');
+ assert.equal(await p.consume(batch(evt('a','In A4'),evt('b','In A3',{customer_id:'other'}))),'held');
+ assert.equal(await p.consume(batch(evt('a','In A4'),evt('b','In A3',{conversation_id:'other'}))),'held');
  assert.equal(writes,0);
 });
 test('after-approval/stale generation/unclear target holds source batch without reply',async()=>{
