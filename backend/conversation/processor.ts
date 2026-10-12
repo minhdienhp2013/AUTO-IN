@@ -3,6 +3,7 @@ import type { Batch } from "./batch.ts";
 import {interpretByRules,type DocumentFact} from "./rules.ts";
 import type { GatePort,GateSnapshot } from "./gate.ts";
 import type { AiInterpretation } from "../ai/deepseek.ts";
+import {confirmationIntent,type ConfirmationCandidatePort} from "./confirmation-candidate.ts";
 
 /** AI1 MUST compare expected_generation under its authoritative shop-scoped
  * PostgreSQL row lock in the SAME transaction as each business effect.
@@ -56,10 +57,11 @@ export class ConversationProcessor {
   private readonly orders:OrderDraftPort;
   private readonly reply:ReplyQueuePort;
   private readonly classifier:ClassifierPort|undefined;
+  private readonly confirmations:ConfirmationCandidatePort|undefined;
   constructor(gate:GatePort,documents:DocumentFactsPort,orders:OrderDraftPort,
-    reply:ReplyQueuePort,classifier?:ClassifierPort) {
+    reply:ReplyQueuePort,classifier?:ClassifierPort,confirmations?:ConfirmationCandidatePort) {
     this.gate=gate;this.documents=documents;this.orders=orders;
-    this.reply=reply;this.classifier=classifier;
+    this.reply=reply;this.classifier=classifier;this.confirmations=confirmations;
   }
   private async current(snapshot:GateSnapshot,batch:Batch):Promise<boolean> {
     const now=this.gate.read_verified_batch
@@ -74,6 +76,17 @@ export class ConversationProcessor {
       ? await this.gate.read_verified_batch(batch)
       : await this.gate.read(first.conversation_id);
     if(snap.mode!=="AI")return "held";
+    // CODE-402: a standalone "OK" is never a confirmation. Only the
+    // authenticated, event-bound challenge Port may persist a candidate.
+    // Without that Port we hold for staff; DeepSeek must not infer approval.
+    if(confirmationIntent(batch)) {
+      if(!this.confirmations)return "held";
+      const c=await this.confirmations.consider({batch,expected_generation:snap.generation});
+      if(c.status==="candidate"||c.status==="existing")return "processed";
+      if(c.status==="pending"||c.status==="needs_human"||
+         c.status==="stale_generation")return "held";
+      throw new Error("INVALID_CONFIRMATION_CANDIDATE_RESULT");
+    }
     const {event_ids,key}=batchIdentity(batch);
     // Processing payload is canonical even if a retry reconstructs a batch in a
     // different insertion order. AI1 once() rejects same key with different text.
