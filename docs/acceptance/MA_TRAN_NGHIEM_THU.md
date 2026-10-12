@@ -1,5 +1,31 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
 
+## CODE-405 — AI5 đã đồng bộ patch 7 lỗi, xác minh đúng SHA (12/10/2026)
+
+**AI5 PR #18** giữ nhánh `ai5/dot3-integrated-acceptance`, không reset/sửa sản phẩm. Bản sửa nghiệm thu được đồng bộ **nguyên blob từ AI0 commit `823237342dd9b6d0c1db5430e72b311d197056d9`**: `code405-composition-pg.test.mjs`, `integrated-webhook.test.mjs`, `code405-subprocess-evidence.mjs`, `code405-subprocess-evidence.test.mjs`, `run.mjs`. Không xóa ca test; 7 lỗi cũ là 6 wrapper composition và 1 webhook nested test.
+
+**Root cause:** Node v24 test runner parent kế thừa `NODE_TEST_CONTEXT=child-v8` vào child `node --test` làm child bị bỏ qua và đôi khi exit 0 với output rỗng. Node reporter mặc định là spec không khớp parser TAP cũ. **Fix:** child chạy `--test-reporter=tap` và `isolatedTestChildEnv()` xóa `NODE_TEST_CONTEXT`; `assertVerifiedTapSummary()` yêu cầu output không rỗng, đủ 6 bộ đếm `tests/pass/fail/skipped/cancelled/todo`, `tests>0`, `pass===tests`, tất cả fail/skip/cancelled/todo=0. Không hard-code 1 test: file nguồn có thể nhiều test.
+
+### Bằng chứng chính xác
+
+- **GitHub Actions PUSH đúng AI0 SHA `823237342dd9b6d0c1db5430e72b311d197056d9`:** [CODE checks #38216608448](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38216608448) SUCCESS; [Simulation integration #38216608417](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38216608417) SUCCESS với job [PostgreSQL 114702715075](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38216608417/job/114702715075) và [Chromium 114702714940](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38216608417/job/114702714940) SUCCESS. Git checkout job và AUTOIN_INTEGRATION_SHA đã được đối chiếu đúng SHA; 2 workflow pull_request khác cũng SUCCESS nhưng không dùng thay push.
+- **PostgreSQL CI:** AI1 core **23 PASS/0 FAIL/0 SKIP**, AI2 **50 PASS/0 FAIL/0 SKIP**, composition **20 PASS/0 FAIL/0 SKIP**; AI3 **167 PASS/0 FAIL/1 SKIP**. AI5 `node tests/acceptance/run.mjs --integration`: **80 PASS/0 FAIL/19 SKIP**, gồm **7/7 bài trước FAIL đã PASS**; HTTP `--http`: **54 PASS/0 FAIL/52 SKIP**. SKIP ở runner khác chế độ không chuyển thành PASS.
+- **Chromium product CI:** `web/package-lock.json`, `npm ci`, `VITE_DEMO_MODE=false` build; Fastify + PG synthetic staff session, desktop **1440×900 PASS**, mobile **390×844 PASS**, preview PNG tamper bị từ chối và không tự approve/print/deliver. Không phải iPhone thật.
+- **AI5 local độc lập:** kiểm hash `git hash-object` của **hai blob** `code405-subprocess-evidence.mjs` (`810f1e97dceff534c023ab90fae29bef8892871d`) và test (`1645362c6654201721eb432b30a241f72bfc5769`) **trùng GitHub AI0**. `node --test tests/acceptance/code405-subprocess-evidence.test.mjs tests/acceptance/code405-exact-sha.test.mjs` trên Node v22.16.0: **11 PASS / 0 FAIL / 0 SKIP / 0 CANCELLED / 0 TODO**, trong đó **nested child thật** chạy ≥3 test, không chỉ parse fixture.
+- **Giới hạn nguồn chứng cứ:** không có PostgreSQL server/npm registry/GitHub git DNS để chạy lại toàn repo từ container AI5; PostgreSQL/HTTP/Chromium nói trên là **CI thực thi trên SHA tích hợp AI0**, không phải CI của nhánh AI5 sau sync. 5 blob patch trên nhánh AI5 đã được đối chiếu SHA nguồn; AI0 cần nhập patch vào SHA tích hợp kế tiếp rồi chạy CI đúng SHA để tránh lệch.
+
+| Phạm vi | Trạng thái |
+|---|---|
+| 7 lỗi harness CODE-405 trên tích hợp `823237342dd9b6d0c1db5430e72b311d197056d9` | **PASS 7/7**, không còn FAIL |
+| Bản sửa 5 file trên AI5 branch mới | **COMMITTED**, CI của HEAD nhánh AI5 **NOT RUN** |
+| AI5 local selftest parser + nested child | **11 PASS / 0 FAIL / 0 SKIP** |
+| CODE-405 Zalo confirmed từ credential/challenge verified thực sự | **NOT RUN**: synthetic OK chỉ candidate, không tạo confirmation |
+| Real Zalo OA / Windows Ricoh / iPhone / TN-037 ≥210 đơn trong ≥7 ngày | **NOT RUN / BLOCKED** |
+
+**TN-037 và V1 vẫn BLOCKED**; 7 lỗi kỹ thuật harness đã được sửa không thay cho nghiệm thu kinh doanh, không phát tin OA thật/in Ricoh/merge/deploy.
+
+---
+
 ## CODE-405 — cập nhật kết quả CI SHA mới nhất (12/10/2026)
 
 **AI0 PR #31 đã tiến lên HEAD `fb4af186d62adc3d91848f1306576f07cf35f4ee`.** Bằng chứng của `e16f69a` bên dưới trở thành lịch sử; không lấy kết quả cũ thế chỗ. Các lượt **PUSH đúng SHA mới** đã xác minh:
