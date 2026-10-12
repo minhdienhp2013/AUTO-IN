@@ -18,16 +18,20 @@ test('HTTP-PG-ZALO-02: synthetic raw Fastify webhook writes/dedupes real Postgre
  const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
  const path=resolve(root,'tests/integration/composition/zalo-http-pg.test.mjs');
  assert.equal(existsSync(path),true,'Missing AI0 synthetic raw webhook composition test');
- const r=spawnSync(process.execPath,['--import','tsx','--test',path],{
+ // Node 24 propagates this internal marker to spawned processes; a nested
+ // --test invocation then skips all files while still exiting successfully.
+ const {NODE_TEST_CONTEXT: _nestedTestMarker, ...childEnv}=process.env;
+ const r=spawnSync(process.execPath,['--import','tsx','--test-reporter=tap','--test',path],{
   cwd:root,encoding:'utf8',timeout:120000,maxBuffer:3*1024*1024,
-  env:{...process.env,TEST_DATABASE_URL:url,FORCE_COLOR:'0'}
+  env:{...childEnv,TEST_DATABASE_URL:url,FORCE_COLOR:'0'}
  });
  const output=(r.stdout||'')+'\n'+(r.stderr||'');
  assert.equal(r.error,undefined,'Child synthetic webhook test could not start');
  assert.equal(r.status,0,'Synthetic webhook composition failed: '+output.slice(-1200));
  const values={};
  for(const kind of ['tests','pass','fail','skipped']){
-  const matches=[...output.matchAll(new RegExp('^\\s*(?:#|ℹ)\\s*'+kind+'\\s+(\\d+)\\s*$','gm'))];
+  const label=kind==='skipped'?'skip(?:ped)?':kind;
+  const matches=[...output.matchAll(new RegExp('^\\s*(?:#|ℹ)\\s*'+label+'\\s+(\\d+)\\s*$','gm'))];
   values[kind]=matches.length?Number(matches.at(-1)[1]):null;
  }
  assert.deepEqual(values,{tests:1,pass:1,fail:0,skipped:0},
