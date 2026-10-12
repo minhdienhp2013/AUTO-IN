@@ -9,6 +9,10 @@ export interface GateSnapshot {
 }
 export interface GatePort {
   read(conversation_id: string): Promise<GateSnapshot>;
+  /** Optional trusted bootstrap for the very first verified inbound batch.
+   * Never assume generation zero from an unverified webhook.
+   */
+  read_verified_batch?(batch: import("./batch.ts").Batch): Promise<GateSnapshot>;
 }
 export interface OutboundPort {
   /** Must atomically claim a QUEUED outbound and compare current gate AI+generation.

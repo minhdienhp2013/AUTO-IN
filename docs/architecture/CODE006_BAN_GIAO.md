@@ -79,3 +79,11 @@ server-authorized, event-idempotent draft Port for AI2's `suggest_draft()` and
 `route_human()`; AI3 needs a trusted document inspection Port. Do not schedule
 `tick_inbound()` until both are connected and tested. No actual OA verifier,
 outbound sender, or live printing is configured.
+
+## Bản tích hợp tiếp theo (AI1–AI5)
+
+Nhánh `ai0/code006-ports-integration` nhập mã AI1/AI2/AI3/AI4/AI5 đã bàn giao, bổ sung AI0 composition. Migration chạy AI1 001–004 → AI2 001–002 → AI1 005 → AI0 artifact registry. Synthetic inbound worker chỉ chạy khi có registry riêng và `AUTOIN_ZALO_SYNTHETIC_TICK_MS=1000..60000`; server kiểm đủ bảng trước khi nghe. AI1 draft Port kiểm sự kiện/generation; tài liệu chỉ được AI3 xem khi khớp bản ghi artifact do server kiểm soát, còn file chưa đăng ký chuyển người xử lý. Outbound vẫn khóa, không kết nối OA thật.
+
+Đã tạo `web/package-lock.json` từ npm registry thật: `npm ci`, test, typecheck, build đều đạt cục bộ; workflow CODE checks cũng chạy cài sạch/build web. Python AI3 đạt 140 PASS, 1 SKIP cục bộ. Browser desktop/mobile chưa kiểm được do Chromium trong môi trường này không khởi động. PostgreSQL trên SHA mới cần xác nhận qua Simulation integration CI. Bài thử AI2 `route_human` được đồng bộ với hợp đồng CAS của AI1: generation cũ trả `stale_generation`.
+
+Chưa có đường ingest an toàn để ghi artifact registry, HTTPS agent sản phẩm, browser, OA thật hoặc in thật. Không coi các mục đó là V1 đã nghiệm thu.

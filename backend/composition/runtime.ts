@@ -12,6 +12,7 @@ export interface RuntimeOptions {
   tls?: { key: Buffer; cert: Buffer };
   /** Only AI2's verifier/pipeline may be injected; absent means explicit 503. */
   zaloWebhook?: FastifyPluginAsync;
+  zaloWorkerConfigured?: boolean;
 }
 export function identityResolver(identities: readonly ServiceIdentity[]) {
   for (const identity of identities) {
@@ -71,7 +72,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
   app.get('/health', async () => ({ status: 'ok', mode: 'simulation', live_enabled: false,
     auth_configured: true, configured_operations: ['me', 'listOrders', 'approveOrder', 'claimJob', 'markSending', 'reportJob'],
     registered_routes: registered, zalo_webhook_configured: !!options.zaloWebhook,
-    zalo_worker_configured: false,
+    zalo_worker_configured: options.zaloWorkerConfigured === true,
     processor_configured: false, integration_stage: 'core-http' }));
   if (options.zaloWebhook) app.register(options.zaloWebhook);
   else app.post('/webhooks/zalo', async (_request, reply) => reply.code(503).send({ error: {

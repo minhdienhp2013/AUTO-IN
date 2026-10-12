@@ -75,6 +75,15 @@ export const hasValidApprovalInputs = (order: OrderView): boolean => {
   const mustConfirmPrice = order.total_sheets !== null && order.total_sheets > 150 || order.large_cost_flag;
   return !mustConfirmPrice || order.amount_vnd !== null && order.quote_revision !== null && order.confirmed_quote_revision === order.quote_revision;
 };
+/** Only the paper physically evidenced by the server is eligible for delivery.
+ * AI1 allows inspected partial paper on an UNKNOWN job; UNKNOWN still means
+ * reconciliation is needed and never means that printing completed. */
+export const availableVerifiedSheets = (order: OrderView): number => {
+  if (order.print_state !== 'VERIFIED_DONE' && order.print_state !== 'UNKNOWN') return 0;
+  if (!Number.isSafeInteger(order.verified_sheets) || !Number.isSafeInteger(order.delivered_sheets) ||
+      order.verified_sheets === null || order.verified_sheets < 0 || order.delivered_sheets < 0) return 0;
+  return Math.max(0, order.verified_sheets - order.delivered_sheets);
+};
 export const depositShortfall = (o: OrderView): number => Math.max(0, o.required_deposit_vnd - o.received_vnd);
 export const receivable = (o: OrderView): number | null => o.amount_vnd === null ? null : Math.max(0, o.amount_vnd - o.received_vnd);
 export const isPrintUncertain = (s: PrintState): boolean => ['SENDING', 'SENT_UNVERIFIED', 'UNKNOWN'].includes(s);

@@ -1,4 +1,35 @@
-# AUTO-IN — ma trận nghiệm thu CODE-105
+# AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305
+
+## Trạng thái hiện hành — xác minh lại 2026-10-12
+
+**HEAD mới nhất PR AI0 #25:** `d3e53461a5cc71d0b96b24b069b5240ca9dcd71e` (Draft, chưa merge). **Không có SHA tích hợp mới hơn** ở thời điểm kiểm tra. Bằng chứng dưới đây lấy từ GitHub Actions **PUSH đúng SHA**; AI5 đọc lại job log, không tự nhận đã chạy PostgreSQL mới trong container.
+
+- [Simulation integration — PUSH #38165256655](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38165256655), job `114546378165`: SUCCESS.
+- [CODE checks — PUSH #38165256659](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38165256659): SUCCESS.
+- Không dùng SHA cũ `15c1ac7` hoặc PR-triggered merge ref để thay thế.
+
+| Hạng mục kiểm thử | PASS | FAIL | SKIP / NOT RUN | Mức kết luận |
+|---|---:|---:|---|---|
+| AI1 PostgreSQL/core | 16 | 0 | 0 | CI trên PostgreSQL 18.3 thật |
+| AI2 Zalo unit/integration | 36 | 0 | 0 | Simulation, không phải OA live |
+| Composition Fastify/PostgreSQL | 9 | 0 | 0 | Có 1 bài synthetic raw webhook → PG (signature/scope/dedupe) |
+| AI3 Python documents/printing | 100 | 0 | 1 SKIP | Không tính SKIP thành PASS |
+| AI5 PG/DryRun product | 20 | 0 | 0 | Simulation; không phải Ricoh |
+| HTTP auth (5) + readiness (1) | 6 | 0 | 0 | Anonymous, không chứng minh auth E2E |
+| Full runner --integration | 50 | 0 | 19 SKIP | Legacy/không nối |
+| Full runner --http | 36 | 0 | 40 SKIP | PG tắt, legacy và HTTP-ZALO-01 chưa nối runtime mặc định |
+| AI5 selftest guard Node local | 6 | 0 | 0 | Chỉ fixture/browser preflight, không kết nối sản phẩm |
+| Browser AI4 desktop/mobile | — | — | NOT RUN | AI4 HEAD `dbf4986`: chưa package-lock.json / build |
+| HTTPS agent CLI, ACK mất, crash/restart | — | — | NOT RUN | Thiếu test TLS/token/job riêng từng scenario |
+| OA thật, Ricoh, iPhone, 100 đơn/ngày, 210 đơn/≥7 ngày | — | — | NOT RUN | Chưa có dữ liệu thực địa |
+
+**TN-037: BLOCKED**, chưa đủ tỷ lệ nhận diện ≥90%, tự xử lý ≥80%, tải 100 đơn/ngày, 210 đơn/ít nhất 7 ngày, thiết bị thật và duyệt chủ. Không đánh dấu toàn hệ thống DONE.
+
+AI4 HEAD `dbf4986da7c7786afbaf6e2a5f9871136867cbad` có báo cáo 48/48 UI unit PASS nhưng lockfile/npm ci/typecheck/build chưa đạt; không đổi thành browser PASS. Bộ test mới trên AI5 PR #18 chưa có CI riêng ở HEAD; phải tích hợp và chạy lại khi có SHA mới.
+
+**Các bảng bên dưới là lịch sử tại thời điểm viết trước; phần này là trạng thái mới nhất.**
+
+---
 
 **Mặc định tất cả ca nghiệm thu sản phẩm CHƯA CHẠY.** Fixture PASS không phải bằng chứng phần mềm đúng. Chỉ dùng giấy tờ tổng hợp, không dùng file khách.
 
@@ -65,3 +96,11 @@
 **Release gate bổ sung:** yêu cầu `evidence.integration_sha` 40 ký tự và `evidence.product_runs.pg/http/dryrun/browser` từng mục có `status:'PASS'`, `fail:0`, `skip:0`, `pass >= 1` và **cùng SHA**; các điều kiện nghiệp vụ/thiết bị TN-037 trước đây vẫn giữ nguyên. Một bài SKIP không phải PASS.
 
 **Nguyên tắc báo cáo:** Bất kỳ ca P0 FAIL -> SAFE, không tự gửi in, không tự nhắn OA. File/code AI5 chỉ báo lỗi, chủ module tương ứng sửa. Mọi báo cáo phải ghi SHA, lệnh tái hiện, observed/expected và bằng chứng đã che thông tin nhạy cảm.
+
+## Cập nhật xác minh 2026-10-12
+
+Xem [Bằng chứng SHA 15c1ac7](CODE305_SHA_15c1ac7_EVIDENCE.md). Các bảng NOT RUN ở trên là trạng thái lịch sử trước khi AI0 cấp SHA. Kết quả mới của GitHub Actions **push trực tiếp SHA**: 20 PG/DryRun PASS/0 FAIL/0 SKIP; HTTP auth/readiness 6 PASS/0 FAIL/0 SKIP; 1 bài webhook synthetic Fastify/PostgreSQL PASS. Toàn runner --integration 50 PASS/19 SKIP; --http 36 PASS/40 SKIP (các SKIP không phải kết quả PASS sản phẩm). Browser BLOCKED vì AI4 chưa có package-lock.json. Zalo OA thật, Ricoh thật, iPhone thật và TN-037 vẫn NOT RUN/BLOCKED. Không nâng trạng thái TN-037 dựa trên CI simulation.
+
+## Trạng thái mới trên SHA CODE-006 `d3e53461`
+
+Bảng phía trên và báo cáo `15c1ac7` là lịch sử. Bằng chứng đang có trên [SHA push mới](CODE305_SHA_D3E53461_EVIDENCE.md): AI5 PG/DryRun **20 PASS/0 FAIL/0 SKIP**; HTTP auth/readiness **6 PASS/0 FAIL/0 SKIP**; synthetic raw Fastify→PostgreSQL **PASS** trong 9 ca composition. Toàn runner integration 50 PASS/19 SKIP; HTTP 36 PASS/40 SKIP. Browser desktop/mobile và agent HTTPS fixture mới **NOT RUN**. Zalo OA thật, Ricoh thật, iPhone thật và TN-037 **BLOCKED**. Không lấy kết quả SHA cũ hoặc selftest làm nghiệm thu thực tế.
