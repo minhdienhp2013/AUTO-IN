@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHmac,randomUUID} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {mkdir,mkdtemp,rm} from 'node:fs/promises';
+import {chmod,mkdir,mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {loadVerifiedOrderPreviewCatalog} from '../../../backend/composition/preview.ts';
@@ -79,6 +79,23 @@ test('CODE-007 real HTTP/PG: AI2 signed OK pending, explicit signed button -> AI
     assert.equal(catalog.preview_verified,true);
     assert.equal(catalog.files?.[0]?.physical_sheets,151);
     assert.ok(catalog.preview_count>=1,'AI3 must render a verifiable preview');
+    // A changed *frozen source*, even with intact PNG, revokes every
+    // verified preview and per-file metric. Restore to finish the same order.
+    const planRow=(await pool.query(
+      'SELECT plan FROM core_revisions WHERE order_id=$1 AND revision=2',
+      [orderId])).rows[0].plan;
+    const manifest=JSON.parse(await readFile(join(artifactRoot,planRow.artifact_ref),'utf8'));
+    const source=join(artifactRoot,manifest.files[0].source_artifact_ref);
+    const frozen=await readFile(source);
+    await chmod(source,0o600);
+    await writeFile(source,Buffer.from('SOURCE_CHANGED_AFTER_AI3_RENDER'));
+    await assert.rejects(
+      loadVerifiedOrderPreviewCatalog(sql,artifactRoot,staff,orderId,2),
+      error=>error.code==='DOCUMENT_SOURCE_CHANGED'
+    );
+    await writeFile(source,frozen);
+    assert.equal((await loadVerifiedOrderPreviewCatalog(sql,artifactRoot,staff,orderId,2)).preview_verified,true);
+
     const quote=await core.service.setQuote(staff,orderId,{
       expected_revision:2,amount_vnd:30000,deposit_required_vnd:6000,
       significant_cost:false,idempotency_key:'quote-'+randomUUID()});
@@ -184,6 +201,7 @@ test('CODE-007 real HTTP/PG: AI2 signed OK pending, explicit signed button -> AI
       await pool.query('DELETE FROM core_confirmations WHERE order_id=$1',[orderId]);
       await pool.query('DELETE FROM core_quotes WHERE order_id=$1',[orderId]);
       await pool.query('DELETE FROM core_audit WHERE shop_id=$1',[shop]);
+      await pool.query('DELETE FROM ai0_verified_plan_manifests WHERE shop_id=$1',[shop]);
       await pool.query('DELETE FROM core_revisions WHERE order_id=$1',[orderId]);
       await pool.query('DELETE FROM core_orders WHERE shop_id=$1',[shop]);
       await pool.query('DELETE FROM core_conversation_controls WHERE shop_id=$1',[shop]);
