@@ -36,7 +36,13 @@ let ticking = false;
 let timer: ReturnType<typeof setInterval> | undefined;
 const app = buildIntegratedApp({ pool: asSqlPool(pool), identities,
   ...(tls ? { tls } : {}), ...(zaloRuntime ? { zaloWebhook: zaloRuntime.webhook } : {}),
-  zaloWorkerConfigured: tickMs > 0 });
+  zaloWorkerConfigured: tickMs > 0,
+  ...(zaloRuntime && process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT ? {
+    syntheticArtifactIngest: {
+      artifactRoot: process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT,
+      scope: zaloRuntime.trustedScope
+    }
+  } : {}) });
 app.addHook('onClose', async () => { if (timer) clearInterval(timer); await pool.end(); });
 try {
   await pool.query('SELECT 1 FROM core_shop_settings LIMIT 1');
