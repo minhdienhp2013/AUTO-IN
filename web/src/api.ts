@@ -207,7 +207,7 @@ export class HttpPrintPort implements PrintPort {
   // Backend AI1 has bearer sessions, NOT browser cookie sessions. No persistence,
   // no localStorage and no token in URL: refreshing requires a fresh login.
   private token: string | null = null;
-  constructor(baseUrl = '', fetcher: typeof fetch = fetch) { this.baseUrl = baseUrl; this.fetcher = fetcher; }
+  constructor(baseUrl = '', fetcher: typeof fetch = globalThis.fetch.bind(globalThis)) { this.baseUrl = baseUrl; this.fetcher = fetcher; }
   private async call(path: string, options: RequestInit = {}): Promise<unknown> {
     let response: Response;
     try {
