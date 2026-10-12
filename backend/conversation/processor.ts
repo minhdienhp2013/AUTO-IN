@@ -152,7 +152,7 @@ export class ConversationProcessor {
     if(!await this.current(snap,batch))return "held";
     const useAtomic=!!this.orders.apply_incoming_batch &&
       incoming.intent!=="clarify" &&
-      (decision.intent==="PRINT" || incoming.changes.length>0);
+      (decision.intent==="PRINT" || (decision.intent==="OTHER" && incoming.changes.length>0));
     if(decision.intent==="OTHER"&&!useAtomic)return routeHuman("OUT_OF_SCOPE");
     if(decision.intent==="HUMAN"||decision.handover_reason==="PRICE_QUOTE") {
       const result=await routeHuman(decision.handover_reason??"NEEDS_CLARIFICATION");
