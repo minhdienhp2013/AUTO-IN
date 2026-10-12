@@ -70,3 +70,40 @@ test('AI0 serves only current, staff-scoped, hashed raster previews',async()=>{
     await assert.rejects(loadVerifiedOrderPreviewCatalog(pool,root,actor,orderId,2),{code:'PREVIEW_MANIFEST_CHANGED'});
   } finally {await rm(root,{recursive:true,force:true});}
 });
+
+
+test('AI0 catalog is all-or-nothing: a corrupt second preview blocks even when first is intact',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'autoin-multipage-'));
+  const dir='doc-twoimages123',requestHash='b'.repeat(64);
+  const manifestRef=dir+'/manifest.json',one=dir+'/page-1.png',two=dir+'/page-2.png';
+  let manifestHash='';
+  const pool:SqlPool={
+    async connect(){throw Error('not needed');},
+    async query<T>(_sql:string,args?:unknown[]):Promise<QueryResult<T>>{
+      const rows=args?.[0]===actor.shop_id?[{
+        artifact_ref:manifestRef,manifest_sha256:manifestHash,request_hash:requestHash,
+        plan:{artifact_ref:manifestRef,request_hash:requestHash,ready:true},active_revision:2
+      }]:[];
+      return {rows:rows as T[],rowCount:rows.length};
+    }
+  };
+  try{
+    await mkdir(join(root,dir),{mode:0o700});
+    await writeFile(join(root,one),image);
+    await writeFile(join(root,two),image);
+    const manifest=Buffer.from(JSON.stringify({schema:'ai3.document_bridge.v1',
+      request_hash:requestHash,previews:[
+        {ref:one,sha256:hash(image),bytes:image.length},
+        {ref:two,sha256:hash(image),bytes:image.length}
+      ]}));
+    manifestHash=hash(manifest);
+    await writeFile(join(root,manifestRef),manifest);
+    const before=await loadVerifiedOrderPreviewCatalog(pool,root,actor,orderId,2);
+    assert.equal(before.preview_count,2);
+    await writeFile(join(root,two),Buffer.from('tampered second'));
+    await assert.rejects(loadVerifiedOrderPreviewCatalog(pool,root,actor,orderId,2),
+      {code:'PREVIEW_BYTES_CHANGED'});
+    assert.deepEqual(await loadVerifiedOrderPreview(pool,root,actor,orderId,2,0),image,
+      'An individual page still requires its own hash and staff check');
+  }finally{await rm(root,{recursive:true,force:true});}
+});
