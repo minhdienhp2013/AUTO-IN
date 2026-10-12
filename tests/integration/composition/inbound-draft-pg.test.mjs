@@ -85,6 +85,23 @@ test('REAL PostgreSQL: verified synthetic webhook file → one staff draft → A
   const published=JSON.parse(first.stdout);
   assert.equal(published.revision,2);
   assert.equal(published.requires_reconfirmation,true);
+  const catalogUrl='/api/v1/orders/'+draft.order_id+'/revisions/2/previews';
+  assert.equal((await app.inject({method:'GET',url:catalogUrl})).statusCode,401);
+  const catalogResponse=await app.inject({method:'GET',url:catalogUrl,
+    headers:{authorization:'Bearer '+login.token}});
+  assert.equal(catalogResponse.statusCode,200,JSON.stringify(catalogResponse.json()));
+  assert.equal(catalogResponse.headers['cache-control'],'no-store');
+  const catalog=catalogResponse.json();
+  assert.equal(catalog.preview_verified,true);
+  assert.equal(catalog.revision,2);
+  assert.equal(catalog.order_id,draft.order_id);
+  assert.ok(catalog.preview_count>0 && catalog.preview_count<=15);
+  assert.equal(catalog.previews.length,catalog.preview_count);
+  assert.equal(catalog.previews[0].index,0);
+  assert.equal(catalog.previews[0].content_type,'image/png');
+  assert.equal(catalog.previews[0].url,
+    '/api/v1/orders/'+draft.order_id+'/revisions/2/previews/0');
+  assert.ok(!JSON.stringify(catalog).includes('/doc-'),'Catalog cannot expose source/manifest paths');
   const previewUrl='/api/v1/orders/'+draft.order_id+'/revisions/2/previews/0';
   assert.equal((await app.inject({method:'GET',url:previewUrl})).statusCode,401);
   const previewResponse=await app.inject({method:'GET',url:previewUrl,
@@ -96,6 +113,16 @@ test('REAL PostgreSQL: verified synthetic webhook file → one staff draft → A
   assert.deepEqual(view.subarray(0,8),Buffer.from([137,80,78,71,13,10,26,10]));
   await assert.rejects(loadVerifiedOrderPreview(asSqlPool(pool),output,
     {...staff,shop_id:'other'},draft.order_id,2,0),{code:'PREVIEW_NOT_AVAILABLE'});
+  // The catalog is also invalidated on source preview bytes change, not just per-image access.
+  const metadata=(await pool.query('SELECT artifact_ref FROM ai0_verified_plan_manifests WHERE order_id=$1 AND revision=2',
+    [draft.order_id])).rows[0];
+  const manifest=JSON.parse(await readFile(join(output,metadata.artifact_ref),'utf8'));
+  const rendered=join(output,manifest.previews[0].ref);
+  await chmod(rendered,0o600);await writeFile(rendered,Buffer.from('broken after verified plan'));
+  const brokenCatalog=await app.inject({method:'GET',url:catalogUrl,
+    headers:{authorization:'Bearer '+login.token}});
+  assert.equal(brokenCatalog.statusCode,409);
+  assert.equal(brokenCatalog.json().error.code,'PREVIEW_BYTES_CHANGED');
   const revisions=(await pool.query('SELECT active_revision FROM core_orders WHERE id=$1',[draft.order_id])).rows;
   assert.equal(revisions[0].active_revision,2);
   assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM core_confirmations WHERE order_id=$1',[draft.order_id])).rows[0].n,0);
