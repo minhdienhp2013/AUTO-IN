@@ -251,6 +251,26 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
      return {status:'existing',order_id:match.order_id,revision,
       request_hash:record.rows[0].request_hash,requires_reconfirmation:true};
     }
+    // An event RECEIVED before a staff approval cannot be quietly attached
+    // to a later order even if another draft is now open in the same chat.
+    // Original first-batch replays are already handled above; other old events HOLD.
+    if(list.rows.some(o=>o.approved)){
+     const latest=await db.query<{approved_at:Date|null}>(
+      'SELECT MAX(a.created_at) AS approved_at FROM core_approvals a JOIN core_orders o ON o.id=a.order_id '+
+      'WHERE o.shop_id=$1 AND o.customer_id=$2 AND o.conversation_id=$3',
+      [shopId,customer,conv]);
+     const approvedAt=latest.rows[0]?.approved_at;
+     if(approvedAt){
+      const threshold=new Date(approvedAt).getTime();
+      const delayed=trustedEvents.rows.some(e=>{
+       const received=new Date(e.received_at).getTime();
+       const occurred=new Date(e.occurred_at).getTime();
+       return !Number.isFinite(received)||!Number.isFinite(occurred)||
+        received<=threshold||occurred<=threshold;
+      });
+      if(delayed)return {status:'needs_review'};
+     }
+    }
     if(input.intent==='append_or_create'&&opens.length>1)return {status:'ambiguous'};
     if(input.intent==='append_or_create'&&target&&!target.oa_linked)return {status:'needs_review',order_id:target.id};
     if(input.intent==='append_or_create'&&opens.length===0&&list.rows.some(o=>!o.approved&&
