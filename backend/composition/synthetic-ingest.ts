@@ -111,8 +111,10 @@ export async function ingestSyntheticArtifact(
     // Registered artifacts must remain immutable: only remove the losing scratch directory.
     const row = await pool.query<{ artifact_ref: string }>(
       'SELECT artifact_ref FROM ai0_inbound_document_artifacts WHERE shop_id=$1 AND oa_id=$2 AND event_id=$3',
-      [scope.shop_id,scope.oa_id,file.eventId]).catch(() => ({rows:[]} as {rows:{artifact_ref:string}[]}));
-    if (row.rows[0]?.artifact_ref?.split('/')[0] !== prefix)
+      [scope.shop_id,scope.oa_id,file.eventId]).catch(() => null);
+    // On database uncertainty, retain private bytes for manual reconciliation;
+    // NEVER risk deleting a snapshot whose transaction may have committed.
+    if (row && row.rows[0]?.artifact_ref?.split('/')[0] !== prefix)
       await rm(directory, {recursive:true,force:true});
   }
 }
