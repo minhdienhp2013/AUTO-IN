@@ -51,3 +51,15 @@ jobs:
             sleep 1
           done
           AUTOIN_API_URL=http://127.0.0.1:3000 AUTOIN_ACCEPTANCE_HTTP_SCOPE=local-simulation node tests/acceptance/run.mjs --http
+
+      - name: Build real-backend web UI (demo disabled)
+        working-directory: web
+        env:
+          VITE_DEMO_MODE: 'false'
+        run: |
+          npm ci
+          npm run build
+      - name: Chromium staff-login and PostgreSQL browser E2E (synthetic only)
+        run: |
+          python -m pip install playwright==1.57.0
+          node --import tsx scripts/browser-product.mjs
