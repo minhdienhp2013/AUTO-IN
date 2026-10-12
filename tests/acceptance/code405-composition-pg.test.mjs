@@ -4,6 +4,7 @@ import {dirname,resolve} from 'node:path';import {fileURLToPath} from 'node:url'
 import {assertSafeDatabase} from './product-adapter.mjs';
 import {requireIsolatedPgEnv} from './integration-preflight.mjs';
 import {requireExactCode405Checkout} from './code405-exact-sha.mjs';
+import {assertVerifiedTapSummary,isolatedTestChildEnv} from './code405-subprocess-evidence.mjs';
 const active=process.env.AUTOIN_RUN_PRODUCT_ACCEPTANCE==='1';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
 const cases=[
@@ -22,18 +23,14 @@ for(const [label,name] of cases)test(label,{
  if(process.env.TEST_DATABASE_URL && process.env.TEST_DATABASE_URL!==url)throw Error('CODE405: PG test URLs differ');
  const filepath=resolve(root,'tests/integration/composition',name);
  assert.equal(existsSync(filepath),true,'Required AI0 product test missing: '+name);
- const r=spawnSync(process.execPath,['--import','tsx','--test',filepath],{
+ const r=spawnSync(process.execPath,['--import','tsx','--test','--test-reporter=tap',filepath],{
   cwd:root,encoding:'utf8',timeout:150000,maxBuffer:4*1024*1024,
-  env:{...process.env,TEST_DATABASE_URL:url,FORCE_COLOR:'0'}
+  env:isolatedTestChildEnv({TEST_DATABASE_URL:url,FORCE_COLOR:'0'})
  });
  const output=(r.stdout??'')+'\n'+(r.stderr??'');
  assert.equal(r.error,undefined,'CODE405 real product test failed to start');
  assert.equal(r.status,0,'CODE405 product FAIL '+name+': '+output.slice(-1400));
- const totals={};
- for(const type of ['tests','pass','fail','skipped']){
-  const m=[...output.matchAll(new RegExp('^\\s*(?:#|ℹ)\\s*'+type+'\\s+(\\d+)\\s*$','gm'))];
-  totals[type]=m.length?Number(m.at(-1)[1]):null;
- }
- assert.deepEqual(totals,{tests:1,pass:1,fail:0,skipped:0},
-  'CODE405 requires 1 product PASS, not SKIP or fixture-only '+name);
+ const totals=assertVerifiedTapSummary(output,name);
+ assert.ok(totals.tests>=1,'CODE405 must execute real tests for '+name);
+
 });
