@@ -69,3 +69,14 @@ Ca PG thật sử dụng webhook **fixture có chữ ký**, cố tình gửi vă
 **Phân công thực hiện:** AI1 phụ trách transaction PostgreSQL/active-order lookup/link, revision/idempotency, từ chối cập nhật đơn locked/sent; AI2 nhận diện ý định bổ sung/đơn mới và giữ batch-vs-order rõ ràng, đối thoại hỏi lại; AI0 nối 2 Port và kiểm thử real PG trên một chat có nhiều đợt batch, AI5 nghiệm thu duplicate/two-worker/stale-confirmation. AI4 hiển thị đơn đang xử lý và báo khi cần xác nhận lại. AI1/AI2 không đổi hợp đồng chung nếu chưa được AI0 chốt.
 
 **Trạng thái:** yêu cầu đã chốt và giao, **CHƯA xác nhận code gộp xuyên batch hoàn thành**. Không đánh dấu V1 PASS chỉ vì một batch tạo một draft.
+
+
+### Làm rõ từ chủ cửa hàng: ranh giới là lúc **CHỐT IN**, không phải hết thời gian gom tin
+
+Trong **cùng OA/shop, cùng khách, cùng conversation**, mọi nội dung thuộc yêu cầu in được gửi **trước khi nhân viên chốt in** phải cập nhật **cùng order_id**: file đầu tiên, các file đến sau, số bản, khổ giấy, một/hai mặt và chỉnh sửa. Dù các tin đến sau 60 giây hoặc qua nhiều batch, vẫn không tự tạo đơn mới.
+
+- `CHỐT IN` là hành động **duyệt/chốt đơn để in** có thẩm quyền ở AI1 (approval/print job boundary), **không phải** lúc kết thúc batch Zalo, AI đề xuất báo giá, hay khách vừa nhắn "OK". Trước chốt, mỗi thay đổi tạo phiên bản mới, huỷ hiệu lực xác nhận bản/giá cũ khi cần; sau chốt, đơn bất biến về yêu cầu in, không tự chỉnh sửa hoặc in thêm trên cùng job.
+- Tin/file đến sau chốt in: không nhập vào order/job đã duyệt; nếu đó là yêu cầu in mới thì mở **đơn mới**, còn không rõ thì hỏi lại/chuyển nhân viên. Không tái sử dụng phiên bản xác nhận của đơn trước và không tự tạo lệnh in.
+- Khách nói rõ "tạo đơn riêng" *trước* khi đơn cũ chốt: có thể có hơn một đơn trong cùng chat; tách theo ý định rõ ràng và phải có mã đơn riêng. Nếu việc bổ sung không rõ thuộc đơn nào thì hỏi lại. Không gộp những tin không liên quan việc in chỉ vì cùng chat.
+- Điều kiện chống đua: nhân viên chốt in đồng thời khách nhắn bổ sung => phải tuần tự hoá bằng PostgreSQL lock/CAS; không được để thông điệp trước chốt thất lạc mà job in bản cũ; nếu không biết thứ tự chắc chắn thì **chặn và nhờ nhân viên xác nhận lại**, không tự in.
+- Nhắc rõ: quy tắc **đã chốt nghiệp vụ, CHƯA được triển khai toàn bộ** trong AI1/AI2. AI5 cần test tin khác batch trước/đúng thời điểm chốt, message replay, song song 2 worker, phát sinh đơn mới sau chốt; không báo PASS nếu chỉ test gom trong 60 giây.
