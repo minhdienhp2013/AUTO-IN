@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { createCoreModule } from '../backend/core/factory.js';
 import { asSqlPool, assertIsolatedSimulationDatabase } from '../backend/composition/postgres.js';
 import { inspectDocumentRequest } from '../backend/composition/processor.js';
+import { verifyBoundSourceForPlan } from '../backend/composition/source-binding.js';
 
 const [shopId, orderId] = process.argv.slice(2);
 if (!shopId || !/^[a-f0-9-]{36}$/i.test(orderId ?? '') || !process.env.DATABASE_URL ||
@@ -26,6 +27,14 @@ try {
     row.request_hash, { inputRoot: process.env.AUTOIN_INPUT_ROOT,
       artifactRoot: process.env.AUTOIN_ARTIFACT_ROOT,
       ...(process.env.AUTOIN_PYTHON ? { python: process.env.AUTOIN_PYTHON } : {}) });
+  const snapshotFiles=(row.request_data as {documents?:{artifact_name?:unknown}[]}|null)?.documents;
+  if (Array.isArray(snapshotFiles) && snapshotFiles.some(file =>
+    typeof file?.artifact_name==='string' && file.artifact_name.startsWith('doc-'))) {
+    await verifyBoundSourceForPlan(asSqlPool(pool),
+      {shop_id:verifiedShopId,order_id:verifiedOrderId},row.request_data,
+      process.env.AUTOIN_INPUT_ROOT,process.env.AUTOIN_ARTIFACT_ROOT,
+      plan.artifact_ref,evidenceHash);
+  }
   const module = createCoreModule({ pool: asSqlPool(pool) });
   const processorId = process.env.AUTOIN_PROCESSOR_ID!;
   const stableKey = createHash('sha256').update(`${verifiedOrderId}:${row.active_revision}:${evidenceHash}`).digest('hex');
