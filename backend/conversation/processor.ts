@@ -4,6 +4,7 @@ import {interpretByRules,type DocumentFact} from "./rules.ts";
 import type { GatePort,GateSnapshot } from "./gate.ts";
 import type { AiInterpretation } from "../ai/deepseek.ts";
 import {confirmationIntent,type ConfirmationCandidatePort} from "./confirmation-candidate.ts";
+import {classifyIncomingOrderBatch,type IncomingOrderChange} from "./order-batch-intent.ts";
 
 /** AI1 MUST compare expected_generation under its authoritative shop-scoped
  * PostgreSQL row lock in the SAME transaction as each business effect.
@@ -13,7 +14,22 @@ import {confirmationIntent,type ConfirmationCandidatePort} from "./confirmation-
 /** Exact AI1 createAiOrderPort() contract, CODE-301 PR #16 / #28. */
 export type DraftResult = {status:"created"|"existing";order_id:string} | {status:"stale_generation"};
 export type HumanRouteResult = {status:"routed"|"already_routed";generation:number} | {status:"stale_generation"};
+/** CODE-008: Core (AI1) must resolve the active order AND append event IDs in
+ * one locked transaction with staff approval. This Port is deliberately optional
+ * until AI0 wires AI1's authoritative implementation. It is never simulated by
+ * creating a new draft in AI2.
+ */
+export type ApplyIncomingBatchResult =
+  | {status:"created"|"existing";order_id:string;active_revision?:number}
+  | {status:"appended";order_id:string;active_revision:number;requires_reconfirmation:true}
+  | {status:"needs_human"|"stale_generation"|"closed"|"ambiguous"};
 export interface OrderDraftPort {
+  apply_incoming_batch?(input:{
+    scope:{oa_id:string;customer_id:string;conversation_id:string};
+    expected_generation:number;event_ids:string[];text:string;
+    idempotency_key:string;intent:"append_or_create"|"explicit_separate";
+    changes:IncomingOrderChange[];
+  }):Promise<ApplyIncomingBatchResult>;
   suggest_draft(data:{conversation_id:string;customer_id:string;expected_generation:number;
     event_ids:string[];text:string;idempotency_key:string}):Promise<DraftResult>;
   route_human(data:{conversation_id:string;expected_generation:number;reason:string;
@@ -89,6 +105,10 @@ export class ConversationProcessor {
          c.status==="stale_generation")return "held";
       throw new Error("INVALID_CONFIRMATION_CANDIDATE_RESULT");
     }
+    const incoming=classifyIncomingOrderBatch(batch);
+    // Never interpret a mixed OA/customer/chat or contradictory batch as a
+    // single order, even when the provider gives it the same 60s batch key.
+    if(incoming.reason==="CONFLICTING_INTENTS")return "held";
     const {event_ids,key}=batchIdentity(batch);
     // Processing payload is canonical even if a retry reconstructs a batch in a
     // different insertion order. AI1 once() rejects same key with different text.
@@ -130,19 +150,46 @@ export class ConversationProcessor {
       }
     }
     if(!await this.current(snap,batch))return "held";
-    if(decision.intent==="OTHER")return routeHuman("OUT_OF_SCOPE");
+    const useAtomic=!!this.orders.apply_incoming_batch &&
+      incoming.intent!=="clarify" &&
+      (decision.intent==="PRINT" || incoming.changes.length>0);
+    if(decision.intent==="OTHER"&&!useAtomic)return routeHuman("OUT_OF_SCOPE");
     if(decision.intent==="HUMAN"||decision.handover_reason==="PRICE_QUOTE") {
       const result=await routeHuman(decision.handover_reason??"NEEDS_CLARIFICATION");
       if(result==="held")return "held";
     }
-    if(decision.intent==="PRINT") {
-      // AI1 performs generation CAS and idempotent draft insert AT the side-effect
-      // boundary: this second gate read alone cannot prevent a concurrent handover.
-      const result=await this.orders.suggest_draft({
-        conversation_id:first.conversation_id,customer_id:first.customer_id,
-        expected_generation:snap.generation,event_ids,text,idempotency_key:key+":draft"
-      });
-      if(draftOutcome(result)==="held")return "held";
+    if(decision.intent==="PRINT"||useAtomic) {
+      if(useAtomic && this.orders.apply_incoming_batch && incoming.intent!=="clarify") {
+        // Trust only persisted event IDs. AI1 must re-read signed ingress rows
+        // and atomically lock the active order/revision and approval boundary.
+        const result=await this.orders.apply_incoming_batch({
+          scope:{oa_id:first.oa_id,customer_id:first.customer_id,
+            conversation_id:first.conversation_id},
+          expected_generation:snap.generation,event_ids,text,
+          idempotency_key:key+":incoming",intent:incoming.intent,
+          changes:incoming.changes
+        });
+        if(!result||typeof result!=="object")throw new Error("AI1_APPEND_PORT_INVALID_RESULT");
+        if(result.status==="stale_generation"||result.status==="needs_human"||
+           result.status==="closed"||result.status==="ambiguous")return "held";
+        if(!["created","existing","appended"].includes(result.status)||
+           typeof result.order_id!=="string"||!result.order_id)
+          throw new Error("AI1_APPEND_PORT_INVALID_RESULT");
+        if(result.status==="appended"&&
+           (!Number.isSafeInteger(result.active_revision)||result.active_revision<1||
+            result.requires_reconfirmation!==true))
+          throw new Error("AI1_APPEND_PORT_INVALID_RESULT");
+      } else {
+        // Legacy first-draft interface remains for existing AI0 composition.
+        // It does NOT implement cross-batch append: AI0's PG guard holds any
+        // subsequent unmatched event until the authoritative Port is wired.
+        if(incoming.intent==="explicit_separate")return "held";
+        const result=await this.orders.suggest_draft({
+          conversation_id:first.conversation_id,customer_id:first.customer_id,
+          expected_generation:snap.generation,event_ids,text,idempotency_key:key+":draft"
+        });
+        if(draftOutcome(result)==="held")return "held";
+      }
     }
     if(!await this.current(snap,batch))return "held";
     if(decision.reply) {
