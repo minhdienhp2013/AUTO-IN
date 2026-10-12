@@ -16,6 +16,8 @@ SHOP = os.environ["AUTOIN_BROWSER_SHOP"]
 USER = os.environ["AUTOIN_BROWSER_USER"]
 PASSWORD = os.environ["AUTOIN_BROWSER_PASSWORD"]
 ORDER = os.environ["AUTOIN_BROWSER_ORDER"]
+PREVIEW_ORDER = os.environ["AUTOIN_BROWSER_PREVIEW_ORDER"]
+EXPECT_TAMPER = os.environ.get("AUTOIN_BROWSER_EXPECT_TAMPER") == "1"
 
 
 def browser_executable() -> str:
@@ -99,6 +101,39 @@ def scenario(browser, width: int, height: int) -> None:
         assert page.locator('[data-testid="api-error"]').count() == 0, (
             "Authenticated product API unexpectedly failed"
         )
+        if mobile:
+            detail.locator(".back-mobile").click()
+            cards.filter(has_text=PREVIEW_ORDER).wait_for(state="visible")
+        cards.filter(has_text=PREVIEW_ORDER).click()
+        detail.locator(".detail-head h2").wait_for(state="visible")
+        assert detail.locator(".detail-head h2").inner_text() == PREVIEW_ORDER
+        gallery = page.locator('[data-testid="verified-preview-gallery"]')
+        gallery.wait_for(state="visible")
+        if EXPECT_TAMPER:
+            gallery.locator('[data-testid="preview-unavailable"]').wait_for(
+                state="visible", timeout=15_000
+            )
+            assert gallery.locator('[data-testid="verified-preview-image"]').count() == 0, (
+                "Tampered raster was shown as verified!"
+            )
+            print(f"PASS Chromium {width}x{height}: tampered hash -> no preview", flush=True)
+        else:
+            image = gallery.locator('[data-testid="verified-preview-image"]')
+            image.wait_for(state="visible", timeout=15_000)
+            assert image.count() == 1
+            assert image.get_attribute("src").startswith("blob:"), (
+                "No bearer token or private file path may be used as img.src"
+            )
+            page.wait_for_function(
+                "() => [...document.querySelectorAll('[data-testid=verified-preview-image]')]"
+                ".every(img=>img.complete && img.naturalWidth>0)",
+                timeout=15000
+            )
+            assert "không phải xác nhận" in gallery.inner_text().lower()
+            print(f"PASS Chromium {width}x{height}: bearer PNG -> ephemeral blob preview", flush=True)
+        assert detail.locator('[data-testid="approve-action"]').is_disabled(), (
+            "Even a SHA-verified raster must NOT approve without customer confirmation"
+        )
         overflow = page.evaluate(
             "() => ({scroll:document.documentElement.scrollWidth,width:window.innerWidth})"
         )
@@ -127,7 +162,7 @@ def main() -> int:
             scenario(browser, 390, 844)
         finally:
             browser.close()
-    print("BROWSER_SCOPE=real_Chromium+Fastify+PostgreSQL; OA/RICOH=NOT_RUN")
+    print("BROWSER_SCOPE=real_Chromium+Fastify+PostgreSQL+hash-bound raster; OA/RICOH=NOT_RUN")
     return 0
 
 
