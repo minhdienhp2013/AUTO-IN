@@ -159,3 +159,20 @@ AI0 cung cấp `GET /api/v1/runtime-status` dành cho nhân viên/chủ đã đ�
 CI `.github/workflows/integration.yml` tách **2 job độc lập**: `postgres` (AI1/AI2/AI3/AI5, Fastify, tài liệu, DryRun) và `product-browser` (Vite `VITE_DEMO_MODE=false`, chromium trên desktop/mobile, Fastify + PostgreSQL test). `product-browser` vẫn là **release-blocking gate**, không được tạm `continue-on-error` hay gắn nhãn SKIP. Tách job là để không ghi sai kết quả PostgreSQL khi lỗi nằm ở UI. CI `check` chạy Chromium DEMO riêng. Lệnh migration cho cả hai PG job chỉ được bật bằng `AUTOIN_ALLOW_PG_ACCEPTANCE=YES_ISOLATED_TEST_DB` và URL localhost `autoin_test_305`.
 
 **Blocker AI4 còn mở:** `web/src/api.ts` dùng default `fetch` không bind rồi gọi `this.fetcher(...)` → trình duyệt không gửi request auth, NETWORK. AI0 đã giao sửa ở PR #15 (bình luận #6117649126 và #6118332767), AI5 phải ghi `product-browser FAIL` tới khi có log chính xác trên SHA tích hợp. Chưa có nghiệm thu Zalo OA, Ricoh, Windows thật hoặc TN-037. Không merge/deploy/in thật.
+
+
+## CODE-006 — Đóng blocker Chromium product login (12/10/2026)
+
+**ĐÃ KHẮC PHỤC và kiểm thử thật**, không còn giữ nhãn `product-browser FAIL` cho commit `1d3ef7f157ea903d6d6bd91dc14334e9866ee1e7`.
+
+Nguyên nhân: AI4 `web/src/api.ts` truyền `fetch` mặc định vào `this.fetcher`, sau đó gọi như method của `HttpPrintPort`. Khi chạy trên Chromium, native `Window.fetch` yêu cầu receiver đúng, xảy ra `Illegal invocation`, HTTP POST đăng nhập không gửi đến Fastify; web hiển thị NETWORK. **Bản vá tích hợp khẩn một dòng theo yêu cầu trực tiếp của chủ**: default `fetcher = globalThis.fetch.bind(globalThis)`. Bản vá chỉ sửa method binding, không thay quyền, nội dung nghiệp vụ, mô hình phiên, không đụng AI1/AI2/AI3. AI4 giữ quyền sở hữu lâu dài `web/**` và phải đồng bộ commit này vào nhánh AI4 trước khi phát triển thêm.
+
+Bằng chứng **đúng SHA `1d3ef7f157ea903d6d6bd91dc14334e9866ee1e7`**:
+- CODE checks push + PR: **2/2 SUCCESS**.
+- Simulation integration PostgreSQL push + PR: **2/2 SUCCESS**.
+- Product-browser Chromium push + PR: **2/2 SUCCESS**.
+- Trình duyệt Chrome headless chạy build thật `VITE_DEMO_MODE=false`, đăng nhập chủ đã bootstrap bằng AI1, qua Fastify localhost và PostgreSQL test biệt lập: **Desktop 1440×900 PASS, mobile 390×844 PASS**. POST `/api/v1/auth/login` thực sự đến Fastify HTTP 200, GET `/api/v1/auth/me`, `/api/v1/orders`, GET chi tiết đơn HTTP 200; preview chưa đủ chứng cứ => nút duyệt disabled. Sau ca test DB chứng minh không tạo xác nhận khách, approval, print job, delivery; không tràn ngang. Không có gọi OA/driver Ricoh.
+- AI0 composition PostgreSQL **18/18 PASS**, Python AI3 **140 PASS / 1 SKIP**, AI5 integration **58 PASS / 19 SKIP**, HTTP **43 PASS / 41 SKIP**.
+- GitHub job tham chiếu: product-browser `https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38208761685/job/114678010061`; PostgreSQL `https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38208761685/job/114678009933`; checks `https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38208761749/job/114678010257`.
+
+**Không suy diễn thành V1 RELEASE:** Zalo OA thật, máy Ricoh/Windows thật, end-to-end in vật lý và tiêu chí TN-037 210 đơn/≥7 ngày vẫn NOT RUN/BLOCKED. V1/PR #31 vẫn Draft; không merge/deploy/in thật khi chưa có phê duyệt.
