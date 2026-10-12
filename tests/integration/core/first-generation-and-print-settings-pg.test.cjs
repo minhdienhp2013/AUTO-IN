@@ -28,6 +28,14 @@ test('REAL PostgreSQL CODE-008 P0: first generation, parameter revisions, approv
   const storeA=new PgStore(a),storeB=new PgStore(b),service=new OrderService(storeA);
   const portA=createOrderSupplementPort({store:storeA,trusted:{shop_id:shop,oa_id:oa},processor});
   const portB=createOrderSupplementPort({store:storeB,trusted:{shop_id:shop,oa_id:oa},processor});
+  const staleConv=key('uninitialized'),staleEvent=key('stale-first');
+  await event(a,oa,staleConv,customer,staleEvent,'In tài liệu bất kỳ');
+  assert.deepEqual(await portA.apply_incoming_batch({
+   conversation_id:staleConv,customer_id:customer,event_ids:[staleEvent],
+   text:'In tài liệu bất kỳ',idempotency_key:key('wrong-gen'),
+   expected_generation:7,intent:'append_or_create',materialized:true
+  }),{status:'stale_generation'});
+  assert.equal((await a.query('SELECT count(*)::int n FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',[shop,staleConv])).rows[0].n,0);
   const first=key('initial');
   await event(a,oa,conv,customer,first,'In tài liệu đầu tiên');
   const initial={conversation_id:conv,customer_id:customer,event_ids:[first],
@@ -62,6 +70,11 @@ test('REAL PostgreSQL CODE-008 P0: first generation, parameter revisions, approv
    assert.equal(row.plan,null);
   }
   assert.equal(revision,4);
+  const spelled=key('spelled');await event(a,oa,conv,customer,spelled,'in ba bản');
+  const unclearCount=await portA.apply_incoming_batch({...initial,event_ids:[spelled],
+   expected_revision:4,text:'in ba bản',idempotency_key:key('spoken-unclear')});
+  assert.equal(unclearCount.status,'needs_review','uncertain spoken quantities must not ACK');
+  await a.query('DELETE FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',[oa,spelled]);
   const ambiguous=key('unclear');await event(a,oa,conv,customer,ambiguous,'in 2 bản khổ A4');
   const hold=await portB.apply_incoming_batch({...initial,event_ids:[ambiguous],
    expected_revision:4,text:'in 2 bản khổ A4',idempotency_key:key('unclear')});
@@ -95,7 +108,12 @@ test('REAL PostgreSQL CODE-008 P0: first generation, parameter revisions, approv
   assert.notEqual(fresh.order_id,orderId);
   assert.equal((await a.query('SELECT count(*)::int n FROM core_orders WHERE shop_id=$1 AND conversation_id=$2',[shop,conv])).rows[0].n,2);
   assert.equal((await a.query('SELECT count(*)::int n FROM core_print_jobs WHERE order_id=$1',[fresh.order_id])).rows[0].n,0);
-
+  const parameterOnly=key('after-approved-parameter');
+  await event(a,oa,conv,customer,parameterOnly,'in 2 bản');
+  const postApprovalSetting=await portA.apply_incoming_batch({...initial,
+   event_ids:[parameterOnly],text:'in 2 bản',idempotency_key:key('post-approval-setting')});
+  assert.equal(postApprovalSetting.status,'needs_review','cannot assume a post-approval setting update is a new order');
+  assert.equal((await a.query('SELECT count(*)::int n FROM core_orders WHERE shop_id=$1 AND conversation_id=$2',[shop,conv])).rows[0].n,2);
   // A provider-clock-future event whose trusted receipt time predates staff approval
   // is a delayed OLD request, not another new order.
   const lagged=key('delayed');
