@@ -186,6 +186,29 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
     const c=control.rows[0];
     if(!c||dbSafeInteger(c.generation,'generation')!==input.expected_generation||c.status!=='AI')
      return {status:'stale_generation'};
+    // Lost ACK of the FIRST draft: initial proposal must not be re-appended as a new revision.
+    // Query inside this same transaction after the trusted generation check.
+    const firstFingerprint=sha(canonical({conversation_id:conv,event_ids:ids}));
+    const original=await db.query<{order_id:string;event_fingerprint:string;content_hash:string}>(
+     'SELECT order_id,event_fingerprint,content_hash FROM core_ai_draft_proposals WHERE shop_id=$1 AND oa_id=$2 AND (event_fingerprint=$3 OR idempotency_key=$4) FOR UPDATE',
+     [shopId,oaId,firstFingerprint,key]);
+    if(original.rows.length){
+     const payload=sha(canonical({conversation_id:conv,customer_id:customer,text:content,
+      expected_generation:input.expected_generation}));
+     const match=original.rows[0];
+     if(original.rows.length!==1||!match||match.event_fingerprint!==firstFingerprint||match.content_hash!==payload)
+      throw new DomainError('AI_DRAFT_IDEMPOTENCY_CONFLICT','Original batch key or event was reused with changed content',409);
+     const latest=await db.query<{active_revision:number}>(
+      'SELECT active_revision FROM core_orders WHERE id=$1 AND shop_id=$2 AND customer_id=$3 AND conversation_id=$4',
+      [match.order_id,shopId,customer,conv]);
+     if(!latest.rows[0])return {status:'needs_review'};
+     const revision=latest.rows[0].active_revision;
+     const record=await db.query<{request_hash:string}>(
+      'SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=$2',[match.order_id,revision]);
+     if(!record.rows[0])return {status:'needs_review'};
+     return {status:'existing',order_id:match.order_id,revision,
+      request_hash:record.rows[0].request_hash,requires_reconfirmation:true};
+    }
     if(input.intent==='append_or_create'&&opens.length>1)return {status:'ambiguous'};
     if(input.intent==='append_or_create'&&opens.length===0&&list.rows.some(o=>!o.approved&&
        (o.manual_lock||o.print_closed)))return {status:'closed'};
