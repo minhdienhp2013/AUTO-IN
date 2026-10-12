@@ -16,3 +16,16 @@
 .verified-preview-grid img{display:block;width:100%;max-height:360px;object-fit:contain;background:white;border-radius:4px}
 .verified-preview-grid figcaption{font-size:10px;color:#60796a;margin-top:8px;text-align:center}
 .verified-previews .preview-disclaimer{font-weight:600;color:#8c6f43}
+
+
+/* Per-file AI3-backed metadata, never a customer confirmation or print receipt. */
+.verified-document-list{margin-top:12px;display:grid;gap:9px}
+.verified-document-list h4{font-size:12px;color:#315142;margin:0 0 3px}
+.verified-document-row{padding:11px;background:white;border-radius:8px;border:1px solid #dfe8e0;min-width:0}
+.verified-document-title{display:flex;gap:8px;align-items:center;color:#315142;font-size:12px;overflow-wrap:anywhere}
+.verified-document-title small{font-size:10px;color:#739381}
+.verified-document-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:10px}
+.verified-document-metrics span{font-size:10px;color:#66816f;overflow-wrap:anywhere}
+.verified-document-metrics b{color:#274e38;font-size:12px}
+.verified-document-row p{font-size:10px;color:#946d3e}
+@media(max-width:520px){.verified-document-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
