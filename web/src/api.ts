@@ -258,7 +258,7 @@ export class HttpPrintPort implements PrintPort {
     const raw = await this.call(`/api/v1/orders/${encodeURIComponent(id)}`);
     return mapCoreOrderDetail(raw);
   }
-  async loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<Blob[]> {
+  async loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{pages:Blob[];files:VerifiedFileFact[]}> {
     const {order_id,revision,request_hash}=order;
     if (!this.token || !/^[0-9a-f-]{36}$/i.test(order_id) ||
         !Number.isSafeInteger(revision) || revision < 1 ||
