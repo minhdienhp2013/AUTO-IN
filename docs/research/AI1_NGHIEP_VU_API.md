@@ -185,3 +185,29 @@ route_human({conversation_id, reason, event_ids, expected_generation})
 **Migrations:** core `001` → `005`, tiếp theo AI2 `001_zalo_durable.sql` và `002_zalo_oa_scope.sql` trước khi dùng Port; AI0 sở hữu runner/runtime. Port là module nội bộ, không đăng ký HTTP mới, giữ nguyên read model AI0/AI4.
 
 **Bằng chứng:** Unit `tests/unit/core/ai-order-port.test.cjs` và PostgreSQL thật hai kết nối `tests/integration/core/ai-order-port-pg.test.cjs`. Ca thực thi gồm retry đồng thời, idempotency conflict, stale trước khi control tồn tại, stale sau HUMAN, cạnh tranh `suggest_draft` vs `route_human`. Xem PR #28 cho CI trên base tích hợp; PR #23 giữ nguyên lịch sử kiểm thử trước đó. Không merge/deploy/gửi OA hay in thật.
+
+## CODE-401 — Port xác nhận khách bằng sự kiện OA có chứng cứ (2026-10-12)
+
+**Chỉ dành cho backend AI0** (không thêm HTTP route; không tạo `Principal customer` hoặc staff giả):
+
+```ts
+import { createVerifiedConfirmationPort } from './backend/core/verified-confirmation-port.js';
+const port = createVerifiedConfirmationPort({store:core.store, trusted:{shop_id: verifiedShopId,oa_id:verifiedOaId}});
+const target = {order_id,expected_revision,request_hash,kind:'request',expected_generation};
+const challenge = await port.issue_challenge(target);
+// {status:'issued',challenge_id,challenge_token,expires_at} | {status:'stale'}
+const committed = await port.confirm_verified_event({...target,event_id:verifiedEventId});
+// {status:'confirmed'|'existing', confirmation_id,order_id,revision,kind,quote_revision} | {status:'stale'}
+```
+
+**Hợp đồng bằng chứng bắt buộc:** AI0 xác minh chữ ký webhook Zalo OA, mapping OA→shop/customer/conversation và **loại postback nút nhấn đồng ý rõ ràng** rồi mới lưu chuẩn hóa vào `zalo_inbound_events` của AI2, với `payload_json.confirmation_postback={kind:'verified_confirmation_accept',challenge_id,challenge_token}`. Đây là dữ liệu **do adapter đáng tin cậy tạo từ postback có chữ ký**, tuyệt đối KHÔNG suy đoán từ text `OK`, `đồng ý`, event ID/metadata người dùng tự điền hay kết quả LLM. AI2 chỉ tạo candidate khi thiếu chứng cứ và HOLD/NEEDS_HUMAN; không tự gọi `OrderService.confirm` bằng Principal dựng giả. AI0 phải chốt và triển khai adapter kí/challenge delivery trước khi gọi Port với OA thật. `challenge_token` là giá trị 256-bit ngẫu nhiên, chỉ sử dụng trong một postback hợp lệ; không ghi secrets vào Git/log, không nhận từ text khách; challenge hiệu lực 10 phút.
+
+**Binding và transaction:** AI1 khóa `core_orders` theo ID, đối chiếu shop, customer, conversation, active revision/hash, manual/closed, khóa `(shop_id,conversation_id)` trong `core_conversation_controls` bằng `FOR UPDATE`, so status=AI/generation; quote challenge buộc `quote_revision` đúng bản giá mới nhất. Port đọc `zalo_inbound_events` theo server-provided OA/event ID, kiểm customer và conversation; khóa challenge, đối chiếu order/revision/hash/kind/quote/customer/generation + SHA-256 token + hạn; ghi `core_confirmations`, `core_verified_confirmation_events`, đánh dấu challenge consumed và audit trong **một transaction**. Các thao tác này không định giá, tạo approval/print job hoặc gửi OA.
+
+**Replay/ACK:** Cùng event ID gọi bởi hai PostgreSQL pools chỉ một xác nhận, lần sau trả `existing` + ID đã commit (khi revision còn hiệu lực). Event khác reuse challenge trả `CONFIRMATION_REPLAY` (409); event đã dùng cho challenge khác trả `CONFIRMATION_EVENT_REPLAY` (409). Wrong OA/shop/customer/conversation, thiếu structured postback hoặc sai token trả 403; sai revision/hash/quote/takeover/generation trả `stale`, không tạo xác nhận. Lost ACK sau thay revision phải trả stale chứ không hồi sinh phiên cũ. Challenge được phát ra **không phải** xác nhận khách.
+
+**Migration 006:** `backend/storage/migrations/006_verified_confirmation.sql` bổ sung bảng `core_confirmation_challenges` và `core_verified_confirmation_events`. `CORE_MIGRATIONS` nay 001→006. Migration chạy trên DB test riêng cùng AI2 001/002; không chạy trong request. Chỉ AI0 nối vào migration runner đã có; không tự đụng `scripts/**` hay `backend/composition/**`.
+
+**Nhắc AI0 và AI2 (cần chốt contract trước wire chung):** [AI0][CODE-007][Bảo đảm `payload_json.confirmation_postback` chỉ do adapter sự kiện postback có chữ ký phát sinh và challenge đã gửi qua OA đúng khách; không dựng từ tin nhắn text, đồng thời inject trusted mapping server vào Port][Thiếu guard này không đủ bằng chứng customer][CI synthetic + negative text/wrong OA/customer/replay trên PG phải PASS]. [AI2][CODE-402][Chỉ tạo confirmation_candidate, giữ raw event signature/provenance cho AI0; không tự ghi core_confirmations][Không giả danh khách][stale và thiếu challenge phải HOLD/NEEDS_HUMAN].
+
+**Kiểm thử:** `npm ci && npm run typecheck && npm run test:core` (trên branch tích hợp); CI PostgreSQL 18.3 trên PR #33 chạy `npm run db:migrate`, `npm run check`, `node tests/acceptance/run.mjs --integration` khi có `TEST_DATABASE_URL`. `tests/integration/core/verified-confirmation-pg.test.cjs` dùng hai pg.Pool, kiểm nhấn chấp nhận rõ ràng, thiếu challenge/text OK, shop/OA/customer sai, replay/lost ACK, sửa revision, takeover, >150 tờ/quote và chỉ staff mới approve. Không dùng synthetic để tuyên bố đã xác minh chữ ký OA thật.
