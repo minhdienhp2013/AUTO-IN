@@ -76,3 +76,19 @@ AI1–AI5 bắt đầu phần độc lập ngay. Ca phụ thuộc CODE-006 chờ
 
 ## CODE-006 — điểm nối được cấp cho AI0
 AI0 sở hữu thêm backend/composition/**, scripts/** và tests/integration/composition/** để nối runtime, migration, processor và kiểm thử tích hợp. Các module AI1–AI5 được nhập nguyên trạng từ SHA đã bàn giao; không đổi chủ file.
+
+
+## Đợt 4 — CODE-401–405 + AI0 CODE-007 (giao 12/10/2026)
+
+[Chi tiết nhiệm vụ/điều kiện an toàn](architecture/CODE007_PHAN_CONG_20261012.md). Nền tham chiếu tích hợp đã có 6/6 CI SUCCESS: `3f0380abed2294fc18d09294cd6a8c9562108710` trên PR #31. Nhánh AI cá nhân không được tự ghi đè code tích hợp; báo AI0 khi cần đồng bộ hợp đồng.
+
+| AI | Mã | Công việc tiếp theo | PR |
+| --- | --- | --- | --- |
+| AI0 | CODE-007 | Chốt credential/event-confirmation contract, composition, PostgreSQL, Chromium/DryRun, gom commit và release gate | #31 |
+| AI1 | CODE-401 | Confirm khách đúng current revision/hash/quote, idempotency+race cùng transaction; API/Port xác thực | #16 |
+| AI2 | CODE-402 | Nhận diện confirmation candidate an toàn từ event, generation/dedupe, không tự xác thực khách | #19 |
+| AI3 | CODE-403 | Kiểm chứng nguồn/manifest/preview bất biến và agent UNKNOWN/ACK/restart bằng DryRun | #20 |
+| AI4 | CODE-404 | Đồng bộ UI đã được AI0 tích hợp; hiển thị confirmation/quote/read model, fail-closed desktop/mobile | #15 |
+| AI5 | CODE-405 | Chạy acceptance đúng integration SHA; PG/HTTP/Chromium/DryRun và ghi rõ LIVE NOT RUN | #18 |
+
+Phạm vi file giữ nguyên bảng CODE-101–105 và bổ sung AI0 `backend/composition/**`, `scripts/**`, `tests/integration/composition/**`; không có file hai chủ. Mỗi AI tự viết và chạy test trong phạm vi, bàn giao commit/PR 6 dòng. Comment PR là kênh lưu giao việc, **không tự khởi động phiên AI khác**. Chưa được merge, deploy, Zalo OA thật hoặc Ricoh thật; chỉ chủ cho phép thử thật.
