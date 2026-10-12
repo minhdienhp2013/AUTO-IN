@@ -6,6 +6,7 @@ and VITE_DEMO_MODE=false npm run build. No real customers/printing/OA.
 from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit
 import shutil
 import sys
 from playwright.sync_api import sync_playwright
@@ -36,6 +37,18 @@ def scenario(browser, width: int, height: int) -> None:
     print(f"PRODUCT BROWSER {width}x{height}: start", flush=True)
     runtime_errors: list[str] = []
     page.on("pageerror", lambda error: runtime_errors.append(str(error)))
+    def report_failed(request):
+        route = urlsplit(request.url).path
+        if route.startswith("/api/"):
+            print(f"PRODUCT BROWSER {width}x{height}: FAILED {request.method} {route} "
+                  f"reason={request.failure}", flush=True)
+
+    page.on("requestfailed", report_failed)
+    page.on("response", lambda response: print(
+        f"PRODUCT BROWSER {width}x{height}: RESPONSE "
+        f"{response.request.method} {urlsplit(response.url).path} {response.status}",
+        flush=True
+    ) if urlsplit(response.url).path.startswith("/api/") else None)
     try:
         api = page.request.get(URL + "api/v1/orders")
         assert api.status == 401, "Anonymous users must not see any order"
