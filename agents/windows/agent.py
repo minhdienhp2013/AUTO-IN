@@ -11,7 +11,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 
 class PrintBlocked(RuntimeError):
@@ -128,6 +128,11 @@ class PrintAgent:
     backend: BackendPort
     journal: Journal
     driver: DriverPort
+    # CODE-403: optional *server-bound* evidence gate. The actual product
+    # backend remains authoritative for approval/revision/manifest binding.
+    # If provided, failure blocks BEFORE durable BOUNDARY/mark-sending/driver.
+    # This callback is NOT taken from a job JSON field or customer/webhook.
+    evidence_gate: Callable[[dict[str, Any]], bool] | None = None
 
     def recover(self) -> list[str]:
         pending = self.journal.unresolved()
@@ -178,6 +183,17 @@ class PrintAgent:
                 or check.get('revision') != job['revision'] or check.get('mode') != 'simulation'
                 or check.get('approval_id') != job['approval_id']):
             return {'status': 'BLOCKED', 'job_id': job['job_id'], 'reason': 'SERVER_PREFLIGHT_DENIED'}
+        if self.evidence_gate is not None:
+            try:
+                # Reject truthy dictionaries such as {"status":"NEEDS_HUMAN"}.
+                # Only an exact boolean True from a trusted evidence verifier
+                # is acceptable. Never grant print approval here.
+                if self.evidence_gate(job) is not True:
+                    return {'status': 'BLOCKED', 'job_id': job['job_id'],
+                            'reason': 'DOCUMENT_EVIDENCE_UNVERIFIED'}
+            except Exception:
+                return {'status': 'BLOCKED', 'job_id': job['job_id'],
+                        'reason': 'DOCUMENT_EVIDENCE_UNVERIFIED'}
         self.journal.begin(job)
         if fault_at == 'before_mark_sending':
             raise SimulatedCrash('before_mark_sending')

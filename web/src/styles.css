@@ -29,3 +29,11 @@
 .verified-document-metrics b{color:#274e38;font-size:12px}
 .verified-document-row p{font-size:10px;color:#946d3e}
 @media(max-width:520px){.verified-document-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* CODE-404: distinct real customer, quote and staff-approval facts */
+.confirmation-evidence {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0;padding:12px;border:1px solid var(--border,#dfe4ea);border-radius:12px;background:var(--surface,#fff)}
+.confirmation-evidence > div {display:flex;flex-direction:column;gap:5px;min-width:0;padding:10px;border:1px solid #e3e8ed;border-radius:9px}
+.confirmation-evidence strong {font-size:.79rem;color:#465260}
+.confirmation-evidence span {font-size:.87rem;line-height:1.5;font-weight:600}
+.confirmation-evidence p {grid-column:1/-1;font-size:.78rem;margin:0;color:#596574;line-height:1.5}
+@media(max-width:760px){.confirmation-evidence{grid-template-columns:1fr}}
