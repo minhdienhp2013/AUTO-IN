@@ -1,7 +1,7 @@
 import Fastify, { type FastifyPluginAsync } from 'fastify';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createCoreModule } from '../core/factory.js';
-import { DomainError, type Principal } from '../core/model.js';
+import { assertStaff, DomainError, type Principal } from '../core/model.js';
 import type { SqlPool } from '../storage/database.js';
 import type { RouteRegistrar } from '../api/routes.js';
 import { ingestSyntheticArtifact, type SyntheticArtifactScope } from './synthetic-ingest.js';
@@ -82,6 +82,30 @@ export function buildIntegratedApp(options: RuntimeOptions) {
     processor_configured: false, preview_configured: !!options.previewArtifactRoot,
     synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
     integration_stage: 'core-http' }));
+  // Authenticated server-owned operation truth for the AI4 product adapter.
+  // Never infer this from the browser environment or anonymous /health.
+  app.get('/api/v1/runtime-status', async (request, reply) => {
+    const token = request.headers.authorization?.startsWith('Bearer ')
+      ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    assertStaff(actor);
+    const settings = await options.pool.query<{mode:string;manual_lock:boolean}>(
+      'SELECT mode,manual_lock FROM core_shop_settings WHERE shop_id=$1',
+      [actor.shop_id]);
+    if (settings.rows.length!==1 || settings.rows[0]?.mode!=='simulation')
+      throw new DomainError('SIMULATION_REQUIRED','Only isolated simulation is configured',409);
+    return reply.header('Cache-Control','no-store')
+      .header('X-Content-Type-Options','nosniff')
+      .send({
+        server_verified: true,
+        mode: 'simulation',
+        live_enabled: false,
+        physical_print_enabled: false,
+        manual_lock: settings.rows[0].manual_lock,
+        preview_configured: !!options.previewArtifactRoot,
+        synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest
+      });
+  });
   app.post('/internal/simulation/inbound-artifacts', async (request, reply) => {
     if (!options.syntheticArtifactIngest) throw new DomainError('FEATURE_UNAVAILABLE', 'Synthetic import unavailable', 503);
     const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
