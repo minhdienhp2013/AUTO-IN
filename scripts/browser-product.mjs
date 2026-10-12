@@ -4,7 +4,7 @@
  */
 import { randomUUID,createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { readFile, stat, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { readFile, stat, mkdtemp, mkdir, writeFile, rm, chmod } from 'node:fs/promises';
 import { resolve, extname, sep, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import pg from 'pg';
@@ -140,6 +140,7 @@ try{
   console.log('PASS real Fastify/PostgreSQL browser UI; staff session; NO customer approval/print job/delivery');
   // Tamper an already-registered preview without touching the sealed manifest.
   // The very same browser UI must now REFUSE that page on both viewports.
+  await chmod(pngPath,0o600); // TEST ONLY: registered fixture was deliberately read-only.
   await writeFile(pngPath,Buffer.from('CORRUPT_AFTER_PUBLISH'));
   const badResult=await new Promise((resolveStatus,reject)=>{
     const child=spawn('python3',['scripts/browser-product.py'],{
