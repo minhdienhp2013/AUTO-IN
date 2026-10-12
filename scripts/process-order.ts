@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { createCoreModule } from '../backend/core/factory.js';
 import { asSqlPool, assertIsolatedSimulationDatabase } from '../backend/composition/postgres.js';
 import { inspectDocumentRequest } from '../backend/composition/processor.js';
-import { verifyBoundSourceForPlan } from '../backend/composition/source-binding.js';
+import { verifyBoundSourceBeforeRender, verifyBoundSourceForPlan } from '../backend/composition/source-binding.js';
 
 const [shopId, orderId] = process.argv.slice(2);
 if (!shopId || !/^[a-f0-9-]{36}$/i.test(orderId ?? '') || !process.env.DATABASE_URL ||
@@ -23,13 +23,17 @@ try {
     [verifiedOrderId, verifiedShopId]);
   const row = result.rows[0];
   if (!row) throw new Error('Simulation order not available');
+  const snapshotFiles=(row.request_data as {documents?:{artifact_name?:unknown}[]}|null)?.documents;
+  const registeredInput=Array.isArray(snapshotFiles) && snapshotFiles.some(file =>
+    typeof file?.artifact_name==='string' && file.artifact_name.startsWith('doc-'));
+  if (registeredInput) await verifyBoundSourceBeforeRender(asSqlPool(pool),
+    {shop_id:verifiedShopId,order_id:verifiedOrderId},
+    row.request_data,process.env.AUTOIN_INPUT_ROOT);
   const { plan, evidenceHash } = await inspectDocumentRequest(row.request_data,
     row.request_hash, { inputRoot: process.env.AUTOIN_INPUT_ROOT,
       artifactRoot: process.env.AUTOIN_ARTIFACT_ROOT,
       ...(process.env.AUTOIN_PYTHON ? { python: process.env.AUTOIN_PYTHON } : {}) });
-  const snapshotFiles=(row.request_data as {documents?:{artifact_name?:unknown}[]}|null)?.documents;
-  if (Array.isArray(snapshotFiles) && snapshotFiles.some(file =>
-    typeof file?.artifact_name==='string' && file.artifact_name.startsWith('doc-'))) {
+  if (registeredInput) {
     await verifyBoundSourceForPlan(asSqlPool(pool),
       {shop_id:verifiedShopId,order_id:verifiedOrderId},row.request_data,
       process.env.AUTOIN_INPUT_ROOT,process.env.AUTOIN_ARTIFACT_ROOT,
