@@ -7,7 +7,7 @@ const evt=(id,text='In A4',extra={})=>({
 });
 const batch=(...events)=>({key:'zalo-batch',first_at:0,deadline_at:60000,events});
 const gate={async read(){return {mode:'AI',generation:7,conversation_id:'chat'}}};
-const documents={async inspect(){return []}};
+const documents={async inspect(batch){return batch.events.filter(e=>e.kind==='image'||e.kind==='file').map(e=>({kind:e.kind==='image'?'image':'pdf',preview_trusted:true}))}};
 function processor(orders,replies=[]){
  return new ConversationProcessor(gate,documents,orders,{async enqueue(item){replies.push(item)}});
 }
