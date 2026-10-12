@@ -1,4 +1,4 @@
-import { actionPath, depositShortfall, hasValidApprovalInputs, validMoney, type ActionKind, type Mutation, type OrderView, type Snapshot, type StaffSession, type OperationMode, type ConversationState } from './domain.ts';
+import { actionPath, depositShortfall, hasValidApprovalInputs, validMoney, type ActionKind, type Mutation, type OrderView, type Snapshot, type StaffSession, type OperationMode, type ConversationState, type VerifiedFileFact } from './domain.ts';
 import { demoOrders, demoSession } from './fixtures.ts';
 
 export class ApiFault extends Error {
@@ -12,7 +12,7 @@ export interface PrintPort {
   listOrders(): Promise<OrderView[]>;
   getOrder(id: string): Promise<OrderView>;
   /** Verified *raster* bytes only; NOT customer confirmation or approval. */
-  loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<Blob[]>;
+  loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{pages:Blob[];files:VerifiedFileFact[]}>;
   mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView>;
   mode(): Promise<OperationMode>;
 }
@@ -273,6 +273,31 @@ export class HttpPrintPort implements PrintPort {
         (catalog.preview_count as number)<1 || (catalog.preview_count as number)>15 ||
         !Array.isArray(entries) || entries.length!==catalog.preview_count)
       throw new ApiFault(409,'PREVIEW_UNVERIFIED','Danh sách ảnh xem trước không khớp phiên bản hiện tại.');
+    const rawFiles=catalog.files;
+    const files:VerifiedFileFact[]=[];
+    if(rawFiles!==undefined){
+      if(!Array.isArray(rawFiles) || rawFiles.length<1 || rawFiles.length>5)
+        throw new ApiFault(409,'PREVIEW_DOCUMENTS_INVALID','Danh sách thông số file chưa được xác minh.');
+      let countSheets=0;
+      for(let i=0;i<rawFiles.length;i++){
+        const file=asObject(rawFiles[i]);
+        const integer=(value:unknown,max:number):value is number=>
+          typeof value==='number'&&Number.isSafeInteger(value)&&value>0&&value<=max;
+        if(file.index!==i||file.label!==`Tài liệu ${i+1}`||
+           typeof file.format!=='string'||!/^(PDF|PNG|JPG|JPEG|TIF|TIFF|WEBP|BMP|DOCX|ZIP)$/.test(file.format)||
+           !integer(file.document_pages,500)||!integer(file.printed_faces,5000)||
+           !integer(file.physical_sheets,5000)||!integer(file.copies,999)||
+           (file.paper!=='A4'&&file.paper!=='A3')||typeof file.duplex!=='boolean'||
+           (file.orientation!=='portrait'&&file.orientation!=='landscape')||
+           !Array.isArray(file.warnings)||file.warnings.length>10||
+           file.warnings.some(w=>typeof w!=='string'||!/^[A-Z0-9_]{1,80}$/.test(w)))
+          throw new ApiFault(409,'PREVIEW_DOCUMENTS_INVALID','Thông số file không khớp hợp đồng kiểm chứng.');
+        files.push(file as unknown as VerifiedFileFact);
+        countSheets+=file.physical_sheets;
+      }
+      if(!Number.isSafeInteger(countSheets)||countSheets<1)
+        throw new ApiFault(409,'PREVIEW_DOCUMENTS_INVALID','Tổng số tờ không đáng tin cậy.');
+    }
     const token=this.token;
     const pages:Blob[]=[];
     const signature=[137,80,78,71,13,10,26,10];
@@ -304,7 +329,7 @@ export class HttpPrintPort implements PrintPort {
     }
     if(this.token!==token)
       throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
-    return pages;
+    return {pages,files};
   }
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView> {
     // AI1 CODE-201 routes now exist, but they require current generation from a
@@ -374,9 +399,9 @@ export class DemoPrintPort implements PrintPort {
     if (!found) throw new ApiFault(404, 'NOT_FOUND', 'Không tìm thấy đơn mô phỏng.');
     return structuredClone(found);
   }
-  async loadVerifiedPreviewPages(): Promise<Blob[]> {
+  async loadVerifiedPreviewPages(): Promise<{pages:Blob[];files:VerifiedFileFact[]}> {
     // Demo images cannot be used as verified processor proof.
-    return [];
+    return {pages:[],files:[]};
   }
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string) {
     this.checkNetwork();
