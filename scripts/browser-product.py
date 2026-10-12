@@ -53,7 +53,9 @@ def scenario(browser, width: int, height: int) -> None:
         cards = page.locator('[data-testid="order-list"] .order-card')
         cards.filter(has_text=ORDER).wait_for(state="visible", timeout=20_000)
         mode = page.locator('[data-testid="operation-mode"]').inner_text()
-        assert "MÔ PHỎNG" in mode, "DB mode was not verified as simulation"
+        assert "CHƯA XÁC MINH" in mode, (
+            "AI4 must fail closed until authoritative staff-mode API is wired"
+        )
         assert page.locator(".simulation-note").count() == 0, (
             "VITE_DEMO_MODE must be false: product API mode only"
         )
