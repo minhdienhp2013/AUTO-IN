@@ -108,8 +108,8 @@ async function withSignedConversation(fn){
     'DELETE FROM core_confirmations WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',
     'DELETE FROM core_quotes WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',
     'DELETE FROM zalo_outbound WHERE shop_id=$1',
-    'DELETE FROM zalo_batch_items WHERE oa_id=$2','DELETE FROM zalo_batches WHERE oa_id=$2',
-    'DELETE FROM zalo_process_queue WHERE oa_id=$2','DELETE FROM zalo_inbound_events WHERE oa_id=$2',
+    'DELETE FROM zalo_batch_items WHERE oa_id=$1','DELETE FROM zalo_batches WHERE oa_id=$1',
+    'DELETE FROM zalo_process_queue WHERE oa_id=$1','DELETE FROM zalo_inbound_events WHERE oa_id=$1',
     'DELETE FROM core_ai_draft_proposals WHERE shop_id=$1',
     'DELETE FROM core_audit WHERE shop_id=$1',
     'DELETE FROM core_revisions WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',
@@ -118,7 +118,7 @@ async function withSignedConversation(fn){
     'DELETE FROM core_sessions WHERE user_id IN (SELECT id FROM core_users WHERE shop_id=$1)',
     'DELETE FROM core_users WHERE shop_id=$1','DELETE FROM core_shop_settings WHERE shop_id=$1'
    ];
-   for(const sql of stmts)await pool.query(sql,sql.includes('$2')?[shop,oa]:[shop]).catch(error=>{
+   for(const sql of stmts)await pool.query(sql,sql.includes('WHERE oa_id=$1')?[oa]:[shop]).catch(error=>{
     throw Error('CODE008 fixture cleanup failed at '+sql+': '+error.message);
    });
   }
@@ -139,7 +139,12 @@ test('C008-PG-01: signed files >60s apart in distinct batches do NOT mint second
  assert.equal(await f.count('core_orders'),1);
  assert.equal(await f.count('core_approvals'),0);
  assert.equal(await f.count('core_print_jobs'),0);
- assert.equal((await f.pool.query('SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1',[f.oa])).rows[0].n,2);
+ const third='third-file-'+rand();
+ assert.equal((await f.webhook(third,{kind:'image'})).status,'accepted');
+ const again=await f.propose(third,'[SYSTEM ATTACHMENT ONLY]');
+ assert.equal(again.status,'stale_generation');
+ assert.equal(await f.count('core_orders'),1);
+ assert.equal((await f.pool.query('SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1',[f.oa])).rows[0].n,3);
 }));
 
 test('C008-PG-02 REQUIRED RED until AI1/AI2 append Port: pre-approval file must create NEW revision and invalidate old confirmation',{skip,timeout},()=>withSignedConversation(async f=>{
