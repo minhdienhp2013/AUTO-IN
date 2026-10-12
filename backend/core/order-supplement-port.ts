@@ -8,6 +8,9 @@ export interface AppendVerifiedEventsInput {
   event_ids:readonly string[]; expected_revision:number;
   idempotency_key:string;
 }
+export type ApplyIncomingBatchResult =
+ | {status:'appended'|'existing'|'created';order_id:string;revision:number;request_hash:string;requires_reconfirmation:true}
+ | {status:'stale_generation'|'stale_revision'|'ambiguous'|'closed'|'needs_review';order_id?:string;current_revision?:number};
 export type AppendVerifiedEventsResult =
  | {status:'appended'|'existing';order_id:string;revision:number;request_hash:string;requires_reconfirmation:true}
  | {status:'stale_revision';current_revision:number};
@@ -30,7 +33,11 @@ function validEvents(input:readonly string[]):string[] {
  * A verified file event is referenced by ID only, not by client-provided file URL.
  * New revision has plan NULL until processor verifies all current files.
  */
-export function createOrderSupplementPort(options:{store:PgStore;trusted:TrustedSupplementScope}) {
+export interface TrustedSeparateIntent {
+ (db:SqlConnection,scope:{shop_id:string;oa_id:string;customer_id:string;conversation_id:string;event_ids:readonly string[]}):Promise<boolean>;
+}
+export function createOrderSupplementPort(options:{store:PgStore;trusted:TrustedSupplementScope;
+ processor?:Principal;verifyExplicitSeparate?:TrustedSeparateIntent}) {
  const {store,trusted}=options;
  if(!store?.tx||!trusted||typeof trusted.shop_id!=='string'||!trusted.shop_id.trim()||
     typeof trusted.oa_id!=='string'||!trusted.oa_id.trim())
@@ -48,7 +55,7 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
    const fingerprint=sha(canonical({order_id:id,event_ids:ids}));
    return store.tx(db=>appendInside(db,actor,{id,conv,customer,ids,key,fingerprint,expected_revision:input.expected_revision}));
   }
-  async function appendInside(db:SqlConnection,actor:Principal,values:{id:string;conv:string;customer:string;ids:string[];key:string;fingerprint:string;expected_revision:number}){
+  async function appendInside(db:SqlConnection,actor:Principal,values:{id:string;conv:string;customer:string;ids:string[];key:string;fingerprint:string;expected_revision:number}):Promise<AppendVerifiedEventsResult>{
    const {id,conv,customer,ids,key,fingerprint}=values;
    const input={expected_revision:values.expected_revision};
     // Lock the same row as staff approve; no update can race between approval and revision.
@@ -122,13 +129,14 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
     return {status:'appended',order_id:id,revision,request_hash:hash,requires_reconfirmation:true as const};
   }
 
-  async function apply_incoming_batch(actor:Principal,input:{
+  async function apply_incoming_batch(input:{
    conversation_id:string;customer_id:string;event_ids:readonly string[];text:string;
    idempotency_key:string;expected_generation:number;expected_revision?:number;
    intent:'append_or_create'|'explicit_separate'; materialized?:boolean;
-  }):Promise<{status:'appended'|'existing'|'created';order_id:string;revision:number;request_hash:string;requires_reconfirmation:true}|
-              {status:'stale_generation'|'stale_revision'|'ambiguous'|'closed'|'needs_review';order_id?:string;current_revision?:number}>{
-   // Identity comes from AI0's authenticated processor resolver, never from AI2's body.
+  }):Promise<ApplyIncomingBatchResult>{
+   // Trusted processor is injected by AI0 at factory time, not passed in by AI2.
+   const actor=options.processor;
+   if(!actor)throw new DomainError('VERIFIED_PROCESSOR_REQUIRED','Missing trusted processor',403);
    assertProcessor(actor);
    if(actor.shop_id!==shopId)throw new DomainError('SUPPLEMENT_SHOP_FORBIDDEN','Wrong tenant',403);
    const conv=bounded(input.conversation_id,'conversation_id',256);
@@ -163,7 +171,15 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
     const opens=list.rows.filter(o=>!o.approved&&!o.manual_lock&&!o.print_closed);
     // Resolve first, then lock order before conversation generation (same order as Core approve).
     const target=input.intent==='append_or_create'&&opens.length===1?opens[0]:null;
-    if(target)await db.query('SELECT id FROM core_orders WHERE id=$1 FOR UPDATE',[target.id]);
+    if(target){
+     const locked=await db.query<{active_revision:number;manual_lock:boolean;print_closed:boolean}>(
+      'SELECT active_revision,manual_lock,print_closed FROM core_orders WHERE id=$1 FOR UPDATE',[target.id]);
+     const actual=locked.rows[0];
+     if(!actual||actual.manual_lock||actual.print_closed)return {status:'closed'};
+     const checked=await db.query('SELECT 1 FROM core_approvals WHERE order_id=$1 LIMIT 1',[target.id]);
+     if(checked.rows.length)return {status:'closed'};
+     target.active_revision=actual.active_revision;
+    }
     const control=await db.query<{status:string;generation:string|number}>(
      'SELECT status,generation FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2 FOR UPDATE',
      [shopId,conv]);
@@ -173,7 +189,25 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
     if(input.intent==='append_or_create'&&opens.length>1)return {status:'ambiguous'};
     if(input.intent==='append_or_create'&&opens.length===0&&list.rows.some(o=>!o.approved&&
        (o.manual_lock||o.print_closed)))return {status:'closed'};
-    if(input.intent==='explicit_separate'&&input.materialized!==true)return {status:'needs_review'};
+    if(input.intent==='explicit_separate'){
+     // A classifier string from AI2 cannot prove the customer requested a separate order.
+     // AI0 must supply evidence from a server-trusted source via a callback.
+     if(!options.verifyExplicitSeparate)return {status:'needs_review'};
+     if(!await options.verifyExplicitSeparate(db,{
+       shop_id:shopId,oa_id:oaId,customer_id:customer,conversation_id:conv,event_ids:ids
+     }))return {status:'needs_review'};
+    }
+    // Durable artifact provenance is mandatory for image/file; AI2's boolean alone is not proof.
+    const media=trustedEvents.rows.filter(e=>e.kind==='image'||e.kind==='file');
+    if(media.length){
+     const relation=await db.query<{relation:string|null}>(
+      "SELECT to_regclass('public.ai0_inbound_document_artifacts')::text AS relation");
+     if(!relation.rows[0]?.relation)return {status:'needs_review',...(target?{order_id:target.id}:{})};
+     const stored=await db.query<{event_id:string}>(
+      'SELECT event_id FROM ai0_inbound_document_artifacts WHERE shop_id=$1 AND oa_id=$2 AND customer_id=$3 AND conversation_id=$4 AND event_id=ANY($5::text[])',
+      [shopId,oaId,customer,conv,media.map(e=>e.event_id)]);
+     if(stored.rows.length!==media.length)return {status:'needs_review',...(target?{order_id:target.id}:{})};
+    }
     const selected=target;
     // Replays are recognized before CAS revision, but never bypass generation check.
     if(selected){
