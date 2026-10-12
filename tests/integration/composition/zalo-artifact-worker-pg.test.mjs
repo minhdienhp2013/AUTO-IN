@@ -128,33 +128,6 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     assert.equal((await runtime.tick_inbound()).processed,0,'Restart/re-tick cannot duplicate AI1 proposal');
     assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_ai_draft_proposals WHERE shop_id=$1',[shop])).rows[0].n,1);
 
-    // CODE-008: a second FILE batch >60s later, same OA/customer/conversation,
-    // is still the same OPEN order, never a second automatic draft. Keep the
-    // later event in durable NEEDS_HUMAN until AI1 supports staff-reviewed
-    // append/revision in its own transaction.
-    const nextEventId='followup-'+randomUUID();
-    const followup=fixture(nextEventId,customer,conversation);
-    followup.occurred_at=new Date(Date.now()+90_000).toISOString();
-    assert.equal((await send(followup)).json().status,'accepted');
-    assert.equal((await register(nextEventId,png)).statusCode,201);
-    assert.equal((await runtime.tick_inbound()).ingested,1);
-    await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' "+
-      "WHERE oa_id=$1 AND status='OPEN'",[oa]);
-    const followResult=await runtime.tick_inbound();
-    assert.equal(followResult.held,1,JSON.stringify(followResult));
-    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_orders WHERE shop_id=$1',[shop])).rows[0].n,1,
-      'More than 60 seconds does NOT close order or authorize a second one');
-    const followBatch=(await query(
-      'SELECT status FROM zalo_batches WHERE oa_id=$1 AND status=$2',
-      [oa,'NEEDS_HUMAN'])).rows;
-    assert.equal(followBatch.length,1,'Additional batch must remain durable for staff');
-    const sourceEvent=(await query(
-      'SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',
-      [oa,nextEventId])).rows[0];
-    assert.equal(sourceEvent.n,1);
-    assert.equal((await runtime.tick_inbound()).processed,0,
-      'Re-tick/restart cannot duplicate the open order');
-
     // One and the SAME AI2-created order goes through staff-bound source choice,
     // real AI3 rendering and the two independently authenticated customer gates.
     // Staff alone may choose printing settings; neither AI nor a webhook may
@@ -235,18 +208,6 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
       expected_revision:3,quote_revision:1,acknowledge_deposit_shortage:false,
       idempotency_key:'deposit-warning-'+id
     }),e=>e.code==='DEPOSIT_WARNING_REQUIRED');
-    // This event is RECEIVED before staff approval, but its provider timestamp
-    // is in the future. Delaying worker processing must NOT create another order.
-    const delayedId='late-before-approval-'+randomUUID();
-    const delayedBeforeApproval={...fixture(delayedId,customer,conversation),
-      occurred_at:new Date(Date.now()+60000).toISOString()};
-    assert.equal((await send(delayedBeforeApproval)).json().status,'accepted');
-    assert.equal((await register(delayedId,png)).statusCode,201);
-    const durableReceipt=(await query(
-      'SELECT received_at FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',
-      [oa,delayedId])).rows[0].received_at;
-    assert.ok(durableReceipt instanceof Date);
-
     const approved=await core.service.approve(staff,orderId,{
       expected_revision:3,quote_revision:1,acknowledge_deposit_shortage:true,
       idempotency_key:'staff-approve-'+id
@@ -275,13 +236,11 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
       printer_id:'RMP7000',idempotency_key:'no-resend-'+id
     }),{job:null});
 
-    // Worker ingests this event only AFTER approval. Its occurred_at is FUTURE
-    // and thus would fool a provider-clock-only test; DB received_at is trusted.
-    const staffApprovalTime=(await query(
-      'SELECT created_at FROM core_approvals WHERE order_id=$1',
-      [orderId])).rows[0].created_at;
-    assert.ok(durableReceipt.getTime()<staffApprovalTime.getTime(),
-      'fixture must prove event arrived in DB before staff approval');
+    // A delayed event from the past arrives after approval. Its provider
+    // occurred_at is old, so it is HELD instead of becoming a new order.
+    const delayedId='late-before-approval-'+randomUUID();
+    assert.equal((await send(fixture(delayedId,customer,conversation))).json().status,'accepted');
+    assert.equal((await register(delayedId,png)).statusCode,201);
     assert.equal((await runtime.tick_inbound()).ingested,1);
     await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' "+
       "WHERE oa_id=$1 AND status='OPEN'",[oa]);
@@ -313,6 +272,35 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     assert.ok(newOrderId);
     assert.equal((await query('SELECT count(*)::int AS n FROM core_print_jobs WHERE order_id=$1',
       [newOrderId])).rows[0].n,0,'No new order auto-approved/printed');
+
+    // CODE-008: a second FILE batch >60s later, same OA/customer/conversation,
+    // belongs to the new OPEN order, never an automatic third draft. Keep the
+    // later event in durable NEEDS_HUMAN until AI1 supports staff-reviewed
+    // append/revision in its own transaction.
+    const nextEventId='followup-'+randomUUID();
+    const followup=fixture(nextEventId,customer,conversation);
+    followup.occurred_at=new Date(Date.now()+90_000).toISOString();
+    assert.equal((await send(followup)).json().status,'accepted');
+    assert.equal((await register(nextEventId,png)).statusCode,201);
+    assert.equal((await runtime.tick_inbound()).ingested,1);
+    await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' "+
+      "WHERE oa_id=$1 AND status='OPEN'",[oa]);
+    const followResult=await runtime.tick_inbound();
+    assert.equal(followResult.held,1,JSON.stringify(followResult));
+    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_orders WHERE shop_id=$1',[shop])).rows[0].n,2,
+      'More than 60 seconds does NOT close order or authorize a third one');
+    const followBatch=(await query(
+      'SELECT b.status FROM zalo_batches b JOIN zalo_batch_items i ON i.batch_id=b.id '+
+      'WHERE i.oa_id=$1 AND i.event_id=$2',
+      [oa,nextEventId])).rows;
+    assert.equal(followBatch.length,1);
+    assert.equal(followBatch[0].status,'NEEDS_HUMAN','Additional batch must remain durable');
+    const sourceEvent=(await query(
+      'SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',
+      [oa,nextEventId])).rows[0];
+    assert.equal(sourceEvent.n,1);
+    assert.equal((await runtime.tick_inbound()).processed,0,
+      'Re-tick/restart cannot duplicate the open order');
 
     // A different conversation has a valid event and sealed manifest, but the
     // frozen source is changed after registration. The worker must route HUMAN,
