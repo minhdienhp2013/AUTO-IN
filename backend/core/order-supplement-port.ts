@@ -150,7 +150,7 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
     throw new DomainError('UNVERIFIED_SEPARATE_INTENT','Unrecognized intent',422);
    if(input.expected_revision!==undefined&&(!Number.isSafeInteger(input.expected_revision)||input.expected_revision<1))
     throw new DomainError('INVALID_SUPPLEMENT_REVISION','Invalid revision',422);
-   return store.tx(async db=>{
+   return store.tx<ApplyIncomingBatchResult>(async db=>{
     // One transaction; shared conversation advisory mutex serializes simultaneous
     // creation/selection by AI2 workers, then order row lock serializes staff approve.
     await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1::text,0))',
@@ -209,14 +209,13 @@ export function createOrderSupplementPort(options:{store:PgStore;trusted:Trusted
      if(stored.rows.length!==media.length)return {status:'needs_review',...(target?{order_id:target.id}:{})};
     }
     const selected=target;
-    // Replays are recognized before CAS revision, but never bypass generation check.
+    // Replays must be checked under the same row lock before revision CAS:
+    // an append committed with lost ACK must return EXISTING, not STALE.
     if(selected){
-     if(input.expected_revision!==undefined&&selected.active_revision!==input.expected_revision)
-      return {status:'stale_revision',order_id:selected.id,current_revision:selected.active_revision};
      if(input.materialized!==true)return {status:'needs_review',order_id:selected.id};
      const fingerprint=sha(canonical({order_id:selected.id,event_ids:ids}));
      return appendInside(db,actor,{id:selected.id,conv,customer,ids,key,fingerprint,
-       expected_revision:selected.active_revision});
+       expected_revision:input.expected_revision??selected.active_revision});
     }
     // Explicit new order only after verified intent or no current open order.
     if(list.rows.length>0&&input.intent!=='explicit_separate')return {status:'closed'};
