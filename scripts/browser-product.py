@@ -116,6 +116,9 @@ def scenario(browser, width: int, height: int) -> None:
             assert gallery.locator('[data-testid="verified-preview-image"]').count() == 0, (
                 "Tampered raster was shown as verified!"
             )
+            assert gallery.locator('[data-testid="verified-document-row"]').count() == 0, (
+                "Tampered snapshot leaked former verified per-file counts"
+            )
             print(f"PASS Chromium {width}x{height}: tampered hash -> no preview", flush=True)
         else:
             image = gallery.locator('[data-testid="verified-preview-image"]')
@@ -124,6 +127,15 @@ def scenario(browser, width: int, height: int) -> None:
             assert image.get_attribute("src").startswith("blob:"), (
                 "No bearer token or private file path may be used as img.src"
             )
+            facts = gallery.locator('[data-testid="verified-document-row"]')
+            facts.wait_for(state="visible")
+            assert facts.count() == 1, "Expected one sealed per-file record"
+            text = facts.first.inner_text()
+            assert all(part in text for part in [
+                "Tài liệu 1", "PNG", "Trang gốc", "Mặt in",
+                "Tờ giấy", "Số bản", "A4", "Một mặt", "Dọc"
+            ]), f"Required per-file facts missing: {text}"
+            assert gallery.locator('[data-testid="document-facts-unavailable"]').count() == 0
             page.wait_for_function(
                 "() => [...document.querySelectorAll('[data-testid=verified-preview-image]')]"
                 ".every(img=>img.complete && img.naturalWidth>0)",
