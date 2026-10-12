@@ -7,6 +7,8 @@ import { createCoreModule } from '../../../backend/core/factory.ts';
 import { createSyntheticZaloIngress } from '../../../backend/composition/zalo-simulation.ts';
 import { buildIntegratedApp } from '../../../backend/composition/runtime.ts';
 import { preflightSyntheticConfirmationCandidate } from '../../../backend/composition/confirmation-candidate.ts';
+import { createVerifiedConfirmationPort } from '../../../backend/core/verified-confirmation-port.ts';
+import { PgStore } from '../../../backend/storage/database.ts';
 
 const url=process.env.TEST_DATABASE_URL;
 
@@ -87,6 +89,47 @@ test('CODE-007 real PG: signed OK requires credential; stale/wrong tenant/genera
       significant_cost:false,idempotency_key:'quote-'+randomUUID()
     });
     assert.equal(setQuote.quote_revision,1);
+    // CODE-007 boundary: even signed raw JSON cannot assert a postback token.
+    // The AI2 normalizer explicitly discards customer-provided extra fields.
+    // AI1 may only confirm a VERIFIED provider-specific button event, which
+    // is NOT enabled in this synthetic text-only Zalo adapter.
+    const confirmationPort=createVerifiedConfirmationPort({
+      store:new PgStore(sql),trusted:{shop_id:shop,oa_id:oa}
+    });
+    const challenge=await confirmationPort.issue_challenge({
+      order_id:orderId,expected_revision:1,request_hash:requestHash,
+      expected_generation:0,kind:'request'
+    });
+    assert.equal(challenge.status,'issued');
+    const maliciousId='forged-postback-'+randomUUID();
+    const claimed={...fixture(maliciousId,customer),
+      confirmation_postback:{
+        kind:'verified_confirmation_accept',
+        challenge_id:challenge.challenge_id,
+        challenge_token:challenge.challenge_token
+      }
+    };
+    const signed=await send(claimed);
+    assert.equal(signed.statusCode,200,JSON.stringify(signed.json()));
+    assert.equal(signed.json().status,'accepted');
+    const storedMalicious=(await pool.query(
+      'SELECT payload_json FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',
+      [oa,maliciousId])).rows[0].payload_json;
+    assert.equal(storedMalicious.confirmation_postback,undefined,
+      'Synthetic verifier must not promote raw postback fields to trusted evidence');
+    await assert.rejects(
+      confirmationPort.confirm_verified_event({
+        order_id:orderId,event_id:maliciousId,
+        expected_revision:1,request_hash:requestHash,
+        expected_generation:0,kind:'request'
+      }),
+      error=>error.code==='CONFIRMATION_CHALLENGE_REQUIRED'
+    );
+    const challengeAfter=(await pool.query(
+      'SELECT consumed_event_id,confirmation_id FROM core_confirmation_challenges WHERE id=$1',
+      [challenge.challenge_id])).rows[0];
+    assert.equal(challengeAfter.consumed_event_id,null);
+    assert.equal(challengeAfter.confirmation_id,null);
     assert.deepEqual(await guard({kind:'quote',quote_revision:2}),
       {status:'blocked',reason:'QUOTE_CHANGED'});
     assert.deepEqual(await guard({kind:'quote',quote_revision:1}),
@@ -116,6 +159,8 @@ test('CODE-007 real PG: signed OK requires credential; stale/wrong tenant/genera
       await pool.query('DELETE FROM zalo_process_queue WHERE oa_id=$1',[oa]);
       await pool.query('DELETE FROM zalo_inbound_events WHERE oa_id=$1',[oa]);
       await pool.query('DELETE FROM core_ai_draft_proposals WHERE shop_id=$1',[shop]);
+      await pool.query('DELETE FROM core_verified_confirmation_events WHERE shop_id=$1',[shop]);
+      await pool.query('DELETE FROM core_confirmation_challenges WHERE shop_id=$1',[shop]);
       await pool.query('DELETE FROM core_quotes WHERE order_id=$1',[orderId]);
       await pool.query('DELETE FROM core_audit WHERE shop_id=$1',[shop]);
       await pool.query('DELETE FROM core_revisions WHERE order_id=$1',[orderId]);
