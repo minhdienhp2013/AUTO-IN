@@ -6,6 +6,9 @@ export interface Batch {
   first_at: number;
   deadline_at: number;
   events: InboundEvent[];
+  /** IDs ordered by PostgreSQL received_at, set only by durable queue claim.
+   * Never infer trusted ordering from Zalo-provided occurred_at. */
+  server_received_event_ids?: readonly string[];
 }
 export interface BatchStore {
   get(key: string): Promise<Batch | undefined>;

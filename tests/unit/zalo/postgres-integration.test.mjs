@@ -135,6 +135,14 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
 
     // Two independent pool connections must not claim the same due batch.
     await Promise.all([incoming.insert_once(event("e3")),incoming.insert_once(event("e4"))]);
+    // Trusted DB receipt precedes approval even if provider timestamp is
+    // intentionally forged in the future/past. SQL claim must use received_at.
+    await run(`UPDATE zalo_inbound_events SET
+       occurred_at=CASE event_id WHEN 'e3' THEN '2035-01-01T00:00:00Z'::timestamptz
+                                  ELSE '2020-01-01T00:00:00Z'::timestamptz END,
+       received_at=CASE event_id WHEN 'e3' THEN now()-interval '20 seconds'
+                                  ELSE now()-interval '10 seconds' END
+       WHERE event_id IN ('e3','e4')`);
     const secondWorker=new PostgresConversationQueue(db);
     const moved=await Promise.all([durable.ingest_pending(),secondWorker.ingest_pending()]);
     assert.equal(moved.reduce((a,b)=>a+b,0),2);
@@ -143,6 +151,7 @@ test("CODE-202 PostgreSQL real transaction/restart/concurrency",{
     assert.equal(claims[0].length+claims[1].length,1);
     const only=claims[0][0]??claims[1][0];
     assert.deepEqual(only.events.map(e=>e.event_id),["e3","e4"]);
+    assert.deepEqual(only.server_received_event_ids,["e3","e4"]);
     assert.equal(await secondWorker.complete(only),true);
 
     // AI1 handover owns the row lock; reservation must see its NEW generation.
