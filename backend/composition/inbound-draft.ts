@@ -115,8 +115,12 @@ export async function prepareSyntheticInboundDraft(
 ): Promise<{settings:DraftSettings;source:Awaited<ReturnType<typeof verifiedSyntheticSource>>;
   request_data:{documents:{artifact_name:string;copies:number;duplex:boolean;paper:'A4'|'A3'}[]};
   settingsHash:string;idempotencyKey:string}> {
-  const {settings,source,request_data,settingsHash,idempotencyKey}=
-    await prepareSyntheticInboundDraft(pool,root,scope,untrustedInput);
+  const settings=parseSettings(untrustedInput);
+  const source=await verifiedSyntheticSource(pool,root,scope,settings.event_id);
+  const request_data={documents:[{artifact_name:source.artifact_ref,copies:settings.copies,
+    duplex:settings.duplex,paper:settings.paper}]};
+  const settingsHash=hash(canonical({request_data,customer_id:source.customer_id,
+    conversation_id:source.conversation_id,sha256:source.sha256}));
   const idempotencyKey='synthetic:'+hash(scope.shop_id+':'+scope.oa_id+':'+settings.event_id);
   return {settings,source,request_data,settingsHash,idempotencyKey};
 }
@@ -130,12 +134,8 @@ export async function createSyntheticInboundDraft(
 ): Promise<SyntheticDraftResult> {
   assertStaff(actor);
   if (actor.shop_id!==scope.shop_id) return fail('FORBIDDEN',403);
-  const settings=parseSettings(untrustedInput);
-  const source=await verifiedSyntheticSource(pool,root,scope,settings.event_id);
-  const request_data={documents:[{artifact_name:source.artifact_ref,copies:settings.copies,
-    duplex:settings.duplex,paper:settings.paper}]};
-  const settingsHash=hash(canonical({request_data,customer_id:source.customer_id,
-    conversation_id:source.conversation_id,sha256:source.sha256}));
+  const {settings,source,request_data,settingsHash,idempotencyKey}=
+    await prepareSyntheticInboundDraft(pool,root,scope,untrustedInput);
   const inserted=await pool.query(
     'INSERT INTO ai0_inbound_artifact_drafts '+
     '(shop_id,oa_id,event_id,actor_id,settings_sha256) '+
