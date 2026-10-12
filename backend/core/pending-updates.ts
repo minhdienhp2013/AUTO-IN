@@ -72,6 +72,17 @@ export async function readPendingUpdates(db:SqlConnection,scope:PendingUpdatesSc
      initialIds.some(x=>typeof x!=='string')||currentIds.some(x=>typeof x!=='string')||
      initialIds.some(x=>!currentIds.includes(x)))
    return unknown();
+  // Cross-check every ID in current history with the verified OA source.
+  // Stale/deleted/cross-customer source rows cannot be converted into CLEAR by JSON alone.
+  if(new Set(currentIds).size!==currentIds.length||new Set(initialIds).size!==initialIds.length)
+   return unknown();
+  const sourceRows=await db.query<CountRow>(
+   'SELECT COUNT(*)::int AS n FROM zalo_inbound_events e '+
+   'WHERE e.oa_id=$1 AND e.customer_id=$2 AND e.conversation_id=$3 '+
+   'AND e.event_id=ANY($4::text[])',
+   [binding.oa_id,binding.customer_id,binding.conversation_id,currentIds]);
+  if(!sourceRows.rows[0]||dbSafeInteger(sourceRows.rows[0].n,'pending.source_events')!==currentIds.length)
+   return unknown();
   // Distinguish two unapproved orders in one chat (including manual staff drafts).
   // The server verifies tenant/customer/conversation, never the browser's selected order.
   const boundary=await db.query<WindowRow>(
