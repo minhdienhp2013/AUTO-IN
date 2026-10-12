@@ -8,6 +8,7 @@ const active=process.env.AUTOIN_RUN_PRODUCT_ACCEPTANCE==='1';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
 const cases=[
  ['C405-HTTP-PG signed wrong-OA, invalid signature and duplicate', 'zalo-http-pg.test.mjs'],
+ ['C405-CANDIDATE signed OK is NOT customer consent; wrong scope/stale/HUMAN fail closed', 'confirmation-candidate-pg.test.mjs'],
  ['C405-AI2/AI3 signed image, worker replay, source tamper -> HUMAN', 'zalo-artifact-worker-pg.test.mjs'],
  ['C405-PLAN trusted staff draft, real AI3 preview source/PNG tamper', 'inbound-draft-pg.test.mjs'],
  ['C405-ACK owner reconciliation after lost AI1 response', 'inbound-reconcile-pg.test.mjs'],
