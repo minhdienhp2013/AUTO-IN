@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { randomUUID,createHmac } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, chmod, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -12,6 +12,9 @@ import { buildIntegratedApp } from '../../../backend/composition/runtime.ts';
 import { asSqlPool, assertIsolatedSimulationDatabase } from '../../../backend/composition/postgres.ts';
 import { createSyntheticZaloRuntime } from '../../../backend/composition/zalo-simulation.ts';
 import { createTrustedDocumentFactsPort } from '../../../backend/composition/document-facts.ts';
+import { prepareSyntheticInboundDraft } from '../../../backend/composition/inbound-draft.ts';
+import { createVerifiedConfirmationPort } from '../../../backend/core/verified-confirmation-port.ts';
+import { loadVerifiedOrderPreviewCatalog } from '../../../backend/composition/preview.ts';
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 
@@ -26,6 +29,7 @@ test('AI0 REAL PG: signed synthetic Zalo image + frozen manifest -> AI3 verified
   assertIsolatedSimulationDatabase(databaseUrl);
   const scratch = await mkdtemp(join(tmpdir(), 'autoin-zalo-artifact-worker-'));
   const root = join(scratch, 'documents');
+  const renderedRoot=join(scratch,'rendered');
   const pngFile = join(scratch, 'fixture.png');
   const python = process.env.AUTOIN_PYTHON ?? 'python3';
   const pool = new pg.Pool({connectionString:databaseUrl, max:5, connectionTimeoutMillis:5000});
@@ -37,6 +41,7 @@ test('AI0 REAL PG: signed synthetic Zalo image + frozen manifest -> AI3 verified
   let app, created=false;
   try {
     await mkdir(root,{mode:0o700});
+    await mkdir(renderedRoot,{mode:0o700});
     const generated=spawnSync(python,['-c',
       'from PIL import Image;import sys;Image.new("RGB",(95,137),"white").save(sys.argv[1])',
       pngFile],{cwd:process.cwd(),timeout:10000});
@@ -52,7 +57,9 @@ test('AI0 REAL PG: signed synthetic Zalo image + frozen manifest -> AI3 verified
       {store:new PgStore(asSqlPool(pool)),artifactRoot:root,python});
     app=buildIntegratedApp({pool:asSqlPool(pool),zaloWebhook:runtime.webhook,
       zaloWorkerConfigured:true,
-      syntheticArtifactIngest:{artifactRoot:root,scope}});
+      syntheticArtifactIngest:{artifactRoot:root,scope},
+      syntheticVerifiedButton:{kind:'synthetic_fixture',shop_id:shop,oa_id:oa,fixture_secret:buttonKey},
+      previewArtifactRoot:renderedRoot});
     await app.ready();
     const fixture=(eventId,customer,conversation)=>({
       synthetic_fixture:true,event_id:eventId,oa_id:oa,customer_id:customer,
@@ -119,6 +126,108 @@ test('AI0 REAL PG: signed synthetic Zalo image + frozen manifest -> AI3 verified
     assert.equal((await runtime.tick_inbound()).processed,0,'Restart/re-tick cannot duplicate AI1 proposal');
     assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_ai_draft_proposals WHERE shop_id=$1',[shop])).rows[0].n,1);
 
+    // One and the SAME AI2-created order goes through staff-bound source choice,
+    // real AI3 rendering and the two independently authenticated customer gates.
+    // Staff alone may choose printing settings; neither AI nor a webhook may
+    // promote the customer's arbitrary file_ref into an authoritative path.
+    const settings={event_id:goodId,paper:'A4',copies:151,duplex:false};
+    const prepared=await prepareSyntheticInboundDraft(asSqlPool(pool),root,scope,settings);
+    assert.equal(prepared.source.customer_id,customer);
+    assert.equal(prepared.source.conversation_id,conversation);
+    assert.notEqual(prepared.source.artifact_ref,good.file_ref);
+    const staff=session.principal;
+    const revised=await core.service.revise(staff,orderId,{
+      expected_revision:1,request_data:prepared.request_data,
+      idempotency_key:'staff-adopts-verified-source-'+id
+    });
+    assert.equal(revised.revision,2);
+    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_orders WHERE shop_id=$1',[shop])).rows[0].n,1,
+      'Source adoption MUST NOT create a second order');
+    const processor=spawnSync(process.execPath,
+      ['--import','tsx','scripts/process-order.ts',shop,orderId],{
+        cwd:process.cwd(),encoding:'utf8',timeout:90000,maxBuffer:1024*1024,
+        env:{...process.env,DATABASE_URL:databaseUrl,AUTOIN_INPUT_ROOT:root,
+          AUTOIN_ARTIFACT_ROOT:renderedRoot,AUTOIN_PROCESSOR_ID:'ai0-e2e-verified',
+          AUTOIN_PYTHON:python}
+      });
+    assert.equal(processor.status,0,processor.stderr||processor.stdout);
+    const done=JSON.parse(processor.stdout);
+    assert.equal(done.revision,3);
+    const catalog=await loadVerifiedOrderPreviewCatalog(asSqlPool(pool),renderedRoot,staff,orderId,3);
+    assert.equal(catalog.preview_verified,true);
+    assert.equal(catalog.files?.[0]?.physical_sheets,151);
+    assert.ok(catalog.preview_count>=1);
+
+    const quote=await core.service.setQuote(staff,orderId,{
+      expected_revision:3,amount_vnd:32000,deposit_required_vnd:8000,
+      significant_cost:false,idempotency_key:'staff-quote-'+id
+    });
+    assert.equal(quote.quote_revision,1);
+    const confirm=createVerifiedConfirmationPort({
+      store:new PgStore(asSqlPool(pool)),trusted:scope});
+    const target={order_id:orderId,expected_revision:3,request_hash:revised.request_hash,
+      kind:'request',expected_generation:0};
+    const requestChallenge=await confirm.issue_challenge(target);
+    assert.equal(requestChallenge.status,'issued');
+    await assert.rejects(core.service.approve(staff,orderId,{
+      expected_revision:3,quote_revision:1,acknowledge_deposit_shortage:true,
+      idempotency_key:'not-confirmed-'+id
+    }),e=>e.code==='CUSTOMER_NOT_CONFIRMED');
+    const press=async(challenge,eventId,overrides={})=>{
+      const payload={synthetic_fixture:true,type:'explicit_button_accept',event_id:eventId,
+        oa_id:oa,customer_id:customer,conversation_id:conversation,
+        occurred_at:new Date().toISOString(),
+        challenge_id:challenge.challenge_id,challenge_token:challenge.challenge_token,
+        ...overrides};
+      const raw=JSON.stringify(payload);
+      return app.inject({method:'POST',url:'/internal/simulation/verified-button',
+        headers:{'content-type':'application/vnd.autoin.synthetic-button+json',
+          'x-autoin-fixture-hmac':createHmac('sha256',buttonKey).update(raw).digest('hex')},
+        payload:raw});
+    };
+    const firstClick=await press(requestChallenge,'request-'+randomUUID());
+    assert.equal(firstClick.statusCode,201,JSON.stringify(firstClick.json()));
+    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[orderId])).rows[0].n,0);
+    await assert.rejects(core.service.approve(staff,orderId,{
+      expected_revision:3,quote_revision:1,acknowledge_deposit_shortage:true,
+      idempotency_key:'no-price-confirm-'+id
+    }),e=>e.code==='PRICE_CONFIRMATION_REQUIRED');
+    const price={...target,kind:'quote',quote_revision:1};
+    const priceChallenge=await confirm.issue_challenge(price);
+    assert.equal(priceChallenge.status,'issued');
+    assert.equal((await press(priceChallenge,'price-'+randomUUID())).statusCode,201);
+    await assert.rejects(core.service.approve(staff,orderId,{
+      expected_revision:3,quote_revision:1,acknowledge_deposit_shortage:false,
+      idempotency_key:'deposit-warning-'+id
+    }),e=>e.code==='DEPOSIT_WARNING_REQUIRED');
+    const approved=await core.service.approve(staff,orderId,{
+      expected_revision:3,quote_revision:1,acknowledge_deposit_shortage:true,
+      idempotency_key:'staff-approve-'+id
+    });
+    assert.equal(approved.deposit_short_vnd,8000);
+    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_approvals WHERE order_id=$1',[orderId])).rows[0].n,1);
+    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[orderId])).rows[0].n,1);
+    const printAgent={id:'simulated-agent-'+id,shop_id:shop,role:'print_agent',
+      verified:true,printer_ids:['RMP7000']};
+    const claim=await core.service.claim(printAgent,{
+      printer_id:'RMP7000',idempotency_key:'claim-'+id});
+    assert.equal(claim.job?.order_id,orderId);
+    assert.equal(claim.job?.mode,'simulation');
+    const sending=await core.service.markSending(printAgent,claim.job.job_id,{
+      expected_revision:3,lease_token:claim.job.lease_token,
+      idempotency_key:'send-'+id
+    });
+    assert.equal(sending.state,'SENDING');
+    const uncertain=await core.service.report(printAgent,claim.job.job_id,{
+      expected_revision:3,lease_token:claim.job.lease_token,
+      result:'unknown',evidence_kind:'agent_uncertain',
+      idempotency_key:'uncertain-'+id
+    });
+    assert.equal(uncertain.state,'UNKNOWN');
+    assert.deepEqual(await core.service.claim(printAgent,{
+      printer_id:'RMP7000',idempotency_key:'no-resend-'+id
+    }),{job:null});
+
     // A different conversation has a valid event and sealed manifest, but the
     // frozen source is changed after registration. The worker must route HUMAN,
     // never convert its customer-provided file_ref into a trusted draft.
@@ -158,6 +267,13 @@ test('AI0 REAL PG: signed synthetic Zalo image + frozen manifest -> AI3 verified
       await query('DELETE FROM zalo_batch_items WHERE oa_id=$1',[oa]);
       await query('DELETE FROM zalo_batches WHERE oa_id=$1',[oa]);
       await query('DELETE FROM zalo_process_queue WHERE oa_id=$1',[oa]);
+      await query('DELETE FROM core_verified_confirmation_events WHERE shop_id=$1',[shop]);
+      await query('DELETE FROM core_confirmation_challenges WHERE shop_id=$1',[shop]);
+      await query('DELETE FROM core_print_jobs WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',[shop]);
+      await query('DELETE FROM core_approvals WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',[shop]);
+      await query('DELETE FROM core_confirmations WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',[shop]);
+      await query('DELETE FROM core_quotes WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',[shop]);
+      await query('DELETE FROM ai0_verified_plan_manifests WHERE shop_id=$1',[shop]);
       await query('DELETE FROM core_ai_draft_proposals WHERE shop_id=$1',[shop]);
       await query('DELETE FROM core_audit WHERE shop_id=$1',[shop]);
       await query('DELETE FROM core_sessions WHERE user_id IN (SELECT id FROM core_users WHERE shop_id=$1)',[shop]);
