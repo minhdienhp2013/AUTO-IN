@@ -264,8 +264,10 @@ export class HttpPrintPort implements PrintPort {
         !Number.isSafeInteger(revision) || revision < 1 ||
         !/^[0-9a-f]{64}$/.test(request_hash))
       throw new ApiFault(409,'PREVIEW_UNVERIFIED','Không xác minh được phiên bản và hash để xem trước.');
+    const sessionToken=this.token;
     const root=`/api/v1/orders/${order_id}/revisions/${revision}/previews`;
     const catalog=asObject(await this.call(root));
+    if(this.token!==sessionToken) throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
     const entries=catalog.previews;
     if (catalog.preview_verified!==true || catalog.order_id!==order_id ||
         catalog.revision!==revision || catalog.request_hash!==request_hash ||
@@ -298,10 +300,11 @@ export class HttpPrintPort implements PrintPort {
       if(!Number.isSafeInteger(countSheets)||countSheets<1)
         throw new ApiFault(409,'PREVIEW_DOCUMENTS_INVALID','Tổng số tờ không đáng tin cậy.');
     }
-    const token=this.token;
+    const token=sessionToken;
     const pages:Blob[]=[];
     const signature=[137,80,78,71,13,10,26,10];
     for(let index=0;index<entries.length;index++) {
+      if(this.token!==token) throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
       const entry=asObject(entries[index]);
       const exactUrl=`${root}/${index}`;
       if(entry.index!==index || entry.url!==exactUrl || entry.content_type!=='image/png')
@@ -315,6 +318,7 @@ export class HttpPrintPort implements PrintPort {
       } catch {
         throw new ApiFault(0,'PREVIEW_NETWORK','Không tải được ảnh xác minh; cần kiểm tra lại.');
       }
+      if(response.status===401) this.token=null;
       if(!response.ok || response.headers.get('content-type')?.split(';')[0]?.trim()!=='image/png')
         throw new ApiFault(response.status,'PREVIEW_UNAVAILABLE','Ảnh xem trước không còn hợp lệ; cần đối chiếu bản gốc.');
       const claimed=Number(response.headers.get('content-length'));
@@ -325,6 +329,7 @@ export class HttpPrintPort implements PrintPort {
       if(bytes.length<8 || bytes.length>8*1024*1024 ||
           !signature.every((value,n)=>bytes[n]===value))
         throw new ApiFault(409,'PREVIEW_INVALID_PNG','Nội dung ảnh xem trước không được xác minh.');
+      if(this.token!==token) throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
       pages.push(new Blob([buffer],{type:'image/png'}));
     }
     if(this.token!==token)

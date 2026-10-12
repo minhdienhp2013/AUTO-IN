@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { ApiFault, isDemo, makePort, newMutationKey, snapshotFromPort, type PrintPort } from './api.ts';
 import {
-  availableVerifiedSheets, conversationLabels, deliveryLabels, depositShortfall, hasValidApprovalInputs, isPrintUncertain, money,
+  availableVerifiedSheets, confirmationReadiness, conversationLabels, deliveryLabels, depositShortfall, hasValidApprovalInputs, isPrintUncertain, money,
   orderLabels, paymentLabels, printLabels, receivable,
   type ActionKind, type OrderView, type OperationMode, type StaffSession, type VerifiedFileFact
 } from './domain.ts';
@@ -75,7 +75,7 @@ function App() {
     } catch (e) {
       const fault = e as ApiFault;
       if (fault.status === 401) { setSession(null); setOrders([]); setSelected(null); }
-      if (fault.status === 0 || fault.status === 503) setApiHealthy(false);
+      setApiHealthy(false);
       setError(fault.message || 'Không kết nối được.');
     } finally { setLoading(false); }
   }, []);
@@ -135,10 +135,10 @@ function App() {
     } catch (e) {
       const fault = e as ApiFault;
       if (fault.status === 401) { setSession(null); setOrders([]); setSelected(null); }
-      if (fault.status === 0 || fault.status === 503) setApiHealthy(false);
+      if (fault.status === 0 || fault.status === 503 || fault.status === 409) setApiHealthy(false);
       setError((fault.message ?? 'Không thể thực hiện.') + (fault.status === 409 ? ' Không tự thực hiện lại; đang tải dữ liệu mới.' : ''));
       if (fault.status === 409) {
-        try { const latest = await port.getOrder(selectedOrder.order_id); setOrders(prev => prev.map(o => o.order_id === latest.order_id ? latest : o)); }
+        try { const latest = await port.getOrder(selectedOrder.order_id); setOrders(prev => prev.map(o => o.order_id === latest.order_id ? latest : o)); setApiHealthy(true); }
         catch { /* preserve error; no success */ }
       }
     } finally { lock.current = false; setBusy(false); }
@@ -170,6 +170,7 @@ function App() {
   const canWork = Boolean(session?.can_approve && apiHealthy);
   const canApprove = Boolean(canWork && selectedOrder && hasValidApprovalInputs(selectedOrder));
   const printAttention = selectedOrder ? isPrintUncertain(selectedOrder.print_state) : false;
+  const confirmation = selectedOrder ? confirmationReadiness(selectedOrder) : null;
 
   return <div className="shell">
     <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
@@ -226,6 +227,16 @@ function App() {
                 {printAttention && <div className="risk-note"><ShieldAlert size={20}/><div><strong>Lệnh in cần đối soát</strong><p>{printLabels[selectedOrder.print_state]}. Không tự gửi lại; chỉ chủ cửa hàng duyệt in lại sau kiểm tra thực tế.</p></div></div>}
                 <div className="detail-customer"><div className="person-icon"><UserRound size={20}/></div><div><strong>{selectedOrder.customer_name}</strong><small>Khách hàng · {selectedOrder.conversation_id ?? 'Chưa có hội thoại'}</small></div><span className="muted-date">{time(selectedOrder.created_at)}</span></div>
                 <div className="axis-grid" aria-label="Năm trạng thái độc lập"><Axis title="Hội thoại" label={conversationLabels[selectedOrder.conversation_state]}/><Axis title="Đơn hàng" label={orderLabels[selectedOrder.order_state]}/><Axis title="In giấy" label={selectedOrder.print_state==='VERIFIED_DONE' && selectedOrder.total_sheets!==null && (selectedOrder.verified_sheets===null || selectedOrder.verified_sheets < selectedOrder.total_sheets) ? 'Giấy thật chưa xác minh đủ' : printLabels[selectedOrder.print_state]} warn={printAttention || selectedOrder.print_state==='SIMULATED_DONE'}/><Axis title="Giao giấy" label={deliveryLabels[selectedOrder.delivery_state]}/><Axis title="Thanh toán" label={paymentLabels[selectedOrder.payment_state]}/></div>
+                {!useDemo && confirmation && <section className="confirmation-evidence" data-testid="confirmation-evidence" aria-label="Bằng chứng xác nhận khách và duyệt in">
+                  <div><strong>Yêu cầu khách</strong><span data-testid="confirmation-request">{confirmation.request==='confirmed'?'Khách đã xác nhận đúng phiên bản/hash':'Chưa có xác nhận khách đúng phiên bản/hash'}</span></div>
+                  <div><strong>Xác nhận giá</strong><span data-testid="confirmation-price">{confirmation.price==='not_required'?'Không cần xác nhận giá riêng':confirmation.price==='confirmed'?'Đã xác nhận đúng phiên bản báo giá':'Chưa xác nhận giá cho đơn trên 150 tờ hoặc chi phí đáng kể'}</span></div>
+                  <div><strong>Duyệt của nhân viên</strong><span data-testid="confirmation-staff">{({
+                    waiting_customer:'Chờ xác nhận từ khách',waiting_price:'Chờ khách xác nhận giá',waiting_preview:'Cần bản xem trước/file đã kiểm chứng trước khi duyệt',
+                    waiting_staff:'Sẵn sàng để NHÂN VIÊN duyệt',already_approved:'Nhân viên đã duyệt trên máy chủ',
+                    blocked:'Chưa thể duyệt: lệnh đã gửi/chưa rõ hoặc đơn bị khóa'
+                  } as const)[confirmation.staff]}</span></div>
+                  <p>Chỉ máy chủ xác thực khách và ghi nhận đúng phiên bản. Nhân viên không thể tự xác nhận thay khách; xem trước không phải bằng chứng đã in.</p>
+                </section>}
                 <div className="detail-tabs" role="tablist"><button role="tab" aria-selected={detailTab==='document'} className={detailTab==='document'?'on':''} onClick={()=>setDetailTab('document')}><FileText size={17}/> Tài liệu & duyệt</button><button role="tab" aria-selected={detailTab==='activity'} className={detailTab==='activity'?'on':''} onClick={()=>setDetailTab('activity')}><History size={17}/> Lịch sử ({selectedOrder.audit.length})</button></div>
                 {detailTab==='activity' ? <div className="activity-content">{selectedOrder.audit.length === 0 ? <div className="empty-panel">Chưa có dữ liệu lịch sử từ API (không tự suy đoán).</div> : selectedOrder.audit.map((row,i)=><div className="activity" key={`${row.at}-${i}`}><span className="activity-dot"/><div><strong>{row.action}</strong><p>{row.summary}</p><small>{row.actor} · {time(row.at)}</small></div></div>)}</div> : <div className="detail-scroll">
                   <div className="section-head"><h3><FileText size={18}/> Tài liệu đính kèm</h3><span>{selectedOrder.documents.length} file</span></div>

@@ -111,3 +111,26 @@ export const actionPath = (order: OrderView, kind: ActionKind): string => {
   };
   return `${prefix}/orders/${encodeURIComponent(order.order_id)}/${suffix[kind]}`;
 };
+
+/** CODE-404. These are display facts, not permission to confirm on behalf of a customer. */
+export type ConfirmationStep = 'missing' | 'confirmed';
+export type PriceConfirmationStep = 'not_required' | 'missing' | 'confirmed';
+export type StaffReviewStep = 'waiting_customer' | 'waiting_price' | 'waiting_preview' | 'waiting_staff' | 'already_approved' | 'blocked';
+export interface ConfirmationReadiness {
+  request: ConfirmationStep;
+  price: PriceConfirmationStep;
+  staff: StaffReviewStep;
+}
+export const confirmationReadiness = (order: OrderView): ConfirmationReadiness => {
+  const request: ConfirmationStep = order.revision > 0 && order.request_hash.length > 0 &&
+    order.confirmed_revision === order.revision ? 'confirmed' : 'missing';
+  const priceNeeded = order.large_cost_flag || order.total_sheets !== null && order.total_sheets > 150;
+  const price: PriceConfirmationStep = !priceNeeded ? 'not_required' :
+    (order.quote_revision !== null && order.amount_vnd !== null &&
+    order.confirmed_quote_revision === order.quote_revision ? 'confirmed' : 'missing');
+  const staff: StaffReviewStep = order.order_state === 'approved' ? 'already_approved' :
+    order.manual_lock || order.print_state !== 'NOT_SENT' ? 'blocked' :
+    request === 'missing' ? 'waiting_customer' : price === 'missing' ? 'waiting_price' :
+    !hasValidApprovalInputs(order) ? 'waiting_preview' : 'waiting_staff';
+  return {request,price,staff};
+};
