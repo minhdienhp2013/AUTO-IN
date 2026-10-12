@@ -7,6 +7,7 @@ import type { RouteRegistrar } from '../api/routes.js';
 import { ingestSyntheticArtifact, type SyntheticArtifactScope } from './synthetic-ingest.js';
 import { loadVerifiedOrderPreview } from './preview.js';
 import { createSyntheticInboundDraft } from './inbound-draft.js';
+import { reconcileSyntheticInboundDraft } from './inbound-reconcile.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
 export interface RuntimeOptions {
@@ -101,6 +102,19 @@ export function buildIntegratedApp(options: RuntimeOptions) {
       options.syntheticArtifactIngest.artifactRoot,options.syntheticArtifactIngest.scope,
       actor,{...body,event_id:eventId});
     return reply.code(result.status==='created'?201:200).send(result);
+  });
+  app.post('/internal/simulation/inbound-artifacts/:event_id/reconcile', async (request, reply) => {
+    if (!options.syntheticArtifactIngest) throw new DomainError('FEATURE_UNAVAILABLE', 'Synthetic reconciliation unavailable', 503);
+    const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    const eventId = (request.params as {event_id:string}).event_id;
+    const body = request.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      throw new DomainError('INVALID_INPUT', 'JSON object required', 422);
+    const outcome = await reconcileSyntheticInboundDraft(options.pool,
+      options.syntheticArtifactIngest.artifactRoot,options.syntheticArtifactIngest.scope,
+      actor,{...body,event_id:eventId});
+    return reply.code(200).send(outcome);
   });
   app.get('/api/v1/orders/:order_id/revisions/:revision/previews/:index', async (request, reply) => {
     if (!options.previewArtifactRoot) throw new DomainError('FEATURE_UNAVAILABLE', 'Verified preview unavailable', 503);
