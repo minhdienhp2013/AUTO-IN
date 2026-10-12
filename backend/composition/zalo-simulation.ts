@@ -125,12 +125,13 @@ export function createSyntheticZaloRuntime(pool: pg.Pool, input: unknown, option
       if (result.status === 'appended')
         return {status:'appended',order_id:result.order_id,
           active_revision:result.revision,requires_reconfirmation:true};
-      if (result.status === 'stale_generation' && request.expected_generation === 0 &&
+      if ((result.status === 'closed' ||
+           (result.status === 'stale_generation' && request.expected_generation === 0)) &&
           request.intent === 'append_or_create') {
-        // AI1's new Port requires an existing conversation control; its
-        // original first-draft Port initializes generation zero. The guarded
-        // first-draft path checks open orders and generation atomically, so a
-        // takeover or parallel worker still cannot create a second order.
+        // AI1's new Port requires an existing conversation control, and
+        // currently returns CLOSED even for a genuinely new post-approval
+        // request. The existing first-draft guard serializes selection and
+        // verifies the server receipt is strictly after the last approval.
         return guardedOrders.suggest_draft({
           conversation_id:request.scope.conversation_id,
           customer_id:request.scope.customer_id,

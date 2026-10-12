@@ -90,7 +90,8 @@ export function guardedSyntheticConversationOrders(
           // session, unless explicit intent to separate is verified by AI2.
           // Never guess which order to merge when more than one is present.
           const pending=open.rows.filter(x=>!x.approved&&!x.print_closed);
-          if(pending.length||open.rows.some(x=>x.manual_lock)){
+          if(pending.length||open.rows.some(x=>x.manual_lock||
+            (x.print_closed&&!x.approved))){
             await conn.query('COMMIT');ended=true;
             return {status:'stale_generation'};
           }
