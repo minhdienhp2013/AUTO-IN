@@ -276,10 +276,8 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     assert.equal((await query('SELECT count(*)::int AS n FROM core_print_jobs WHERE order_id=$1',
       [newOrderId])).rows[0].n,0,'No new order auto-approved/printed');
 
-    // CODE-008: a second FILE batch >60s later, same OA/customer/conversation,
-    // belongs to the new OPEN order, never an automatic third draft. Keep the
-    // later event in durable NEEDS_HUMAN until AI1 supports staff-reviewed
-    // append/revision in its own transaction.
+    // CODE-008: a second FILE batch >60s later belongs to the same OPEN
+    // order. AI1 appends its verified event and invalidates old confirmation.
     const nextEventId='followup-'+randomUUID();
     const followup=fixture(nextEventId,customer,conversation);
     followup.occurred_at=new Date(Date.now()+90_000).toISOString();
@@ -289,15 +287,19 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' "+
       "WHERE oa_id=$1 AND status='OPEN'",[oa]);
     const followResult=await runtime.tick_inbound();
-    assert.equal(followResult.held,1,JSON.stringify(followResult));
+    assert.equal(followResult.processed,1,JSON.stringify(followResult));
     assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_orders WHERE shop_id=$1',[shop])).rows[0].n,2,
       'More than 60 seconds does NOT close order or authorize a third one');
+    assert.equal((await query('SELECT active_revision FROM core_orders WHERE id=$1',[newOrderId])).rows[0].active_revision,2,
+      'Verified follow-up file creates a new revision on the same order');
+    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_order_inbound_reviews WHERE order_id=$1 AND event_id=$2',
+      [newOrderId,nextEventId])).rows[0].n,1);
     const followBatch=(await query(
       'SELECT b.status FROM zalo_batches b JOIN zalo_batch_items i ON i.batch_id=b.id '+
       'WHERE i.oa_id=$1 AND i.event_id=$2',
       [oa,nextEventId])).rows;
     assert.equal(followBatch.length,1);
-    assert.equal(followBatch[0].status,'NEEDS_HUMAN','Additional batch must remain durable');
+    assert.equal(followBatch[0].status,'DONE','Appended event has durable reviewed provenance');
     const sourceEvent=(await query(
       'SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',
       [oa,nextEventId])).rows[0];
@@ -353,6 +355,8 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
       await query('DELETE FROM core_quotes WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',[shop]);
       await query('DELETE FROM ai0_verified_plan_manifests WHERE shop_id=$1',[shop]);
       await query('DELETE FROM core_ai_draft_proposals WHERE shop_id=$1',[shop]);
+      await query('DELETE FROM core_order_inbound_reviews WHERE shop_id=$1',[shop]);
+      await query('DELETE FROM core_order_supplement_batches WHERE shop_id=$1',[shop]);
       await query('DELETE FROM core_audit WHERE shop_id=$1',[shop]);
       await query('DELETE FROM core_sessions WHERE user_id IN (SELECT id FROM core_users WHERE shop_id=$1)',[shop]);
       await query('DELETE FROM core_idempotency WHERE shop_id=$1',[shop]);
