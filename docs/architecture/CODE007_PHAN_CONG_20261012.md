@@ -80,3 +80,19 @@ Trong **cùng OA/shop, cùng khách, cùng conversation**, mọi nội dung thu�
 - Khách nói rõ "tạo đơn riêng" *trước* khi đơn cũ chốt: có thể có hơn một đơn trong cùng chat; tách theo ý định rõ ràng và phải có mã đơn riêng. Nếu việc bổ sung không rõ thuộc đơn nào thì hỏi lại. Không gộp những tin không liên quan việc in chỉ vì cùng chat.
 - Điều kiện chống đua: nhân viên chốt in đồng thời khách nhắn bổ sung => phải tuần tự hoá bằng PostgreSQL lock/CAS; không được để thông điệp trước chốt thất lạc mà job in bản cũ; nếu không biết thứ tự chắc chắn thì **chặn và nhờ nhân viên xác nhận lại**, không tự in.
 - Nhắc rõ: quy tắc **đã chốt nghiệp vụ, CHƯA được triển khai toàn bộ** trong AI1/AI2. AI5 cần test tin khác batch trước/đúng thời điểm chốt, message replay, song song 2 worker, phát sinh đơn mới sau chốt; không báo PASS nếu chỉ test gom trong 60 giây.
+
+
+## AI0 CODE-008 — nghiệm thu thứ tự tin và blocker chốt in (12/10/2026)
+
+**Bằng chứng code:** `backend/composition/conversation-order-guard.ts` đọc `zalo_inbound_events.received_at` từ PostgreSQL ngoài `occurred_at` của nhà cung cấp. Ca `tests/integration/composition/zalo-artifact-worker-pg.test.mjs` gửi file ảnh vào DB *trước* khi nhân viên chốt nhưng gán `occurred_at` ở tương lai (+60 giây), sau đó mới chạy worker. Guard trả HELD (không tạo đơn mới). Exact SHA `fe86d5e588bc176349dd5607d82eaad3cec863c1` có 6/6 CI SUCCESS, composition 21/21 PASS; đây chỉ là **bảo vệ không tách đơn**, không khẳng định phê duyệt đã an toàn.
+
+**Phát hiện P0:** trong ca trên, `core.service.approve` vẫn tạo approval + print job trong lúc file đến trước đang chưa được AI2 xử lý/gắn vào revision. Điều kiện nghiệp vụ *mọi tin/file đến trước khi chốt thuộc cùng đơn* chưa được bảo đảm. Cấm coi V1 READY cho tới khi khắc phục P0.
+
+**Hợp đồng cần AI1 + AI2 thống nhất:**
+- AI1 phải kiểm tra các event từ nguồn server-trusted OA/shop/customer/conversation nằm trong phiên đơn đang mở, đã nhận bền nhưng chưa được **đưa vào active revision hoặc đối soát rõ ràng**, ngay bên trong transaction approve; nếu còn, fail-closed với trạng thái chờ bổ sung, không tạo `core_approvals`/`core_print_jobs`.
+- AI2 nhập batch mới thành cập nhật cùng `order_id` qua Port AI1, tạo revision/hash mới; xác nhận bản/giá trước đó không còn áp dụng. Event không rõ nội dung hoặc nguồn thì giữ lại để nhân viên xử lý, không tự động gạt khỏi hàng chờ.
+- **Thứ tự sự kiện:** dùng thời điểm máy chủ nhận/commit sự kiện đáng tin, không tin riêng `occurred_at` do phía gửi cung cấp. Approve đồng thời ingress/append phải có cùng khóa tuần tự hóa rõ ràng và test 2 connection/worker; chỉ kiểm tra ở UI hay đọc trước transaction không đủ để chống race.
+- AI5 bổ sung ca RED cho `approval must block while pre-approval file unprocessed`, sau đó chỉ GREEN với implementation Core thật; thêm lost ACK/replay, stale confirmation, sự kiện cũ với `occurred_at` giả tương lai, event mới sau chốt, khách yêu cầu rõ đơn riêng.
+- Đây là **blocker nghiệm thu nghiệp vụ**, không phải lỗi CI sản phẩm đang chạy. CI xanh chỉ chứng minh các assert đã triển khai, không được suy rộng rằng P0 đã qua.
+
+**Tình trạng:** AI0 đã giao AI1 [PR #16](https://github.com/minhdienhp2013/AUTO-IN/pull/16#issuecomment-6122650800) và AI5 [PR #18](https://github.com/minhdienhp2013/AUTO-IN/pull/18#issuecomment-6122653381) theo đúng ownership; không tự sửa AI1 Core hoặc nghiệm thu AI5. Không merge/deploy/live OA/in thật.
