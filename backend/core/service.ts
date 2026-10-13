@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { assertAgent, assertOwner, assertPlan, assertProcessor, assertStaff, canAccessShop, canonical, checkRevision, dbSafeInteger, DomainError, newId, nonNegativeVnd, printingAllowed, sha, shortage, type JobRow, type OrderRow, type Principal, type PrintPlan, type QuoteRow, type RevisionRow, type SettingsRow } from './model.js';
 import { PgStore, type SqlConnection } from '../storage/database.js';
+import { readPendingUpdates } from './pending-updates.js';
 
 export class OrderService {
  constructor(private readonly store:PgStore, private readonly now:()=>Date=()=>new Date()){}
@@ -137,8 +138,11 @@ export class OrderService {
       "JOIN zalo_inbound_events e ON e.oa_id=p.oa_id AND e.customer_id=p.customer_id AND e.conversation_id=p.conversation_id "+
       "WHERE p.order_id=$1 AND e.payload_json->>'kind' IN ('text','image','file') "+
       "AND NOT COALESCE((initial.request_data->'event_ids') ? e.event_id,false) "+
-      "AND NOT EXISTS (SELECT 1 FROM core_order_inbound_reviews r WHERE r.oa_id=e.oa_id AND r.event_id=e.event_id "+
-      "AND r.order_id=p.order_id AND r.revision<=$2) LIMIT 1",
+      "AND NOT EXISTS (SELECT 1 FROM core_order_inbound_reviews r JOIN core_revisions recorded "+
+      "ON recorded.order_id=r.order_id AND recorded.revision=r.revision "+
+      "WHERE r.shop_id=p.shop_id AND r.oa_id=e.oa_id AND r.event_id=e.event_id "+
+      "AND r.order_id=p.order_id AND r.revision<=$2 "+
+      "AND COALESCE((recorded.request_data->'event_ids') ? e.event_id,false)) LIMIT 1",
       [id,o.active_revision]);
      if(pending.rows.length)
       throw new DomainError('PENDING_INBOUND_REVIEW','Còn tin/file khách gửi chưa đối soát vào phiên bản hiện tại',409);
@@ -436,12 +440,17 @@ export class OrderService {
     ? (await db.query<{status:'AI'|'HUMAN';generation:string|number;claimed_by:string|null}>(
       'SELECT status,generation,claimed_by FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',[p.shop_id,o.conversation_id])).rows[0]??null
     :null;
+   const pendingUpdates=await readPendingUpdates(db,{
+    order_id:id,shop_id:o.shop_id,customer_id:o.customer_id,
+    conversation_id:o.conversation_id,revision:current.revision,
+    request_hash:current.request_hash,verified_plan_ready:verifiedPlan!==null
+   });
    return {order:o,revisions:revisions.rows,jobs:jobRows,quote,received_vnd:received,
     receivable_vnd:Math.max(0,(quote?.amount_vnd??0)-received),
     refundable_vnd:Math.max(0,received-(quote?.amount_vnd??0)),
     current:{
      revision:current.revision,request_hash:current.request_hash,
-     verified_plan:verifiedPlan,preview_ref:previewRef,
+     pending_updates:pendingUpdates,verified_plan:verifiedPlan,preview_ref:previewRef,
      request_confirmation:requestConfirmation,price_confirmation:priceConfirmation,
      requires_price_confirmation:needsPrice,approval:approval?{...approval,deposit_short_vnd:dbSafeInteger(approval.deposit_short_vnd,'approval.deposit_short_vnd')}:null,
      queue_confirmed_at:existingActiveJob?.confirmed_at??null,
