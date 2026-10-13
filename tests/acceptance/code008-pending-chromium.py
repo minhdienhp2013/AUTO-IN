@@ -60,9 +60,14 @@ def one(browser,width,height,case):
         pending=detail.locator('[data-testid="code008-pending-count"]')
         step=f"check {case} scoped pending banner"
         if case=="clear":
+            # Selecting a card triggers async getOrder() even after the heading
+            # appears. Wait for the final server-pinned read model, not a
+            # transient optimistic/unknown state; keep a finite hard failure.
+            clear.wait_for(state="visible",timeout=15000)
             assert clear.is_visible(), "Scoped CLEAR not rendered correctly"
             assert blocked.count()==0
         else:
+            blocked.wait_for(state="visible",timeout=15000)
             assert blocked.is_visible(), "No/unsafe pending evidence must block print"
             assert clear.count()==0
             if case in ("missing","stale_hash"):
@@ -71,7 +76,10 @@ def one(browser,width,height,case):
                 assert pending.count()==0, (
                     "UNKNOWN must never display a stale PROCESSING/NEEDS_HUMAN status")
             if case in ("processing0","processing2","needs_human0","needs_human1"):
+                step=f"wait for server-pinned {case} read model after detail GET"
+                pending.wait_for(state="visible",timeout=15000)
                 assert pending.is_visible(), "Known PROCESSING/NEEDS_HUMAN must not collapse into UNKNOWN"
+                step=f"verify {case} count and separate warning"
                 content=pending.inner_text().lower()
                 blocked_text=blocked.inner_text().lower()
                 status="needs_human" if case.startswith("needs_human") else "processing"
