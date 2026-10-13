@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .agent import DryRunDriver, FakeBackend, Journal, PrintAgent
 from .backend_http import HttpBackendClient
@@ -30,6 +31,15 @@ def main() -> int:
     result = {'status': 'UNKNOWN', 'reason_code': 'AGENT_UNVERIFIED_FAILURE'}
     try:
         if args.api_base_url:
+            # CODE-303 is localhost-only simulation; prevent an accidentally
+            # copied production address from receiving a scoped agent token.
+            origin = urlsplit(args.api_base_url)
+            if (origin.scheme != 'https' or
+                    origin.hostname not in ('localhost', '127.0.0.1', '::1') or
+                    origin.username or origin.password or origin.query or
+                    origin.fragment or origin.path not in ('', '/') or
+                    not origin.port):
+                raise ValueError('Simulation agent API requires HTTPS localhost with explicit port')
             # Never accept the scoped credential in argv or weaken HTTPS/TLS.
             backend = HttpBackendClient(args.api_base_url,
                                         os.environ.get('AUTO_IN_AGENT_TOKEN', ''),
@@ -38,7 +48,13 @@ def main() -> int:
             job = json.loads(Path(args.job_json).read_text(encoding='utf-8'))
             backend = FakeBackend(job)
         journal = Journal(args.journal)
-        agent = PrintAgent(backend, journal, DryRunDriver())
+        agent = PrintAgent(
+            backend, journal, DryRunDriver(),
+            # A validated preflight response is cached only by the authenticated
+            # HTTPS client, never by the job's caller-controlled JSON. FakeBackend
+            # and local fixture paths intentionally have no evidence callback.
+            evidence_gate=backend.evidence_verified if args.api_base_url else None,
+        )
         previous = agent.recover()
         result = agent.run_once()
     except Exception:

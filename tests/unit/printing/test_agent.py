@@ -214,3 +214,27 @@ def test_journal_rejects_symlink(tmp_path):
         pytest.skip('symlink not available')
     with pytest.raises(PrintBlocked, match='symbolic link'):
         Journal(link)
+
+
+@pytest.mark.parametrize("paper_flag", [True, None])
+def test_dryrun_evidence_cannot_assert_or_omit_paper_unverified(tmp_path, paper_flag):
+    class InvalidEvidenceDryRun(DryRunDriver):
+        def send(self, job):
+            value = super().send(job)
+            if paper_flag is None:
+                value.pop('paper_verified')
+            else:
+                value['paper_verified'] = paper_flag
+            return value
+
+    backend = FakeBackend(job())
+    driver = InvalidEvidenceDryRun()
+    agent = PrintAgent(backend, Journal(tmp_path / 'evidence.sqlite'), driver)
+    try:
+        result = agent.run_once()
+        assert result['status'] == 'UNKNOWN'
+        assert agent.journal.get('j1')['state'] == 'UNKNOWN'
+        assert backend.state == 'UNKNOWN'
+        assert driver.calls == 1
+    finally:
+        agent.journal.close()

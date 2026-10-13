@@ -38,7 +38,8 @@ def test_wire_exact_body_and_routes(monkeypatch):
             return Response({'job': job()})
         if request.full_url.endswith('/preflight'):
             return Response({'allowed': True, 'job_id': job()['job_id'],
-                             'revision': 2, 'mode': 'simulation', 'approval_id': 'approval1'})
+                             'revision': 2, 'mode': 'simulation', 'approval_id': 'approval1',
+                             'document_evidence_verified': True})
         if request.full_url.endswith('/mark-sending'):
             return Response({'job_id': job()['job_id'], 'state': 'SENDING',
                              'mode': 'simulation'})
@@ -121,7 +122,8 @@ def test_end_to_end_agent_with_ai1_wire_mock(monkeypatch, tmp_path):
         if url.endswith('/preflight'):
             assert body == {'expected_revision': 2, 'lease_token': 'SECRET-LEASE'}
             return Response({'allowed': True, 'job_id': 'job/1', 'revision': 2,
-                             'mode': 'simulation', 'approval_id': 'approval1'})
+                             'mode': 'simulation', 'approval_id': 'approval1',
+                             'document_evidence_verified': True})
         if url.endswith('/mark-sending'):
             assert server['state'] == 'NOT_SENT'
             assert body['expected_revision'] == 2 and body['lease_token'] == 'SECRET-LEASE'

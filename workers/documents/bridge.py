@@ -162,6 +162,7 @@ def process_request(value: dict[str, Any], *, input_root: str | Path,
         inspected: list[dict[str, Any]] = []
         evidence_files: list[dict[str, Any]] = []
         preview_records: list[dict[str, Any]] = []
+        snapshot_bytes = 0
         for index, item in enumerate(documents):
             if (not isinstance(item, dict) or
                     not {"artifact_name"} <= set(item) or
@@ -174,6 +175,9 @@ def process_request(value: dict[str, Any], *, input_root: str | Path,
                 raise ValueError("OVER_FIVE_DOCUMENTS")
             settings = {k: v for k, v in item.items() if k != "artifact_name"}
             for part_name, data in pieces:
+                snapshot_bytes += len(data)
+                if snapshot_bytes > processor.MAX_ARCHIVE:
+                    raise ValueError("ARTIFACT_TOTAL_TOO_LARGE")
                 if Path(part_name).suffix.lower() == ".pdf" and not _pdf_font_reliable(data):
                     raise ValueError("PDF_FONT_NOT_EMBEDDED_OR_UNVERIFIED")
                 result = processor._inspect_data(part_name, data, output_dir,
@@ -185,8 +189,24 @@ def process_request(value: dict[str, Any], *, input_root: str | Path,
                 candidate = {**result, **settings}
                 # All count/hash/status fields come from processor, never from caller.
                 counted = processor.plan([candidate])["files"][0]
+                # Freeze the EXACT verified bytes for the eventual native print
+                # path. Re-reading a mutable inbound/customer file after
+                # approval risks printing a different revision (P0/TN-034).
+                # This snapshot is private and deliberately has no client name.
+                suffix = Path(part_name).suffix.lower()
+                source_name = f"source-{len(inspected):03d}-{_sha(data)}{suffix}"
+                source_path = output_dir / source_name
+                with source_path.open("xb") as snapshot:
+                    snapshot.write(data)
+                    snapshot.flush()
+                    os.fsync(snapshot.fileno())
+                os.chmod(source_path, 0o400)
+                if _sha(source_path.read_bytes()) != _sha(data):
+                    raise ValueError("SOURCE_SNAPSHOT_MISMATCH")
                 inspected.append(candidate)
                 evidence_files.append({
+                    "source_artifact_ref": f"{output_dir.name}/{source_name}",
+                    "size_bytes": len(data),
                     "file_sha256": _sha(data),
                     "settings_sha256": _sha(_canonical(settings).encode("utf-8")),
                     "render_method": result["render_method"],
@@ -230,7 +250,10 @@ def process_request(value: dict[str, Any], *, input_root: str | Path,
         stable_evidence = {
             "request_hash": request_hash,
             "renderer_versions": manifest["renderer_versions"],
-            "files": evidence_files,
+            # The snapshot ref contains a random private directory name. Do
+            # not incorporate that location into the stable content identity.
+            "files": [{k: v for k, v in f.items() if k != "source_artifact_ref"}
+                      for f in evidence_files],
             "preview_sha256": [p["sha256"] for p in preview_records],
             "counts": manifest["counts"],
             "paper_plan": final["files"],
@@ -289,6 +312,7 @@ def process_request(value: dict[str, Any], *, input_root: str | Path,
             "DOCX_EXPANSION_LIMIT", "UNSUPPORTED_FORMAT", "PDF_RENDER_FAILED",
             "IMAGE_DECODE_FAILED", "EXTENSION_CONTENT_MISMATCH", "INVALID_PAGE_COUNT",
             "IMAGE_TOO_LARGE", "PASSWORD_PROTECTED",
+            "ARTIFACT_TOTAL_TOO_LARGE", "SOURCE_SNAPSHOT_MISMATCH",
         }:
             reason = "PROCESSOR_UNVERIFIED"
         return _human(reason)
