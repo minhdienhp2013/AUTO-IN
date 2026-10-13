@@ -28,7 +28,7 @@ export interface VerifiedChallengePort {
   }>):Promise<VerifiedConfirmationChallenge|null>;
 }
 
-type EventRow={conversation_id:string;customer_id:string;occurred_at:Date;payload_json:unknown};
+type EventRow={conversation_id:string;customer_id:string;occurred_at:Date;received_at:Date;payload_json:unknown};
 type ControlRow={generation:string;status:string};
 type RevisionRow={active_revision:number;request_hash:string|null;order_id:string};
 type CandidateRow={candidate_id:string;event_id:string;order_id:string;request_hash:string;
@@ -83,7 +83,7 @@ export class PostgresConfirmationCandidates implements ConfirmationCandidatePort
       // A committed event inserted by the verified Zalo ingress is required.
       // No reliance on the in-memory batch's event ID or raw-text assertion.
       const records=await tx.query<EventRow>(`
-        SELECT conversation_id,customer_id,occurred_at,payload_json
+        SELECT conversation_id,customer_id,occurred_at,received_at,payload_json
         FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2 FOR SHARE`,
         [this.oa,event.event_id]);
       const actual=records.rows[0];
@@ -105,11 +105,16 @@ export class PostgresConfirmationCandidates implements ConfirmationCandidatePort
         event.conversation_id,event.event_id,input.expected_generation))
         return pending("MISSING_OR_UNVERIFIED_CHALLENGE");
       const eventTime=new Date(actual.occurred_at).getTime();
+      // occurred_at comes from the provider and may be backdated or forged.
+      // A reply received by OUR database before the challenge was issued
+      // cannot answer that challenge, regardless of its claimed provider time.
+      const receivedTime=new Date(actual.received_at).getTime();
       const start=safeTime(challenge.issued_at),end=safeTime(challenge.expires_at);
       const now=await tx.query<{now:Date}>("SELECT now() AS now");
       const dbNow=new Date(now.rows[0]?.now??0).getTime();
       if(!Number.isFinite(eventTime)||eventTime<start||eventTime>end||
-        !Number.isFinite(dbNow)||dbNow>end)
+        !Number.isFinite(receivedTime)||receivedTime<start||receivedTime>end||
+        !Number.isFinite(dbNow)||dbNow>end||receivedTime>dbNow)
         return manual("CHALLENGE_EXPIRED_OR_EVENT_STALE");
       // Lock generation, then the exact active order and revision. A human
       // takeover can never race a successful candidate insert unobserved.
