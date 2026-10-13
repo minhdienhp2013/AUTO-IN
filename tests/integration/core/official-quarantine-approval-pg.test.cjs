@@ -74,9 +74,11 @@ test('REAL PG CODE-008: signed OA quarantine blocks HTTP approval 409/zero job; 
   const draft=await port.suggest_draft({conversation_id:conv,customer_id:customer,event_ids:[eventId],
    text:'Print one sheet',expected_generation:0,idempotency_key:unique('draft')});
   assert.equal(draft.status,'created');order=draft.order_id;
+  const requestHash=(await a.query(
+   'SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=1',[order])).rows[0].request_hash;
   await serviceA.publishVerifiedPlan(processor,order,{
    expected_revision:1,
-   plan:{request_hash:draft.request_hash,physical_sheets:1,document_pages:1,
+   plan:{request_hash:requestHash,physical_sheets:1,document_pages:1,
     printed_faces:1,ready:true,printer_id:'RMP7000',
     artifact_ref:'synthetic-fixture',verified_by:processor.id},
    idempotency_key:unique('plan')});
