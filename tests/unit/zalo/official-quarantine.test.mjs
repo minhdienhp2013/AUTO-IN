@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
-import {createOfficialZaloQuarantineReceiver} from "../../../backend/integrations/zalo/official-quarantine.ts";
+import {createOfficialZaloQuarantineReceiver,createOfficialZaloVerifiedIngress} from "../../../backend/integrations/zalo/official-quarantine.ts";
 import {createOfficialZaloWebhookAdapter} from "../../../backend/integrations/zalo/official-webhook.ts";
 
 // Python hashlib.sha256 independently computed vector, NOT a Zalo-issued vector.
@@ -95,4 +95,53 @@ test("unknown sender remains OA-level; wrong OA/app or ordinary text cannot muta
  raw=new TextEncoder().encode(JSON.stringify(obj));
  await assert.rejects(receiver.receive(raw,signed(raw)),/UNSUPPORTED_OFFICIAL_QUARANTINE_EVENT/);
  assert.equal(store.data.size,1);
+});
+
+
+test("single signed ingress dispatches text and unsupported to distinct durable ports, no consent",async()=>{
+ const store=sql(),events=new Map();
+ const repo={async insert_once(event) {
+   if(events.has(event.event_id))return "duplicate";
+   events.set(event.event_id,event);return "inserted";
+ }};
+ const ingress=createOfficialZaloVerifiedIngress(config,repo,store);
+ const t=JSON.parse(RAW);
+ t.event_name="user_send_text";t.message={msg_id:"text-verified-1",text:"OK",
+   confirmation_postback:{kind:"verified_confirmation_accept",challenge_token:"fake"}};
+ const textRaw=new TextEncoder().encode(JSON.stringify(t));
+ const first=await ingress.receive(textRaw,signed(textRaw));
+ assert.deepEqual(first,{status:"accepted",event_id:"text-verified-1"});
+ assert.deepEqual(await ingress.receive(textRaw,signed(textRaw)),{
+   status:"duplicate",event_id:"text-verified-1"});
+ assert.equal(events.size,1);
+ assert.equal(events.get("text-verified-1").confirmation_postback,undefined);
+ assert.equal(events.get("text-verified-1").text,"OK");
+ assert.equal(store.data.size,0);
+ const q=JSON.parse(RAW);q.event_name="user_click_button";
+ const qRaw=new TextEncoder().encode(JSON.stringify(q));
+ const held=await ingress.receive_webhook(qRaw,signed(qRaw));
+ assert.equal(held.status_code,200);
+ assert.equal(held.body.status,"held");
+ assert.equal(held.body.provider_claimed_event_id,"image-1");
+ assert.equal(store.data.size,1);
+ assert.equal(events.size,1,"unknown click must not enter normal conversation processing");
+ const replay=await ingress.receive_webhook(qRaw,signed(qRaw));
+ assert.equal(replay.status_code,200);
+ assert.equal(replay.body.status,"duplicate");
+ assert.equal(replay.body.receipt_id,held.body.receipt_id);
+ const before=store.queries();
+ assert.equal((await ingress.receive_webhook(qRaw,{"x-zevent-signature":"mac="+("f".repeat(64))})).status_code,403);
+ const scope={...q,oa_id:"OTHER-OA"};
+ const forgedRaw=new TextEncoder().encode(JSON.stringify(scope));
+ assert.equal((await ingress.receive_webhook(forgedRaw,signed(forgedRaw))).status_code,422);
+ assert.equal(store.queries(),before,"bad MAC/scope cannot write quarantine");
+});
+test("missing/broken quarantine transaction cannot ACK unsupported events as delivered",async()=>{
+ const repo={async insert_once(){throw new Error("unexpected text insert")}};
+ assert.throws(()=>createOfficialZaloVerifiedIngress(config,repo,null),/OFFICIAL_QUARANTINE_PG_REQUIRED/);
+ const failing={async transaction(){throw new Error("PG_IN_MIGRATION_OR_OUTAGE")}};
+ const ingress=createOfficialZaloVerifiedIngress(config,repo,failing);
+ const received=await ingress.receive_webhook(bytes,signed(bytes));
+ assert.equal(received.status_code,503);
+ assert.equal(received.body.error.code,"OFFICIAL_INGRESS_UNAVAILABLE");
 });
