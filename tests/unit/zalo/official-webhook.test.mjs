@@ -19,7 +19,7 @@ const sign=(bytes,app=app_id,ts=String(now),key=secret)=>{
 };
 const make=(extra={})=>createOfficialZaloWebhookAdapter({
  app_id,oa_id,oa_secret_key:secret,
- resolve_conversation_id:uid=>uid==="246845883529697922"?"trusted-oa-conversation":null,
+ resolve_verified_user:uid=>uid==="246845883529697922"?{customer_id:"trusted-customer",conversation_id:"trusted-oa-conversation"}:null,
  now:()=>now,...extra
 });
 test("official documented SHA-256 MAC is computed from ORIGINAL raw bytes",async()=>{
@@ -30,7 +30,7 @@ test("official documented SHA-256 MAC is computed from ORIGINAL raw bytes",async
  assert.equal(await verifier.verify(spaced,sign(bytes)),false);
  assert.equal(await verifier.verify(spaced,sign(spaced)),true);
  assert.deepEqual(normalizer.normalize(bytes),{
-  event_id:"msg-001",oa_id,customer_id:"246845883529697922",
+  event_id:"msg-001",oa_id,customer_id:"trusted-customer",
   conversation_id:"trusted-oa-conversation",
   occurred_at:new Date(now).toISOString(),kind:"text",text:"In giúp em 2 bản A4"
  });
@@ -84,9 +84,9 @@ test("signed ordinary OK or forged postback metadata NEVER becomes a confirmatio
 });
 test("server mapping and verifier required; missing or forged OA never persists",async()=>{
  for(const config of [
-  {app_id:"",oa_id,oa_secret_key:secret,resolve_conversation_id:()=>""},
-  {app_id,oa_id,oa_secret_key:"short",resolve_conversation_id:()=>""},
-  {app_id,oa_id,oa_secret_key:secret,resolve_conversation_id:null}
+  {app_id:"",oa_id,oa_secret_key:secret,resolve_verified_user:()=>null},
+  {app_id,oa_id,oa_secret_key:"short",resolve_verified_user:()=>null},
+  {app_id,oa_id,oa_secret_key:secret,resolve_verified_user:null}
  ])assert.throws(()=>createOfficialZaloWebhookAdapter(config),/OFFICIAL_ZALO_SERVER_CONFIG_REQUIRED/);
  const {verifier,normalizer}=make();
  let persisted=0;
