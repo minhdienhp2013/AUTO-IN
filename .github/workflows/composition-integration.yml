@@ -29,7 +29,8 @@ jobs:
           node-version: 24.19.0
           cache: npm
       - run: npm ci
+      - name: Migrate isolated PostgreSQL before DB-backed checks
+        run: npm run db:migrate
       - run: npm run check
-      - run: npm run db:migrate
       - name: AI0 composition PostgreSQL and HTTP integration
         run: node --import tsx --test tests/integration/composition/*.test.*
