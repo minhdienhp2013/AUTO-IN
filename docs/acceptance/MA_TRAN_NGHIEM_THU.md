@@ -1,5 +1,11 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
 
+## CODE-402 — AI5 nghiệm thu mới nhất, 14/10/2026
+
+AI0 PR #31 HEAD `4822958713e6ee1c728babde790f4c7022ac02bc`, AI2 PR #53 HEAD `b7a51220b249d895ddd0a75bb67496300ed3923a`; independent staging SHA `646aaa767bd3f37274e48a797ea03488cbbb6c42` giữ nguyên mã sản phẩm, chỉ thêm 3 file test AI5. [CI PUSH integration #38445735214](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38445735214) và [CODE checks #38445735081](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38445735081) đều SUCCESS. **PG 103 PASS/0 FAIL/19 SKIP; HTTP 62 PASS/0 FAIL/67 SKIP; browser 58 PASS/0 FAIL/66 SKIP**, Chromium 14/14 status×viewport PASS. CODE-402: 1 independent signed-postback PG + 4 strict AI2/AI1/AI0 suites PASS; candidate chỉ `PENDING_AI1_REVIEW`, không xác nhận/duyệt/in. CODE-008 11/11 PASS; CODE-405 11/11 PASS. [Ma trận chi tiết](CODE402_AI5_NGHIEM_THU_20261014.md). **Zalo OA/Ricoh/iPhone/TN-037 NOT RUN/BLOCKED.**
+
+---
+
 ## CODE-008 — HIỆN HÀNH (12/10/2026), P0 BLOCKED
 
 AI5 đã viết/chạy độc lập PostgreSQL trên staging **`7dfefc4e51f0e603c38411f2ed85ac3ac90cc489`** dựa từ AI0 `c88fa3b`, **không sửa product**. [Ma trận/evidence chi tiết](CODE008_NGHIEM_THU_20261012.md) · [PG CI](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38245126219/job/114796979545).
