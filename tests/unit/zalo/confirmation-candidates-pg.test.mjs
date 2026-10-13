@@ -173,6 +173,31 @@ test("CODE-402 REAL PostgreSQL: credential-bound candidates, dual workers, resta
     assert.equal((await ingest()).held,1);
     assert.equal((await query("SELECT count(*)::int AS n FROM zalo_confirmation_candidates")).rows[0].n,1);
 
+    // CODE-402: provider clock claims a valid reply, but the authoritative
+    // PostgreSQL receipt predates challenge issuance. This is NOT consent.
+    // A disposable fixture moves received_at to reproduce a delayed/replayed
+    // webhook without changing any production ingress or verification code.
+    await issue("forged-time-before-challenge",{issued_offset:"-1 minute"});
+    assert.equal((await enqueue("forged-time-before-challenge","OK",now)).body.status,"accepted");
+    await query(`UPDATE zalo_inbound_events
+      SET received_at=now()-interval '3 minutes'
+      WHERE oa_id=$1 AND event_id=$2`,[oa,"forged-time-before-challenge"]);
+    await ingest();await due();
+    assert.equal((await ingest()).held,1);
+    assert.equal((await query("SELECT count(*)::int AS n FROM zalo_confirmation_candidates")).rows[0].n,1);
+
+    // Provider occurred_at also cannot extend the challenge expiry or the
+    // server's receipt window, even when the provider timestamp appears valid.
+    await issue("forged-time-after-expiry");
+    assert.equal((await enqueue("forged-time-after-expiry","OK",now)).body.status,"accepted");
+    await query(`UPDATE zalo_inbound_events
+      SET received_at=now()+interval '10 minutes'
+      WHERE oa_id=$1 AND event_id=$2`,[oa,"forged-time-after-expiry"]);
+    await ingest();await due();
+    assert.equal((await ingest()).held,1);
+    assert.equal((await query("SELECT count(*)::int AS n FROM zalo_confirmation_candidates")).rows[0].n,1);
+    assert.equal((await query("SELECT count(*)::int AS n FROM core_confirmations")).rows[0].n,0);
+
     // Old event before challenge issuance, stale revision/hash, stale quote.
     await issue("old-event",{issued_offset:"-1 minute"});
     const old=new Date(Date.now()-4*60*1000).toISOString();
