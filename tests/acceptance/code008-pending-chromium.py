@@ -69,9 +69,14 @@ def one(browser,width,height,case):
                 assert pending.is_visible(), "Known PROCESSING/NEEDS_HUMAN must not collapse into UNKNOWN"
                 content=pending.inner_text().lower()
                 expected="nhân viên" if case.startswith("needs_human") else "ai xử lý"
-                assert expected in content, "AI4 displayed wrong pending state"
+                # Pending banner text is from our localhost synthetic fixture only;
+                # report it without page dumps, URLs, bearer tokens or credentials.
+                print(f"OBS CODE008 viewport={viewport} scenario={case} pending_banner={content!r}",flush=True)
+                assert expected in content, (
+                    f"Pending-state label mismatch: expected={expected!r} actual={content!r}")
                 n=0 if case.endswith("0") else 2 if case.endswith("2") else 1
-                assert str(n) in content, "Missing authoritative unresolved_count"
+                assert str(n) in content, (
+                    f"Missing authoritative unresolved_count={n}; actual={content!r}")
         step="assert approval disabled under test-only unconfirmed order"
         assert detail.locator('[data-testid="approve-action"]').is_disabled(), (
             "No signed customer confirmation or verified print plan: no approval")
