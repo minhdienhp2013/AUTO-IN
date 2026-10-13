@@ -19,7 +19,7 @@ const principal=(shop,id)=>({id,shop_id:shop,role:'staff',verified:true});
 async function inbound(pool,oa,conv,customer,eventId,challenge,opts={}) {
  const postback=challenge?{kind:opts.kind??'verified_confirmation_accept',challenge_id:challenge.challenge_id,
    challenge_token:opts.token??challenge.challenge_token}:undefined;
- const payload=postback?{confirmation_postback:postback}:{text:'OK'};
+ const payload=postback?{kind:'postback',confirmation_postback:postback}:{kind:'text',text:'OK'};
  await pool.query(`INSERT INTO zalo_inbound_events(oa_id,event_id,conversation_id,customer_id,occurred_at,payload_json)
    VALUES($1,$2,$3,$4,now(),$5::jsonb)`,[oa,eventId,conv,customer,JSON.stringify(payload)]);
 }
@@ -63,6 +63,30 @@ test('REAL PostgreSQL CODE-401: verified customer challenge, revision/hash/quote
   await assert.rejects(portB.confirm_verified_event({...target,event_id:wrongOa}),e=>e.code==='UNVERIFIED_CONFIRMATION_EVENT');
   const wrongSecret=k('wrong-token');await inbound(a,oa,conv,customer,wrongSecret,challenge,{token:'fake-token'});
   await assert.rejects(portA.confirm_verified_event({...target,event_id:wrongSecret}),e=>e.code==='CONFIRMATION_CHALLENGE_MISMATCH');
+  // A text event, malformed evidence, and a received-before-issue event
+  // cannot be promoted to acceptance merely by holding the right token.
+  const disguised=k('text-disguised');await inbound(a,oa,conv,customer,disguised,challenge);
+  await a.query("UPDATE zalo_inbound_events SET payload_json=jsonb_set(payload_json,'{kind}','\"text\"'::jsonb) WHERE oa_id=$1 AND event_id=$2",
+   [oa,disguised]);
+  await assert.rejects(portA.confirm_verified_event({...target,event_id:disguised}),
+   e=>e.code==='CONFIRMATION_CHALLENGE_REQUIRED');
+  const smuggled=k('extra-field');await inbound(a,oa,conv,customer,smuggled,challenge);
+  await a.query("UPDATE zalo_inbound_events SET payload_json=jsonb_set(payload_json,'{confirmation_postback,forged}','true'::jsonb) WHERE oa_id=$1 AND event_id=$2",
+   [oa,smuggled]);
+  await assert.rejects(portA.confirm_verified_event({...target,event_id:smuggled}),
+   e=>e.code==='CONFIRMATION_CHALLENGE_REQUIRED');
+  const early=k('early-receipt');await inbound(a,oa,conv,customer,early,challenge);
+  await a.query("UPDATE zalo_inbound_events SET received_at=(SELECT created_at-interval '1 second' FROM core_confirmation_challenges WHERE id=$1) WHERE oa_id=$2 AND event_id=$3",
+   [challenge.challenge_id,oa,early]);
+  await assert.rejects(portA.confirm_verified_event({...target,event_id:early}),
+   e=>e.code==='CONFIRMATION_EVENT_OUTSIDE_CHALLENGE');
+  const late=k('late-receipt');await inbound(b,oa,conv,customer,late,challenge);
+  await a.query("UPDATE zalo_inbound_events SET received_at=(SELECT expires_at+interval '1 second' FROM core_confirmation_challenges WHERE id=$1) WHERE oa_id=$2 AND event_id=$3",
+   [challenge.challenge_id,oa,late]);
+  await assert.rejects(portB.confirm_verified_event({...target,event_id:late}),
+   e=>e.code==='CONFIRMATION_EVENT_OUTSIDE_CHALLENGE');
+  assert.equal(await count(a,'core_confirmations',draft.order_id),0);
+  assert.equal(await count(a,'core_print_jobs',draft.order_id),0);
   const event=k('confirm-event');await inbound(a,oa,conv,customer,event,challenge);
   assert.deepEqual(await portA.confirm_verified_event({...target,expected_revision:1,event_id:event}),{status:'stale'});
   assert.deepEqual(await portA.confirm_verified_event({...target,request_hash:'f'.repeat(64),event_id:event}),{status:'stale'});

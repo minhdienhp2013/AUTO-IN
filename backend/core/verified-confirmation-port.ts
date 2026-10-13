@@ -21,6 +21,7 @@ export type RecordedConfirmation =
 type Order = { id: string; shop_id: string; customer_id: string; conversation_id: string | null;
   active_revision: number; manual_lock: boolean; print_closed: boolean };
 type Challenge = { id: string; order_id: string; revision: number; request_hash: string;
+  created_at: Date;
   customer_id: string; conversation_id: string; kind: ConfirmationKind; quote_revision: number | null;
   generation: string | number; secret_hash: string; expires_at: Date;
   consumed_event_id: string | null; confirmation_id: string | null };
@@ -28,6 +29,24 @@ function bounded(value: string, name: string, max = 256) {
   if (typeof value !== 'string' || !value.trim() || value.length > max)
     throw new DomainError('INVALID_CONFIRMATION_INPUT', `Invalid ${name}`, 422);
   return value;
+}
+/** Defense in depth: AI2 only persists this proof for a signed postback
+ * (never text/OK). Core independently enforces the exact narrow wire.
+ */
+function verifiedPostback(value: unknown):value is {
+  kind:'verified_confirmation_accept';challenge_id:string;challenge_token:string
+} {
+  if(!value||typeof value!=='object'||Array.isArray(value))return false;
+  const p=value as Record<string,unknown>;
+  if(Object.keys(p).length!==3||
+     !Object.keys(p).every(k=>['kind','challenge_id','challenge_token'].includes(k))||
+     p.kind!=='verified_confirmation_accept'||
+     typeof p.challenge_id!=='string'||
+     !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(p.challenge_id)||
+     typeof p.challenge_token!=='string'||
+     !/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(p.challenge_token))return false;
+  const token=Buffer.from(p.challenge_token,'base64url');
+  return token.length===32&&token.toString('base64url')===p.challenge_token;
 }
 function targetOf(x: ConfirmationTarget) {
   if (!x || !Number.isSafeInteger(x.expected_revision) || x.expected_revision < 1 ||
@@ -114,23 +133,23 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
     return store.tx(async db=>{
       const bound=await lockedTarget(db,input);
       if (!bound) return {status:'stale'};
-      const event=await db.query<{customer_id:string;conversation_id:string;postback:unknown}>(
-        `SELECT customer_id,conversation_id,payload_json->'confirmation_postback' AS postback
+      const event=await db.query<{customer_id:string;conversation_id:string;
+        kind:string|null;postback:unknown;received_at:Date}>(
+        `SELECT customer_id,conversation_id,payload_json->>'kind' AS kind,
+                payload_json->'confirmation_postback' AS postback,received_at
          FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2 FOR SHARE`,[oaId,input.event_id]);
       const evidence=event.rows[0];
       if (!evidence || evidence.customer_id!==bound.order.customer_id ||
           evidence.conversation_id!==bound.order.conversation_id)
         throw new DomainError('UNVERIFIED_CONFIRMATION_EVENT','Event provenance does not match customer',403);
-      const p=evidence.postback;
-      if (!p || typeof p!=='object' || Array.isArray(p))
-        throw new DomainError('CONFIRMATION_CHALLENGE_REQUIRED','An explicit verified postback is required',403);
-      const data=p as Record<string,unknown>;
-      if (data.kind!=='verified_confirmation_accept' || typeof data.challenge_id!=='string' ||
-          typeof data.challenge_token!=='string' || !data.challenge_token || data.challenge_token.length>256)
-        throw new DomainError('CONFIRMATION_CHALLENGE_REQUIRED','Verified confirmation challenge missing',403);
+      // Never treat a signed ordinary text event as a confirmed postback, even if
+      // a buggy adapter or malicious fixture attached a postback-shaped property.
+      if (evidence.kind!=='postback'||!verifiedPostback(evidence.postback))
+        throw new DomainError('CONFIRMATION_CHALLENGE_REQUIRED','Explicit verified postback required',403);
+      const data=evidence.postback;
       const challenges=await db.query<Challenge>(
         `SELECT id,order_id,revision,request_hash,customer_id,conversation_id,kind,quote_revision,
-                generation,secret_hash,expires_at,consumed_event_id,confirmation_id
+                generation,secret_hash,created_at,expires_at,consumed_event_id,confirmation_id
          FROM core_confirmation_challenges WHERE id=$1 AND shop_id=$2 AND oa_id=$3 FOR UPDATE`,
         [data.challenge_id,shopId,oaId]);
       const challenge=challenges.rows[0];
@@ -141,6 +160,15 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
           dbSafeInteger(challenge.generation,'challenge.generation')!==input.expected_generation ||
           challenge.secret_hash!==sha(data.challenge_token))
         throw new DomainError('CONFIRMATION_CHALLENGE_MISMATCH','Challenge does not match active order',403);
+      // Trusted DB receipt timestamp must be within the issued challenge window.
+      // Provider occurred_at/text cannot move a pre-issuance or late event into scope.
+      const receipt=new Date(evidence.received_at).getTime();
+      const issued=new Date(challenge.created_at).getTime();
+      const expires=new Date(challenge.expires_at).getTime();
+      if (!Number.isFinite(receipt)||!Number.isFinite(issued)||!Number.isFinite(expires)||
+          receipt<issued||receipt>expires)
+        throw new DomainError('CONFIRMATION_EVENT_OUTSIDE_CHALLENGE',
+          'Verified event was not received within the challenge window',409);
       if (challenge.consumed_event_id) {
         if (challenge.consumed_event_id!==input.event_id || !challenge.confirmation_id)
           throw new DomainError('CONFIRMATION_REPLAY','Challenge already consumed by a different event',409);
