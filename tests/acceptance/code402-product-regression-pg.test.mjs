@@ -29,7 +29,11 @@ for(const [name,relativePath] of programs)test(name,{
   throw Error('AI5 CODE402 inconsistent isolated DB URLs');
  const result=spawnSync(process.execPath,['--import','tsx','--test','--test-reporter=tap',resolve(root,relativePath)],{
   cwd:root,encoding:'utf8',maxBuffer:5*1024*1024,timeout:160000,
-  env:isolatedTestChildEnv({AUTOIN_TEST_DATABASE_URL:url,TEST_DATABASE_URL:url,FORCE_COLOR:'0'})
+  env:isolatedTestChildEnv({AUTOIN_TEST_DATABASE_URL:url,TEST_DATABASE_URL:url,FORCE_COLOR:'0',
+   // Match the repository-owned scripts/run-core.mjs build wiring exactly.
+   // Do not change assertions or bypass the real AI1 PG test.
+   ...(relativePath==='tests/integration/core/verified-confirmation-pg.test.cjs'?
+     {AI1_BUILD_DIR:resolve(root,'dist/backend')}:{})})
  });
  const evidence=(result.stdout??'')+'\n'+(result.stderr??'');
  assert.equal(result.error,undefined,'AI5 CODE402 test could not start: '+relativePath);
