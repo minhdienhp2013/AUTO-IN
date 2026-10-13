@@ -75,6 +75,12 @@ test('REAL PostgreSQL CODE-401: verified customer challenge, revision/hash/quote
    [oa,smuggled]);
   await assert.rejects(portA.confirm_verified_event({...target,event_id:smuggled}),
    e=>e.code==='CONFIRMATION_CHALLENGE_REQUIRED');
+  const unsupported=k('unsupported-unverified');await inbound(a,oa,conv,customer,unsupported,challenge);
+  await a.query("UPDATE zalo_inbound_events SET payload_json=jsonb_set(payload_json,'{kind}','\"unsupported\"'::jsonb) WHERE oa_id=$1 AND event_id=$2",
+   [oa,unsupported]);
+  await assert.rejects(portA.confirm_verified_event({...target,event_id:unsupported}),
+   e=>e.code==='CONFIRMATION_CHALLENGE_REQUIRED',
+   'unsupported non-HMAC fixture marker cannot assert customer acceptance');
   const early=k('early-receipt');await inbound(a,oa,conv,customer,early,challenge);
   await a.query("UPDATE zalo_inbound_events SET received_at=(SELECT created_at-interval '1 second' FROM core_confirmation_challenges WHERE id=$1) WHERE oa_id=$2 AND event_id=$3",
    [challenge.challenge_id,oa,early]);

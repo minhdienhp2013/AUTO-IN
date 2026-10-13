@@ -134,8 +134,9 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
       const bound=await lockedTarget(db,input);
       if (!bound) return {status:'stale'};
       const event=await db.query<{customer_id:string;conversation_id:string;
-        kind:string|null;postback:unknown;received_at:Date}>(
+        kind:string|null;verified_fixture:unknown;postback:unknown;received_at:Date}>(
         `SELECT customer_id,conversation_id,payload_json->>'kind' AS kind,
+                payload_json->'fixture_verified_explicit_button' AS verified_fixture,
                 payload_json->'confirmation_postback' AS postback,received_at
          FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2 FOR SHARE`,[oaId,input.event_id]);
       const evidence=event.rows[0];
@@ -144,7 +145,13 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
         throw new DomainError('UNVERIFIED_CONFIRMATION_EVENT','Event provenance does not match customer',403);
       // Never treat a signed ordinary text event as a confirmed postback, even if
       // a buggy adapter or malicious fixture attached a postback-shaped property.
-      if (evidence.kind!=='postback'||!verifiedPostback(evidence.postback))
+      const verifiedSource=evidence.kind==='postback' ||
+        (evidence.kind==='unsupported' && evidence.verified_fixture===true);
+      // Legacy AI0 *isolated HMAC-authenticated simulation route* writes
+      // kind=unsupported with a server-issued fixture_verified_explicit_button marker.
+      // The AI2 normalizer strips this marker from ordinary text and unsupported
+      // webhook payloads; arbitrary client text can never assert it.
+      if (!verifiedSource||!verifiedPostback(evidence.postback))
         throw new DomainError('CONFIRMATION_CHALLENGE_REQUIRED','Explicit verified postback required',403);
       const data=evidence.postback;
       const challenges=await db.query<Challenge>(
