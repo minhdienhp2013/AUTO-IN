@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from "node:crypto";
-import {createOfficialZaloWebhookAdapter,type OfficialZaloWebhookConfig} from "./official-webhook.ts";
+import {createOfficialZaloWebhookAdapter,createOfficialZaloIngress,type OfficialZaloWebhookConfig} from "./official-webhook.ts";
+import type {InboundEventRepository} from "./protocol.ts";
 import type {PgTransactions} from "./postgres-durable.ts";
 
 /** Durable quarantine for verified, but UNRECOGNIZED, official OA events.
@@ -15,6 +16,8 @@ export interface OfficialQuarantineReceipt {
   kind:QuarantineKind;
   /** Verified server mapping when possible; null means hold at OA level. */
   mapped:boolean;
+  /** Event identifier asserted by signed provider JSON, NOT validated schema. */
+  provider_claimed_event_id:string|null;
 }
 function record(v:unknown):v is Record<string,unknown>{
   return !!v&&typeof v==="object"&&!Array.isArray(v);
@@ -59,6 +62,11 @@ export function createOfficialZaloQuarantineReceiver(
         }
       }
       const kind=classify(payload.event_name);
+      // No universal provider event ID schema is validated yet. Preserve this
+      // bounded, SIGNED-but-UNVERIFIED claim only for manual correlation, never
+      // as an authority/idempotency key; sha256(raw) remains replay key.
+      const message=record(payload.message)?payload.message:null;
+      const claimed=id(message?.msg_id,128)?message.msg_id:null;
       const digest=createHash("sha256").update(raw).digest("hex");
       // No raw payload, arbitrary filename, click data, free text, or OA
       // secret is persisted. DB receipt time is authoritative.
@@ -66,22 +74,87 @@ export function createOfficialZaloQuarantineReceiver(
         const newId=randomUUID();
         const inserted=await tx.query<{id:string;status:string}>(
           "INSERT INTO zalo_official_quarantine "+
-          "(id,oa_id,raw_sha256,kind,customer_id,conversation_id,status) "+
-          "VALUES($1,$2,$3,$4,$5,$6,'NEEDS_HUMAN') "+
+          "(id,oa_id,raw_sha256,kind,customer_id,conversation_id,provider_claimed_event_id,status) "+
+          "VALUES($1,$2,$3,$4,$5,$6,$7,'NEEDS_HUMAN') "+
           "ON CONFLICT (oa_id,raw_sha256) DO NOTHING RETURNING id,status",
-          [newId,config.oa_id,digest,kind,customer,conversation]);
+          [newId,config.oa_id,digest,kind,customer,conversation,claimed]);
         if(inserted.rowCount===1){
-          return {status:"held",receipt_id:newId,pending:true,kind,mapped:customer!==null};
+          return {status:"held",receipt_id:newId,pending:true,kind,mapped:customer!==null,
+            provider_claimed_event_id:claimed};
         }
         if(inserted.rowCount!==0)throw new Error("QUARANTINE_INSERT_UNCERTAIN");
-        const existing=await tx.query<{id:string;status:string;kind:QuarantineKind;customer_id:string|null}>(
-          "SELECT id,status,kind,customer_id FROM zalo_official_quarantine "+
+        const existing=await tx.query<{id:string;status:string;kind:QuarantineKind;customer_id:string|null;provider_claimed_event_id:string|null}>(
+          "SELECT id,status,kind,customer_id,provider_claimed_event_id FROM zalo_official_quarantine "+
           "WHERE oa_id=$1 AND raw_sha256=$2 FOR UPDATE",[config.oa_id,digest]);
         const found=existing.rows[0];
         if(existing.rows.length!==1||!found)throw new Error("QUARANTINE_REPLAY_UNCERTAIN");
         return {status:"duplicate",receipt_id:found.id,
-          pending:found.status!=="REVIEWED",kind:found.kind,mapped:found.customer_id!==null};
+          pending:found.status!=="REVIEWED",kind:found.kind,mapped:found.customer_id!==null,
+          provider_claimed_event_id:found.provider_claimed_event_id};
       });
+    }
+  };
+}
+
+/** AI2 single entry point for AI0 controlled Fastify raw-body wiring.
+ * Official signed user_send_text -> atomically stored in inbound events+queue.
+ * Any authenticated, well-formed yet unsupported event -> distinct durable
+ * OA quarantine, NOT a synthetic postback, customer confirmation or AI1 order.
+ * A verified-but-unmapped event stays OA-level; never invent customer/chat.
+ * Invalid signature, app/OA scope and malformed JSON cause ZERO database writes.
+ * No live route, worker or network transport is registered here.
+ */
+export function createOfficialZaloVerifiedIngress(
+  config:OfficialZaloWebhookConfig,
+  events:InboundEventRepository,
+  quarantineDb:PgTransactions
+) {
+  if(!events||typeof events.insert_once!=="function")
+    throw new Error("OFFICIAL_ZALO_DURABLE_STORE_REQUIRED");
+  if(!quarantineDb||typeof quarantineDb.transaction!=="function")
+    throw new Error("OFFICIAL_QUARANTINE_PG_REQUIRED");
+  const {verifier}=createOfficialZaloWebhookAdapter(config);
+  const text=createOfficialZaloIngress(config,events);
+  const quarantine=createOfficialZaloQuarantineReceiver(config,quarantineDb);
+  const receive=async(raw:Uint8Array,headers:Readonly<Record<string,string>>)=>{
+    if(!(raw instanceof Uint8Array)||raw.length===0||raw.length>1024*1024)
+      throw new Error("WEBHOOK_SIZE_REJECTED");
+    // Dispatch ONLY after signature/authentication; never infer a real
+    // Zalo postback schema or allow text with embedded click metadata.
+    if(!await verifier.verify(raw,headers))
+      throw new Error("WEBHOOK_SIGNATURE_REJECTED");
+    let input:unknown;
+    try {input=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(raw));}
+    catch{throw new Error("INVALID_OFFICIAL_EVENT");}
+    if(!record(input))throw new Error("INVALID_OFFICIAL_EVENT");
+    if(input.event_name==="user_send_text")
+      return text.receive(raw,headers);
+    return quarantine.receive(raw,headers);
+  };
+  return {
+    receive,
+    /** Narrow AI0-owned createZaloRawWebhook-compatible receiving Port.
+     * Return 200 only after the transaction COMMITTED; 503/500 must retry.
+     * Never translate a DB outage into a successful acknowledgement.
+     */
+    async receive_webhook(raw:Uint8Array,headers:Readonly<Record<string,string>>):
+      Promise<{status_code:number;body:unknown}> {
+      try {
+        const receipt=await receive(raw,headers);
+        return {status_code:200,body:receipt};
+      }catch(error){
+        const reason=error instanceof Error?error.message:"UNKNOWN";
+        if(reason==="WEBHOOK_SIGNATURE_REJECTED")
+          return {status_code:403,body:{error:{code:"WEBHOOK_SIGNATURE_REJECTED"}}};
+        if(reason==="WEBHOOK_SIZE_REJECTED"||
+          reason==="INVALID_OFFICIAL_EVENT"||
+          reason==="INVALID_OFFICIAL_EVENT_SCOPE"||
+          reason==="UNSUPPORTED_OFFICIAL_QUARANTINE_EVENT")
+          return {status_code:422,body:{error:{code:"INVALID_OFFICIAL_EVENT"}}};
+        // Missing migration, PG fault, or unknown transaction outcome MUST
+        // remain a retriable failure with no false 200 acknowledgement.
+        return {status_code:503,body:{error:{code:"OFFICIAL_INGRESS_UNAVAILABLE"}}};
+      }
     }
   };
 }
