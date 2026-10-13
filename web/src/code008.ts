@@ -28,8 +28,8 @@ export interface ChatOpenGroup {
 const object = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const unknownPending = (): PendingInboundUpdates => ({ state: 'unknown', unresolved_count: null, items: [] });
-/** PROPOSED read-model field: current.pending_updates. Backend not yet shipping
- * this field at CODE-008 handoff, so the fallback is explicitly blocking. */
+/** AI1 CODE-008 backend contract: current.pending_updates is scoped to the active
+ * order/revision/hash. Missing/malformed/stale data always blocks approval. */
 export function parsePendingInbound(detail: unknown, order: Pick<OrderView, 'order_id'|'revision'|'request_hash'>): PendingInboundUpdates {
   const data = object(detail);
   const current = object(data.current);
@@ -50,8 +50,11 @@ export function parsePendingInbound(detail: unknown, order: Pick<OrderView, 'ord
     items.push({ kind: i.kind, label: i.label, summary: i.summary,
       received_at: typeof i.received_at === 'string' ? i.received_at : null });
   }
+  // Backend readPendingUpdates() deliberately returns processing(0) while
+  // verified_plan_ready is false and needs_human(0) for ambiguous scope.
+  // Only a scoped CLEAR(0,[]) proves the inbox has no unresolved events.
   if (pending.status === 'clear' && (pending.unresolved_count !== 0 || items.length !== 0) ||
-      pending.status !== 'clear' && (pending.unresolved_count as number) === 0) return unknownPending();
+      pending.status !== 'clear' && items.length > (pending.unresolved_count as number)) return unknownPending();
   return { state: pending.status as Exclude<InboundState, 'unknown'>,
     unresolved_count: pending.unresolved_count as number, items };
 }
