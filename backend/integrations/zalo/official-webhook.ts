@@ -19,7 +19,8 @@ export interface OfficialZaloWebhookConfig {
   readonly oa_id:string;
   readonly oa_secret_key:string;
   /** Server-authoritative, verified mapping (never based on untrusted JSON). */
-  readonly resolve_conversation_id:(user_id:string)=>string|null;
+  readonly resolve_verified_user:(user_id:string)=>
+    {customer_id:string;conversation_id:string}|null;
   /** Milliseconds since epoch, injected for deterministic tests. */
   readonly now?:()=>number;
 }
@@ -49,7 +50,7 @@ function decode(raw:Uint8Array):Wire {
 function requiredConfig(c:OfficialZaloWebhookConfig) {
   if(!c||!exactId(c.app_id)||!exactId(c.oa_id)||
     typeof c.oa_secret_key!=="string"||c.oa_secret_key.length<16||
-    typeof c.resolve_conversation_id!=="function")
+    typeof c.resolve_verified_user!=="function")
     throw new Error("OFFICIAL_ZALO_SERVER_CONFIG_REQUIRED");
 }
 export function createOfficialZaloWebhookAdapter(config:OfficialZaloWebhookConfig):
@@ -97,13 +98,14 @@ export function createOfficialZaloWebhookAdapter(config:OfficialZaloWebhookConfi
       if(!exactId(userId,128)||!exactId(msgId,128)||
         typeof bodyText!=="string"||bodyText.length<1||bodyText.length>4000||
         !bodyText.trim())throw new Error("INVALID_OFFICIAL_EVENT");
-      const conversation=config.resolve_conversation_id(userId);
-      if(!exactId(conversation,256))
+      const identity=config.resolve_verified_user(userId);
+      if(!identity||!exactId(identity.customer_id,128)||
+         !exactId(identity.conversation_id,256))
         throw new Error("INVALID_OFFICIAL_EVENT");
-      // Trust only confirmed server mapper; do not invent chat/order identity.
+      // Trust only confirmed server mapper; do not invent customer, chat or order identity.
       const event:InboundEvent={
-        event_id:msgId,oa_id:config.oa_id,customer_id:userId,
-        conversation_id:conversation,occurred_at:new Date(Number(timestamp)).toISOString(),
+        event_id:msgId,oa_id:config.oa_id,customer_id:identity.customer_id,
+        conversation_id:identity.conversation_id,occurred_at:new Date(Number(timestamp)).toISOString(),
         kind:"text",text:bodyText
       };
       return event; // Never populate confirmation_postback from official text.
