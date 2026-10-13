@@ -1,0 +1,35 @@
+name: AI0 composition integration
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  composition-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_composition_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_composition_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_composition_test
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_composition_test
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_composition_test
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run db:migrate
+      - name: AI0 composition PostgreSQL and HTTP integration
+        run: node --import tsx --test tests/integration/composition/*.test.*

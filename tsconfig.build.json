@@ -1,1 +1,10 @@
-{ "extends": "./tsconfig.json", "exclude": ["tests", "contracts/export.ts"] }
+{
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "tests",
+    "contracts/export.ts",
+    "backend/conversation",
+    "backend/ai",
+    "backend/integrations/zalo"
+  ]
+}

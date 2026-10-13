@@ -1,9 +1,31 @@
 {
   "compilerOptions": {
-    "target": "ES2023", "module": "NodeNext", "moduleResolution": "NodeNext",
-    "strict": true, "noUncheckedIndexedAccess": true, "exactOptionalPropertyTypes": true,
-    "esModuleInterop": true, "skipLibCheck": true, "forceConsistentCasingInFileNames": true,
-    "rootDir": ".", "outDir": "dist", "types": ["node"]
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "types": [
+      "node"
+    ],
+    "rewriteRelativeImportExtensions": true
   },
-  "include": ["contracts/**/*.ts", "backend/app.ts", "backend/server.ts", "tests/unit/contracts/**/*.ts"]
+  "include": [
+    "contracts/**/*.ts",
+    "backend/**/*.ts",
+    "scripts/**/*.ts",
+    "tests/unit/contracts/**/*.ts",
+    "tests/integration/composition/**/*.ts"
+  ],
+  "exclude": [
+    "backend/conversation",
+    "backend/ai",
+    "backend/integrations/zalo"
+  ]
 }
