@@ -23,14 +23,15 @@ const names=['verify.test.mjs','fixtures.test.mjs','metrics.test.mjs','release-g
  'security.test.mjs','local-http-guard.test.mjs','integration-preflight.test.mjs','browser-build-guard.test.mjs','https-agent-fixture.test.mjs','code405-exact-sha.test.mjs','code405-subprocess-evidence.test.mjs','product-adapter.test.mjs','code405-confirmation-pg.test.mjs','code405-composition-pg.test.mjs','code008-one-order-pg.test.mjs','code008-composition-pg.test.mjs','code008-pending-ui-contract.test.mjs','product-205.test.mjs','integrated-webhook.test.mjs'];
 if(http)names.push('http-readiness.test.mjs','http-auth.test.mjs','http-webhook.test.mjs');
 if(browser)names.push('browser.test.mjs');
-if(productBrowser)names.push('code405-browser-product.test.mjs');
+if(productBrowser)names.push('code405-browser-product.test.mjs','code008-pending-chromium.test.mjs');
 const env={...process.env};
 if(integration)env.AUTOIN_RUN_PRODUCT_ACCEPTANCE='1';else delete env.AUTOIN_RUN_PRODUCT_ACCEPTANCE;
 // Old CODE-105 Port tests are not the real CODE-205 adapter: skip explicitly.
 delete env.AUTOIN_RUN_LEGACY_P0;
 if(http)env.AUTOIN_RUN_HTTP_ACCEPTANCE='1';else delete env.AUTOIN_RUN_HTTP_ACCEPTANCE;
 if(!browser)delete env.AUTOIN_WEB_URL;
-if(productBrowser)env.AUTOIN_RUN_CODE405_BROWSER_PRODUCT='1';else delete env.AUTOIN_RUN_CODE405_BROWSER_PRODUCT;
+if(productBrowser){env.AUTOIN_RUN_CODE405_BROWSER_PRODUCT='1';env.AUTOIN_RUN_CODE008_PENDING_CHROMIUM='1';}
+else{delete env.AUTOIN_RUN_CODE405_BROWSER_PRODUCT;delete env.AUTOIN_RUN_CODE008_PENDING_CHROMIUM;}
 // Product-backed CODE-008 tests import AI0/AI1/AI2 .ts modules. The root project
 // already pins tsx; without it nested Node v24 fails to import Core .js specifiers.
 // Real isolated PostgreSQL integration tests run serially: independent AI5
