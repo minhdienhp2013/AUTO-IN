@@ -51,6 +51,15 @@ test('REAL PG CODE-008: signed OA quarantine blocks HTTP approval 409/zero job; 
  const jobs=async()=> (await a.query(
   'SELECT count(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[order])).rows[0].n;
  const hold=async(pool,raw,kind,oaId=oa,mapped=false)=>{
+  // Signed AI2 ingress locks exactly this scope row before writing receipt.
+  // When called with a transaction-bound client the lock lasts to COMMIT.
+  await pool.query(
+   "INSERT INTO zalo_official_quarantine_scopes(oa_id) VALUES($1) "+
+   "ON CONFLICT (oa_id) DO NOTHING",[oaId]);
+  const scope=await pool.query(
+   "SELECT oa_id FROM zalo_official_quarantine_scopes "+
+   "WHERE oa_id=$1 FOR UPDATE",[oaId]);
+  assert.equal(scope.rows[0]?.oa_id,oaId);
   const id=randomUUID();
   await pool.query("INSERT INTO zalo_official_quarantine "+
    "(id,oa_id,raw_sha256,kind,customer_id,conversation_id,status) "+
@@ -119,7 +128,7 @@ test('REAL PG CODE-008: signed OA quarantine blocks HTTP approval 409/zero job; 
    let settled=false;
    const racing=callApproval(unique('race-approval')).then(v=>{settled=true;return v});
    await new Promise(resolve=>setTimeout(resolve,90));
-   assert.equal(settled,false,'core approval SHARE table lock must wait for uncommitted AI2 receipt');
+   assert.equal(settled,false,'Core approval must wait for AI2-held per-OA scope row');
    await client.query('COMMIT');opened=false;
    const rejected=await racing;
    assert.equal(rejected.http_status,409);
@@ -132,9 +141,59 @@ test('REAL PG CODE-008: signed OA quarantine blocks HTTP approval 409/zero job; 
   assert.equal(await pending(),1);
   await a.query("UPDATE zalo_official_quarantine SET status='REVIEWED',reviewed_at=now(),reviewed_by='synthetic-staff' WHERE oa_id=$1 AND status='NEEDS_HUMAN'",[oa]);
   assert.equal(await pending(),0);
-  const approved=await callApproval(unique('after-review'));
-  assert.equal(approved.job_id!==undefined,true);
-  assert.equal(await jobs(),1);
+  // Reverse race: Core approval obtains the shared OA-scope row first.
+  // Signed ingress must wait until approval commits; its receipt cannot slip
+  // into a "clear" read performed inside that approval transaction.
+  let afterScopeLock,releaseApproval;
+  const atScopeLock=new Promise(resolve=>{afterScopeLock=resolve});
+  const holdApproval=new Promise(resolve=>{releaseApproval=resolve});
+  let paused=false;
+  const pausedPool={
+   connect:async()=>{
+    const client=await a.connect();
+    return {
+     query:async(sql,args)=>{
+      const result=await client.query(sql,args);
+      if(!paused && sql.startsWith('SELECT oa_id FROM public.zalo_official_quarantine_scopes')){
+       paused=true;afterScopeLock();await holdApproval;
+      }
+      return result;
+     },
+     release:()=>client.release()
+    };
+   },
+   query:(sql,args)=>a.query(sql,args)
+  };
+  const pausedService=new OrderService(new PgStore(pausedPool));
+  const approvalInProgress=pausedService.approve(staff,order,{
+   expected_revision:2,acknowledge_deposit_shortage:true,
+   idempotency_key:unique('approval-scope-first')});
+  await atScopeLock;
+  const ingressClient=await b.connect();
+  let ingressTxOpen=false;
+  let ingressSettled=false;
+  try{
+   await ingressClient.query('BEGIN');ingressTxOpen=true;
+   const incoming=(async()=>{
+    await hold(ingressClient,'arrival-after-approval-scope','file');
+    await ingressClient.query('COMMIT');ingressTxOpen=false;
+    ingressSettled=true;
+   })();
+   await new Promise(resolve=>setTimeout(resolve,90));
+   assert.equal(ingressSettled,false,'signed ingress must wait for approval-held scope row');
+   releaseApproval();
+   const approved=await approvalInProgress;
+   assert.ok(approved.job_id,'Core approval legitimately commits first with no pending receipt');
+   await incoming;
+  }finally{
+   releaseApproval();
+   if(ingressTxOpen)await ingressClient.query('ROLLBACK');
+   ingressClient.release();
+  }
+  assert.equal(await jobs(),1,'no duplicate approval/print under reverse lock race');
+  assert.equal(await pending(),1,'post-approval receipt remains durably pending for follow-up');
+  await a.query("UPDATE zalo_official_quarantine SET status='REVIEWED',reviewed_at=now(),reviewed_by='synthetic-staff' WHERE oa_id=$1 AND status='NEEDS_HUMAN'",[oa]);
+  assert.equal(await pending(),0);
   await assert.rejects(serviceB.approve(staff,order,{
    expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:unique('double-approve')
   }),e=>e.code==='ALREADY_APPROVED'||e.code==='PENDING_INBOUND_REVIEW');
