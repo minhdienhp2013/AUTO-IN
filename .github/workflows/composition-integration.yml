@@ -11,15 +11,15 @@ jobs:
         env:
           POSTGRES_USER: auto_in
           POSTGRES_PASSWORD: isolated_ci_only
-          POSTGRES_DB: autoin_composition_test
+          POSTGRES_DB: autoin_test_composition
         ports: ['5432:5432']
         options: >-
-          --health-cmd "pg_isready -U auto_in -d autoin_composition_test"
+          --health-cmd "pg_isready -U auto_in -d autoin_test_composition"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_composition_test
-      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_composition_test
-      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_composition_test
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_composition
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_composition
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_composition
       AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
       AUTOIN_OPERATION_MODE: simulation
     steps:
@@ -31,6 +31,7 @@ jobs:
       - run: npm ci
       - name: Migrate isolated PostgreSQL before DB-backed checks
         run: npm run db:migrate
-      - run: npm run check
       - name: AI0 composition PostgreSQL and HTTP integration
         run: node --import tsx --test tests/integration/composition/*.test.*
+      - name: Root typecheck and unit checks
+        run: npm run check
