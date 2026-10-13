@@ -1,5 +1,12 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
 
+## CODE-401 AI5 độc lập — mới nhất 14/10/2026
+
+AI0 product PR #31 SHA `1c1b75fd8be7063add12c8510eec9d5d6742df54` + **2 file acceptance AI5** = overlay `f1d334bf90f2506157b12ac7c5a56eefe3267f6b`. [Simulation integration PUSH #38451399440](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38451399440) & [CODE checks #38451399746](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38451399746) đều **SUCCESS**. **PG 104 PASS/0 FAIL/19 SKIP**; **HTTP 62/0/68**; **browser 58/0/67**, Chromium pending_updates **14/14 PASS** desktop/mobile. Ca CODE401 mới dùng Core PG 2 pools, strict postback, signed OK fail-closed, sai scope/token/receipt; bắt buộc `received_at` PG và không tin `occurred_at`; replay & lost ACK, stale revision, handover, staff approve. Lỗi browser ở 2 overlay tiền nhiệm là **harness import Core ngoài integration mode**, đã sửa trước khi đo SUCCESS, không waive assertion. [Chi tiết](CODE401_AI5_INDEPENDENT_1C1B75F_20261014.md). **OA/Ricoh/iPhone/TN037 NOT RUN**.
+
+---
+
+
 ## CODE-402 — AI5 nghiệm thu mới nhất, 14/10/2026
 
 AI0 PR #31 HEAD `4822958713e6ee1c728babde790f4c7022ac02bc`, AI2 PR #53 HEAD `b7a51220b249d895ddd0a75bb67496300ed3923a`; **independent staging SHA `646aaa767bd3f37274e48a797ea03488cbbb6c42`** giữ mã sản phẩm y nguyên, chỉ thêm 3 file test AI5. [CI PUSH integration #38445735214](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38445735214) và [CODE checks #38445735081](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38445735081) đều SUCCESS. **PG 103 PASS/0 FAIL/19 SKIP; HTTP 62 PASS/0 FAIL/67 SKIP; browser 58 PASS/0 FAIL/66 SKIP**, Chromium 14/14 status×viewport PASS. CODE-402 1 independent signed-postback PG + 4 strict real AI2/AI1/AI0/normalizer suites PASS; candidate chỉ `PENDING_AI1_REVIEW`, không xác nhận/duyệt/in. C008 11/11 PASS; CODE405 11/11 PASS. [Ma trận chi tiết](CODE402_AI5_NGHIEM_THU_20261014.md). **Zalo OA/Ricoh/iPhone/TN-037 NOT RUN/BLOCKED.**
