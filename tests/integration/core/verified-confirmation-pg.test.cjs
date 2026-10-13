@@ -93,10 +93,27 @@ test('REAL PostgreSQL CODE-401: verified customer challenge, revision/hash/quote
   assert.equal(qConfirmation.status,'confirmed');
   assert.equal(await count(a,'core_confirmations',draft.order_id),2);
   assert.equal(await count(a,'core_print_jobs',draft.order_id),0);
+  // Challenge issued before approval must not become a late NEW confirmation.
+  const outstanding=await portB.issue_challenge(quoteTarget);
+  assert.equal(outstanding.status,'issued');
   const approved=await service.approve(staff,draft.order_id,{expected_revision:2,quote_revision:1,
     acknowledge_deposit_shortage:true,idempotency_key:k('staff-only-approve')});
   assert.equal(approved.deposit_short_vnd,12000);
   assert.equal(await count(a,'core_print_jobs',draft.order_id),1);
+  assert.deepEqual(await portA.issue_challenge(target),{status:'stale'},
+   'no fresh customer request challenge after staff approval');
+  assert.deepEqual(await portB.issue_challenge(quoteTarget),{status:'stale'},
+   'no fresh quote challenge after staff approval');
+  const lateEvent=k('late-postback');await inbound(b,oa,conv,customer,lateEvent,outstanding);
+  assert.deepEqual(await portB.confirm_verified_event({...quoteTarget,event_id:lateEvent}),
+   {status:'stale'},'outstanding postback cannot mint confirmation after approval');
+  assert.equal(await count(a,'core_confirmations',draft.order_id),2);
+  const committedRetry=await portB.confirm_verified_event({...target,event_id:event});
+  assert.equal(committedRetry.status,'existing','loss of ACK remains idempotent after approval');
+  assert.equal(committedRetry.confirmation_id,r1.confirmation_id);
+  assert.equal(await count(a,'core_confirmations',draft.order_id),2);
+  assert.equal(await count(a,'core_print_jobs',draft.order_id),1);
+
   const fresh=await service.createDraft(staff,{customer_id:customer,conversation_id:conv,
    request_data:{title:'stale-after-revise'},idempotency_key:k('fresh-draft')});
   const stale={order_id:fresh.order_id,expected_revision:1,request_hash:fresh.request_hash,kind:'request',expected_generation:0};
