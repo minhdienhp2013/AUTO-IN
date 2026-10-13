@@ -1,5 +1,5 @@
 import {createHash,timingSafeEqual} from "node:crypto";
-import type {EventNormalizer,InboundEvent,WebhookVerifier} from "./protocol.ts";
+import {ZaloIngress,type EventNormalizer,type InboundEvent,type InboundEventRepository,type WebhookVerifier} from "./protocol.ts";
 
 /** Official Zalo OA webhook subset, verified against the documented
  * X-ZEvent-Signature SHA-256 scheme. Not an enabled live runtime/sender.
@@ -110,4 +110,19 @@ export function createOfficialZaloWebhookAdapter(config:OfficialZaloWebhookConfi
     }
   };
   return {verifier,normalizer};
+}
+
+/** Inbound-only integration point for AI0. Uses its server-owned registry and
+ * durable repository; deliberately has NO outbound/live toggle, no challenge
+ * postback grant, no AI1 write, no printer and no automatic scheduler.
+ * AI0 must still own Fastify raw-body routing, secret management, permission
+ * checks and controlled feature enablement after real OA credential validation.
+ */
+export function createOfficialZaloIngress(
+  config:OfficialZaloWebhookConfig, events:InboundEventRepository
+):ZaloIngress {
+  if(!events||typeof events.insert_once!=="function")
+    throw new Error("OFFICIAL_ZALO_DURABLE_STORE_REQUIRED");
+  const {verifier,normalizer}=createOfficialZaloWebhookAdapter(config);
+  return new ZaloIngress(verifier,normalizer,events);
 }
