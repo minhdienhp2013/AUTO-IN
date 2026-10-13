@@ -4,15 +4,18 @@ const fs=require('node:fs');
 const path=require('node:path');
 const {randomUUID,randomBytes}=require('node:crypto');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../dist/backend');
-const {PgStore}=require(path.join(root,'storage/database.js'));
-const {OrderService}=require(path.join(root,'core/service.js'));
-const {createVerifiedConfirmationPort}=require(path.join(root,'core/verified-confirmation-port.js'));
+// Keep all product Core imports behind integration mode. Browser-only builds
+// web/ but NOT dist/backend; loading Core at module initialization would turn
+// a legitimate PG-only SKIP into a false Chromium job failure.
+const integrationMode=process.env.AUTOIN_RUN_PRODUCT_ACCEPTANCE==='1';
+const {PgStore,OrderService,createVerifiedConfirmationPort}=integrationMode?{
+  PgStore:require(path.join(root,'storage/database.js')).PgStore,
+  OrderService:require(path.join(root,'core/service.js')).OrderService,
+  createVerifiedConfirmationPort:require(path.join(root,'core/verified-confirmation-port.js')).createVerifiedConfirmationPort
+}:{PgStore:null,OrderService:null,createVerifiedConfirmationPort:null};
 let pg;try{pg=require('pg');}catch{/* AI0 owns deps */}
 const url=process.env.TEST_DATABASE_URL;
-// AI5 PG-only acceptance executes after root npm run check/build in --integration.
-// The browser-only job intentionally builds just web/, so a Core binary is
-// unavailable there. Browser checks stay active and separately gated.
-const ready=Boolean(pg&&url&&process.env.AUTOIN_RUN_PRODUCT_ACCEPTANCE==='1');
+const ready=Boolean(pg&&url&&integrationMode);
 const uuid=()=>randomUUID();
 const k=p=>p+'-'+uuid();
 const principal=(shop,id)=>({id,shop_id:shop,role:'staff',verified:true});
