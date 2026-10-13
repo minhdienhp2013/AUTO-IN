@@ -41,8 +41,47 @@ export function emptyPending(scope:PendingUpdatesScope,status:PendingUpdatesStat
  */
 export async function readPendingUpdates(db:SqlConnection,scope:PendingUpdatesScope):Promise<PendingUpdatesReadModel>{
  const unknown=()=>emptyPending(scope);
- if(!scope.conversation_id)return unknown();
  try{
+  // A null chat is not itself evidence of a manual order. Core.staff.createDraft
+  // writes a server-side order.created audit; an OA proposal never does.
+  // Verify staff provenance, source tables and current revision before CLEAR.
+  if(!scope.conversation_id){
+   const relations=(await db.query<{proposals:string|null;audit:string|null;users:string|null;revisions:string|null}>(
+    "SELECT to_regclass('public.core_ai_draft_proposals')::text AS proposals,"+
+    "to_regclass('public.core_audit')::text AS audit,"+
+    "to_regclass('public.core_users')::text AS users,"+
+    "to_regclass('public.core_revisions')::text AS revisions")).rows[0];
+   if(!relations?.proposals||!relations.audit||!relations.users||!relations.revisions)return unknown();
+   const provenance=await db.query<{proposal_count:number|string;staff_creates:number|string;
+     initial_data:unknown;current_data:unknown;request_hash:string}>(
+    "SELECT "+
+    "(SELECT count(*)::int FROM core_ai_draft_proposals p WHERE p.order_id=$1) AS proposal_count,"+
+    "(SELECT count(*)::int FROM core_audit a JOIN core_users u "+
+    "ON u.id::text=a.actor_id AND u.shop_id=a.shop_id "+
+    "WHERE a.order_id=$1 AND a.shop_id=$2 AND a.action='order.created' "+
+    "AND u.role IN ('owner','staff')) AS staff_creates,"+
+    "initial.request_data AS initial_data,current.request_data AS current_data,"+
+    "current.request_hash "+
+    "FROM core_revisions initial JOIN core_revisions current "+
+    "ON current.order_id=initial.order_id AND current.revision=$3 "+
+    "WHERE initial.order_id=$1 AND initial.revision=1",
+    [scope.order_id,scope.shop_id,scope.revision]);
+   const row=provenance.rows[0];
+   if(!row||provenance.rows.length!==1||row.request_hash!==scope.request_hash||
+      dbSafeInteger(row.proposal_count,'pending.manual_proposals')!==0||
+      dbSafeInteger(row.staff_creates,'pending.manual_creator_count')!==1)
+    return unknown();
+   const safeManualData=(v:unknown):boolean=>{
+    if(!v||typeof v!=='object'||Array.isArray(v))return false;
+    const record=v as Record<string,unknown>;
+    if(Object.hasOwn(record,'event_ids')||Object.hasOwn(record,'conversation_id'))return false;
+    if(typeof record.source==='string'&&/zalo|webhook|inbound|conversation|_oa/i.test(record.source))
+     return false;
+    return true;
+   };
+   if(!safeManualData(row.initial_data)||!safeManualData(row.current_data))return unknown();
+   return emptyPending(scope,scope.verified_plan_ready?'clear':'processing');
+  }
   const t=(await db.query<RelationRow>(
    "SELECT to_regclass('public.core_ai_draft_proposals')::text AS proposals,"+
    "to_regclass('public.zalo_inbound_events')::text AS events,"+
