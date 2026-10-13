@@ -76,9 +76,8 @@ test("REAL PostgreSQL AI2 signed unsupported OA quarantine: two workers, replay,
 
   // An authenticated human reconciliation (AI0-owned API NOT IMPLEMENTED) is
   // modeled explicitly in this PG test. Zero pending ONLY after every row is reviewed.
-  const all=(await a.query("SELECT id FROM zalo_official_quarantine WHERE oa_id=$1 ORDER BY id",[oa])).rows;
   await a.query("UPDATE zalo_official_quarantine SET status='REVIEWED',reviewed_at=now(),reviewed_by=$3 WHERE oa_id=$1 AND id=$2",
-   [oa,all[0].id,"test-operator"]);
+   [oa,results[0].receipt_id,"test-operator"]);
   assert.equal(await countPending(),3,"one reviewed marker cannot clear other pending");
   const retry=await receiverA.receive(images,signer(images));
   assert.equal(retry.status,"duplicate");
