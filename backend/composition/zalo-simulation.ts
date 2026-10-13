@@ -7,6 +7,7 @@ import type { PgStore } from '../storage/database.js';
 import type { OrderDraftPort, DocumentFactsPort } from '../conversation/processor.js';
 import { createTrustedDocumentFactsPort } from './document-facts.js';
 import { createZaloRawWebhook } from './zalo-http.js';
+import { createPostgresVerifiedChallengeResolver } from './verified-challenge-resolver.js';
 import {guardedSyntheticConversationOrders} from './conversation-order-guard.js';
 
 /** Local test registry. Never populate these values from webhook bytes or headers. */
@@ -40,6 +41,9 @@ function compose(pool: pg.Pool, registry: SyntheticZaloRegistry,
     trusted_oa_id: registry.oa_id,
     mode: 'simulation',
     orders, documents,
+    confirmation_challenges: createPostgresVerifiedChallengeResolver({
+      trusted: { shop_id: registry.shop_id, oa_id: registry.oa_id }
+    }),
     schedule: { allowed() { return false; } },
     clock: { now: () => new Date() },
     synthetic_provider: {
