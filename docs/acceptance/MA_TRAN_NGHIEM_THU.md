@@ -1,5 +1,12 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
 
+## CODE-008/CODE-405 — AI5 kiểm trên AI0 SHA 9fb2bf1 (13/10/2026)
+
+AI0 #31 HEAD `9fb2bf1bcd1ca9d59b912adf60d7fb8f3cabca54` có [CI PUSH integration SUCCESS](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38362911714): **91 PASS/0 FAIL/19 SKIP** PG, **54 PASS/0 FAIL/63 SKIP** HTTP, Chromium desktop/mobile PASS tổng quát. AI5 phát hiện **2 lỗi hiển thị read-model AI4** bằng test mới trên staging SHA `6a317e4f6abc68127fc0fbd020d1fd58cf03e06a` (chỉ +2 test AI5): [PG job](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38364941554/job/115187703075) **96 PASS/2 FAIL/19 SKIP**, HTTP **59 PASS/2 FAIL/63 SKIP**. Thực hiện đầy đủ CODE-008 9/9 PG + 2/2 composition và CODE405 5/5 PG + 6/6 composition **PASS**, không viện SKIP. **C008-UI-02/03 FAIL**: processing(0)/needs_human(0) bị đổi thành unknown; hệ thống vẫn khóa duyệt nhưng hiện sai trạng thái. AI4 PR #47 đã có fix cần AI0 nhập; Chromium 14 status×viewport mới **NOT RUN** do CI chưa chạy wrapper. Báo cáo [CODE008_AI5_AUDIT_SHA_9FB2BF1_20261013.md](CODE008_AI5_AUDIT_SHA_9FB2BF1_20261013.md). **TN-037 chưa đủ**.
+
+---
+
+
 ## CODE-008 — MỚI NHẤT, 13/10/2026 (PG staging GREEN, V1 chưa DONE)
 
 **AI0 PR #31 HEAD `faa0668c326393cc6a49cfa74fe682a606aeddb1`**, AI5 test-only staging **`0730cbd14f5386a431f74593ba0e4e49c8518490`**, hai workflow push [checks](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38283185322) / [integration](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38283185321) đều **SUCCESS**. [Bằng chứng chi tiết C008-PG-02](CODE008_NGHIEM_THU_20261012.md).
