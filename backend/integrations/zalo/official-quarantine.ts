@@ -43,8 +43,7 @@ export function createOfficialZaloQuarantineReceiver(
       let payload:unknown;
       try{payload=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(raw))}
       catch{throw new Error("INVALID_OFFICIAL_EVENT")}
-      if(!record(payload)||!id(payload.event_name,100)||
-         payload.event_name==="user_send_text")
+      if(!record(payload)||!id(payload.event_name,100))
         throw new Error("UNSUPPORTED_OFFICIAL_QUARANTINE_EVENT");
       // A signed payload claiming a DIFFERENT OA must never be attributed
       // to our configured OA. Omitted OA / recipient is OA-level held only.
@@ -61,6 +60,16 @@ export function createOfficialZaloQuarantineReceiver(
           customer=trusted.customer_id;conversation=trusted.conversation_id;
         }
       }
+      // An already-mapped TEXT event belongs ONLY in the ordinary durable
+      // queue, never in quarantine. Signed TEXT without a server mapping must
+      // be held at OA level with no body, customer or conversation persisted.
+      if(payload.event_name==="user_send_text"){
+        if(customer!==null)
+          throw new Error("UNSUPPORTED_OFFICIAL_QUARANTINE_EVENT");
+        customer=null;conversation=null;
+      }
+      // Keep DB enum unchanged: kind=unknown is the conservative custody
+      // category for unbound text. Do not guess an official provider schema.
       const kind=classify(payload.event_name);
       // No universal provider event ID schema is validated yet. Preserve this
       // bounded, SIGNED-but-UNVERIFIED claim only for manual correlation, never
@@ -83,11 +92,14 @@ export function createOfficialZaloQuarantineReceiver(
           "WHERE oa_id=$1 FOR UPDATE",[config.oa_id]);
         if(scope.rowCount!==1||scope.rows[0]?.oa_id!==config.oa_id)
           throw new Error("OFFICIAL_QUARANTINE_SCOPE_LOCK_REQUIRED");
+        // PostgreSQL now()/CURRENT_TIMESTAMP denote transaction start,
+        // possibly BEFORE waiting for this OA row lock. clock_timestamp()
+        // at the INSERT above records the actual post-lock receipt time.
         const newId=randomUUID();
         const inserted=await tx.query<{id:string;status:string}>(
           "INSERT INTO zalo_official_quarantine "+
-          "(id,oa_id,raw_sha256,kind,customer_id,conversation_id,provider_claimed_event_id,status) "+
-          "VALUES($1,$2,$3,$4,$5,$6,$7,'NEEDS_HUMAN') "+
+          "(id,oa_id,raw_sha256,kind,customer_id,conversation_id,provider_claimed_event_id,status,received_at) "+
+          "VALUES($1,$2,$3,$4,$5,$6,$7,'NEEDS_HUMAN',clock_timestamp()) "+
           "ON CONFLICT (oa_id,raw_sha256) DO NOTHING RETURNING id,status",
           [newId,config.oa_id,digest,kind,customer,conversation,claimed]);
         if(inserted.rowCount===1){
@@ -146,8 +158,20 @@ export function createOfficialZaloVerifiedIngress(
     if(record(input.recipient)&&input.recipient.id!==undefined&&
        input.recipient.id!==config.oa_id)
       throw new Error("INVALID_OFFICIAL_EVENT_SCOPE");
-    if(input.event_name==="user_send_text")
-      return text.receive(raw,headers);
+    if(input.event_name==="user_send_text"){
+      // Only a configured recipient and a verified server identity can enter
+      // conversation processing. A signed text event from an unknown sender
+      // MUST remain durably OA-level even though its body is untrusted.
+      const recipient=record(input.recipient)?input.recipient:null;
+      const sender=record(input.sender)?input.sender:null;
+      const user=sender?.id;
+      if(recipient?.id===config.oa_id&&id(user)){
+        const mapping=config.resolve_verified_user(user);
+        if(mapping&&id(mapping.customer_id)&&id(mapping.conversation_id,256))
+          return text.receive(raw,headers);
+      }
+      return quarantine.receive(raw,headers);
+    }
     return quarantine.receive(raw,headers);
   };
   return {
