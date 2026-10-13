@@ -62,3 +62,42 @@ test('after staff approval or printed job, request editing is locked; payment re
   assert.equal(canEditPrintRequest({...o,print_state:'UNKNOWN'}),false);
   assert.equal(canEditPrintRequest({...o,manual_lock:true}),false);
 });
+test('backend processing(0,[]) means waiting for verified plan, NEVER CLEAR',()=>{
+  const o=order('zero-plan');
+  const view=enrichOrderWithCode008(pending(o,'processing',0),o);
+  assert.equal(view.pending_updates?.state,'processing');
+  assert.equal(view.pending_updates?.unresolved_count,0);
+  assert.equal(hasClearPendingInbound(view),false);
+  assert.equal(canApproveAfterInboundReview(view),false);
+});
+test('backend needs_human(0,[]) means missing trusted scope, NEVER CLEAR',()=>{
+  const o=order('missing-scope');
+  const view=enrichOrderWithCode008(pending(o,'needs_human',0),o);
+  assert.equal(view.pending_updates?.state,'needs_human');
+  assert.equal(view.pending_updates?.unresolved_count,0);
+  assert.equal(canApproveAfterInboundReview(view),false);
+});
+test('backend pending list can be truncated while count is authoritative; never become CLEAR',()=>{
+  const o=order('many-items');
+  const view=enrichOrderWithCode008(pending(o,'processing',20,[{
+    kind:'file',label:'Tệp tin cần đối soát',
+    summary:'Chưa được xác minh trong phiên bản đơn hiện hành',received_at:'2026-10-13T04:00:00.000Z'
+  }]),o);
+  assert.equal(view.pending_updates?.state,'processing');
+  assert.equal(view.pending_updates?.unresolved_count,20);
+  assert.equal(canApproveAfterInboundReview(view),false);
+});
+test('pending metadata count less than supplied items and CLEAR with nonzero count stay unknown',()=>{
+  const o=order('bad-count');
+  for(const detail of [pending(o,'processing',0,[{kind:'file',label:'x',summary:'y',received_at:null}]),
+    pending(o,'clear',1)]) {
+    const parsed=parsePendingInbound(detail,o);
+    assert.equal(parsed.state,'unknown');
+    assert.equal(canApproveAfterInboundReview(enrichOrderWithCode008(detail,o)),false);
+  }
+});
+test('mismatched order id for backend CLEAR is never accepted',()=>{
+  const o=order('one'); const d=pending(o,'clear',0);
+  d.current.pending_updates.order_id='another-order';
+  assert.equal(parsePendingInbound(d,o).state,'unknown');
+});
