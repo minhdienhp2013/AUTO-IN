@@ -178,7 +178,10 @@ test("CODE-402 REAL PostgreSQL: credential-bound candidates, dual workers, resta
     assert.equal((await query("SELECT count(*)::int AS n FROM core_confirmations")).rows[0].n,0);
     // Lost worker ACK followed by concurrent restart must read the existing
     // committed candidate, never generate a second one or call AI1.confirm.
-    const verifiedBatch={key:"retry",first_at:0,deadline_at:0,events:[fixture("valid")]};
+    const verifiedEvent=(await query(
+      "SELECT payload_json FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2",
+      [oa,"valid"])).rows[0].payload_json;
+    const verifiedBatch={key:"retry",first_at:0,deadline_at:0,events:[verifiedEvent]};
     const [replayedA,replayedB]=await Promise.all([
       a.confirmations.consider({batch:verifiedBatch,expected_generation:3}),
       b.confirmations.consider({batch:verifiedBatch,expected_generation:3})
@@ -188,7 +191,8 @@ test("CODE-402 REAL PostgreSQL: credential-bound candidates, dual workers, resta
     assert.equal((await query("SELECT count(*)::int AS n FROM zalo_confirmation_candidates")).rows[0].n,1);
     // App restart and repeated webhook never re-process or create a candidate.
     const restarted=createZaloPipeline(options);
-    assert.equal((await restarted.receive_webhook(raw("valid"),headers)).body.status,"duplicate");
+    assert.equal((await restarted.receive_webhook(
+      new TextEncoder().encode(JSON.stringify(verifiedEvent)),headers)).body.status,"duplicate");
     assert.equal((await restarted.tick_inbound()).claimed,0);
     assert.equal((await query("SELECT count(*)::int AS n FROM zalo_confirmation_candidates")).rows[0].n,1);
     assert.equal((await restarted.tick_outbound()).disabled,true);
