@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {randomUUID} from "node:crypto";
+import {randomUUID,randomBytes} from "node:crypto";
 import {readFile} from "node:fs/promises";
 import {fileURLToPath} from "node:url";
 import {createZaloPipeline} from "../../../backend/integrations/zalo/pipeline.ts";
@@ -234,6 +234,56 @@ test("CODE-402 REAL PostgreSQL: credential-bound candidates, dual workers, resta
     await enqueue("challenge-replay");await ingest();await due();
     assert.equal((await ingest()).held,1);
     assert.equal((await query("SELECT count(*)::int AS n FROM zalo_confirmation_candidates")).rows[0].n,2);
+    assert.equal((await query("SELECT count(*)::int AS n FROM core_confirmations")).rows[0].n,0);
+
+    // CODE-402: fully structured synthetic postback travels from verified raw
+    // ingress through PostgreSQL unchanged. Only a server-bound challenge may
+    // create a PENDING_AI1_REVIEW candidate; never a core confirmation.
+    const postbackEvent=(id,challenge_id,token=randomBytes(32).toString("base64url"))=>({
+      synthetic_fixture:true,event_id:id,oa_id:oa,customer_id:customer,
+      conversation_id:conversation,occurred_at:new Date().toISOString(),
+      kind:"postback",confirmation_postback:{
+        kind:"verified_confirmation_accept",challenge_id,challenge_token:token
+      }
+    });
+    const structured=await issue("signed-structured",{expected_generation:5});
+    const signed=postbackEvent("signed-structured",structured.challenge_id);
+    assert.equal((await a.receive_webhook(new TextEncoder().encode(JSON.stringify(signed)),headers)).body.status,"accepted");
+    const persisted=(await query("SELECT payload_json FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2",
+      [oa,"signed-structured"])).rows[0].payload_json;
+    assert.deepEqual(persisted.confirmation_postback,signed.confirmation_postback);
+    await ingest();await due();
+    const [postbackA,postbackB]=await Promise.all([a.tick_inbound(),b.tick_inbound()]);
+    assert.equal(postbackA.processed+postbackB.processed,1);
+    assert.deepEqual((await query("SELECT status,challenge_id FROM zalo_confirmation_candidates WHERE event_id=$1",
+      ["signed-structured"])).rows[0],{
+       status:"PENDING_AI1_REVIEW",challenge_id:structured.challenge_id
+    });
+    assert.equal((await query("SELECT count(*)::int AS n FROM core_confirmations")).rows[0].n,0);
+    assert.equal((await a.receive_webhook(new TextEncoder().encode(JSON.stringify(signed)),headers)).body.status,"duplicate");
+    const again=await b.confirmations.consider({
+      batch:{key:"pb-repeat",first_at:0,deadline_at:0,events:[signed]},expected_generation:5
+    });
+    assert.equal(again.status,"existing");
+    assert.equal((await query("SELECT count(*)::int AS n FROM zalo_confirmation_candidates WHERE event_id='signed-structured'")).rows[0].n,1);
+
+    // Correctly signed but mismatched structured challenge ID cannot receive
+    // a candidate even when AI0 resolver returns another known issued challenge.
+    const incorrect=await issue("postback-mismatch",{expected_generation:5});
+    const mismatched=postbackEvent("postback-mismatch",randomUUID());
+    assert.notEqual(mismatched.confirmation_postback.challenge_id,incorrect.challenge_id);
+    assert.equal((await a.receive_webhook(new TextEncoder().encode(JSON.stringify(mismatched)),headers)).body.status,"accepted");
+    await ingest();await due();
+    assert.equal((await ingest()).held,1);
+    assert.equal((await query("SELECT count(*)::int AS n FROM zalo_confirmation_candidates WHERE event_id='postback-mismatch'")).rows[0].n,0);
+
+    // No trusted challenge resolver => retained batch and ZERO consent.
+    const unbound=postbackEvent("postback-no-resolver",randomUUID());
+    const noResolver=createZaloPipeline({...options,confirmation_challenges:undefined});
+    assert.equal((await noResolver.receive_webhook(new TextEncoder().encode(JSON.stringify(unbound)),headers)).body.status,"accepted");
+    await noResolver.tick_inbound();await due();
+    assert.equal((await noResolver.tick_inbound()).held,1);
+    assert.equal((await query("SELECT count(*)::int AS n FROM zalo_confirmation_candidates WHERE event_id='postback-no-resolver'")).rows[0].n,0);
     assert.equal((await query("SELECT count(*)::int AS n FROM core_confirmations")).rows[0].n,0);
   }finally{
     try{await admin.query('DROP SCHEMA IF EXISTS "'+schema+'" CASCADE')}
