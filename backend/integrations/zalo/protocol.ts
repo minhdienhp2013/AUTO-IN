@@ -2,7 +2,29 @@
  * CODE-102: provider-neutral ports. Wire v0.1 uses snake_case.
  * The example shape below is SYNTHETIC, NOT a claim about the real Zalo OA API.
  */
-export type InboundKind = "text" | "file" | "image" | "unsupported";
+export type InboundKind = "text" | "file" | "image" | "postback" | "unsupported";
+/** Synthetic fixture shape ONLY: NOT a declaration of real Zalo OA postback API.
+ * Challenge token is opaque 32 random bytes, base64url encoded.
+ * Validating this object is NOT proof of customer identity or consent.
+ */
+export interface VerifiedConfirmationPostback {
+  kind:"verified_confirmation_accept";
+  challenge_id:string;
+  challenge_token:string;
+}
+const challengeId=/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+const challengeToken=/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
+export function isVerifiedConfirmationPostback(value:unknown):value is VerifiedConfirmationPostback {
+  if(!value||typeof value!=="object"||Array.isArray(value))return false;
+  const o=value as Record<string,unknown>;
+  return Object.keys(o).length===3 &&
+    Object.keys(o).every(k=>["kind","challenge_id","challenge_token"].includes(k)) &&
+    o.kind==="verified_confirmation_accept"&&
+    typeof o.challenge_id==="string"&&challengeId.test(o.challenge_id)&&
+    typeof o.challenge_token==="string"&&challengeToken.test(o.challenge_token)&&
+    Buffer.from(o.challenge_token,"base64url").length===32 &&
+    Buffer.from(o.challenge_token,"base64url").toString("base64url")===o.challenge_token;
+}
 export interface InboundEvent {
   event_id: string;
   oa_id: string;
@@ -14,6 +36,7 @@ export interface InboundEvent {
   file_ref?: string;
   mime_type?: string;
   filename?: string;
+  confirmation_postback?: VerifiedConfirmationPostback;
 }
 export interface WebhookVerifier {
   /** Must validate an official Zalo signature over exact raw bytes. */
@@ -45,7 +68,7 @@ export class SyntheticFixtureNormalizer implements EventNormalizer {
     const o = data as Record<string, unknown>;
     if (o.synthetic_fixture !== true) throw new Error("NOT_SYNTHETIC_FIXTURE");
     const kind = required(o.kind, 16);
-    if (!["text", "file", "image", "unsupported"].includes(kind)) throw new Error("INVALID_KIND");
+    if (!["text", "file", "image", "postback", "unsupported"].includes(kind)) throw new Error("INVALID_KIND");
     const occurred_at = required(o.occurred_at, 40);
     if (!/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(occurred_at) || !Number.isFinite(Date.parse(occurred_at))) throw new Error("INVALID_TIME");
     const evt: InboundEvent = {
@@ -61,6 +84,19 @@ export class SyntheticFixtureNormalizer implements EventNormalizer {
     if (typeof o.file_ref === "string") evt.file_ref = required(o.file_ref, 2048);
     if (typeof o.mime_type === "string") evt.mime_type = required(o.mime_type, 128);
     if (typeof o.filename === "string") evt.filename = required(o.filename, 255);
+    if (Object.hasOwn(o,"confirmation_postback") || kind==="postback") {
+      // Never promote text, a forged metadata key, or an arbitrary event kind
+      // to an authenticated button response. Reject rather than strip.
+      if(kind!=="postback"||!isVerifiedConfirmationPostback(o.confirmation_postback)||
+        Object.hasOwn(o,"text")||Object.hasOwn(o,"file_ref")||
+        Object.hasOwn(o,"mime_type")||Object.hasOwn(o,"filename"))
+        throw new Error("INVALID_CONFIRMATION_POSTBACK");
+      evt.confirmation_postback={
+        kind:"verified_confirmation_accept",
+        challenge_id:o.confirmation_postback.challenge_id,
+        challenge_token:o.confirmation_postback.challenge_token
+      };
+    }
     if (kind === "text" && !evt.text) throw new Error("MISSING_TEXT");
     if ((kind === "file" || kind === "image") && !evt.file_ref) throw new Error("MISSING_FILE_REF");
     return evt;
