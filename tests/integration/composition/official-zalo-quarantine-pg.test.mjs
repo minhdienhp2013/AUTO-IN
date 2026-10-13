@@ -149,7 +149,7 @@ test('AI0 official quarantine composition: raw verified webhook, owner review, m
    await new Promise(resolve=>setTimeout(resolve,100));
    assert.equal(settled,false,'approval must wait for the same OA scope row');
    const digest=createHash('sha256').update('synthetic-race-receipt').digest('hex');
-   const receipt=unique('receipt');
+   const receipt=randomUUID();
    // Valid AI2 custody row committed by the transaction holding the scope lock.
    await held.query(
     "INSERT INTO zalo_official_quarantine(id,oa_id,raw_sha256,kind,status) VALUES($1,$2,$3,'click','NEEDS_HUMAN')",
