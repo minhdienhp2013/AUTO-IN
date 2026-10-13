@@ -71,6 +71,18 @@ export function createOfficialZaloQuarantineReceiver(
       // No raw payload, arbitrary filename, click data, free text, or OA
       // secret is persisted. DB receipt time is authoritative.
       return db.transaction(async tx=>{
+        // Shared DB serialization point for AI0's future approval gate.
+        // AI0 MUST acquire this same row FOR UPDATE before testing pending
+        // quarantine in the SAME approval transaction (Core owner action).
+        // Never rely on a non-locking count outside Core's approval tx.
+        await tx.query(
+          "INSERT INTO zalo_official_quarantine_scopes(oa_id) VALUES($1) "+
+          "ON CONFLICT (oa_id) DO NOTHING",[config.oa_id]);
+        const scope=await tx.query<{oa_id:string}>(
+          "SELECT oa_id FROM zalo_official_quarantine_scopes "+
+          "WHERE oa_id=$1 FOR UPDATE",[config.oa_id]);
+        if(scope.rowCount!==1||scope.rows[0]?.oa_id!==config.oa_id)
+          throw new Error("OFFICIAL_QUARANTINE_SCOPE_LOCK_REQUIRED");
         const newId=randomUUID();
         const inserted=await tx.query<{id:string;status:string}>(
           "INSERT INTO zalo_official_quarantine "+
