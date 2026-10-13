@@ -1,5 +1,12 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
 
+## CODE-008 AI5 — PR #48 Chromium 14/14 PASS, 13/10/2026
+
+PR #48 nền `816adb5fd7ff24cc98cd5841c95a8d25a523e45d`; **staging CI push đúng SHA `33f793af444045cbc1c15387ec748f00847a21a5`** sau khi chỉ sửa harness AI5. [Simulation integration #38369695822](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38369695822) cả hai job PG/Chromium **SUCCESS**; [CODE checks #38369695850](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38369695850) SUCCESS. PG **98 PASS/0 FAIL/19 SKIP**, HTTP **61 PASS/0 FAIL/63 SKIP**, Chromium status **14/14 PASS** trên 1440×900/390×844. Chẩn đoán: lỗi parser kỳ vọng câu ở sai phần tử và đua loading trong **test harness AI5**, không phải lỗi sản phẩm AI4. Giữ fail-closed/khóa duyệt, không waiver. [Báo cáo chi tiết](CODE008_CHROMIUM_PR48_20261013.md). **Chưa CI trên SHA PR #18 mới**, AI0 chưa nhập patch AI5 mới vào PR #48/#31; TN-037/Zalo OA/Ricoh/iPhone thật **NOT RUN**.
+
+---
+
+
 ## CODE-008/CODE-405 — AI5 kiểm trên AI0 SHA 9fb2bf1 (13/10/2026)
 
 AI0 #31 HEAD `9fb2bf1bcd1ca9d59b912adf60d7fb8f3cabca54` có [CI PUSH integration SUCCESS](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38362911714): **91 PASS/0 FAIL/19 SKIP** PG, **54 PASS/0 FAIL/63 SKIP** HTTP, Chromium desktop/mobile PASS tổng quát. AI5 phát hiện **2 lỗi hiển thị read-model AI4** bằng test mới trên staging SHA `6a317e4f6abc68127fc0fbd020d1fd58cf03e06a` (chỉ +2 test AI5): [PG job](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38364941554/job/115187703075) **96 PASS/2 FAIL/19 SKIP**, HTTP **59 PASS/2 FAIL/63 SKIP**. Thực hiện đầy đủ CODE-008 9/9 PG + 2/2 composition và CODE405 5/5 PG + 6/6 composition **PASS**, không viện SKIP. **C008-UI-02/03 FAIL**: processing(0)/needs_human(0) bị đổi thành unknown; hệ thống vẫn khóa duyệt nhưng hiện sai trạng thái. AI4 PR #47 đã có fix cần AI0 nhập; Chromium 14 status×viewport mới **NOT RUN** do CI chưa chạy wrapper. Báo cáo [CODE008_AI5_AUDIT_SHA_9FB2BF1_20261013.md](CODE008_AI5_AUDIT_SHA_9FB2BF1_20261013.md). **TN-037 chưa đủ**.

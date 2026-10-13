@@ -36,3 +36,7 @@ Ngày xác minh 13/10/2026. Vai trò AI5, **chỉ thay đổi tests/acceptance/*
 
 **TN-037 và V1 vẫn BLOCKED.** Không merge/deploy, không chạy Zalo OA/Ricoh thật, không tự gửi xác nhận/duyệt thay khách.
 
+
+## Bổ sung 13/10 — trạng thái CI sau khi AI4 PR #47 + AI5 harness trên PR #48
+
+Hai lỗi CODE008 UI-02/03 thuộc AI0 SHA cũ `9fb2bf1` đã được AI4 sửa tại PR #47; PR #48 đã tích hợp fix đó. AI5 Chromium fail ở PR #48 không phải lỗi UI: harness kiểm sai DOM node và đua tải dữ liệu. Đã sửa trong AI5 và nghiệm thu 14/14 trên staging `33f793af444045cbc1c15387ec748f00847a21a5` (PG 98 PASS/19 SKIP, HTTP 61 PASS/63 SKIP, browser 14 PASS). [Báo cáo cuối](CODE008_CHROMIUM_PR48_20261013.md); không diễn giải những RED trước đây là còn tồn tại trong patch đã kiểm. TN-037 vẫn NOT RUN.
