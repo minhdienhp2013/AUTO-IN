@@ -2,7 +2,7 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
-const {randomUUID}=require('node:crypto');
+const {randomUUID,randomBytes}=require('node:crypto');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../../.ai1-build/backend');
 const {PgStore}=require(path.join(root,'storage/database.js'));
 const {OrderService}=require(path.join(root,'core/service.js'));
@@ -61,7 +61,7 @@ test('REAL PostgreSQL CODE-401: verified customer challenge, revision/hash/quote
   await assert.rejects(portA.confirm_verified_event({...target,event_id:wrongCustomer}),e=>e.code==='UNVERIFIED_CONFIRMATION_EVENT');
   const wrongOa=k('wrong-oa');await inbound(a,'other-'+oa,conv,customer,wrongOa,challenge);
   await assert.rejects(portB.confirm_verified_event({...target,event_id:wrongOa}),e=>e.code==='UNVERIFIED_CONFIRMATION_EVENT');
-  const wrongSecret=k('wrong-token');await inbound(a,oa,conv,customer,wrongSecret,challenge,{token:'fake-token'});
+  const wrongSecret=k('wrong-token');await inbound(a,oa,conv,customer,wrongSecret,challenge,{token:randomBytes(32).toString('base64url')});
   await assert.rejects(portA.confirm_verified_event({...target,event_id:wrongSecret}),e=>e.code==='CONFIRMATION_CHALLENGE_MISMATCH');
   // A text event, malformed evidence, and a received-before-issue event
   // cannot be promoted to acceptance merely by holding the right token.
