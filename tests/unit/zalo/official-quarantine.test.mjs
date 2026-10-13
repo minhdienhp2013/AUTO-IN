@@ -25,11 +25,15 @@ function sql(){
  return {data,queries:()=>queries,transaction:async action=>action({
   async query(text,values=[]){
    queries++;
+   if(text.startsWith("INSERT INTO zalo_official_quarantine_scopes"))
+     return {rows:[],rowCount:1};
+   if(text.startsWith("SELECT oa_id FROM zalo_official_quarantine_scopes"))
+     return {rows:[{oa_id:values[0]}],rowCount:1};
    if(text.startsWith("INSERT INTO zalo_official_quarantine")){
-    const [id,oa,sha,kind,customer,conversation]=values,unique=oa+":"+sha;
+    const [id,oa,sha,kind,customer,conversation,claimed]=values,unique=oa+":"+sha;
     if(data.has(unique))return {rows:[],rowCount:0};
     const row={id,oa_id:oa,raw_sha256:sha,kind,customer_id:customer,
-     conversation_id:conversation,status:"NEEDS_HUMAN"};
+     conversation_id:conversation,provider_claimed_event_id:claimed,status:"NEEDS_HUMAN"};
     data.set(unique,row);return {rows:[row],rowCount:1};
    }
    if(text.startsWith("SELECT id,status,kind")){
