@@ -55,3 +55,11 @@ CREATE INDEX IF NOT EXISTS zalo_official_quarantine_pending_idx
 );
 CREATE INDEX IF NOT EXISTS zalo_official_quarantine_pending_idx
  ON zalo_official_quarantine(oa_id,received_at,id) WHERE status='NEEDS_HUMAN';
+
+-- Preserve existing AI2 test/quarantine rows from the early CODE-402 version.
+-- Re-applying v004 on an isolated DB must NOT silently omit this new column.
+ALTER TABLE zalo_official_quarantine
+  ADD COLUMN IF NOT EXISTS provider_claimed_event_id text NULL
+  CHECK(provider_claimed_event_id IS NULL OR
+    (length(provider_claimed_event_id) BETWEEN 1 AND 128 AND
+     provider_claimed_event_id ~ '^[A-Za-z0-9._:-]+$'));
