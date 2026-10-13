@@ -9,7 +9,10 @@ const {OrderService}=require(path.join(root,'core/service.js'));
 const {createVerifiedConfirmationPort}=require(path.join(root,'core/verified-confirmation-port.js'));
 let pg;try{pg=require('pg');}catch{/* AI0 owns deps */}
 const url=process.env.TEST_DATABASE_URL;
-const ready=Boolean(pg&&url);
+// AI5 PG-only acceptance executes after root npm run check/build in --integration.
+// The browser-only job intentionally builds just web/, so a Core binary is
+// unavailable there. Browser checks stay active and separately gated.
+const ready=Boolean(pg&&url&&process.env.AUTOIN_RUN_PRODUCT_ACCEPTANCE==='1');
 const uuid=()=>randomUUID();
 const k=p=>p+'-'+uuid();
 const principal=(shop,id)=>({id,shop_id:shop,role:'staff',verified:true});
@@ -26,7 +29,7 @@ async function inbound(pool,oa,conv,customer,eventId,challenge,opts={}) {
 const count=async(pool,table,orderId)=>Number((await pool.query(`SELECT count(*)::int AS n FROM ${table} WHERE order_id=$1`,[orderId])).rows[0].n);
 
 test('AI5 independent CODE-401: actual integrated Core PG receipt time, strict postback, 2 workers, ACK replay and staff approve',
- {skip:!ready&&'Requires REAL TEST_DATABASE_URL and pg'},async()=>{
+ {skip:!ready&&'NOT RUN in browser/HTTP mode: requires --integration, dist/backend and real isolated PostgreSQL'},async()=>{
  const a=new pg.Pool({connectionString:url,max:6});
  const b=new pg.Pool({connectionString:url,max:6});
  try{
