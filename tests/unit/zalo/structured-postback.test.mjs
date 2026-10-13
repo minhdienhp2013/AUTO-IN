@@ -43,8 +43,6 @@ test('malformed, hidden, spoofed, oversized or mixed postback metadata is reject
    {kind:'postback',confirmation_postback:{...postback,challenge_token:'A'.repeat(300)}},
    {kind:'postback',confirmation_postback:{...postback,challenge_token:'!'.repeat(43)}},
    {kind:'postback',confirmation_postback:{...postback,challenge_token:'A'.repeat(42)+'B'}},
-   {kind:'text',text:'OK',confirmation_postback:postback},
-   {kind:'image',file_ref:'synthetic:proof',confirmation_postback:postback},
    {kind:'postback',text:'OK'},
    {kind:'postback',file_ref:'synthetic:proof'},
    {kind:'postback',filename:'untrusted'},
@@ -52,6 +50,15 @@ test('malformed, hidden, spoofed, oversized or mixed postback metadata is reject
  ];
  for(const change of bad)
    assert.throws(()=>normalizer.normalize(raw(fixture(change))),/INVALID_CONFIRMATION_POSTBACK/);
+});
+test('signed ordinary messages discard untrusted postback metadata, never promote it',()=>{
+ const msg=normalizer.normalize(raw(fixture({kind:'text',text:'OK'})));
+ assert.equal(msg.kind,'text');
+ assert.equal(msg.confirmation_postback,undefined);
+ const img=normalizer.normalize(raw(fixture({kind:'image',file_ref:'synthetic:proof'})));
+ assert.equal(img.kind,'image');
+ assert.equal(img.confirmation_postback,undefined);
+ assert.equal(confirmationIntent({key:'k',events:[img],first_at:0,deadline_at:1}),undefined);
 });
 test('raw unverified fixture cannot enter DB; signed synthetic fixture retains postback as JSON',async()=>{
  const inserts=[];
@@ -65,9 +72,12 @@ test('raw unverified fixture cannot enter DB; signed synthetic fixture retains p
  assert.deepEqual(await ingress.receive(bytes,{'x-test-fixture-key':'fixture-only-secret'}),
    {status:'accepted',event_id:'event-postback'});
  assert.deepEqual(JSON.parse(JSON.stringify(inserts[0])).confirmation_postback,postback);
- await assert.rejects(ingress.receive(raw(fixture({kind:'text',text:JSON.stringify(postback)})),
-   {'x-test-fixture-key':'fixture-only-secret'}),/INVALID_CONFIRMATION_POSTBACK/);
- assert.equal(inserts.length,1);
+ const masquerade=await ingress.receive(raw(fixture({kind:'text',text:JSON.stringify(postback)})),
+   {'x-test-fixture-key':'fixture-only-secret'});
+ assert.equal(masquerade.status,'accepted');
+ assert.equal(inserts.length,2);
+ assert.equal(inserts[1].confirmation_postback,undefined);
+ assert.equal(inserts[1].text,JSON.stringify(postback));
 });
 test('structured postback without server challenge resolver is HELD; never draft/approve/reply',async()=>{
  let effects=0;
