@@ -302,16 +302,27 @@ function App() {
                   <p data-testid="code008-revision">Phiên bản đang xử lý: <b>{selectedOrder.revision}</b> · Chat: {selectedOrder.conversation_id??'chưa được server xác minh'}</p>
                   {requiresCustomerReconfirmation(selectedOrder) && <p className="inbound-warning" data-testid="code008-reconfirm">Có phiên bản đơn mới: khách cần xác nhận lại yêu cầu và giá (nếu cần). Xác nhận phiên bản cũ không có hiệu lực.</p>}
                   {apiHealthy && selectedOrder.pending_updates?.state==='clear'
-                    ? <p data-testid="code008-clear">Máy chủ xác nhận không còn tin/file bổ sung đang chờ đối soát cho đúng phiên bản/hash hiện hành.</p>
-                    : <p className="inbound-warning" data-testid="code008-blocked">Có tin/file bổ sung cần đối soát trước khi chốt in, hoặc API chưa cung cấp chứng cứ đã xử lý hết. Không coi nội dung này là đã nhập vào đơn.</p>}
-                  {apiHealthy && selectedOrder.pending_updates && selectedOrder.pending_updates.state!=='unknown' && selectedOrder.pending_updates.state!=='clear' &&
-                    <p data-testid="code008-pending-count">Máy chủ ghi nhận {selectedOrder.pending_updates?.unresolved_count ?? 'chưa xác định'} tin/file chưa xử lý; {selectedOrder.pending_updates?.state==='needs_human'?'cần nhân viên đối soát':'đang chờ AI xử lý'}.</p>}
+                    ? <p data-testid="code008-clear">CLEAR — Máy chủ xác nhận không có sự kiện bổ sung chưa đối soát cho đúng mã đơn, phiên bản và hash hiện hành. Đây không phải xác nhận của khách.</p>
+                    : <p className="inbound-warning" data-testid="code008-blocked">
+                        {!apiHealthy || selectedOrder.pending_updates?.state==='unknown' || !selectedOrder.pending_updates
+                          ? 'CHƯA XÁC ĐỊNH — API lỗi/thiếu dữ liệu hoặc bằng chứng sai đơn, phiên bản, hash. Đã khóa duyệt in.'
+                          : selectedOrder.pending_updates.state==='needs_human'
+                            ? 'CẦN NHÂN VIÊN ĐỐI SOÁT — không chốt in trước khi server xác minh lại.'
+                            : 'ĐANG CHỜ AI XỬ LÝ — chưa đủ điều kiện chốt in.'}
+                      </p>}
+                  {apiHealthy && selectedOrder.pending_updates && (selectedOrder.pending_updates.state==='processing' || selectedOrder.pending_updates.state==='needs_human') &&
+                    <p data-testid="code008-pending-count">
+                      Trạng thái: <b>{selectedOrder.pending_updates.state==='needs_human'?'needs_human':'processing'}</b>.
+                      {selectedOrder.pending_updates.unresolved_count === 0
+                        ? ' Chưa có mục được liệt kê, nhưng backend chưa chứng thực CLEAR; không được duyệt.'
+                        : ` Có ${selectedOrder.pending_updates.unresolved_count} tin/file chưa xử lý; danh sách bên dưới chỉ là metadata an toàn.`}
+                    </p>}
                   {(apiHealthy?selectedOrder.pending_updates?.items??[]:[]).map((item,index)=><div className="inbound-item" key={index}>
                     <b>{item.kind==='file'?'File bổ sung':'Tin bổ sung'}: {item.label}</b>
                     <p>{item.summary}</p>
                     {item.received_at && <small>{time(item.received_at)}</small>}
                   </div>)}
-                  {selectedOrder.pending_updates?.state==='unknown' && <small>Backend hiện chưa có hợp đồng pending_updates theo order/revision/hash. Đã khóa duyệt an toàn; chờ AI0/AI1 cấp API.</small>}
+                  {(!apiHealthy || selectedOrder.pending_updates?.state==='unknown' || !selectedOrder.pending_updates) && <small>Không thể dùng dữ liệu pending trước đó để duyệt; tải lại chi tiết đơn từ server sau khi API hoạt động.</small>}
                 </section>}
                 <div className="axis-grid" aria-label="Năm trạng thái độc lập"><Axis title="Hội thoại" label={conversationLabels[selectedOrder.conversation_state]}/><Axis title="Đơn hàng" label={orderLabels[selectedOrder.order_state]}/><Axis title="In giấy" label={selectedOrder.print_state==='VERIFIED_DONE' && selectedOrder.total_sheets!==null && (selectedOrder.verified_sheets===null || selectedOrder.verified_sheets < selectedOrder.total_sheets) ? 'Giấy thật chưa xác minh đủ' : printLabels[selectedOrder.print_state]} warn={printAttention || selectedOrder.print_state==='SIMULATED_DONE'}/><Axis title="Giao giấy" label={deliveryLabels[selectedOrder.delivery_state]}/><Axis title="Thanh toán" label={paymentLabels[selectedOrder.payment_state]}/></div>
                 {!useDemo && confirmation && <section className="confirmation-evidence" data-testid="confirmation-evidence" aria-label="Bằng chứng xác nhận khách và duyệt in">
@@ -319,7 +330,7 @@ function App() {
                   <div><strong>Xác nhận giá</strong><span data-testid="confirmation-price">{confirmation.price==='not_required'?'Không cần xác nhận giá riêng':confirmation.price==='confirmed'?'Đã xác nhận đúng phiên bản báo giá':'Chưa xác nhận giá cho đơn trên 150 tờ hoặc chi phí đáng kể'}</span></div>
                   <div><strong>Duyệt của nhân viên</strong><span data-testid="confirmation-staff">{({
                     waiting_customer:'Chờ xác nhận từ khách',waiting_price:'Chờ khách xác nhận giá',waiting_preview:'Cần bản xem trước/file đã kiểm chứng trước khi duyệt',
-                    waiting_staff:hasClearPendingInbound(selectedOrder)?'Sẵn sàng để NHÂN VIÊN duyệt':'Chờ đối soát tin/file trước khi NHÂN VIÊN duyệt',already_approved:'Nhân viên đã duyệt trên máy chủ',
+                    waiting_staff:apiHealthy&&hasClearPendingInbound(selectedOrder)?'Sẵn sàng để NHÂN VIÊN duyệt':'Chờ đối soát tin/file trước khi NHÂN VIÊN duyệt',already_approved:'Nhân viên đã duyệt trên máy chủ',
                     blocked:'Chưa thể duyệt: lệnh đã gửi/chưa rõ hoặc đơn bị khóa'
                   } as const)[confirmation.staff]}</span></div>
                   <p>Chỉ máy chủ xác thực khách và ghi nhận đúng phiên bản. Nhân viên không thể tự xác nhận thay khách; xem trước không phải bằng chứng đã in.</p>

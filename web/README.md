@@ -142,3 +142,9 @@ không đủ điều kiện. Không merge/deploy, không bật in hoặc OA th�
 - Batch Zalo 60 giây không phải chốt đơn. `NEEDS_HUMAN`/PENDING không được hiển thị là đã nhập đơn. Chỉ AI1/AI2/AI0 mới nối sự kiện vào revision và xác nhận danh tính; UI chỉ thông báo khách cần xác nhận lại khi revision tăng và chưa có current confirmation.
 - Sau `approved`, `manual_lock`, `closed`, hoặc print_state khác NOT_SENT, thao tác **sửa giá/yêu cầu in** bị khóa ở UI và HTTP port. Thanh toán/giao hàng tách riêng, không suy ra đã in thật.
 - Kiểm thử `tests/ui/code008-open-orders.test.ts` cho thiếu read model, CLEAR đúng phiên, pending, sai hash/revision, SYSTEM metadata, chat nhiều đơn, khóa sau chốt; không test OA/Ricoh thật. Chromium cần bundle thật và backend simulation đúng SHA.
+
+### AI4 CODE-008 — tương thích pending_updates thực từ PR #31 / AI1 (13/10/2026)
+- Đã xác minh `backend/core/pending-updates.ts`: `needs_human,unresolved_count=0,items=[]` hợp lệ khi không chứng thực được scope; `processing,unresolved_count=0,items=[]` hợp lệ khi kế hoạch chưa verified. Không gọi hai trường hợp này là UNKNOWN/CLEAR và **không duyệt**.
+- Danh sách `items` là metadata (không chứa nội dung khách) và có thể giới hạn 12 mục trong khi `unresolved_count` lớn hơn 12. Không coi items ngắn hơn count là đã xử lý xong.
+- Chỉ `clear,unresolved_count=0,items=[]` đúng `order_id/revision/request_hash` mới đạt gate hàng đợi; customer confirmation, price confirmation và trusted preview vẫn là các điều kiện riêng. API lỗi/401/409/thiếu trường hoặc scope/hash mismatch hiển thị CHƯA XÁC ĐỊNH và khóa duyệt.
+- CI verification trên nhánh AI4 đối chiếu với SHA PR #31 mới nhất; không thay lịch sử AI4 hoặc backend. 
