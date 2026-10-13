@@ -82,6 +82,40 @@ test("REAL PostgreSQL AI2 unified verified official ingress: text/held image-fil
   assert.equal(missing.rows[0].customer_id,null);
   assert.equal(missing.rows[0].conversation_id,null);
 
+  // Signed TEXT without a verified sender→customer/chat mapping must not
+  // disappear as 422; no message body, guessed identity or AI2 candidate.
+  const privateBody="SENSITIVE_UNMAPPED_MESSAGE_"+unique;
+  const unbound=create("user_send_text",{msg_id:"unmapped-text-"+unique,
+    text:privateBody,confirmation_postback:{kind:"verified_confirmation_accept"}},
+    "no-trusted-binding");
+  const [unboundA,unboundB]=await Promise.all([
+    ingressA.receive(unbound.bytes,unbound.headers),
+    ingressB.receive(unbound.bytes,unbound.headers)
+  ]);
+  assert.deepEqual([unboundA.status,unboundB.status].sort(),["duplicate","held"]);
+  assert.equal(unboundA.receipt_id,unboundB.receipt_id);
+  assert.equal(unboundA.mapped,false);
+  assert.equal(unboundA.kind,"unknown");
+  const q=await a.query(
+    "SELECT raw_sha256,kind,status,received_at,customer_id,conversation_id,provider_claimed_event_id "+
+    "FROM zalo_official_quarantine WHERE id=$1",[unboundA.receipt_id]);
+  assert.equal(q.rowCount,1);
+  assert.equal(q.rows[0].status,"NEEDS_HUMAN");
+  assert.equal(q.rows[0].customer_id,null);
+  assert.equal(q.rows[0].conversation_id,null);
+  assert.ok(q.rows[0].received_at);
+  assert.equal(q.rows[0].provider_claimed_event_id,"unmapped-text-"+unique);
+  assert.equal(await count("zalo_inbound_events"),1);
+  assert.equal(await count("zalo_process_queue"),1);
+  assert.equal((await a.query(
+    "SELECT count(*)::int n FROM zalo_confirmation_candidates WHERE oa_id=$1",[oa])).rows[0].n,0);
+  // A new provider-controlled signed payload body is NEVER stored as raw data.
+  const fieldNames=Object.values(q.rows[0]).join("|");
+  assert.equal(fieldNames.includes(privateBody),false);
+  assert.equal((await ingressB.receive_webhook(unbound.bytes,{
+    "x-zevent-signature":"mac="+("0".repeat(64))
+  })).status_code,403);
+  assert.equal(await count("zalo_official_quarantine"),6);
   const before=await count("zalo_official_quarantine");
   assert.equal((await ingressA.receive_webhook(unknown.bytes,{"x-zevent-signature":"mac="+("0".repeat(64))})).status_code,403);
   const wrong=create("user_send_file",{msg_id:"wrong-"+unique},user,{oa_id:"wrong-oa"});
