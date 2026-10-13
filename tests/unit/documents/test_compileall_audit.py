@@ -24,3 +24,20 @@ def test_compileall_workers_agents_and_ai3_tests():
         f"AI3 compileall failed with exit code {result.returncode}: "
         f"{result.stderr[-1000:]}"
     )
+
+
+
+def test_source_snapshot_audit_suite_runs_directly():
+    """Explicit HEAD audit: execute the requested source-snapshot file by itself."""
+    repo = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q",
+         "tests/unit/documents/test_source_snapshots.py"],
+        cwd=repo, capture_output=True, text=True,
+        check=False, timeout=60,
+    )
+    assert result.returncode == 0, (
+        "Direct snapshot audit FAILED: " + result.stdout[-1500:]
+        + result.stderr[-500:]
+    )
+    assert "5 passed" in result.stdout, result.stdout[-1500:]
