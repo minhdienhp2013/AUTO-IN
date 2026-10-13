@@ -69,9 +69,9 @@ export function createPostgresVerifiedChallengeResolver(options:{trusted:Trusted
 
       // Re-read the committed ingress row; an in-memory event or text cannot
       // supply challenge proof. pg uses one transaction/client for this query.
-      const events=await tx.query<InboundRow>(\`
+      const events=await tx.query<InboundRow>(`
         SELECT event_id,oa_id,customer_id,conversation_id,occurred_at,received_at,payload_json
-        FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2 FOR SHARE\`,
+        FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2 FOR SHARE`,
         [oa,scope.event_id]);
       const event=events.rows[0];
       if(!event||event.oa_id!==oa||event.event_id!==scope.event_id||
@@ -94,7 +94,7 @@ export function createPostgresVerifiedChallengeResolver(options:{trusted:Trusted
       // Read-only proof lookup. AI2 takes the generation/order locks later in
       // this same transaction. AI1 alone writes core_confirmations and rechecks
       // the authoritative state under its row locks.
-      const found=await tx.query<ChallengeRow>(\`
+      const found=await tx.query<ChallengeRow>(`
         SELECT c.id::text AS challenge_id,c.shop_id,c.oa_id,
           c.order_id::text AS order_id,c.customer_id,c.conversation_id,c.kind,
           c.quote_revision,c.revision,o.active_revision,
@@ -111,7 +111,7 @@ export function createPostgresVerifiedChallengeResolver(options:{trusted:Trusted
         JOIN core_conversation_controls ctl
           ON ctl.shop_id=c.shop_id AND ctl.conversation_id=c.conversation_id
         WHERE c.id=$1::uuid AND c.shop_id=$2 AND c.oa_id=$3
-          AND c.customer_id=$4 AND c.conversation_id=$5\`,
+          AND c.customer_id=$4 AND c.conversation_id=$5`,
         [postback.challenge_id,shop,oa,scope.customer_id,scope.conversation_id]);
       const challenge=found.rows[0];
       if(!challenge||challenge.challenge_id!==postback.challenge_id||
