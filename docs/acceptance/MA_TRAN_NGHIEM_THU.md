@@ -1,5 +1,12 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
 
+## CODE-402 — AI5 nghiệm thu mới nhất, 14/10/2026
+
+AI0 PR #31 HEAD `4822958713e6ee1c728babde790f4c7022ac02bc`, AI2 PR #53 HEAD `b7a51220b249d895ddd0a75bb67496300ed3923a`; **independent staging SHA `646aaa767bd3f37274e48a797ea03488cbbb6c42`** giữ mã sản phẩm y nguyên, chỉ thêm 3 file test AI5. [CI PUSH integration #38445735214](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38445735214) và [CODE checks #38445735081](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38445735081) đều SUCCESS. **PG 103 PASS/0 FAIL/19 SKIP; HTTP 62 PASS/0 FAIL/67 SKIP; browser 58 PASS/0 FAIL/66 SKIP**, Chromium 14/14 status×viewport PASS. CODE-402 1 independent signed-postback PG + 4 strict real AI2/AI1/AI0/normalizer suites PASS; candidate chỉ `PENDING_AI1_REVIEW`, không xác nhận/duyệt/in. C008 11/11 PASS; CODE405 11/11 PASS. [Ma trận chi tiết](CODE402_AI5_NGHIEM_THU_20261014.md). **Zalo OA/Ricoh/iPhone/TN-037 NOT RUN/BLOCKED.**
+
+---
+
+
 ## CODE-008 AI5 — PR #48 Chromium 14/14 PASS, 13/10/2026
 
 PR #48 nền `816adb5fd7ff24cc98cd5841c95a8d25a523e45d`; **staging CI push đúng SHA `33f793af444045cbc1c15387ec748f00847a21a5`** sau khi chỉ sửa harness AI5. [Simulation integration #38369695822](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38369695822) cả hai job PG/Chromium **SUCCESS**; [CODE checks #38369695850](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38369695850) SUCCESS. PG **98 PASS/0 FAIL/19 SKIP**, HTTP **61 PASS/0 FAIL/63 SKIP**, Chromium status **14/14 PASS** trên 1440×900/390×844. Chẩn đoán: lỗi parser kỳ vọng câu ở sai phần tử và đua loading trong **test harness AI5**, không phải lỗi sản phẩm AI4. Giữ fail-closed/khóa duyệt, không waiver. [Báo cáo chi tiết](CODE008_CHROMIUM_PR48_20261013.md). **Chưa CI trên SHA PR #18 mới**, AI0 chưa nhập patch AI5 mới vào PR #48/#31; TN-037/Zalo OA/Ricoh/iPhone thật **NOT RUN**.
