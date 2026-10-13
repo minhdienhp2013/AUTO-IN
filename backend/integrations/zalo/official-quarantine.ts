@@ -127,6 +127,13 @@ export function createOfficialZaloVerifiedIngress(
     try {input=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(raw));}
     catch{throw new Error("INVALID_OFFICIAL_EVENT");}
     if(!record(input))throw new Error("INVALID_OFFICIAL_EVENT");
+    // Unknown provider fields cannot silently select a different OA; the
+    // configured server OA stays authoritative for both ingress branches.
+    if(input.oa_id!==undefined&&input.oa_id!==config.oa_id)
+      throw new Error("INVALID_OFFICIAL_EVENT_SCOPE");
+    if(record(input.recipient)&&input.recipient.id!==undefined&&
+       input.recipient.id!==config.oa_id)
+      throw new Error("INVALID_OFFICIAL_EVENT_SCOPE");
     if(input.event_name==="user_send_text")
       return text.receive(raw,headers);
     return quarantine.receive(raw,headers);
