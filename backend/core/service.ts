@@ -128,7 +128,30 @@ export class OrderService {
     "SELECT to_regclass('public.core_order_inbound_reviews')::text AS reviews,to_regclass('public.zalo_inbound_events')::text AS events,to_regclass('public.core_ai_draft_proposals')::text AS proposals");
    const tables=pendingTables.rows[0];
    if(tables?.proposals){
-    const source=await db.query('SELECT 1 FROM core_ai_draft_proposals WHERE order_id=$1 LIMIT 1',[id]);
+    const source=await db.query<{oa_id:string;shop_id:string}>(
+     'SELECT oa_id,shop_id FROM core_ai_draft_proposals WHERE order_id=$1',[id]);
+    if(source.rows.length>1||source.rows.some(x=>x.shop_id!==o.shop_id||!x.oa_id))
+     throw new DomainError('PENDING_INBOUND_REVIEW','Không xác định duy nhất OA của đơn, cấm chốt in',409);
+    // Signed, unsupported OA events are held by AI2 outside normal inbound.
+    // This order row was locked by this.order(). Take a SHARE table lock *before*
+    // reading quarantine. It conflicts with the ROW EXCLUSIVE lock of AI2
+    // INSERT/UPDATE, so an in-flight receipt cannot slip past staff approval.
+    // Empty/missing relation is only allowed while AI0 keeps the official route
+    // DISABLED; AI0 MUST install migration 004 before enabling that route.
+    if(source.rows.length){
+     const quarantineTable=await db.query<{relation:string|null}>(
+      "SELECT to_regclass('public.zalo_official_quarantine')::text AS relation");
+     if(quarantineTable.rows[0]?.relation){
+      await db.query('LOCK TABLE public.zalo_official_quarantine IN SHARE MODE');
+      const held=await db.query(
+       "SELECT 1 FROM public.zalo_official_quarantine "+
+       "WHERE oa_id=$1 AND status='NEEDS_HUMAN' LIMIT 1",
+       [source.rows[0]!.oa_id]);
+      if(held.rows.length)
+       throw new DomainError('PENDING_INBOUND_REVIEW',
+        'Còn sự kiện OA đã nhận đang chờ đối soát (kể cả chưa xác định khách)',409);
+     }
+    }
     if(source.rows.length && (!tables.events||!tables.reviews))
      throw new DomainError('PENDING_INBOUND_REVIEW','Không đủ bảng đối soát tin/file, cấm chốt in',409);
     if(source.rows.length){
