@@ -28,7 +28,7 @@ test("Official documented MAC -> durable PostgreSQL ingress: 2 independent pools
    .update(app).update(bytes).update(String(data.timestamp)).update(secret).digest("hex");
  const header={"x-zevent-signature":signature};
  const scope={app_id:app,oa_id:oa,oa_secret_key:secret,
-   resolve_conversation_id:(user)=>user===customer?"verified-conversation-"+unique:null};
+   resolve_verified_user:(user)=>user===customer?{customer_id:"trusted-"+customer,conversation_id:"verified-conversation-"+unique}:null};
  const ingressA=createOfficialZaloIngress(scope,
    new PostgresInboundEventRepository(createZaloTransactions(poolA)));
  const ingressB=createOfficialZaloIngress(scope,
@@ -45,7 +45,7 @@ test("Official documented MAC -> durable PostgreSQL ingress: 2 independent pools
    assert.equal(rows.rowCount,1);
    const payload=rows.rows[0].payload_json;
    assert.equal(payload.oa_id,oa);
-   assert.equal(payload.customer_id,customer);
+   assert.equal(payload.customer_id,"trusted-"+customer);
    assert.equal(payload.conversation_id,"verified-conversation-"+unique);
    assert.equal(payload.kind,"text");
    assert.equal(payload.confirmation_postback,undefined);
