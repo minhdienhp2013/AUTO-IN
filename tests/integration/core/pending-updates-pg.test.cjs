@@ -191,5 +191,44 @@ test('REAL PostgreSQL: current.pending_updates trustworthy journal, boundaries, 
   const missing=(await service.getOrder(staff,closed.order_id)).current.pending_updates;
   assert.equal(missing.status,'needs_human');
   assert.equal(missing.order_id,closed.order_id);
+
+  // Proven non-Zalo manual order: real Core staff audit and current revision
+  // establish provenance; Zalo tables existing alone are not a reason to block.
+  const manualOrderProof=await service.createDraft(staff,{
+   customer_id:k('manual-only-customer'),
+   request_data:{files:[{file_id:'public-fixture',copies:1,format:'pdf'}]},
+   idempotency_key:k('manual-origin')});
+  const manualBeforePlan=await service.getOrder(staff,manualOrderProof.order_id);
+  assert.equal(manualBeforePlan.order.conversation_id,null);
+  assert.equal(manualBeforePlan.current.pending_updates.status,'processing');
+  await service.publishVerifiedPlan(processor,manualOrderProof.order_id,{
+   expected_revision:1,
+   plan:{...plan,request_hash:manualOrderProof.request_hash},
+   idempotency_key:k('manual-verified-plan')});
+  const manualAfterPlan=await service.getOrder(staff,manualOrderProof.order_id);
+  assert.deepEqual(manualAfterPlan.current.pending_updates,{
+   order_id:manualOrderProof.order_id,revision:2,request_hash:manualOrderProof.request_hash,
+   status:'clear',unresolved_count:0,items:[]
+  });
+
+  // Missing OA mapping for any chat cannot impersonate a safe manual order.
+  const disconnected=await service.createDraft(staff,{
+   customer_id:k('unlinked-customer'),conversation_id:k('unlinked-chat'),
+   request_data:{files:[{file_id:'fixture'}]},idempotency_key:k('unlinked')});
+  assert.equal((await service.getOrder(staff,disconnected.order_id))
+   .current.pending_updates.status,'needs_human');
+
+  // A Zalo-looking payload with null conversation must not bypass the gate.
+  const disguised=await service.createDraft(staff,{
+   customer_id:k('disguised-customer'),request_data:{source:'zalo_ai_suggestion'},
+   idempotency_key:k('zalo-disguised')});
+  assert.equal((await service.getOrder(staff,disguised.order_id))
+   .current.pending_updates.status,'needs_human');
+
+  // Staff origin must still be auditable when the order has been revised.
+  await b.query("DELETE FROM core_audit WHERE order_id=$1 AND action='order.created'",
+   [manualOrderProof.order_id]);
+  assert.equal((await service.getOrder(staff,manualOrderProof.order_id))
+   .current.pending_updates.status,'needs_human');
  }finally{await Promise.all([a.end(),b.end()]);}
 });
