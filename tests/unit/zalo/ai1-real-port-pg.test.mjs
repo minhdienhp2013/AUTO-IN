@@ -1,8 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {readFile} from 'node:fs/promises';
-import {fileURLToPath} from 'node:url';
 import {createZaloPipeline} from '../../../backend/integrations/zalo/pipeline.ts';
 import {createZaloTransactions} from '../../../backend/integrations/zalo/transaction-runner.ts';
 import {SyntheticFixtureNormalizer,SyntheticTestVerifier} from '../../../backend/integrations/zalo/protocol.ts';
@@ -44,10 +42,12 @@ test('REAL PostgreSQL + REAL AI1 createAiOrderPort: new conversation, 2 workers,
     const a=await poolA.query('SELECT pg_backend_pid() AS pid');
     const b=await poolB.query('SELECT pg_backend_pid() AS pid');
     assert.notEqual(a.rows[0].pid,b.rows[0].pid);
-    // AI1 owns migration 005; this independent AI2 test only invokes it
-    // if the integration DB migration runner has not applied it.
-    const migration=await readFile(fileURLToPath(new URL('../../../backend/storage/migrations/005_ai_order_port.sql',import.meta.url)),'utf8');
-    await run(migration);
+    // AI0's migration runner must provision Core before tests. Executing
+    // AI1 DDL from an AI2 test races concurrent Core test DDL and can
+    // deadlock PostgreSQL 40P01; assert the real schema instead of
+    // mutating another owner's tables. Missing schema is an explicit FAIL.
+    const migrated=(await run("SELECT to_regclass('core_ai_draft_proposals')::text AS name")).rows[0]?.name;
+    assert.ok(migrated,'AI1 migration 005 is required before AI2 PostgreSQL integration');
     await run('INSERT INTO core_shop_settings(shop_id) VALUES($1)',[shop]);createdShop=true;
     const pids=await run('INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,$3,$4,\'staff\') RETURNING id',
       [staffId,shop,'staff-'+unique,'fixture-not-a-real-hash']);
