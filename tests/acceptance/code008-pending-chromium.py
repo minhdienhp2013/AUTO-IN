@@ -65,18 +65,33 @@ def one(browser,width,height,case):
         else:
             assert blocked.is_visible(), "No/unsafe pending evidence must block print"
             assert clear.count()==0
+            if case in ("missing","stale_hash"):
+                assert "chưa xác định" in blocked.inner_text().lower(), (
+                    "Missing or mismatched authoritative data must be visibly UNKNOWN")
+                assert pending.count()==0, (
+                    "UNKNOWN must never display a stale PROCESSING/NEEDS_HUMAN status")
             if case in ("processing0","processing2","needs_human0","needs_human1"):
                 assert pending.is_visible(), "Known PROCESSING/NEEDS_HUMAN must not collapse into UNKNOWN"
                 content=pending.inner_text().lower()
-                expected="nhân viên" if case.startswith("needs_human") else "ai xử lý"
-                # Pending banner text is from our localhost synthetic fixture only;
-                # report it without page dumps, URLs, bearer tokens or credentials.
-                print(f"OBS CODE008 viewport={viewport} scenario={case} pending_banner={content!r}",flush=True)
-                assert expected in content, (
-                    f"Pending-state label mismatch: expected={expected!r} actual={content!r}")
+                blocked_text=blocked.inner_text().lower()
+                status="needs_human" if case.startswith("needs_human") else "processing"
+                expected_warning="cần nhân viên đối soát" if status=="needs_human" else "đang chờ ai xử lý"
+                # AI4 deliberately separates the machine-readable status/count
+                # line from the human-facing blocking warning. Verify BOTH.
+                # Only fixed synthetic status messages, never URL/token/page dump.
+                print(f"OBS CODE008 viewport={viewport} scenario={case} "
+                      f"status_text={content!r} warning={blocked_text!r}",flush=True)
+                assert f"trạng thái: {status}" in content, (
+                    f"Wrong explicit server status: expected={status!r} actual={content!r}")
+                assert expected_warning in blocked_text, (
+                    f"Wrong user-facing block reason: expected={expected_warning!r} actual={blocked_text!r}")
                 n=0 if case.endswith("0") else 2 if case.endswith("2") else 1
-                assert str(n) in content, (
-                    f"Missing authoritative unresolved_count={n}; actual={content!r}")
+                if n==0:
+                    assert "chưa có mục được liệt kê" in content and "chưa chứng thực clear" in content, (
+                        f"Empty unresolved list must NEVER look like CLEAR: {content!r}")
+                else:
+                    assert f"có {n} tin/file chưa xử lý" in content, (
+                        f"Wrong exact unresolved count={n}: {content!r}")
         step="assert approval disabled under test-only unconfirmed order"
         assert detail.locator('[data-testid="approve-action"]').is_disabled(), (
             "No signed customer confirmation or verified print plan: no approval")
