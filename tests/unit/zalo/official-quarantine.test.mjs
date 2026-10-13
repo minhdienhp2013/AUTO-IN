@@ -96,6 +96,7 @@ test("unknown sender remains OA-level; wrong OA/app or ordinary text cannot muta
  raw=new TextEncoder().encode(JSON.stringify(obj));
  await assert.rejects(receiver.receive(raw,signed(raw)),/INVALID_OFFICIAL_EVENT_SCOPE/);
  obj.oa_id=config.oa_id;obj.event_name="user_send_text";
+ obj.sender.id="sender-1"; // MAPPED text belongs in ordinary event queue only.
  raw=new TextEncoder().encode(JSON.stringify(obj));
  await assert.rejects(receiver.receive(raw,signed(raw)),/UNSUPPORTED_OFFICIAL_QUARANTINE_EVENT/);
  assert.equal(store.data.size,1);
