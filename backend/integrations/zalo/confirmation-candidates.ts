@@ -77,6 +77,13 @@ export class PostgresConfirmationCandidates implements ConfirmationCandidatePort
   async consider(input:CandidateInput):Promise<CandidateDecision> {
     const event=confirmationIntent(input.batch);
     if(!event)return pending("NOT_AN_ISOLATED_CONFIRMATION_REPLY");
+    // A plain "OK" is never a signed customer click, even if a caller mistakenly
+    // injects a resolver that would claim a server challenge for a text event.
+    // Preserve the legacy pending reason for the staff review queue; do not
+    // call resolve_verified or write a candidate for any non-postback kind.
+    if(event.kind!=="postback"||
+       !isVerifiedConfirmationPostback(event.confirmation_postback))
+      return pending("MISSING_OR_UNVERIFIED_CHALLENGE");
     if(event.oa_id!==this.oa||!safeId(event.conversation_id,256)||
       !safeId(event.customer_id,256)||!safeId(event.event_id,128)||
       !safeInt(input.expected_generation))return manual("UNTRUSTED_EVENT_SCOPE");
@@ -103,9 +110,7 @@ export class PostgresConfirmationCandidates implements ConfirmationCandidatePort
         p.confirmation_postback.challenge_id===event.confirmation_postback?.challenge_id &&
         p.confirmation_postback.challenge_token===event.confirmation_postback?.challenge_token &&
         !Object.hasOwn(p,"text");
-      const matchText=event.kind==="text"&&p?.kind==="text"&&p?.text===event.text &&
-        !Object.hasOwn(p,"confirmation_postback");
-      if((!matchText&&!matchPostback) ||
+      if(!matchPostback ||
         p?.oa_id!==event.oa_id||p?.event_id!==event.event_id||
         p?.customer_id!==event.customer_id||p?.conversation_id!==event.conversation_id)
         return manual("EVENT_CONTENT_MISMATCH");
@@ -120,7 +125,7 @@ export class PostgresConfirmationCandidates implements ConfirmationCandidatePort
       // For postback only: the trusted AI0 resolver MUST validate the token
       // against its server-issued challenge. A mismatched challenge ID cannot
       // journal even a PENDING_AI1_REVIEW candidate.
-      if(isPostback && challenge.challenge_id!==event.confirmation_postback?.challenge_id)
+      if(challenge.challenge_id!==event.confirmation_postback?.challenge_id)
         return manual("POSTBACK_CHALLENGE_MISMATCH");
       const eventTime=new Date(actual.occurred_at).getTime();
       // occurred_at comes from the provider and may be backdated or forged.

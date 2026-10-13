@@ -119,8 +119,24 @@ test("CODE-402 REAL PostgreSQL: credential-bound candidates, dual workers, resta
       confirmation_challenges:challenges
     };
     const a=createZaloPipeline(options),b=createZaloPipeline(options);
+    const postbackEvent=(id,challenge_id,token=randomBytes(32).toString("base64url"),
+      occurred_at=new Date().toISOString(),oa_id=oa,customer_id=customer)=>({
+      synthetic_fixture:true,event_id:id,oa_id,customer_id,
+      conversation_id:conversation,occurred_at,
+      kind:"postback",confirmation_postback:{
+        kind:"verified_confirmation_accept",challenge_id,challenge_token:token
+      }
+    });
     const enqueue=async(id,text="OK",occurred_at=now,oa_id=oa,customer_id=customer)=>{
-      return a.receive_webhook(raw(id,text,occurred_at,oa_id,customer_id),headers);
+      // Positive candidates MUST be signed, structured postbacks. A plain
+      // text acknowledgement stays held, even if a resolver is injected.
+      const challenge=await query(
+        "SELECT challenge_id FROM test_issued_challenges WHERE event_id=$1",[id]);
+      const issued=challenge.rows[0]?.challenge_id;
+      const payload=issued&&text==="OK"
+        ?postbackEvent(id,issued,randomBytes(32).toString("base64url"),occurred_at,oa_id,customer_id)
+        :fixture(id,text,occurred_at,oa_id,customer_id);
+      return a.receive_webhook(new TextEncoder().encode(JSON.stringify(payload)),headers);
     };
     const ingest=async(p=a)=>{
       const result=await p.tick_inbound();return result;
@@ -134,6 +150,17 @@ test("CODE-402 REAL PostgreSQL: credential-bound candidates, dual workers, resta
     assert.equal(noChallenge.held,1);
     assert.equal((await query("SELECT status FROM zalo_batches WHERE batch_key=$1",
       [JSON.stringify([oa,customer,conversation])])).rows[0].status,"NEEDS_HUMAN");
+    assert.equal((await query("SELECT count(*)::int AS n FROM zalo_confirmation_candidates")).rows[0].n,0);
+    assert.equal((await query("SELECT count(*)::int AS n FROM core_confirmations")).rows[0].n,0);
+
+    // Even a server resolver that erroneously offers a challenge for a text
+    // event cannot turn "OK" into PENDING_AI1_REVIEW.
+    await issue("text-with-issued-challenge");
+    const ordinary=fixture("text-with-issued-challenge","OK");
+    assert.equal((await a.receive_webhook(
+      new TextEncoder().encode(JSON.stringify(ordinary)),headers)).body.status,"accepted");
+    await ingest();await due();
+    assert.equal((await ingest()).held,1);
     assert.equal((await query("SELECT count(*)::int AS n FROM zalo_confirmation_candidates")).rows[0].n,0);
     assert.equal((await query("SELECT count(*)::int AS n FROM core_confirmations")).rows[0].n,0);
 
@@ -239,13 +266,7 @@ test("CODE-402 REAL PostgreSQL: credential-bound candidates, dual workers, resta
     // CODE-402: fully structured synthetic postback travels from verified raw
     // ingress through PostgreSQL unchanged. Only a server-bound challenge may
     // create a PENDING_AI1_REVIEW candidate; never a core confirmation.
-    const postbackEvent=(id,challenge_id,token=randomBytes(32).toString("base64url"))=>({
-      synthetic_fixture:true,event_id:id,oa_id:oa,customer_id:customer,
-      conversation_id:conversation,occurred_at:new Date().toISOString(),
-      kind:"postback",confirmation_postback:{
-        kind:"verified_confirmation_accept",challenge_id,challenge_token:token
-      }
-    });
+
     const structured=await issue("signed-structured",{expected_generation:5});
     const signed=postbackEvent("signed-structured",structured.challenge_id);
     assert.equal((await a.receive_webhook(new TextEncoder().encode(JSON.stringify(signed)),headers)).body.status,"accepted");
