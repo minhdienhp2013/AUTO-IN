@@ -63,3 +63,11 @@ ALTER TABLE zalo_official_quarantine
   CHECK(provider_claimed_event_id IS NULL OR
     (length(provider_claimed_event_id) BETWEEN 1 AND 128 AND
      provider_claimed_event_id ~ '^[A-Za-z0-9._:-]+$'));
+
+-- Stable serialization row shared with the eventual AI0 approval transaction.
+-- Both the AI2 incoming quarantine tx and AI0 pending-approval Core tx MUST
+-- SELECT this row FOR UPDATE before insert/check; a plain SELECT count is
+-- insufficient for concurrent inbound/approve races.
+CREATE TABLE IF NOT EXISTS zalo_official_quarantine_scopes(
+  oa_id text PRIMARY KEY CHECK(length(oa_id) BETWEEN 1 AND 128)
+);
