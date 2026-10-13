@@ -6,7 +6,7 @@ const {OrderService}=require(path.join(root,'core/service.js'));
 const {registerCoreRoutes}=require(path.join(root,'api/routes.js'));
 
 const staff={id:'staff1',role:'staff',shop_id:'shop-test',verified:true};
-function mockReadModel(mode, previewVerified, artifactPreview){
+function mockReadModel(mode, previewVerified, artifactPreview, manualEvidence=false){
  const requestHash='a'.repeat(64);
  const plan={ready:true,request_hash:requestHash,physical_sheets:5,
   document_pages:5,printed_faces:5,printer_id:'RMP7000',
@@ -20,7 +20,12 @@ function mockReadModel(mode, previewVerified, artifactPreview){
   verified_sheets:'5',mode_at_send:mode,cancelled_at:null};
  const db={query:async sql=>{
   // Non-Zalo unit fixture: verify pending read model fails closed only for an OA-linked order.
-  if(sql.startsWith('SELECT to_regclass('))return {rows:[{proposals:null,events:null,reviews:null}]};
+  if(sql.startsWith('SELECT to_regclass('))return {rows:[manualEvidence?
+   {proposals:'core_ai_draft_proposals',audit:'core_audit',
+    users:'core_users',revisions:'core_revisions'}:{proposals:null,events:null,reviews:null}]};
+  if(sql.startsWith('SELECT (SELECT count(*)::int FROM core_ai_draft_proposals'))
+   return {rows:[{proposal_count:0,staff_creates:1,
+    initial_data:{files:[]},current_data:{files:[]},request_hash:requestHash}]};
   if(sql.startsWith('SELECT * FROM core_revisions'))return {rows:[{revision:2,request_hash:requestHash,request_data:{},plan}]};
   if(sql.startsWith('SELECT id,order_id,revision,request_hash,approval_id,state'))return {rows:[job]};
   if(sql.startsWith('SELECT * FROM core_quotes'))return {rows:[]};
@@ -43,7 +48,8 @@ function mockReadModel(mode, previewVerified, artifactPreview){
 test('read model never counts legacy/null-mode print as verified physical paper',async()=>{
  const view=await mockReadModel(null,true,'preview/private').getOrder(staff,'order1');
  assert.equal(view.current.staff_approved,true);
- assert.equal(view.current.pending_updates.status,'CLEAR');
+ assert.equal(view.current.pending_updates.status,'needs_human',
+  'missing staff audit/schema must never become clear solely from null conversation');
  assert.equal(view.current.pending_updates.unresolved_count,0);
  assert.equal(view.current.verified_plan.physical_sheets,5);
  assert.equal(view.current.preview_ref,'preview/private');
@@ -83,4 +89,12 @@ test('API route rejects non-object bodies before invoking core mutations',async(
  assert.equal(badLogin.status,422);
  assert.equal(badLogin.response.error.code,'INVALID_INPUT');
  assert.equal(called,false);
+});
+
+test('verified staff non-Zalo order reports lower-case clear in existing order detail API',async()=>{
+ const view=await mockReadModel('controlled_test',true,'preview/manual',true).getOrder(staff,'order1');
+ assert.deepEqual(view.current.pending_updates,{
+  order_id:'order1',revision:2,request_hash:'a'.repeat(64),
+  status:'clear',unresolved_count:0,items:[]
+ });
 });

@@ -52,3 +52,37 @@ test('CODE-008 old/mismatched JSON revision history never returns CLEAR',async()
  assert.equal(result.status,'needs_human');
  assert.equal(step,3);
 });
+
+test('manual non-Zalo requires staff audit, no OA binding, valid revision/hash',async()=>{
+ const manualScope={...scope,conversation_id:null};
+ const manual=(override={})=>{
+  let steps=0;
+  return db(async()=>{
+   steps++;
+   return steps===1?[{proposals:'core_ai_draft_proposals',audit:'core_audit',
+    users:'core_users',revisions:'core_revisions'}]:
+    [{proposal_count:0,staff_creates:1,initial_data:{files:[]},
+      current_data:{files:[]},request_hash:'hash-3',...override}];
+  });
+ };
+ assert.equal((await readPendingUpdates(manual(),manualScope)).status,'clear');
+ assert.equal((await readPendingUpdates(manual(),{...manualScope,verified_plan_ready:false})).status,'processing');
+ for(const bad of [
+  {proposal_count:1},{staff_creates:0},{staff_creates:2},{request_hash:'old-hash'},
+  {initial_data:{source:'zalo_ai_suggestion',event_ids:[]}},
+  {current_data:{event_ids:['unverified']}},
+  {current_data:{source:'zalo_oa',files:[]}}
+ ]){
+  assert.equal((await readPendingUpdates(manual(bad),manualScope)).status,
+   'needs_human',JSON.stringify(bad));
+ }
+});
+test('missing manual provenance schema or SQL failure is fail-closed',async()=>{
+ const manualScope={...scope,conversation_id:null};
+ const missing=db(async()=>[{proposals:'core_ai_draft_proposals',audit:null,
+  users:'core_users',revisions:'core_revisions'}]);
+ assert.equal((await readPendingUpdates(missing,manualScope)).status,'needs_human');
+ const broken=db(async()=>{throw new Error('provenance unavailable')});
+ await assert.rejects(readPendingUpdates(broken,manualScope),
+  e=>e.code==='PENDING_READ_UNAVAILABLE'&&e.status===503);
+});
