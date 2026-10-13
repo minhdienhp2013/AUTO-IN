@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {execFile as execFileCallback} from 'node:child_process';
 import {promisify} from 'node:util';
 import {randomUUID} from 'node:crypto';
-import {mkdtemp, mkdir, readFile, rm} from 'node:fs/promises';
+import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import pg from 'pg';
@@ -58,7 +58,7 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
         customer_id:customer,role:'customer',verified:true}},
       {token:agentToken,principal:{id:'agent-local',shop_id:shop,
         printer_ids:['RMP7000'],role:'print_agent',verified:true}}
-    ]});
+    ],approvedDocumentEvidence:{artifactRoot,python:'python3',timeoutMs:20000}});
     await app.listen({host:'127.0.0.1',port:0});
     const address=app.server.address();
     assert.ok(address && typeof address!=='string');
@@ -131,6 +131,26 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     const repeat=await run('python3',agentArgs,{env:pythonEnv});
     assert.equal(JSON.parse(repeat.stdout).result.status,'NO_JOB');
     assert.equal((await state(normal.jobId)).state,'SIMULATED_DONE');
+
+    const tampered=await orderReadyToDryRun('tampered');
+    const anchor=await pool.query(
+      'SELECT artifact_ref FROM ai0_verified_plan_manifests WHERE shop_id=$1 AND order_id=$2 AND revision=2',
+      [shop,tampered.id]);
+    assert.equal(anchor.rows.length,1);
+    await writeFile(join(artifactRoot,anchor.rows[0].artifact_ref),Buffer.from('tampered manifest'));
+    const tamperedJournal=join(scratch,'tampered.sqlite');
+    const tamperedRun=await run('python3',['-m','agents.windows.cli','--api-base-url',url,
+      '--journal',tamperedJournal],{env:pythonEnv}).then(value=>({value}),error=>({error}));
+    assert.ok(tamperedRun.error,'Tampered manifest must block the agent before mark-sending');
+    assert.equal(tamperedRun.error.code,2);
+    assert.equal((await state(tampered.jobId)).state,'NOT_SENT');
+    const emptyJournal=await run('python3',['-c',
+      'import sqlite3,sys;d=sqlite3.connect(sys.argv[1]);print(d.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])',
+      tamperedJournal]);
+    assert.equal(emptyJournal.stdout.trim(),'0','A blocked evidence gate must not journal a send boundary');
+    const tamperedJobCount=await pool.query(
+      'SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[tampered.id]);
+    assert.equal(tamperedJobCount.rows[0].n,1,'Evidence rejection must not create a retry job');
 
     const crash=await orderReadyToDryRun('crash');
     // Simulated process death AFTER committed SENDING, BEFORE any dry-run driver.
