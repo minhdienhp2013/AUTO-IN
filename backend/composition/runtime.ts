@@ -146,8 +146,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
         physical_print_enabled: false,
         manual_lock: settings.rows[0].manual_lock,
         preview_configured: !!options.previewArtifactRoot,
-        synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
-      approved_document_evidence_gate_configured: !!options.approvedDocumentEvidence
+        synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest
       });
   });
   app.post('/internal/simulation/inbound-artifacts', async (request, reply) => {
