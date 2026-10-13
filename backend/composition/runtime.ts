@@ -10,6 +10,7 @@ import { createSyntheticInboundDraft } from './inbound-draft.js';
 import { reconcileSyntheticInboundDraft } from './inbound-reconcile.js';
 import { createSyntheticVerifiedButtonPlugin, type SyntheticButtonScope } from './synthetic-verified-button.js';
 import { pendingReviewSqlPool } from './pending-review-errors.js';
+import { assertApprovedPrintJobEvidence, type ApprovedDocumentEvidenceOptions } from './approved-document-evidence.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
 export interface RuntimeOptions {
@@ -23,6 +24,8 @@ export interface RuntimeOptions {
   previewArtifactRoot?: string;
   /** Opt-in HMAC signed fixture endpoint; NEVER configured for live OA. */
   syntheticVerifiedButton?: SyntheticButtonScope;
+  /** Required before an approved job can enter SENDING; reads only server-bound artifacts. */
+  approvedDocumentEvidence?: ApprovedDocumentEvidenceOptions;
 }
 export function identityResolver(identities: readonly ServiceIdentity[]) {
   for (const identity of identities) {
@@ -61,10 +64,13 @@ export function buildIntegratedApp(options: RuntimeOptions) {
     registered.push(`${method} ${path}`);
     app.route({ method, url: path, handler: async (request, reply) => {
       // Refuse any real-mode shop at the send boundary, even if DB was changed externally.
-      if (path.startsWith('/internal/v1/print-jobs') && !path.endsWith('/reports')) {
-        const principal = await resolve({ headers: { authorization: request.headers.authorization } });
+      const agentRoute = path.startsWith('/internal/v1/print-jobs') && !path.endsWith('/reports');
+      const printAgent = agentRoute
+        ? await resolve({ headers: { authorization: request.headers.authorization } })
+        : undefined;
+      if (printAgent) {
         const settings = await options.pool.query<{ mode: string }>(
-          'SELECT mode FROM core_shop_settings WHERE shop_id=$1', [principal.shop_id]);
+          'SELECT mode FROM core_shop_settings WHERE shop_id=$1', [printAgent.shop_id]);
         if (settings.rows[0]?.mode !== 'simulation')
           throw new DomainError('SIMULATION_REQUIRED', 'Simulation shop required', 409);
       }
@@ -72,8 +78,41 @@ export function buildIntegratedApp(options: RuntimeOptions) {
         throw new DomainError('INVALID_INPUT', 'JSON object required', 422);
       const headers = Object.fromEntries(Object.entries(request.headers)
         .filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
-      return handler({ headers, body: request.body,
-        params: request.params as Record<string, string>, query: request.query as Record<string, string> }, reply);
+      const routedRequest = { headers, body: request.body,
+        params: request.params as Record<string, string>, query: request.query as Record<string, string> };
+      const params = request.params as { job_id?: string };
+      const body = request.body as { expected_revision?: number; lease_token?: string };
+      if (printAgent && method === 'POST' && path === '/internal/v1/print-jobs/:job_id/mark-sending') {
+        const current = await options.pool.query<{ state: string }>(
+          'SELECT j.state FROM core_print_jobs j JOIN core_orders o ON o.id=j.order_id ' +
+          'WHERE j.id=$1 AND o.shop_id=$2 AND j.claimed_by=$3',
+          [params.job_id, printAgent.shop_id, printAgent.id]);
+        // Preserve Core's idempotent replay after SENDING; only a fresh side-effect
+        // boundary needs the document evidence gate.
+        if (current.rows[0]?.state === 'NOT_SENT') {
+          await core.service.preflight(printAgent, params.job_id ?? '', {
+            expected_revision: body.expected_revision as number,
+            lease_token: body.lease_token as string
+          });
+          await assertApprovedPrintJobEvidence(options.pool, printAgent, {
+            jobId: params.job_id ?? '',
+            expectedRevision: body.expected_revision as number,
+            leaseToken: body.lease_token as string
+          }, options.approvedDocumentEvidence);
+        }
+      }
+      const result = await handler(routedRequest, reply);
+      if (printAgent && method === 'POST' && path === '/internal/v1/print-jobs/:job_id/preflight' &&
+          result !== null && typeof result === 'object' &&
+          (result as { allowed?: unknown }).allowed === true) {
+        await assertApprovedPrintJobEvidence(options.pool, printAgent, {
+          jobId: params.job_id ?? '',
+          expectedRevision: body.expected_revision as number,
+          leaseToken: body.lease_token as string
+        }, options.approvedDocumentEvidence);
+        return { ...(result as Record<string, unknown>), document_evidence_verified: true };
+      }
+      return result;
     } });
   };
   core.registerRoutes({ get: (p, h) => register('GET', p, h), post: (p, h) => register('POST', p, h) }, {
