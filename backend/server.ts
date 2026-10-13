@@ -4,6 +4,7 @@ import { buildIntegratedApp, type ServiceIdentity } from './composition/runtime.
 import { asSqlPool, assertIsolatedSimulationDatabase } from './composition/postgres.js';
 import { createCoreModule } from './core/factory.js';
 import { createSyntheticZaloRuntime } from './composition/zalo-simulation.js';
+import { createOfficialZaloWebhookPlugin } from './composition/official-zalo-webhook.js';
 if ((process.env.AUTO_IN_MODE ?? 'simulation') !== 'simulation') throw new Error('Only simulation is available');
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL required; run db:migrate and db:bootstrap first');
@@ -28,6 +29,22 @@ const zaloRuntime = registry === undefined ? undefined : createSyntheticZaloRunt
   ...(process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT
     ? { artifactRoot: process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT } : {})
 });
+const officialConfigFile = process.env.AUTOIN_ZALO_OFFICIAL_SIMULATION_CONFIG_FILE;
+const syntheticOfficialEnabled = process.env.AUTOIN_ENABLE_SYNTHETIC_ZALO_WEBHOOK === 'YES_TEST_ONLY';
+let officialZaloWebhook: FastifyPluginAsync | undefined;
+if (syntheticOfficialEnabled) {
+  if (!officialConfigFile || zaloRuntime)
+    throw new Error('Synthetic official webhook requires a private config file and no other Zalo runtime');
+  const raw = JSON.parse(await readFile(officialConfigFile, 'utf8')) as Record<string, unknown>;
+  if (typeof raw.app_id !== 'string' || typeof raw.oa_id !== 'string' ||
+      typeof raw.oa_secret_key !== 'string' || !raw.oa_secret_key.startsWith('synthetic-only-'))
+    throw new Error('Only synthetic-only Zalo credentials are allowed in this localhost runtime');
+  officialZaloWebhook = await createOfficialZaloWebhookPlugin(asSqlPool(pool), {
+    app_id: raw.app_id, oa_id: raw.oa_id, oa_secret_key: raw.oa_secret_key
+  });
+} else if (officialConfigFile) {
+  throw new Error('Set AUTOIN_ENABLE_SYNTHETIC_ZALO_WEBHOOK=YES_TEST_ONLY for the local synthetic route');
+}
 const configuredTick = process.env.AUTOIN_ZALO_SYNTHETIC_TICK_MS;
 const tickMs = configuredTick === undefined ? 0 : Number(configuredTick);
 if (configuredTick !== undefined && (!zaloRuntime || !Number.isInteger(tickMs) || tickMs < 1000 || tickMs > 60000))
@@ -35,7 +52,8 @@ if (configuredTick !== undefined && (!zaloRuntime || !Number.isInteger(tickMs) |
 let ticking = false;
 let timer: ReturnType<typeof setInterval> | undefined;
 const app = buildIntegratedApp({ pool: asSqlPool(pool), identities,
-  ...(tls ? { tls } : {}), ...(zaloRuntime ? { zaloWebhook: zaloRuntime.webhook } : {}),
+  ...(tls ? { tls } : {}), ...(officialZaloWebhook ? { zaloWebhook: officialZaloWebhook } :
+    zaloRuntime ? { zaloWebhook: zaloRuntime.webhook } : {}),
   zaloWorkerConfigured: tickMs > 0,
   ...(process.env.AUTOIN_ARTIFACT_ROOT ? {previewArtifactRoot: process.env.AUTOIN_ARTIFACT_ROOT} : {}),
   ...(zaloRuntime && process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT ? {
