@@ -135,12 +135,24 @@ test('REAL PostgreSQL + REAL AI1 createAiOrderPort: new conversation, 2 workers,
       'SELECT generation::text AS generation,status,claimed_by FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',
       [shop,conv])).rows[0];
     assert.deepEqual(afterRoute,{generation:'3',status:'HUMAN',claimed_by:null});
+    // Strict Core generation CAS: replay of the SAME event at generation 2
+    // is stale after route_human committed generation 3, not already_routed.
+    for(const orders of [ordersA,ordersB]) {
+      assert.deepEqual(await orders.route_human({
+        conversation_id:conv,reason:'COLOR_PRINT',event_ids:[ids[3]],expected_generation:2
+      }),{status:'stale_generation'});
+    }
+    // already_routed is valid only when caller names CURRENT generation 3
+    // and the authoritative conversation is still HUMAN.
     assert.deepEqual(await ordersA.route_human({
-      conversation_id:conv,reason:'COLOR_PRINT',event_ids:[ids[3]],expected_generation:2
+      conversation_id:conv,reason:'COLOR_PRINT',event_ids:[ids[3]],expected_generation:3
     }),{status:'already_routed',generation:3});
     assert.deepEqual(await ordersB.route_human({
       conversation_id:conv,reason:'COLOR_PRINT',event_ids:[ids[3]],expected_generation:0
     }),{status:'stale_generation'});
+    assert.deepEqual((await run(
+      'SELECT generation::text AS generation,status,claimed_by FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',
+      [shop,conv])).rows[0],afterRoute); // No generation bump, no staff impersonation.
     assert.equal((await run('SELECT count(*)::int AS n FROM core_ai_draft_proposals WHERE shop_id=$1',[shop])).rows[0].n,2);
     assert.equal((await one.receive_webhook(bytes(ids[3],'in màu'),key)).body.status,'duplicate');
     assert.equal((await one.tick_inbound()).claimed,0);
