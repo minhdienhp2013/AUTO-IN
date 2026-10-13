@@ -1,6 +1,7 @@
 import {randomUUID} from "node:crypto";
 import type {CandidateDecision,CandidateInput,ConfirmationCandidatePort} from "../../conversation/confirmation-candidate.ts";
 import {confirmationIntent} from "../../conversation/confirmation-candidate.ts";
+import {isVerifiedConfirmationPostback} from "./protocol.ts";
 import type {PgTransactions,PgTx} from "./postgres-durable.ts";
 
 /** Authenticated, server-issued reply challenge. NEVER construct this from
@@ -92,7 +93,19 @@ export class PostgresConfirmationCandidates implements ConfirmationCandidatePort
       const p=typeof actual.payload_json==="string"
         ?JSON.parse(actual.payload_json) as Record<string,unknown>
         :actual.payload_json as Record<string,unknown>;
-      if(p?.kind!=="text"||p?.text!==event.text||
+      // A real postback is never inferred from text, user-filled metadata,
+      // headers or DeepSeek. Only the verifier-normalized persisted fixture
+      // may carry the exact structured challenge evidence.
+      const isPostback=event.kind==="postback" &&
+        isVerifiedConfirmationPostback(event.confirmation_postback);
+      const matchPostback=isPostback && p?.kind==="postback" &&
+        isVerifiedConfirmationPostback(p.confirmation_postback) &&
+        p.confirmation_postback.challenge_id===event.confirmation_postback?.challenge_id &&
+        p.confirmation_postback.challenge_token===event.confirmation_postback?.challenge_token &&
+        !Object.hasOwn(p,"text");
+      const matchText=event.kind==="text"&&p?.kind==="text"&&p?.text===event.text &&
+        !Object.hasOwn(p,"confirmation_postback");
+      if((!matchText&&!matchPostback) ||
         p?.oa_id!==event.oa_id||p?.event_id!==event.event_id||
         p?.customer_id!==event.customer_id||p?.conversation_id!==event.conversation_id)
         return manual("EVENT_CONTENT_MISMATCH");
@@ -104,6 +117,11 @@ export class PostgresConfirmationCandidates implements ConfirmationCandidatePort
       if(!verifiedChallenge(challenge,this.shop,this.oa,event.customer_id,
         event.conversation_id,event.event_id,input.expected_generation))
         return pending("MISSING_OR_UNVERIFIED_CHALLENGE");
+      // For postback only: the trusted AI0 resolver MUST validate the token
+      // against its server-issued challenge. A mismatched challenge ID cannot
+      // journal even a PENDING_AI1_REVIEW candidate.
+      if(isPostback && challenge.challenge_id!==event.confirmation_postback?.challenge_id)
+        return manual("POSTBACK_CHALLENGE_MISMATCH");
       const eventTime=new Date(actual.occurred_at).getTime();
       // occurred_at comes from the provider and may be backdated or forged.
       // A reply received by OUR database before the challenge was issued
