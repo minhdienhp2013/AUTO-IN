@@ -23,7 +23,14 @@ test('C008 Chromium 14 pending_updates status+viewport cases on authenticated Fa
    AUTOIN_OPERATION_MODE:'simulation',FORCE_COLOR:'0'}
  });
  assert.equal(r.error,undefined,'Cannot run real Chromium pending acceptance');
- assert.equal(r.status,0,'CODE008 Chromium statuses FAIL: '+(r.stderr||'').slice(-950));
+ // Collect BOTH child stdout/stderr; Python prints START/PASS to stdout and
+ // exact failed assertion/step/original traceback to stderr. Never replace
+ // the cause with a generic "AssertionError" or just an exit code.
+ const evidence=(r.stdout??'')+'\n'+(r.stderr??'');
+ assert.equal(r.status,0,'CODE008 Chromium status E2E failed; original child logs:\n'+evidence.slice(-16000));
+ for(const line of (r.stdout??'').split('\n')){
+  if(line.startsWith('PASS CODE008 Chromium '))console.log(line);
+ }
  for(const viewport of ['1440x900','390x844']){
   for(const status of ['clear','processing0','needs_human0','processing2','needs_human1','stale_hash','missing']){
    assert.ok((r.stdout||'').includes('PASS CODE008 Chromium '+viewport+' pending_updates='+status),

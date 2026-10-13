@@ -167,7 +167,7 @@ try{
     child.on('error',reject);
     child.on('close',code=>resolveStatus(code));
   });
-  if(status!==0)throw Error('Authenticated real Fastify/PostgreSQL Chromium E2E failed');
+  if(status!==0)throw Error('AI5 CODE008 Chromium Python child exited '+status+'; see preceding FAIL viewport/scenario/step and original traceback (not a product verdict without evidence)');
   const counts=await pool.query(
     'SELECT (SELECT COUNT(*)::int FROM core_confirmations WHERE order_id=$1) AS confirms,'+
     ' (SELECT COUNT(*)::int FROM core_approvals WHERE order_id=$1) AS approvals,'+
