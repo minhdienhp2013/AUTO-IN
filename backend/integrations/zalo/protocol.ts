@@ -84,10 +84,12 @@ export class SyntheticFixtureNormalizer implements EventNormalizer {
     if (typeof o.file_ref === "string") evt.file_ref = required(o.file_ref, 2048);
     if (typeof o.mime_type === "string") evt.mime_type = required(o.mime_type, 128);
     if (typeof o.filename === "string") evt.filename = required(o.filename, 255);
-    if (Object.hasOwn(o,"confirmation_postback") || kind==="postback") {
-      // Never promote text, a forged metadata key, or an arbitrary event kind
-      // to an authenticated button response. Reject rather than strip.
-      if(kind!=="postback"||!isVerifiedConfirmationPostback(o.confirmation_postback)||
+    // Ordinary text/image/file fixture payloads may include arbitrary,
+    // untrusted extra JSON fields. They are intentionally STRIPPED, never
+    // promoted into confirmation evidence (CODE-007 signed-text regression).
+    // Only a distinct signed fixture kind='postback' may preserve proof.
+    if (kind==="postback") {
+      if(!isVerifiedConfirmationPostback(o.confirmation_postback)||
         Object.hasOwn(o,"text")||Object.hasOwn(o,"file_ref")||
         Object.hasOwn(o,"mime_type")||Object.hasOwn(o,"filename"))
         throw new Error("INVALID_CONFIRMATION_POSTBACK");
