@@ -1,4 +1,5 @@
 import pg from 'pg';
+import type { FastifyPluginAsync } from 'fastify';
 import { readFile } from 'node:fs/promises';
 import { buildIntegratedApp, type ServiceIdentity } from './composition/runtime.js';
 import { asSqlPool, assertIsolatedSimulationDatabase } from './composition/postgres.js';

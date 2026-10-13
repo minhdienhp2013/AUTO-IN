@@ -38,8 +38,9 @@ function createInboundEventRepository(transactions: PgTransactions): PostgresInb
   const runner: TransactionRunner = {
     transaction<T>(action: (client: SqlClient) => Promise<T>): Promise<T> {
       return transactions.transaction(tx => action({
-        query: async (sql: string, params: readonly unknown[]) =>
-          (await tx.query(sql, params)).rowCount
+        query: async (sql: string, params: readonly unknown[]) => ({
+          rowCount: (await tx.query(sql, params)).rowCount
+        })
       }));
     }
   };
