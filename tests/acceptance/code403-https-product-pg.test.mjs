@@ -140,7 +140,7 @@ test('AI5 INDEPENDENT CODE-403: HTTPS real PG + Python DryRun, tamper/stale/ACK/
         ' result=a.run_once()',
         ' print(json.dumps({"result":result,"driver_calls":d.calls}))',
         'finally:j.close()'
-      ].join('\\n');
+      ].join('\n');
       const attempt=await run('python3',['-c',guardedPython,url,journalPath],{env:pythonEnv});
       const output=JSON.parse(attempt.stdout.trim());
       assert.equal(output.result.status,'BLOCKED',JSON.stringify(output));
