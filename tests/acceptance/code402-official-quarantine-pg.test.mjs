@@ -133,7 +133,7 @@ const quarantine=async(sql,oa)=> (await sql(
  'WHERE oa_id=$1 ORDER BY received_at,id',[oa])).rows;
 
 test('C402-OA-01 AI0 Fastify: signed mapped TEXT durable queue; text OK cannot mint CODE401 confirmation',gate,async()=>{
- await withComposition(async({appA,appB,fixture,send,sql,count,oa,customer,conversation,noCoreEffects})=>{
+ await withComposition(async({appA,appB,fixture,send,sql,count,oa,customer,conversation,secret,noCoreEffects})=>{
   const w=fixture('user_send_text',{text:'OK',confirmation_postback:{
    kind:'verified_confirmation_accept',challenge_token:'self-declared'
   }});
@@ -209,11 +209,13 @@ for(const [code,kind,expected,details] of [
    const raw=Buffer.from(JSON.stringify(otherPayload),'utf8');
    const foreign=await send(appA,{
     raw,headers:{'content-type':'application/json',
-     'x-zevent-signature':mac(raw,w.payload.app_id,w.payload.timestamp,
-       'unused')},payload:otherPayload
-   }).catch(()=>null);
-   // A wrong/unknown secret may only cause 403, not a quarantine write.
-   assert.ok(foreign===null||foreign.statusCode===403||foreign.statusCode===422);
+     // The same synthetic-only server secret signs the wrong-OA payload;
+     // this must fail SCOPE checks AFTER signature verification, not MAC.
+     'x-zevent-signature':mac(raw,w.payload.app_id,w.payload.timestamp,secret)},
+    payload:otherPayload
+   });
+   assert.equal(foreign.statusCode,422,'valid-MAC but wrong server-authoritative OA must be rejected');
+   assert.equal(foreign.json().error.code,'INVALID_OFFICIAL_EVENT');
    assert.equal((await quarantine(sql,oa)).length,1);
    await noCoreEffects(kind+' after negative input');
   });
