@@ -69,9 +69,16 @@ test('AI5 PR66 independent CODE402: migrations 004/005, signed custody, owner au
   // Assert BOTH migration artifacts exist and the production migration runner
   // applies AI2 004 before AI0 005. No fake/in-memory database substitute.
   const script=readFileSync(new URL('../../scripts/database.ts',import.meta.url),'utf8');
-  const migrationA=script.indexOf("'004_official_quarantine.sql'");
-  const migrationB=script.indexOf("'005_official_zalo_quarantine.sql'");
-  assert.ok(migrationA>0&&migrationB>migrationA,
+  // Demand 004 in the executed AI2 migration loop and 005 in AI0's
+  // explicit readFile call. Merely finding filenames/comments is insufficient.
+  const loopStart=script.indexOf('for (const file of [');
+  const migrationA=script.indexOf("'004_official_quarantine.sql'",loopStart);
+  const loopClose=script.indexOf('])',migrationA);
+  const execAi2=script.indexOf('await connection.query(await readFile(new URL(',loopClose);
+  const ai2Path=script.indexOf('`../backend/integrations/zalo/migrations/${file}`',execAi2);
+  const migrationB=script.indexOf("await connection.query(await readFile(new URL('../backend/composition/migrations/005_official_zalo_quarantine.sql'");
+  assert.ok(loopStart>0 && migrationA>loopStart && loopClose>migrationA &&
+   execAi2>loopClose && ai2Path>execAi2 && migrationB>ai2Path,
    'Migration order regression: AI2 004 MUST precede AI0 005');
   const migrated=await a.query(
    "SELECT to_regclass('public.zalo_official_quarantine') quarantine,"+
