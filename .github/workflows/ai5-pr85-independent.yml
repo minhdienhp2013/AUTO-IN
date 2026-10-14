@@ -1,0 +1,96 @@
+name: AI5 PR85 independent acceptance
+on:
+  push:
+    branches:
+      - ai0/validate-pr86-code008-20261014
+permissions:
+  contents: read
+jobs:
+  pg-http-dryrun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_test_pr85_ai5
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_pr85_ai5"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_pr85_ai5
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_pr85_ai5
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_pr85_ai5
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+    steps:
+      - name: Checkout exact AI5 overlay
+        uses: actions/checkout@v4
+        with:
+          ref: 3cde4b49fdacf8d40c59f69a770b6886cd5ce529
+          fetch-depth: 0
+          path: source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python acceptance dependencies
+        working-directory: source
+        run: python -m pip install -r workers/documents/requirements-test.txt
+      - name: Install root dependencies
+        working-directory: source
+        run: npm ci
+      - name: Migrate isolated PostgreSQL
+        working-directory: source
+        run: npm run db:migrate
+      - name: Run root strict checks
+        working-directory: source
+        run: npm run check
+      - name: Run AI5 PostgreSQL HTTP and DryRun acceptance
+        working-directory: source
+        run: node tests/acceptance/pr85-independent.mjs --pg
+  chromium:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact AI5 overlay
+        uses: actions/checkout@v4
+        with:
+          ref: 3cde4b49fdacf8d40c59f69a770b6886cd5ce529
+          fetch-depth: 0
+          path: source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install web dependencies
+        working-directory: source/web
+        run: npm ci
+      - name: Build production UI
+        working-directory: source/web
+        run: VITE_DEMO_MODE=false npm run build
+      - name: Install Playwright and Chromium
+        run: |
+          python -m pip install --disable-pip-version-check playwright==1.58.0
+          python -m playwright install --with-deps chromium
+      - name: Expose Playwright Chromium to AI5 harness
+        shell: bash
+        run: |
+          playwright_chrome="$(python -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')"
+          test -x "$playwright_chrome"
+          mkdir -p "$RUNNER_TEMP/autoin-chromium-bin"
+          ln -sfn "$playwright_chrome" "$RUNNER_TEMP/autoin-chromium-bin/chromium"
+          echo "$RUNNER_TEMP/autoin-chromium-bin" >> "$GITHUB_PATH"
+      - name: Run AI5 exact 28-case Chromium acceptance
+        working-directory: source
+        run: node tests/acceptance/pr85-independent.mjs --browser
