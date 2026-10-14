@@ -75,7 +75,15 @@ test('REAL PG CODE-008: signed OA quarantine blocks HTTP approval 409/zero job; 
   // modified by AI1. Registration in production remains AI0's responsibility.
   const migration=path.resolve(__dirname,'../../../backend/integrations/zalo/migrations/004_official_quarantine.sql');
   await a.query(readFileSync(migration,'utf8'));
+  // AI0-owned 005 is the source of truth for the non-secret registry schema.
+  // When this old-base AI1 PR lacks 005, run this regression on AI0 staging.
+  const registryMigration=path.resolve(__dirname,
+   '../../../backend/composition/migrations/005_official_zalo_shop_registry.sql');
+  await a.query(readFileSync(registryMigration,'utf8'));
   await a.query('INSERT INTO core_shop_settings(shop_id) VALUES($1)',[shop]);
+  await a.query(
+   'INSERT INTO core_shop_zalo_oa_registry(shop_id,oa_id,app_id) VALUES($1,$2,$3)',
+   [shop,oa,unique('gate-app')]);
   await a.query("INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,'staff','fixture','staff')",[staffId,shop]);
   await a.query("INSERT INTO zalo_inbound_events(oa_id,event_id,conversation_id,customer_id,occurred_at,payload_json) VALUES($1,$2,$3,$4,now(),$5::jsonb)",
    [oa,eventId,conv,customer,JSON.stringify({kind:'text',text:'fixture first print request'})]);
@@ -93,6 +101,15 @@ test('REAL PG CODE-008: signed OA quarantine blocks HTTP approval 409/zero job; 
    idempotency_key:unique('plan')});
   await serviceA.confirm(customerPrincipal,order,{
    expected_revision:2,kind:'request',idempotency_key:unique('confirmed')});
+  // Proposal OA must be registered once by AI0; an unbound proposal rejects.
+  await a.query('DELETE FROM core_shop_zalo_oa_registry WHERE shop_id=$1 AND oa_id=$2',[shop,oa]);
+  const unbound=await callApproval(unique('unbound-proposal'));
+  assert.equal(unbound.http_status,409);
+  assert.equal(unbound.body.error.code,'PENDING_INBOUND_REVIEW');
+  assert.equal(await jobs(),0);
+  await a.query(
+   'INSERT INTO core_shop_zalo_oa_registry(shop_id,oa_id,app_id) VALUES($1,$2,$3)',
+   [shop,oa,unique('gate-app-restored')]);
   const unknown=await hold(b,'oa-unmapped-unknown','unknown');
   const file=await hold(a,'oa-file-mapped','file',oa,true);
   await hold(b,'different-oa','image',unique('foreign-oa'));
@@ -116,7 +133,7 @@ test('REAL PG CODE-008: signed OA quarantine blocks HTTP approval 409/zero job; 
   assert.equal(still.body.error.code,'PENDING_INBOUND_REVIEW');
   assert.equal(await jobs(),0);
   // A signed event committed concurrently with the approval attempt must
-  // serialize through the table SHARE/ROW EXCLUSIVE lock. Provider timestamp
+  // serialize through the same per-OA row lock. Provider timestamp
   // does not justify bypassing a durable event.
   await a.query("UPDATE zalo_official_quarantine SET status='REVIEWED',reviewed_at=now(),reviewed_by='synthetic-staff' WHERE id=$1",[unknown]);
   assert.equal(await pending(),0);
