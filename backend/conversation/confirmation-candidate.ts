@@ -1,5 +1,5 @@
 import type {Batch} from "./batch.ts";
-import type {InboundEvent} from "../integrations/zalo/protocol.ts";
+import {isVerifiedConfirmationPostback,type InboundEvent} from "../integrations/zalo/protocol.ts";
 
 /** Only a literal, standalone reply is a *possible* response to a challenge.
  * Classification never proves customer identity or creates a confirmation.
@@ -8,7 +8,12 @@ import type {InboundEvent} from "../integrations/zalo/protocol.ts";
 export function confirmationIntent(batch:Batch):InboundEvent|undefined {
   if(batch.events.length!==1)return undefined;
   const event=batch.events[0];
-  if(!event || event.kind!=="text" || typeof event.text!=="string")return undefined;
+  if(!event)return undefined;
+  // A structured synthetic postback is only an INTENT candidate. The
+  // persisted event and challenge still require server-side verification.
+  if(event.kind==="postback")
+    return isVerifiedConfirmationPostback(event.confirmation_postback)?event:undefined;
+  if(event.kind!=="text" || typeof event.text!=="string")return undefined;
   const text=event.text.normalize("NFC").trim().replace(/\s+/gu," ").toLocaleLowerCase("vi");
   return /^(ok|oke|đồng ý|toi dong y|tôi đồng ý|xác nhận|xac nhan|đúng rồi|dung roi)$/.test(text)
     ?event:undefined;

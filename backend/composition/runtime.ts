@@ -1,7 +1,7 @@
 import Fastify, { type FastifyPluginAsync } from 'fastify';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createCoreModule } from '../core/factory.js';
-import { assertStaff, DomainError, type Principal } from '../core/model.js';
+import { assertOwner, assertStaff, canAccessShop, DomainError, type Principal } from '../core/model.js';
 import type { SqlPool } from '../storage/database.js';
 import type { RouteRegistrar } from '../api/routes.js';
 import { ingestSyntheticArtifact, type SyntheticArtifactScope } from './synthetic-ingest.js';
@@ -117,6 +117,113 @@ export function buildIntegratedApp(options: RuntimeOptions) {
   };
   core.registerRoutes({ get: (p, h) => register('GET', p, h), post: (p, h) => register('POST', p, h) }, {
     resolveVerifiedCustomer: resolve, resolvePrintAgent: resolve
+  });
+  register('POST', '/api/v1/official-zalo/quarantine/:receipt_id/reconcile', async request => {
+    const auth = request.headers.authorization?.startsWith('Bearer ')
+      ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(auth);
+    assertOwner(actor);
+    const receiptId = request.params?.receipt_id ?? '';
+    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(receiptId))
+      throw new DomainError('INVALID_INPUT', 'Receipt id không hợp lệ', 422);
+    const body = request.body as {
+      disposition?: unknown; note?: unknown; idempotency_key?: unknown
+    };
+    if ((body.disposition !== 'NO_ORDER_CHANGE' && body.disposition !== 'NEEDS_FOLLOW_UP') ||
+        typeof body.note !== 'string' || !body.note.trim() || body.note.length > 500 ||
+        typeof body.idempotency_key !== 'string' ||
+        !/^[A-Za-z0-9._:-]{1,128}$/.test(body.idempotency_key))
+      throw new DomainError('INVALID_INPUT', 'Disposition, note và idempotency_key hợp lệ là bắt buộc', 422);
+    const disposition = body.disposition;
+    const note = body.note;
+    const requestHash = createHash('sha256')
+      .update(JSON.stringify({ receipt_id: receiptId, disposition, note })).digest('hex');
+    const available = await options.pool.query<{ quarantine: string | null; reviews: string | null }>(
+      "SELECT to_regclass('public.zalo_official_quarantine')::text AS quarantine," +
+      "to_regclass('public.ai0_official_quarantine_reviews')::text AS reviews");
+    if (!available.rows[0]?.quarantine || !available.rows[0]?.reviews)
+      throw new DomainError('FEATURE_UNAVAILABLE', 'Đối soát OA chưa được cấu hình', 503);
+    const initial = await options.pool.query<{ oa_id: string; shop_id: string }>(
+      'SELECT q.oa_id,r.shop_id FROM zalo_official_quarantine q ' +
+      'JOIN ai0_official_zalo_oa_registry r ON r.oa_id=q.oa_id WHERE q.id=$1',
+      [receiptId]);
+    if (initial.rows.length !== 1)
+      throw new DomainError('NOT_FOUND', 'Không tìm thấy receipt quarantine', 404);
+    const shopId = initial.rows[0]!.shop_id;
+    canAccessShop(actor, shopId);
+
+    const connection = await options.pool.connect();
+    let inTransaction = false;
+    try {
+      await connection.query('BEGIN');
+      inTransaction = true;
+      await connection.query(
+        'INSERT INTO zalo_official_quarantine_scopes(oa_id) VALUES($1) ' +
+        'ON CONFLICT (oa_id) DO NOTHING', [initial.rows[0]!.oa_id]);
+      const scope = await connection.query<{ oa_id: string }>(
+        'SELECT oa_id FROM zalo_official_quarantine_scopes WHERE oa_id=$1 FOR UPDATE',
+        [initial.rows[0]!.oa_id]);
+      if (scope.rows.length !== 1)
+        throw new DomainError('PENDING_INBOUND_REVIEW', 'Không khóa được phạm vi OA để đối soát', 409);
+
+      const duplicate = await connection.query<{
+        request_hash: string; response_json: unknown
+      }>(
+        'SELECT request_hash,response_json FROM ai0_official_quarantine_reviews ' +
+        'WHERE shop_id=$1 AND actor_id=$2 AND idempotency_key=$3 FOR UPDATE',
+        [shopId, actor.id, body.idempotency_key]);
+      if (duplicate.rows.length === 1) {
+        if (duplicate.rows[0]!.request_hash.trim() !== requestHash)
+          throw new DomainError('IDEMPOTENCY_CONFLICT', 'Idempotency key đã dùng với nội dung khác', 409);
+        await connection.query('COMMIT');
+        inTransaction = false;
+        const saved = duplicate.rows[0]!.response_json;
+        return saved && typeof saved === 'object' && !Array.isArray(saved)
+          ? { ...(saved as Record<string, unknown>), replayed: true } : saved;
+      }
+
+      const receipt = await connection.query<{ status: string; oa_id: string; shop_id: string }>(
+        'SELECT q.status,q.oa_id,r.shop_id FROM zalo_official_quarantine q ' +
+        'JOIN ai0_official_zalo_oa_registry r ON r.oa_id=q.oa_id ' +
+        'WHERE q.id=$1 FOR UPDATE OF q',
+        [receiptId]);
+      if (receipt.rows.length !== 1 || receipt.rows[0]!.shop_id !== shopId)
+        throw new DomainError('NOT_FOUND', 'Receipt không còn thuộc OA cửa hàng này', 404);
+      if (receipt.rows[0]!.status !== 'NEEDS_HUMAN')
+        throw new DomainError('QUARANTINE_ALREADY_REVIEWED', 'Receipt đã được đối soát', 409);
+
+      const reviewId = randomUUID();
+      const status = disposition === 'NO_ORDER_CHANGE' ? 'reviewed' : 'pending';
+      const response = {
+        receipt_id: receiptId, review_id: reviewId, status,
+        pending: disposition !== 'NO_ORDER_CHANGE', disposition,
+        replayed: false
+      };
+      await connection.query(
+        'INSERT INTO ai0_official_quarantine_reviews ' +
+        '(id,receipt_id,oa_id,shop_id,actor_id,idempotency_key,request_hash,disposition,note,response_json) ' +
+        'VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)',
+        [reviewId, receiptId, receipt.rows[0]!.oa_id, shopId, actor.id,
+          body.idempotency_key, requestHash, disposition, note, JSON.stringify(response)]);
+      if (disposition === 'NO_ORDER_CHANGE') {
+        const updated = await connection.query(
+          "UPDATE zalo_official_quarantine SET status='REVIEWED',reviewed_at=clock_timestamp(),reviewed_by=$2 " +
+          "WHERE id=$1 AND status='NEEDS_HUMAN' RETURNING id",
+          [receiptId, actor.id]);
+        if (updated.rowCount !== 1)
+          throw new DomainError('QUARANTINE_REVIEW_CONFLICT', 'Receipt đổi trạng thái trong lúc đối soát', 409);
+      }
+      await connection.query('COMMIT');
+      inTransaction = false;
+      return response;
+    } catch (error) {
+      if (inTransaction) {
+        try { await connection.query('ROLLBACK'); } catch { /* preserve original error */ }
+      }
+      throw error;
+    } finally {
+      connection.release();
+    }
   });
   app.get('/health', async () => ({ status: 'ok', mode: 'simulation', live_enabled: false,
     auth_configured: true, configured_operations: ['me', 'listOrders', 'approveOrder', 'claimJob', 'markSending', 'reportJob'],
