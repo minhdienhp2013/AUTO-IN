@@ -141,7 +141,8 @@ export class OrderService {
      "to_regclass('public.zalo_official_quarantine')::text AS quarantine,"+
      "to_regclass('public.zalo_official_quarantine_scopes')::text AS scopes");
     const installed=relations.rows[0];
-    if(!installed)pendingReview('Không xác minh được các bảng đối soát OA');
+    if(!installed)throw new DomainError('PENDING_INBOUND_REVIEW',
+     'Không xác minh được các bảng đối soát OA',409);
     if(tables?.proposals){
      source=(await db.query<{oa_id:string;shop_id:string}>(
       'SELECT oa_id,shop_id FROM core_ai_draft_proposals WHERE order_id=$1',[id])).rows;
