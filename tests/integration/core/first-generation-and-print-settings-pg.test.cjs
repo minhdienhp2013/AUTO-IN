@@ -25,6 +25,10 @@ test('REAL PostgreSQL CODE-008 P0: first generation, parameter revisions, approv
   const shop=key('shop'),oa=key('oa'),conv=key('chat'),customer=key('customer');
   const processor={id:'server-verified-processor',role:'processor',shop_id:shop,verified:true};
   await a.query('INSERT INTO core_shop_settings(shop_id) VALUES($1)',[shop]);
+  // Positive OA proposal path uses an AI0-owned registered synthetic binding;
+  // missing registration remains a separate fail-closed HTTP409 regression.
+  await a.query('INSERT INTO core_shop_zalo_oa_registry(shop_id,oa_id,app_id) VALUES($1,$2,$3)',
+   [shop,oa,key('code008-app')]);
   const storeA=new PgStore(a),storeB=new PgStore(b),service=new OrderService(storeA);
   const portA=createOrderSupplementPort({store:storeA,trusted:{shop_id:shop,oa_id:oa},processor});
   const portB=createOrderSupplementPort({store:storeB,trusted:{shop_id:shop,oa_id:oa},processor});
