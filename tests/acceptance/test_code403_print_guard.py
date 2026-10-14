@@ -106,3 +106,55 @@ def test_preflight_document_denial_does_not_mark_or_journal(tmp_path):
         assert agent.journal.get(backend.job["job_id"]) is None
     finally:
         agent.journal.close()
+
+
+@pytest.mark.parametrize("tamper,reason", [
+    ("source", "SOURCE_CHANGED"),
+    ("preview", "PREVIEW_CHANGED"),
+])
+def test_tampered_sealed_document_cannot_reach_driver(tmp_path, tamper, reason):
+    """Real AI3 generated PDF snapshot and preview, with real product evidence
+    verifier wired to the actual PrintAgent gate, not a mocked verdict.
+    No PostgreSQL/HTTPS here; those are separate exact-SHA composition suites.
+    """
+    import importlib.util
+    from pathlib import Path
+    from workers.documents.evidence_guard import verify_approved_evidence
+
+    helper_path = Path(__file__).resolve().parents[1] / "unit/documents/test_evidence_guard_403.py"
+    loader = importlib.util.spec_from_file_location("ai5_403_fixture_helpers", helper_path)
+    assert loader and loader.loader, "real document fixture module must exist"
+    module = importlib.util.module_from_spec(loader)
+    loader.loader.exec_module(module)
+    incoming, output = module.prepared(tmp_path, [("source.pdf", "pdf", 2)])
+    _, trusted, manifest = module.published(incoming, output, [
+        {"artifact_name": "source.pdf"}
+    ])
+    initial = verify_approved_evidence(trusted, artifact_root=output)
+    assert initial["status"] == "READY", initial
+    ref = (manifest["files"][0]["source_artifact_ref"] if tamper == "source"
+           else manifest["previews"][0]["ref"])
+    target = output / ref
+    original = target.read_bytes()
+    assert original
+    target.chmod(0o600)
+    target.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+    corrupted = verify_approved_evidence(trusted, artifact_root=output)
+    assert corrupted["status"] == "NEEDS_HUMAN", corrupted
+    assert corrupted["reason_code"] == reason, corrupted
+
+    backend = FakeBackend(claimed())
+    driver = DryRunDriver()
+    agent = PrintAgent(backend, Journal(tmp_path / "guard.sqlite"), driver,
+                       evidence_gate=lambda _job: (
+                           verify_approved_evidence(trusted, artifact_root=output)["status"] == "READY"))
+    try:
+        result = agent.run_once()
+        assert result["status"] == "BLOCKED", (tamper, result)
+        assert result["reason"] == "DOCUMENT_EVIDENCE_UNVERIFIED"
+        assert driver.calls == 0, "tampered source/preview must NEVER reach DryRunDriver"
+        assert backend.state == "NOT_SENT"
+        assert backend.reports == []
+        assert agent.journal.get(backend.job["job_id"]) is None
+    finally:
+        agent.journal.close()
