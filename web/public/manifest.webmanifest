@@ -1,0 +1,11 @@
+{
+  "name": "AUTO-IN Minh Điến",
+  "short_name": "AUTO-IN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f8f6",
+  "theme_color": "#123d37",
+  "lang": "vi",
+  "icons": []
+}
