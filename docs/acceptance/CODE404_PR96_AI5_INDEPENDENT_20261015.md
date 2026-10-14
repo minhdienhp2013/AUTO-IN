@@ -15,7 +15,7 @@
 ## Trạng thái bằng chứng
 
 - **Product CI SHA 7bf2127:** CODE checks [#38612295368](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38612295368) SUCCESS, PostgreSQL [#38612295370](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38612295370) SUCCESS, Core 39/39, AI2 93/93, composition 26/26, contracts 18/18; Python 199 PASS **1 SKIP**; AI4 Chromium synthetic 28/28. **Không coi đây là independent AI5 runner**.
-- **PR97 overlay tự động:** [CODE checks #38615517062](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38615517062), [composition #38615516635](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38615516635). Những workflow có sẵn không chạy `tests/acceptance/**`; chỉ nêu PASS/FAIL khi log kết thúc và đối chiếu đúng SHA.
+- **PR97 overlay tự động trên SHA `21e6c4f`:** [CODE checks #38615517062](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38615517062) **SUCCESS**; [composition #38615516635](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38615516635) **SUCCESS**, cả composition-postgres và web-quality. Đã đọc log web-quality: 28 marker Chromium synthetic duy nhất, mỗi marker `mutation=0`, tổng kết `PASS CODE008 SYNTHETIC Chromium 28 scenario-viewport cases`. **Hai workflows không gọi `node tests/acceptance/run-pr96.mjs --pg` hoặc `--browser`.** Đây là CI sản phẩm ở overlay, không phải independent AI5.
 - **AI5 independent `--pg`: NOT RUN; `--browser`: NOT RUN.** Không có PostgreSQL 18.3/Docker và không thể kích hoạt workflow tùy ý từ môi trường hiện tại. Cần AI0 tạo job riêng, cấp log/TAP exact SHA rồi mới cập nhật trạng thái.
 
 ## Lệnh AI0 cần chạy trong workflow AI0 sở hữu
