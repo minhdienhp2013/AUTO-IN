@@ -76,3 +76,75 @@ mobile viewport is not testing a physical iPhone.
 - `tsc` kiểm tra độc lập các module `api.ts`, `domain.ts`, `fixtures.ts`, `notifications.ts` PASS với khai báo ImportMeta tạm **không phải** build Vite.
 - npm registry báo `EAI_AGAIN` nên không sinh được `web/package-lock.json` thật. `npm ci --offline` FAIL thiếu lock; `npm run typecheck` và `npm run build` FAIL `TS2688` thiếu `vite/client`. Không tự tạo lockfile giả, không báo Vite build PASS.
 - Browser desktop/mobile, CODE-006 localhost, PostgreSQL, iPhone thật: chưa chạy. Nút duyệt live tiếp tục khóa khi không có preview per-file được xác thực.
+
+### CODE-304 — đối chiếu PR tích hợp #21 (`15c1ac75859914b2cc07d5a98bf57c18973cbbb2`, 12/10/2026)
+
+Nguồn live được kiểm lại theo `backend/api/routes.ts` và `backend/core/service.ts` trên
+[PR #21](https://github.com/minhdienhp2013/AUTO-IN/pull/21). AI1 đã trả
+`current`, `print_progress`, `conversation_control` qua `GET /api/v1/orders/:order_id`;
+`POST /api/v1/print-jobs/:job_id/verify-paper` trả biên nhận gồm `job_id`,
+`state`, `verified_sheets`, `planned_sheets`. Khi nhân viên xác minh **một phần**,
+server trả `UNKNOWN` và số tờ đã kiểm, KHÔNG trả `VERIFIED_DONE`. Client giờ
+chấp nhận đúng biên nhận `UNKNOWN` có đếm giấy, sau đó đọc lại GET để so
+khớp trạng thái/số tờ; biên nhận thiếu, dữ liệu đọc lại cũ hoặc mâu thuẫn đều
+trả lỗi đối soát, không tạo trạng thái thành công từ UI.
+
+Bộ mapper chặn tình huống jobs tự khai `VERIFIED_DONE` nhưng thiếu số tờ,
+`evidence_kind` không thuộc `staff_inspected`/`device_verified`, mode gửi
+không rõ/simulation, đếm thiếu, hoặc mâu thuẫn với `print_progress`. Khi đó
+UI hạ trạng thái xuống `UNKNOWN`, ghi cảnh báo và không hiển thị đã in/giao đủ.
+Job của revision/hash cũ không cộng thành giấy thật cho revision hiện hành;
+spooler không xác minh được giấy. Đã có regression tests cho cả ca này.
+
+**Kết quả chạy độc lập (Node v22.16.0, npm 10.9.2):**
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `cd web && npm test` | **PASS 45/45**, 0 FAIL |
+| TypeScript strict API/domain/fixtures/notifications bằng `tsc` global với `ImportMetaEnv` shim tạm *chỉ cho isolation* | **PASS**; **không** coi là Vite build |
+| `node --check web/public/sw.js` | **PASS** |
+| `npm install --package-lock-only --ignore-scripts --no-audit --no-fund --fetch-retries=0 --fetch-timeout=5000` | **BLOCKED** `EAI_AGAIN: getaddrinfo registry.npmjs.org` |
+| `cd web && npm ci --ignore-scripts --no-audit --no-fund` | **BLOCKED** `EUSAGE` — chưa có `web/package-lock.json` thật |
+| `cd web && npm run typecheck` | **BLOCKED** `TS2688 Cannot find type definition file for 'vite/client'` (thiếu dependency npm) |
+| `cd web && npm run build` | **BLOCKED** cùng TS2688, chưa chạy được Vite bundle |
+
+**Browser:** chưa có bundle và server web chạy được, nên Chromium desktop
+**1440×900** và mobile viewport **390×844** đều **NOT RUN** (0 kích thước
+được kiểm chứng); không báo đây là test trình duyệt hoặc iPhone thật.
+
+**Phụ thuộc:** `[AI0/CI] [CODE-006→304]` Chạy `npm install --package-lock-only`
+trong môi trường npm registry hoạt động, bàn giao lockfile sinh thật cho AI4,
+sau đó `npm ci && npm test && npm run typecheck && npm run build` và browser
+1440×900/390×844. AI4 không chạm CI/root config. `[AI0/AI1/AI3]` Cấp
+preview per-file có phân quyền nếu muốn mở duyệt live; internal `preview_ref`
+không đủ điều kiện. Không merge/deploy, không bật in hoặc OA thật.
+
+## CODE-304 — continuation on AI4 PR #15 (2026-10-12)
+
+- Source branch before change: `ai4/dot3-web-contract-lock` at `8859d8639fb88345e0ef145856c28222fd245f00`, integration reference PR #21 at `15c1ac75859914b2cc07d5a98bf57c18973cbbb2`. No merge/deployment.
+- Delivery axis matches AI1 `OrderService.deliver`: real **staff-inspected partial paper** of an `UNKNOWN` job can be handed over up to the **server-evidenced** remaining count, while the print axis remains `UNKNOWN` and still needs reconciliation. `SIMULATED_DONE`, `SENDING`, `SENT_UNVERIFIED`, missing evidence, and exhausted verified quantity **cannot** enable delivery. The backend remains the authority on delivery; this UI helper does not report successful printing.
+- Preview remains locked: AI1 GET current `preview_ref` is an internal artifact reference, not an authenticated per-document preview URL. `mapCoreOrderDetail` therefore deliberately returns `documents: []`; client approval stays disabled.
+- Commands attempted in this environment: `npm install --package-lock-only --ignore-scripts --no-audit --no-fund --fetch-retries=0 --fetch-timeout=4000` => **FAIL EAI_AGAIN** (`getaddrinfo registry.npmjs.org`, metadata `@types/react`); `npm ci --offline --ignore-scripts --no-audit --no-fund` => **FAIL EUSAGE** (no lockfile); `npm test` => **48/48 PASS**; `npm run typecheck` and `npm run build` => **FAIL TS2688** (`vite/client` package unavailable). Because `npm install` did not succeed, `web/package-lock.json` does **not** exist. Do not generate it manually. See local logs from this session when provided as handoff artifact.
+- Chromium desktop **1440 x 900** and mobile **390 x 844**: **NOT RUN**, since required React/Vite packages and successful build are absent. Backend simulation was not launched. No real iPhone, Zalo, or printer test was performed.
+- Next action when npm registry is reachable: from `web/`, run `npm install --package-lock-only --ignore-scripts && npm ci && npm test && npm run typecheck && npm run build`, commit real `web/package-lock.json`, run Chromium at the above viewports against simulation, capture screenshots/console/network, and verify `UNKNOWN`, partial evidence, simulated output and untrusted preview.
+
+## CODE-404 — giao diện xác nhận có chứng cứ (12/10/2026)
+
+- Nguồn tích hợp AI0 `3f0380abed2294fc18d09294cd6a8c9562108710`: đã đồng bộ đúng patch `web/src/{api,App,domain,styles}` và `web/package-lock.json` npm **thật**, không tự dựng. Preview chỉ qua Bearer catalog+PNG, đối chiếu order_id/active revision/request_hash/URL/index, metadata AI3; gallery blob URL được revoke khi unmount/đổi revision/hash.
+- CODE-404 thêm ba trục hiển thị riêng **khách xác nhận đúng revision/hash / yêu cầu báo giá / chờ nhân viên duyệt** lấy từ nested read model. Nhân viên KHÔNG có nút xác nhận thay khách, không tự duyệt, và preview không biến giấy mô phỏng/UNKNOWN thành giấy thật.
+- Session token được chụp *trước* GET catalog; logout/đổi tài khoản trong lúc tải khiến mọi ảnh bị từ chối, PNG 401 xóa token. 409, 401, offline khiến thao tác duyệt bị khóa cho tới khi GET hiện hành thành công.
+- Test mới: `tests/ui/confirmation-readiness.test.ts` (6 case), `tests/ui/code404-preview-security.test.ts` (5 case); dùng fixture synthetic, không Zalo/Ricoh. Xem bàn giao PR #15 cho SHA và phân loại npm/build/browser thực tế.
+
+## CODE-008 — cùng chat trước khi chốt in (AI4, 12/10/2026)
+
+- **Chỉ hiển thị**, không tự gộp đơn. Nút "Tải chi tiết theo chat" dùng staff Bearer đọc từng GET chi tiết (tối đa bốn request cùng lúc), nhóm theo `customer_id+conversation_id` trong shop đã xác thực; mỗi `order_id` vẫn riêng. API danh sách AI1 chưa trả conversation_id, nên không đoán nhóm từ tóm tắt.
+- **Hợp đồng còn cần AI0/AI1:** `GET /api/v1/orders/:id` trả `current.pending_updates={order_id,revision,request_hash,status:'clear'|'processing'|'needs_human',unresolved_count,items:[{kind:'file'|'message',label,summary,received_at}]}`. `clear` phải có count=0/items=[] và được khóa theo active revision/hash; nếu thiếu/sai/stale thì UI `unknown`, **khóa duyệt**. Backend vẫn PHẢI CAS/transaction kiểm tin chưa xử lý trong thao tác approval, kể cả khi UI đã đọc clear; UI không thể chống race một mình.
+- Batch Zalo 60 giây không phải chốt đơn. `NEEDS_HUMAN`/PENDING không được hiển thị là đã nhập đơn. Chỉ AI1/AI2/AI0 mới nối sự kiện vào revision và xác nhận danh tính; UI chỉ thông báo khách cần xác nhận lại khi revision tăng và chưa có current confirmation.
+- Sau `approved`, `manual_lock`, `closed`, hoặc print_state khác NOT_SENT, thao tác **sửa giá/yêu cầu in** bị khóa ở UI và HTTP port. Thanh toán/giao hàng tách riêng, không suy ra đã in thật.
+- Kiểm thử `tests/ui/code008-open-orders.test.ts` cho thiếu read model, CLEAR đúng phiên, pending, sai hash/revision, SYSTEM metadata, chat nhiều đơn, khóa sau chốt; không test OA/Ricoh thật. Chromium cần bundle thật và backend simulation đúng SHA.
+
+### AI4 CODE-008 — tương thích pending_updates thực từ PR #31 / AI1 (13/10/2026)
+- Đã xác minh `backend/core/pending-updates.ts`: `needs_human,unresolved_count=0,items=[]` hợp lệ khi không chứng thực được scope; `processing,unresolved_count=0,items=[]` hợp lệ khi kế hoạch chưa verified. Không gọi hai trường hợp này là UNKNOWN/CLEAR và **không duyệt**.
+- Danh sách `items` là metadata (không chứa nội dung khách) và có thể giới hạn 12 mục trong khi `unresolved_count` lớn hơn 12. Không coi items ngắn hơn count là đã xử lý xong.
+- Chỉ `clear,unresolved_count=0,items=[]` đúng `order_id/revision/request_hash` mới đạt gate hàng đợi; customer confirmation, price confirmation và trusted preview vẫn là các điều kiện riêng. API lỗi/401/409/thiếu trường hoặc scope/hash mismatch hiển thị CHƯA XÁC ĐỊNH và khóa duyệt.
+- CI verification trên nhánh AI4 đối chiếu với SHA PR #31 mới nhất; không thay lịch sử AI4 hoặc backend. 

@@ -59,3 +59,92 @@ Lỗi PostgreSQL/transaction/ledger/confirmation queue/generation -> **AI1**; Za
 ## Trạng thái ở thời điểm bàn giao
 
 Selftest chốt SHA riêng (`integration-preflight.test.mjs`) đã chạy cục bộ: 4 PASS / 0 FAIL. Toàn bộ product PG/HTTP/DryRun/browser CODE-305: **NOT RUN/BLOCKED vì thiếu SHA tích hợp và PostgreSQL/server thực**. Không báo số PASS sản phẩm hoặc in thử.
+
+## Sau khi có SHA 15c1ac7
+
+Đã có [bằng chứng CI push trực tiếp HEAD](CODE305_SHA_15c1ac7_EVIDENCE.md) cho PostgreSQL, DryRun, HTTP auth và webhook synthetic. Người kiểm thử mới chạy trên SHA khác phải đặt AUTOIN_INTEGRATION_SHA bằng SHA CODE-006 mới và chạy lại nhóm sản phẩm, không chép kết quả cũ. Trong run.mjs AI5 đã bổ sung một ca synthetic webhook thật sự gọi composition test với PostgreSQL test rồi bắt buộc 1 PASS/0 FAIL/0 SKIP; ca này CHƯA được CI chạy trên SHA 15c1ac7 vì thay đổi AI5 tạo sau SHA đó. Browser yêu cầu AI4 package-lock.json và web/dist/index.html, thiếu sẽ báo BLOCKED exit2; không coi unit tests web là browser E2E. HTTP-ZALO-01 vẫn SKIP trên default server không gắn ingress; synthetic test dùng app.inject với provider thử riêng, không phải OA live.
+
+## CODE-305 — SHA mới và kịch bản HTTPS agent (cập nhật 2026-10-12)
+
+Đọc [báo cáo bằng chứng SHA `d3e53461`](CODE305_SHA_D3E53461_EVIDENCE.md). Bằng chứng PASS PostgreSQL/DryRun/HTTP chỉ tính cho `d3e53461a5cc71d0b96b24b069b5240ca9dcd71e` (push CI), không dùng lại từ SHA trước.
+
+**Browser:** AI4 phải tạo lockfile thật từ npm (`web/package-lock.json`), `cd web && npm ci && npm run build`, chạy server Vite localhost và Playwright. Lệnh `node tests/acceptance/run.mjs --browser` sau đó kiểm **desktop 1440×900** và **mobile 390×844**, mode an toàn và không tràn ngang; `AUTOIN_EXPECT_ANONYMOUS=1` để kiểm quyền khách chưa login. Nếu không có lock/build, runner trả BLOCKED exit2; không coi demo/unit test là browser PASS.
+
+**HTTPS agent fixture do AI0 cấp (chưa có, hiện NOT RUN):** cần PostgreSQL test localhost, server HTTPS localhost với TLS đáng tin cậy (không `--insecure`), token print_agent scoped và file JSON fixture **riêng cho mỗi scenario** (chmod 600, đặt bên ngoài Git). Ví dụ file synthetic không chứa secret:
+```json
+{
+  "scenario": "cli",
+  "job_id": "12345678-1234-1234-1234-123456789abc",
+  "order_id": "87654321-1234-1234-1234-abcdef123456",
+  "shop_id": "autoin-test-305",
+  "printer_id": "RMP7000",
+  "integration_sha": "d3e53461a5cc71d0b96b24b069b5240ca9dcd71e"
+}
+```
+Các UUID trên chỉ là ví dụ, không phải job có thật. **Không gửi/chia sẻ token hoặc chứng thư riêng trong repo.** Mỗi scenario lấy job/order UUID mới và riêng biệt trong PG; ghi file `AUTOIN_CODE305_USED_JOB_LEDGER` ngoài Git, mode 0600, để không tái dùng dù ACK mơ hồ. Trước khi gọi agent, AI5 tự truy vấn DB xác minh job **NOT_SENT**, chưa claim, không khóa/đóng, shop ở simulation, có xác nhận khách + approval đúng revision/hash, **chỉ một job eligible trong shop**. Nếu sai: BLOCKED, không gọi agent.
+
+```sh
+export AUTOIN_INTEGRATION_SHA=d3e53461a5cc71d0b96b24b069b5240ca9dcd71e  # thay bằng SHA mới nếu AI0 bàn giao
+export AUTOIN_OPERATION_MODE=simulation
+export AUTOIN_ALLOW_PG_ACCEPTANCE=YES_ISOLATED_TEST_DB
+export AUTOIN_TEST_DATABASE_URL=postgresql://localhost/autoin_test_305
+export TEST_DATABASE_URL="$AUTOIN_TEST_DATABASE_URL"
+export AUTOIN_CODE303_HTTPS_URL=https://127.0.0.1:3443/
+export SSL_CERT_FILE=/ngoai-git/cert/trusted-synthetic-test-ca.pem
+export AUTOIN_CODE303_AGENT_TOKEN='TOKEN_TEST_SCOPE_DO_AI0_CAP_KHONG_COMMIT'
+export AUTOIN_CODE305_USED_JOB_LEDGER=/ngoai-git/job-ledger-305.jsonl
+export AUTOIN_CODE305_HTTPS_FIXTURE=/ngoai-git/fixture-cli-fresh.json
+export AUTOIN_CODE305_SCENARIO=cli
+export AUTOIN_CODE305_RUN_HTTPS_AGENT=YES_SIMULATION_ONLY
+node tests/acceptance/https-agent-run.mjs --execute
+```
+
+Chạy **từng scenario với fixture/job MỚI**; tám tên hợp lệ: `normal`, `cli`, `lost_mark_ack`, `lost_report_ack`, `before_mark_sending`, `after_mark_sending`, `after_journal_before_driver`, `after_driver`. Harness gọi trực tiếp bài kiểm tra AI3 `tests/unit/printing/test_product_backend_optin.py`, chỉ chấp nhận `1 passed/0 failed/0 skipped`, không dùng driver in thật. Log không chứa token; lỗi phải gửi AI3/AI0 kèm SHA và scenario, không đăng token, ảnh, nội dung khách.
+
+**Selftests AI5:** `node --test tests/acceptance/https-agent-fixture.test.mjs` để kiểm guard trước khi cấp fixture. Chỉ selftest mới có thể chạy độc lập; không được ghi HTTPS CLI PASS nếu chưa có fixture thật. Các ca mới này chưa có CI trên tích hợp `d3e53461a5cc71d0b96b24b069b5240ca9dcd71e`, nên AI0 phải đưa vào SHA tích hợp tiếp theo và chạy lại.
+
+**Phân công:** AI0 cấp SHA tích hợp + HTTPS fixture/CI, AI3 xác minh logic HTTPS/ACK/restart, AI4 cung cấp npm lock/build/browser. AI5 chỉ nghiệm thu và báo lỗi. Giữ **TN-037 BLOCKED** cho đến khi đủ toàn bộ điều kiện thực tế.
+
+## Recheck 2026-10-12
+
+SHA PR #25 mới nhất vẫn `d3e53461a5cc71d0b96b24b069b5240ca9dcd71e`. Chỉ đối chiếu CI **push** run #38165256655 và #38165256659 đúng SHA. Nếu AI0 cấp commit mới phải xác minh run **push của SHA mới**; không kế thừa số đếm PASS. AI4 HEAD `dbf4986` thiếu web/package-lock.json nên Playwright desktop/mobile **NOT RUN**. HTTPS agent cần fixture DB test, TLS, token scoped và job đã duyệt riêng cho từng scenario; chưa có nên **NOT RUN**. AI3 1 SKIP và các runner 19/40 SKIP phải báo riêng. TN-037 tiếp tục **BLOCKED**.
+
+## CODE-405 — runbook kiểm chính xác AI0 SHA
+
+Đọc [báo cáo CODE405](CODE405_NGHIEM_THU_20261012.md) và [phân công CODE007](../architecture/CODE007_PHAN_CONG_20261012.md). Mặc định tất cả test CODE405 mới có cổng. **Không chạy trên AI5 branch bằng cách giả mạo AUTOIN_INTEGRATION_SHA**. Checkout CODE-006 AI0 immutable SHA mới đã nhận các file AI5; `git rev-parse HEAD` phải khớp `AUTOIN_INTEGRATION_SHA`. Máy chỉ dùng PostgreSQL localhost tên `autoin_test*` và DryRunDriver.
+
+```sh
+# Checkout đúng SHA AI0 đã tích hợp CODE-405, không lấy SHA lịch sử
+git rev-parse HEAD
+export AUTOIN_INTEGRATION_SHA=$(git rev-parse HEAD)
+export AUTOIN_OPERATION_MODE=simulation
+export AUTOIN_TEST_DATABASE_URL=postgresql://auto_in:ISOLATED_TEST_ONLY@127.0.0.1:5432/autoin_test_405
+export TEST_DATABASE_URL="$AUTOIN_TEST_DATABASE_URL"
+export AUTOIN_ALLOW_PG_ACCEPTANCE=YES_ISOLATED_TEST_DB
+npm ci && npm run db:migrate && npm run build
+# Chỉ chạy test mới + selftest cũ; wrapper subprocess chứng minh chính checkout
+node tests/acceptance/run.mjs --integration
+
+# AI4 phải có web/package-lock.json thật; build web không demo
+(cd web && npm ci && VITE_DEMO_MODE=false npm run build)
+# Python/Chromium Playwright được cài trong isolated CI
+node tests/acceptance/run.mjs --browser-product
+```
+
+Các test `C405-PG-*` dùng test-only credential Principal từ fixture/DB, **không phải** customer đã xác thực qua webhook. Các wrapper `C405-*` spawn chính test sản phẩm AI0 đã có, yêu cầu **1 PASS / 0 FAIL / 0 SKIP** mỗi bài. Nếu chưa có customer event verification Port chính thức từ CODE-401/402: ghi **NOT RUN** phần OA→customer-confirm; không tự giả Principal Zalo. Browser product script chỉ phục vụ localhost/PG isolated, xác minh tamper, không in thật.
+
+**Hiện tại** 3 self-test provenance PASS cục bộ; test mới PG/browser/HTTP sản phẩm **NOT RUN** vì AI0 chưa nhập test CODE405 vào SHA mới. Vẫn có bằng chứng CI hiện có trên SHA `e16f69ace72f41b82bd7438cc97b0c275fc57f64` tại PR #31 cho PostgreSQL/Chromium trước CODE-405. Chuyển lỗi về đúng AI1/AI2/AI3/AI4/AI0; tuyệt đối không merge/deploy.
+
+## CODE-405 — latest integration HEAD recheck
+
+PR #31 đã chuyển sang `fb4af186d62adc3d91848f1306576f07cf35f4ee`. CODE checks PUSH [38213694609](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38213694609) và Simulation integration PUSH [38213694522](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38213694522) đều SUCCESS. PG composition **20/20 PASS** gồm signed synthetic `OK` candidate **không** ghi customer confirmation, AI3 140 PASS/1 SKIP, AI5 hiện hữu 58 PASS/19 SKIP integration và 43 PASS/41 SKIP HTTP; Chromium product PASS desktop/mobile. **Đây là kết quả CI trước khi test AI5 CODE-405 mới được nhập.**
+
+Trong nhóm wrapper CODE-405 mới phải chạy `confirmation-candidate-pg.test.mjs` cùng signed wrong OA, artifact, lost-ACK reconcile, preview tamper và HTTPS agent. Mọi wrapper chưa chạy đúng SHA tích hợp có file AI5 phải báo **NOT RUN**. Không bao giờ đổi `candidate_requires_credential` thành xác nhận khách. Từ chối mọi cách giả identity, OA thật hay driver Ricoh thật.
+
+## CODE-405 — nghiệm thu 7 lỗi đã sửa bởi AI0, SHA `823237342dd9b6d0c1db5430e72b311d197056d9`
+
+Patch đã được chuyển nguyên blob vào AI5, chi tiết tại [CODE405_NGHIEM_THU_20261012.md](CODE405_NGHIEM_THU_20261012.md). Với subprocess test, bắt buộc `--test-reporter=tap`, **xóa `NODE_TEST_CONTEXT`** khỏi môi trường child; xác minh cả 6 trường TAP, >0 bài thực thi, toàn bộ PASS và không có FAIL/SKIP/cancelled/TODO; không chấp nhận exit code 0 đơn độc. Lệnh selftest đã chạy: `node --test tests/acceptance/code405-subprocess-evidence.test.mjs tests/acceptance/code405-exact-sha.test.mjs` (11 PASS/0 FAIL/0 SKIP trên đúng GitHub blobs). CI AI0 push đúng SHA `823237342dd9b6d0c1db5430e72b311d197056d9` đã chạy real PostgreSQL + HTTP + DryRun + Chromium 1440×900/390×844 (lượt `--integration` 80 PASS/19 SKIP, `--http` 54 PASS/52 SKIP, AI3 Python 167 PASS/1 SKIP). Test nào SKIP không tính là PASS. **AI0 phải tiếp nhận HEAD AI5 mới và chạy CI tích hợp đúng SHA tiếp theo** trước khi kết luận nghiệm thu lại. OA/Ricoh thật, iPhone thật và TN-037 NOT RUN/BLOCKED.
+
+## CODE-402 AI5 — PG challenge candidate 14/10/2026
+
+AI5 PR #18 branch `ai5/dot3-integrated-acceptance`, integrated product SHA `4822958713e6ee1c728babde790f4c7022ac02bc`, staging SHA `646aaa767bd3f37274e48a797ea03488cbbb6c42` chạy real PostgreSQL [#38445735214](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38445735214). `code402-postback-pg.test.mjs` kiểm nguồn signed synthetic→normalizer→AI0 resolver→AI2 candidate, 0 confirmation/approval/job; `code402-product-regression-pg.test.mjs` chạy strict TAP 4 product suites (AI2 durable workers, strict normalization, AI1 verified-confirmation/replay, AI0 signed Fastify/PG). Chạy `node tests/acceptance/run.mjs --integration` sau `npm ci && npm run db:migrate && npm run check` với PostgreSQL cô lập `autoin_test*`, `AUTOIN_ALLOW_PG_ACCEPTANCE=YES_ISOLATED_TEST_DB`, `AUTOIN_TEST_DATABASE_URL=TEST_DATABASE_URL`, `AUTOIN_INTEGRATION_SHA=$(git rev-parse HEAD)`; AI1 child dùng `AI1_BUILD_DIR=dist/backend` theo `scripts/run-core.mjs`. Kết quả **103 PASS/0 FAIL/19 SKIP**. Candidate synthetic không chứng minh xác nhận Zalo thật; TN-037 NOT RUN.

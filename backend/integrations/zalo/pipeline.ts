@@ -7,6 +7,7 @@ import {PostgresConversationQueue,PostgresOutboundRepository,type PgTransactions
 import {ConversationProcessor,type OrderDraftPort,type ClassifierPort,type DocumentFactsPort} from '../../conversation/processor.ts';
 import {DurableConversationWorker} from '../../conversation/durable-worker.ts';
 import {OutboundDispatcher,type ReplySchedule,type ZaloSender} from '../../conversation/gate.ts';
+import {PostgresConfirmationCandidates,type VerifiedChallengePort} from './confirmation-candidates.ts';
 
 /** Safe simulation entry. AI0 supplies a real PG transaction runner and a trusted
  * OA->shop mapping; neither is derived from unverified webhook payload/header.
@@ -29,6 +30,8 @@ export interface ZaloPipelineOptions {
   schedule: ReplySchedule;
   clock: {now():Date};
   classifier?: ClassifierPort;
+  /** Trusted server-side challenge resolver; absent means PENDING/NEEDS_HUMAN. */
+  confirmation_challenges?: VerifiedChallengePort;
   /** Without this, inbound webhook is always 403 and outbound is never sent. */
   synthetic_provider?: SyntheticProvider;
   mode?: 'simulation' | 'controlled_test' | 'production' | 'safe';
@@ -36,7 +39,7 @@ export interface ZaloPipelineOptions {
 export function createZaloPipeline(options:ZaloPipelineOptions) {
   if((options.mode ?? 'simulation')!=='simulation')throw new Error('ZALO_LIVE_DISABLED');
   if(!options.trusted_oa_id||options.trusted_oa_id.length>128)throw new Error('INVALID_TRUSTED_OA');
-  const gate=new CoreConversationGate(options.db,options.trusted_shop_id);
+  const gate=new CoreConversationGate(options.db,options.trusted_shop_id,options.trusted_oa_id);
   const queue=new PostgresConversationQueue(options.db,options.trusted_oa_id);
   const outbox=new PostgresOutboundRepository(options.db,gate,{shop_id:options.trusted_shop_id,oa_id:options.trusted_oa_id});
   const provider=options.synthetic_provider;
@@ -51,12 +54,15 @@ export function createZaloPipeline(options:ZaloPipelineOptions) {
   }};
   const ingress=new ZaloIngress(verifier,normalizer,
     new PostgresInboundEventRepository(options.db) as InboundEventRepository);
-  const processor=new ConversationProcessor(gate,options.documents,options.orders,outbox,options.classifier);
+  const confirmations=new PostgresConfirmationCandidates(options.db,
+    options.trusted_shop_id,options.trusted_oa_id,options.confirmation_challenges);
+  const processor=new ConversationProcessor(gate,options.documents,options.orders,outbox,
+    options.classifier,confirmations);
   const worker=new DurableConversationWorker(queue,processor);
   const dispatcher=provider?.sender ? new OutboundDispatcher(gate,outbox,provider.sender,
     options.clock,options.schedule):undefined;
   return {
-    ingress,gate,queue,outbox,processor,worker,
+    ingress,gate,queue,outbox,confirmations,processor,worker,
     receive_webhook(raw:Uint8Array,headers:Readonly<Record<string,string>>) {
       return handleZaloWebhook(ingress,raw,headers);
     },

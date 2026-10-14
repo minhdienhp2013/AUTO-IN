@@ -246,3 +246,135 @@ python -m agents.windows.cli \
 - PR #21 tại SHA `15c1ac7` đã báo (và CI chạy) Python **95 PASS/1 SKIP**, AI5 PG/DryRun sản phẩm **20/20 PASS** trên snapshot AI3 trước những thay đổi mới; đó không chứng minh agent CLI HTTPS product path mới đạt.
 - Nhánh AI3 này bổ sung chặn CLI remote, bài kiểm ACK/crash TLS socket, gate product HTTPS/PG strict. Cần **AI0 nhập đúng SHA mới** vào nhánh simulation rồi chạy GitHub Actions `.github/workflows/integration.yml` (workflow thuộc AI0, AI3 không sửa). CI mặc định sản phẩm opt-in vẫn SKIP nếu chưa seed HTTPS agent test. AI5 phải chạy opt-in trên **Fastify thật với cert/token/job**; report riêng PASS/FAIL/SKIP.
 - Còn thiếu **đường chứng minh print thực**: backend job claim chỉ mang `request_hash`/revision, chưa có ký nhận manifest/source artifact hoặc native driver; tuyệt đối không mở driver thật/không tự lấy file gốc. Khi có driver Windows đã xác minh, AI0 phải cấp ref/hash nguồn bất biến và so lại SHA từng source sát lúc in. Ricoh A4/A3/duplex/font/spooler chưa chạy; Windows ACL journal cũng chưa chứng minh.
+
+
+## CODE-303 — Port DocumentFact[] dành cho AI2 / AI0 (12/10/2026)
+
+**Chính xác nguồn kiểu:** `backend/conversation/rules.ts` PR tích hợp #21 định nghĩa
+`DocumentFact { kind: "pdf"|"word"|"image"|"excel"|"unknown"|"zip"; count_inside?: number; preview_trusted?: boolean }`.
+Không thay `backend/conversation/**` hoặc contracts AI0.
+
+**Port Python:** `workers.documents.fact_inspect.inspect(batch, artifact_root=<SERVER_PRIVATE_ROOT>) -> list[DocumentFact]`. JSON CLI:
+```sh
+python -m workers.documents.fact_inspect \
+  --artifact-root /private/autoin/verified-artifacts \
+  --timeout-seconds 45 < batch.json
+```
+`batch.json` dạng sau (tất cả ref/hash phải lấy từ hồ sơ artifact ở **server**, không được copy từ trường file name/URL/zalo-event/client):
+```json
+{
+  "batch": [
+    {
+      "artifact_ref": "doc-a1b2c3d4/source-000-<64hex-sha256>.pdf",
+      "sha256": "<64hex-sha256>",
+      "manifest_ref": "doc-a1b2c3d4/manifest.json",
+      "manifest_sha256": "<64hex-sha256-of-stored-manifest>"
+    },
+    {
+      "artifact_ref": "doc-e5f6a7b8/source-000-<64hex-sha256>.zip",
+      "sha256": "<64hex-sha256>",
+      "manifest_ref": "doc-e5f6a7b8/manifest.json",
+      "manifest_sha256": "<64hex-sha256-of-stored-manifest>"
+    }
+  ]
+}
+```
+`artifact_ref` phải là ref private của **snapshot bất biến** do pipeline server tạo (`doc-*/source-XXX-<sha>.<extension>`), không phải input path, public URL, Zalo attachment URL hay client name. Tệp ZIP raw cần được **AI0 lưu thành snapshot riêng và đăng ký ref/hash tại DB hoặc manifest server tin cậy** trước khi gọi Port; bridge in hiện tại chụp từng file sau giải nén, chưa chụp ZIP container raw, vì vậy **chưa có tự động nối upload ZIP → batch Port**. Nếu AI0 không có snapshot đáng tin cậy, trả UNKNOWN, không mở file trực tiếp từ webhook.
+
+**Output khi đủ chứng cứ (không có đường dẫn, nội dung file, OCR, số trang hoặc hash):**
+```json
+{
+  "schema": "ai3.document_facts.v1",
+  "status": "READY",
+  "facts": [
+    {"kind":"pdf","preview_trusted":true},
+    {"kind":"image","preview_trusted":true},
+    {"kind":"zip","count_inside":2,"preview_trusted":true}
+  ]
+}
+```
+Mỗi phần tử trong `facts` có đúng các key AI2 đang hiểu. Hàm `inspect` Python trả trực tiếp mảng facts; CLI bọc `schema/status/reason_code/facts` để AI0 phân biệt tình trạng. Nếu **bất kỳ** phần tử thiếu/hash sai/symlink/ZIP lỗi/bị sửa/font PDF chưa nhúng/render hỏng/format chưa xác minh, `status:"NEEDS_HUMAN"` và phần tử `{"kind":"unknown","preview_trusted":false}` hoặc `{"kind":"word"|"excel"|"zip","preview_trusted":false}` phù hợp. Không suy ra `document_pages` từ metadata đoán, không nâng `preview_trusted` nếu chưa thực render.
+
+**Kiểm chứng an toàn:** Bắt buộc bốn trường `artifact_ref`, `sha256`, `manifest_ref`, `manifest_sha256` **đều do AI0 lấy từ DB đáng tin cậy**; không còn chấp nhận cặp ref/hash tự khai. Mở manifest bằng `O_NOFOLLOW` từng path segment, so SHA-256 manifest với digest lưu server, so `files[]` chứa đúng một `source_artifact_ref`/digest/size, sau đó mới mở snapshot bằng dirfd và xác minh bytes SHA-256 cùng kích thước, *trước* giải mã PDF/Pillow/ZIP. Hỏng/sai/thiếu manifest hoặc snapshot đều UNKNOWN/NEEDS_HUMAN. Chỉ xem nội dung những bytes đã hash; không đọc lại inbound. PDF phải đọc được và không dùng font chưa nhúng; ảnh phải Pillow render được; ZIP kiểm traversal/symlink/password/compression/giới hạn file, kiểm thực từng member, chỉ trả `count_inside` khi ZIP cấu trúc an toàn. Word/Excel nhận biết loại nhưng `preview_trusted:false`, không đoán số trang, chuyển người. Bản copy preview chỉ tạo tạm, không mở in.
+
+**Giới hạn tích hợp:** Quyền cấp `artifact_ref`/hash thuộc AI0 backend và quyền đọc nguồn thuộc server, **không thuộc AI2/webhook**. Port không thể tự chứng minh một chuỗi do khách gửi là ref đáng tin: AI0 phải kiểm subject/shop/order/manifest trong DB trước khi gọi, bảo vệ artifact-root (owner/quota/cleanup), và không giao đường dẫn lẫn SHA từ raw webhook sang Port. `inspect(batch)` không tự tạo đơn hoặc duyệt in. Dữ liệu sai/thiếu vẫn được nhận để chuyển nhân viên, không mặc định `PRINT`.
+
+**Kiểm thử:** `tests/unit/documents/test_fact_inspect.py` có PDF/ảnh thật (fitz/Pillow), ZIP nhiều file/hỏng/path traversal, bản snapshot thay đổi/hash mismatch, thiếu nguồn, từ chối path khách/URL/symlink, CLI JSON và định dạng đúng AI2. Chạy:
+```sh
+python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing
+python -m pytest -q tests/unit/documents tests/unit/printing
+```
+Đây là Port module AI3; AI0 sẽ map JSON CLI đầu ra thành `DocumentFact[]` cho AI2 và chịu trách nhiệm kiểm DB/ref. PR #24 vẫn là chứng cứ **100 PASS / 1 SKIP của SHA trước lần bổ sung Port**, không chứng minh những bài mới đã chạy.
+
+### Cập nhật điều kiện an toàn — manifest có hash từ DB
+
+Port `inspect(batch)` đã được nâng lên yêu cầu **bốn** trường chứng cứ server: `artifact_ref`, `sha256`, `manifest_ref`, `manifest_sha256` (không phải hai trường). Bản tích hợp AI0 hiện gọi `inspectDocumentRequest` để tạo manifest: giá trị `evidenceHash` từ `backend/composition/processor.ts` là SHA-256 **raw manifest bytes**, phù hợp `manifest_sha256`; nhưng AI0 phải tự lưu vào PostgreSQL cùng liên kết shop/order/artifact một cách đáng tin trước khi gọi Port. Không được cho webhook truyền hash/ref thay cho record DB.
+
+Manifest do `workers.documents.bridge` sinh dùng schema `ai3.document_bridge.v1`, có `files[]`, `source_artifact_ref`, `file_sha256`, `size_bytes`, `request_hash`, `content_settings_sha256`. Với upload từ server chưa qua bridge, AI0 có thể tạo một private immutable manifest theo `ai3.upload_snapshot.v1` và `files[]` tương tự (bắt buộc có `source_artifact_ref/file_sha256/size_bytes`), rồi lưu **SHA-256 manifest** trong server DB. Port không tự sinh bằng chứng, không nhận metadata của khách; thiếu manifest hoặc record phải trả UNKNOWN.
+
+ZIP raw chỉ có khi AI0 đã lưu **container ZIP raw** theo quy tắc snapshot/manifest này; bridge in hiện có lưu từng thành viên sau giải nén, chưa làm bằng chứng riêng cho container ZIP. Thử nghiệm dữ liệu từ fixture tự tạo không đồng nghĩa AI0 đã nối upload ZIP thật.
+
+Các test hồi quy có fixture server-ingest với manifest SHA được ghim; kiểm thêm trường hợp giữ nguyên file nhưng xóa/sửa manifest, manifest trỏ hash/size sai, file thay đổi, mất file, lỗi I/O đọc manifest/bytes, symlink manifest, và kiểm tương thích *thực tế* manifest do bridge tạo. Khi CI chưa hoàn tất, không gọi số PASS từ PR #24/#26 là bằng chứng cho commit sửa lần này.
+
+
+## CODE-403 (12/10/2026) — Ranh giới bất biến source → manifest → preview → approved revision → DryRun
+
+**Phân công:** `docs/architecture/CODE007_PHAN_CONG_20261012.md` tại `e16f69ace72f41b82bd7438cc97b0c275fc57f64`; AI0 tham chiếu tích hợp `3f0380abed2294fc18d09294cd6a8c9562108710` (PR #31). **Nhánh code AI3:** `ai3/audit-handover-code103-303`, PR #20; giữ nguyên lịch sử và tất cả commit CODE-103/203/303.
+
+### Port mới: kiểm chứng toàn bộ bằng chứng đã đóng băng
+
+`workers.documents.evidence_guard.verify_approved_evidence(trusted, artifact_root=private_root)` là **Port nội bộ Python server-only**, không phải API khách hàng. AI0 phải lấy `trusted` **từ PostgreSQL đã kiểm soát shop/order/actor/revision**, không lấy từ webhook, AI hoặc trường do client truyền. Cấu trúc:
+
+```json
+{
+  "active_revision": 3,
+  "approval_revision": 3,
+  "request_hash": "<sha256-of-current-request-from-DB>",
+  "approval_id": "<verified-staff-approval-id-from-DB>",
+  "manifest_ref": "doc-<private-id>/manifest.json",
+  "manifest_sha256": "<sha256-of-persisted-manifest-bytes>",
+  "plan": {
+    "request_hash": "<sha256-of-current-request-from-DB>",
+    "physical_sheets": 6,
+    "document_pages": 3,
+    "printed_faces": 9,
+    "ready": true,
+    "printer_id": "RMP7000",
+    "artifact_ref": "doc-<private-id>/manifest.json",
+    "verified_by": "ai3.processor.v1"
+  }
+}
+```
+
+- So `active_revision == approval_revision`, `request_hash` với plan/manifest, exact manifest ref và SHA256 manifest bytes; chỉ nhận schema AI3 đã biết. Không có đường dẫn tuyệt đối/URL đến file khách.
+- Đọc snapshot với `bridge._read_scoped` (dirfd + `O_NOFOLLOW` từng thành phần), so SHA256 + kích thước + tên ref `source-<index>-<sha>`, chặn thiếu/sai/trùng ref.
+- So từng `paper_plan` với `processor.plan` tái tính từ số trang đã xác minh, copies, duplex, page selection, A4/A3/binding; cộng tổng `document_pages/printed_faces/physical_sheets`; nếu tổng tờ trên 150 đặt `requires_price_confirmation:true`. **Không tự xác nhận giá** — AI1 phải xác nhận/duyệt dựa trên chứng cứ khách đúng phiên bản và quote hiện hành.
+- Kiểm từng PNG raster riêng: private ref thuộc manifest hiện hành, tên được gắn SHA nguồn/index, SHA256 bytes, size, PNG signature và Pillow decode/verify; tối thiểu một preview cho mỗi file. Tính lại `content_settings_sha256` theo cùng bằng chứng chuẩn bridge. Sai nguồn sau render, PNG đổi, manifest thay, giả counts, lỗi I/O hoặc stale revision → `NEEDS_HUMAN` fail closed.
+- `READY` xuất metadata tối thiểu gồm `revision,request_hash,manifest_sha256,content_settings_sha256,source_sha256[],preview_sha256[],document_count,preview_count,document_pages,printed_faces,physical_sheets,requires_price_confirmation`; luôn ghi `paper_verified:false`, `print_evidence_kind:"pre_send_document_only"`. **Không trả file ref**, không kết luận khách đã xác nhận, đơn đã được nhân viên duyệt hợp lệ, máy đã in hay đã giao giấy.
+- Port này KHÔNG được tự gọi từ request web/public với payload do khách chọn. AI0 phải thực hiện xác thực và ràng buộc qua AI1 transaction trước/sau điểm kiểm chứng; khi revision hoặc hash thay đổi trong lúc kiểm, cần bắt đầu lại bằng trạng thái mới và không sử dụng proof cũ.
+
+### Windows Agent chỉ DryRun và chống gửi lặp
+
+`agents/windows/agent.py` có thêm thuộc tính tùy chọn `evidence_gate` cho `PrintAgent`: callback Python do server/agent integration tin cậy cấp, nhận job AI1, trả **đúng boolean True** khi chứng cứ được xác nhận. Nếu trả `False/None`, object truthy hoặc throw lỗi I/O → BLOCKED ngay **trước** `journal.begin`, `mark_sending`, và driver. Callback không được lấy từ trường JSON khách/job, không phải lối bật in thật. Nếu không được cấu hình, agent tiếp tục phụ thuộc backend AI1 authoritative preflight như trước; **không được diễn giải rằng toàn đường sản phẩm đã tích hợp evidence_guard**.
+
+Đường `BOUNDARY`, `ARMED`, `DRIVER_CALLED`, `UNKNOWN` giữ SQLite WAL + synchronous FULL. Mất ACK `mark-sending` hoặc crash/restart phải fail closed, không tự resend DryRun hay driver thật. Mất ACK `report` chỉ report/reconcile lại idempotent; `SIMULATED_DONE` không phải `VERIFIED_DONE`, không có giấy thật được xác minh.
+
+### Test thật và điểm chặn
+
+- Tests thuộc AI3: `tests/unit/documents/test_evidence_guard_403.py` (PDF thật, PNG thật, ZIP giải nén 2 file, nhiều file, duplex/copies, 151 tờ, render timeout, source/manifest/raster tamper, missing file, active revision stale, tổng count giả); `tests/unit/printing/test_evidence_gate_403.py` (gate không hợp lệ, storage error, revision khác, false/truthy, crash after driver, lost report ACK, restart không gọi lại driver). Các bộ test cũ còn nguyên.
+- Test CI dùng nhánh staging [PR #32](https://github.com/minhdienhp2013/AUTO-IN/pull/32) được tạo trên nền **AI0 3f0380a**, chỉ nhập 4 file CODE-403 của AI3. `CODE checks` run **38213521187 SUCCESS**; `Simulation integration` run **38213521205 SUCCESS**, Python `167 passed, 1 skipped`, PostgreSQL/AI5 acceptance `58 pass, 19 skip`, Chromium product-browser PASS. Đây là CI Python/PG/Chromium **synthetic**, KHÔNG phải Ricoh/Windows/OA thật. `compileall` riêng chưa chạy, không ghi PASS.
+- **[AI0 CODE-007 cần nối]** Trong composition server-owned: sau khi staff approve/AI1 giữ đúng revision, lấy proof từ `ai0_verified_plan_manifests` và AI1 active revision/approval, gọi Port trước send boundary; phát sinh revision mới, thay PNG/manifest/source hoặc thiếu quote/current challenge phải block/quay về NEEDS_HUMAN. Không cấp input `trusted` từ client; không đổi hợp đồng AI1 trong AI3. Agent Windows không giữ DB hoặc private root server, vì vậy không thể tự hoàn tất end-to-end mà không có Port/binding của AI0. **Windows/Ricoh NOT RUN**, Zalo OA thật NOT RUN, V1/TN-037 chưa nghiệm thu; không merge/deploy/in thật.
+
+
+## CODE-403 — HTTPS CLI evidence gate (13/10/2026)
+
+Đường `python -m agents.windows.cli --api-base-url https://localhost:PORT --journal PERSISTENT.sqlite` **chỉ DryRun**, được nối với `HttpBackendClient.evidence_verified` qua `PrintAgent.evidence_gate`. Fixture CLI dùng `FakeBackend` độc lập, không giả giấy thật.
+
+- Cache bằng chứng chỉ tạo từ **HTTP 200 HTTPS preflight thật** có đồng thời `allowed is True`, `document_evidence_verified is True` (boolean Python chính xác, không phải `1`/`"true"`), `job_id`, `revision` (int, không bool), `approval_id`, `mode=simulation` khớp claim. Máy chủ AI0 phải xác thực job, shop, lease, request_hash, nguồn/manifest/PNG/approval/current revision qua PostgreSQL; client không tự xét hay tin metadata khách.
+- Cache private ràng buộc chính xác bộ `(job_id,order_id,revision,request_hash,approval_id,lease_token)` từ claim. Mỗi claim/preflight mới xóa cache; thay bất kỳ trường nào đều trả `False`; mark-sending chỉ được gọi sau preflight hợp lệ và xóa cache **trước khi** POST, kể cả khi ACK mất.
+- **Chỉ** HTTP status `409` có JSON `{"error":{"code":"DOCUMENT_EVIDENCE_UNVERIFIED"}}` từ HTTPS preflight chuyển `BLOCKED` **trước** journal, `mark-sending` và driver. 409 mã khác, phản hồi không hợp lệ, 503/mạng/mất ACK không bị đổi thành BLOCKED hay tự retry; CLI giữ `UNKNOWN`/đối soát. 409 ở mark-sending **sau** journal đi lối `UNKNOWN`, không gọi driver, tuyệt đối không resend.
+- Mọi lỗi/đối soát vẫn dùng SQLite WAL + `synchronous=FULL` và chỉ báo `SIMULATED_DONE`/`paper_verified:false`, không `VERIFIED_DONE`. Không đọc tệp khách cho chứng cứ.
+
+Các ca mô phỏng mới thuộc AI3: `tests/unit/printing/test_https_evidence_gate_403.py` (identity/cache/replay/cờ đúng-sai, HTTP 409 chính xác và khác mã, lỗi socket, mark bị từ chối), `tests/unit/printing/test_localhost_tls.py` (CLI subprocess HTTPS cert tin cậy, restart, 409, mark denial, ACK loss). Hai fixture cũ `test_backend_http.py` và `test_backend_simulation.py` được cập nhật **chỉ để thêm cờ 200 đúng từ server**, không bỏ/nới kịch bản chống in trùng.
+
+Chạy `python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing` và `python -m pytest -q tests/unit/documents tests/unit/printing`. GitHub Actions staging PR #32 giữ lịch sử bằng merge commit không force, parent AI0 SHA `9c9920bed560ca073b783f2d2a6d0db67c4abeb9`, chỉ mang thay đổi file AI3; branch PR #20 không reset. Lượt kiểm thử Windows/Ricoh/OA thật vẫn **NOT RUN**, HTTPS PostgreSQL mới cần CI PASS riêng từng commit; không tuyên bố V1 nghiệm thu.

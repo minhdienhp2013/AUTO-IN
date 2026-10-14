@@ -6,3 +6,47 @@
 @media(max-width:380px){.mode-pill{font-size:7px;max-width:144px}.breadcrumb{font-size:11px}.header-actions .outline-btn{display:none}.doc-primary{flex-wrap:wrap}.verified-label,.invalid-label{margin-left:54px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 .paper-verification{background:#f9fbf6;border:1px solid #cfe1d4;padding:14px;border-radius:10px;display:grid;gap:12px;margin-bottom:14px}.paper-verification>strong{font-size:13px;color:#2c6349;overflow-wrap:anywhere}.paper-verification .hint{margin:0}.paper-verification .outline-btn{justify-self:start}
+
+/* CODE-006: staff-only verified raster preview, no browser source URLs/tokens. */
+.verified-previews{min-width:0;margin:13px 0 17px;padding:13px;border:1px solid #d6e8da;border-radius:10px;background:#f7faf7}
+.verified-previews>strong{display:flex;align-items:center;gap:7px;color:#275b40;font-size:12px}
+.verified-previews>p{color:#6b7f71;font-size:11px;line-height:1.55;margin:8px 0 0}
+.verified-preview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:12px;margin:12px 0}
+.verified-preview-grid figure{min-width:0;margin:0;padding:8px;background:#fff;border:1px solid #dfebdf;border-radius:8px}
+.verified-preview-grid img{display:block;width:100%;max-height:360px;object-fit:contain;background:white;border-radius:4px}
+.verified-preview-grid figcaption{font-size:10px;color:#60796a;margin-top:8px;text-align:center}
+.verified-previews .preview-disclaimer{font-weight:600;color:#8c6f43}
+
+
+/* Per-file AI3-backed metadata, never a customer confirmation or print receipt. */
+.verified-document-list{margin-top:12px;display:grid;gap:9px}
+.verified-document-list h4{font-size:12px;color:#315142;margin:0 0 3px}
+.verified-document-row{padding:11px;background:white;border-radius:8px;border:1px solid #dfe8e0;min-width:0}
+.verified-document-title{display:flex;gap:8px;align-items:center;color:#315142;font-size:12px;overflow-wrap:anywhere}
+.verified-document-title small{font-size:10px;color:#739381}
+.verified-document-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:10px}
+.verified-document-metrics span{font-size:10px;color:#66816f;overflow-wrap:anywhere}
+.verified-document-metrics b{color:#274e38;font-size:12px}
+.verified-document-row p{font-size:10px;color:#946d3e}
+@media(max-width:520px){.verified-document-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* CODE-404: distinct real customer, quote and staff-approval facts */
+.confirmation-evidence {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0;padding:12px;border:1px solid var(--border,#dfe4ea);border-radius:12px;background:var(--surface,#fff)}
+.confirmation-evidence > div {display:flex;flex-direction:column;gap:5px;min-width:0;padding:10px;border:1px solid #e3e8ed;border-radius:9px}
+.confirmation-evidence strong {font-size:.79rem;color:#465260}
+.confirmation-evidence span {font-size:.87rem;line-height:1.5;font-weight:600}
+.confirmation-evidence p {grid-column:1/-1;font-size:.78rem;margin:0;color:#596574;line-height:1.5}
+@media(max-width:760px){.confirmation-evidence{grid-template-columns:1fr}}
+
+/* CODE-008: verified chat grouping and pre-approval inbound guard */
+.chat-group-panel,.inbound-workflow{border:1px solid #d9e0e8;border-radius:12px;padding:12px;margin:10px 0;background:#f8fafc}
+.chat-group-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.chat-group-panel p,.inbound-workflow p{font-size:.83rem;line-height:1.55;margin:7px 0;color:#4e5c6b}
+.chat-group{margin:10px 0;padding:10px;border:1px solid #dce4ed;border-radius:9px;background:white}
+.chat-group small{display:block;overflow-wrap:anywhere;color:#556575}
+.chat-open-order{display:block;width:100%;border:1px solid #dce4ed;border-radius:8px;background:#f4f7fb;padding:8px;text-align:left;margin-top:6px;color:#193f65}
+.inbound-workflow{background:#fffaf3;border-color:#ead6ae}
+.inbound-warning{font-weight:700;color:#94441c!important}
+.inbound-item{border-top:1px solid #e6d9c7;padding:8px 0;overflow-wrap:anywhere}
+.inbound-item p{margin:3px 0}
+@media(max-width:760px){.chat-group-heading{align-items:stretch}.chat-group-heading button{width:100%}.chat-open-order{font-size:.82rem}}

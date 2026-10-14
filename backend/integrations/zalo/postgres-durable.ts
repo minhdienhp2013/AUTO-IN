@@ -91,14 +91,16 @@ export class PostgresConversationQueue {
           lease_token=$2::uuid,lease_until=now()+($3::int*interval '1 second'),
           attempts=attempts+1 WHERE id=$1`,[row.id,token,leaseSeconds]);
         if(changed.rowCount!==1) throw new Error("BATCH_LEASE_UNCERTAIN");
-        const items=await tx.query<{payload_json:unknown}>(`
-          SELECT e.payload_json FROM zalo_batch_items i
+        const items=await tx.query<{payload_json:unknown;event_id:string}>(`
+          SELECT e.payload_json,e.event_id FROM zalo_batch_items i
           JOIN zalo_inbound_events e USING(oa_id,event_id)
-          WHERE i.batch_id=$1 ORDER BY e.occurred_at,e.event_id`,[row.id]);
+          -- Provider occurred_at can be delayed or forged; server DB receipt wins.
+          WHERE i.batch_id=$1 ORDER BY e.received_at,e.event_id`,[row.id]);
         claimed.push({batch_id:String(row.id),lease_token:token,attempts:row.attempts+1,
           key:row.batch_key,first_at:new Date(row.first_at).getTime(),
           deadline_at:new Date(row.deadline_at).getTime(),
-          events:items.rows.map(item=>normalized(item.payload_json))});
+          events:items.rows.map(item=>normalized(item.payload_json)),
+          server_received_event_ids:items.rows.map(item=>item.event_id)});
       }
       return claimed;
     });
@@ -109,6 +111,21 @@ export class PostgresConversationQueue {
         lease_token=NULL,lease_until=NULL WHERE id=$1 AND lease_token=$2::uuid
         AND status='LEASED'`,[batch.batch_id,batch.lease_token]);
       return result.rowCount===1;
+    });
+  }
+  /** A stale-generation / staff-owned batch must remain visible and durable.
+   * Do NOT complete it or replay automatically after return-to-AI.
+   * Inbound rows and batch_items remain intact for manual reconciliation.
+   */
+  async hold(batch:LeasedBatch,reason="GENERATION_HELD"):Promise<boolean> {
+    if(!/^[A-Z][A-Z0-9_]{1,63}$/.test(reason))throw new Error("INVALID_HOLD_REASON");
+    return this.db.transaction(async tx=>{
+      const changed=await tx.query(`UPDATE zalo_batches
+        SET status='NEEDS_HUMAN',lease_token=NULL,lease_until=NULL,
+            last_error_code=$3
+        WHERE id=$1 AND lease_token=$2::uuid AND status='LEASED'`,
+        [batch.batch_id,batch.lease_token,reason]);
+      return changed.rowCount===1;
     });
   }
   async fail(batch:LeasedBatch,errorCode="PROCESSING_FAILED",maxAttempts=5):Promise<"retry"|"needs_human"|"lost_lease"> {

@@ -48,7 +48,13 @@ def main() -> int:
             job = json.loads(Path(args.job_json).read_text(encoding='utf-8'))
             backend = FakeBackend(job)
         journal = Journal(args.journal)
-        agent = PrintAgent(backend, journal, DryRunDriver())
+        agent = PrintAgent(
+            backend, journal, DryRunDriver(),
+            # A validated preflight response is cached only by the authenticated
+            # HTTPS client, never by the job's caller-controlled JSON. FakeBackend
+            # and local fixture paths intentionally have no evidence callback.
+            evidence_gate=backend.evidence_verified if args.api_base_url else None,
+        )
         previous = agent.recover()
         result = agent.run_once()
     except Exception:
