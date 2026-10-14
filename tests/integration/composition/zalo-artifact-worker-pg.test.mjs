@@ -56,6 +56,12 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     // Fixture-only hours: test real PG + DryRun UNKNOWN, not store hours.
     await pool.query('UPDATE core_shop_settings SET open_at=$2,close_at=$3 WHERE shop_id=$1',
       [shop,'00:00','24:00']);
+    // This positive Zalo-proposal flow uses an explicit synthetic shop/OA binding.
+    // Missing/unregistered bindings are still covered by negative 409/zero-job tests.
+    await pool.query(
+      'INSERT INTO core_shop_zalo_oa_registry(shop_id,oa_id,app_id) VALUES($1,$2,$3)',
+      [shop,oa,'synthetic-app-'+id]
+    );
     const session=await core.auth.login(shop,'owner',ownerPassword);
     const runtime=createSyntheticZaloRuntime(pool,
       {kind:'synthetic_fixture',shop_id:shop,oa_id:oa,fixture_key:key},
