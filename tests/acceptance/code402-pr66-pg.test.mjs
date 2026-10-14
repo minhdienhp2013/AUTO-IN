@@ -105,10 +105,19 @@ test('AI5 PR66 independent CODE402: migrations 004/005, signed custody, owner au
   app=buildIntegratedApp({pool:asSqlPool(a),zaloWebhook:plugin});
   await app.ready();
 
-  const text=await postEvent('user_send_text',unique('text'),{text:'In A4 mot ban'});
+  const text=await postEvent('user_send_text',unique('text'),{text:'OK',
+   confirmation_postback:{kind:'verified_confirmation_accept',challenge_token:'untrusted-self-declared'}});
   assert.equal(text.response.statusCode,200,text.response.body);
   assert.equal(text.response.json().status,'accepted');
   assert.equal((await a.query('SELECT count(*)::int n FROM zalo_process_queue WHERE oa_id=$1',[oa])).rows[0].n,1);
+  const persistedText=(await a.query(
+   'SELECT payload_json FROM zalo_inbound_events WHERE oa_id=$1',[oa])).rows[0].payload_json;
+  assert.equal(persistedText.confirmation_postback,undefined,
+   'signed OK with self-declared confirmation_postback must be stripped');
+  assert.equal((await a.query('SELECT count(*)::int n FROM zalo_confirmation_candidates WHERE oa_id=$1',[oa])).rows[0].n,0);
+  assert.equal((await a.query('SELECT count(*)::int n FROM core_orders WHERE shop_id=$1',[shop])).rows[0].n,0,
+   'plain OK cannot create a customer confirmation, new order, approval or print job');
+
 
   const image=await postEvent('user_send_image',unique('image'),{attachments:[{type:'image',url:'synthetic://fixture'}]});
   assert.equal(image.response.statusCode,200,image.response.body);
