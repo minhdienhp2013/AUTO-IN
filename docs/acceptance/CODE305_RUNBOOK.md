@@ -171,3 +171,47 @@ Chạy độc lập sản phẩm AI0 `1c1b75fd8be7063add12c8510eec9d5d6742df54` 
 
 ## AI5 CODE-402 current quarantine proof (2026-10-14)
 Product `25a99ce2d0ddae673489361d7fceca56c3b60151` + AI5-only overlay `413860824677f35a7211174d8f243f0bbb471685`. CI [integration #38489353875](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38489353875), [CODE checks #38489353886](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38489353886), both SUCCESS. PostgreSQL 109 PASS/0 FAIL/19 SKIP, HTTP 62/0/73, browser 58/0/72, Chromium 14/14 statuses PASS. New `tests/acceptance/code402-official-quarantine-pg.test.mjs` tests current AI0 Fastify raw-body composer / server registry / AI2 verified ingress, not obsolete `createOfficialZaloIngress`; 5 OA cases, NEEDS_HUMAN durable custody, 2 PG pools, replay, wrong signature & wrong OA, mapped/unmapped text, default OA route 503, zero Core/outbound effects. Signed MAC and data synthetic only; live OA, Windows Ricoh, iPhone physical, TN037 NOT RUN. AI0 PR31 may have advanced since `25a99ce2d0ddae673489361d7fceca56c3b60151`; independent retest required on any newer SHA.
+
+
+## Checklist vận hành TN-037 — chuẩn bị nghiệm thu thật
+
+**Mục đích:** mẫu chuẩn bị/bàn giao **chưa thực thi pilot**; đối chiếu với [đặc tả TN-037](../spec/DAC_TA_TN001-TN037.md) (mục II/TN-037 và VII). Không thay đổi quyết định đã chốt, không coi CI, DryRun, Chromium synthetic, đơn mẫu hoặc tải giả lập là đơn vận hành thật. Tất cả dòng checklist chưa có bằng chứng được ghi **NOT RUN/BLOCKED**, không tích dấu đạt trước.
+
+### A. Khóa phạm vi, nguồn dữ liệu và người chịu trách nhiệm (chưa chạy)
+
+- [ ] Có **chủ cửa hàng phê duyệt riêng** việc bắt đầu thử vận hành thực tế, phạm vi OA, cửa hàng, máy Windows/Ricoh IM7000, nhân sự, lịch bắt đầu/kết thúc và phương án chuyển sang xử lý thủ công; không suy diễn quyền thử thật từ CI/PR.
+- [ ] Ghi **product SHA, phiên bản backend/web/Windows agent, migration/schema và cấu hình máy in**, thời điểm áp dụng/thay đổi, người đối chiếu. Thay bản có lỗi nghiêm trọng phải tách lứa bằng chứng, không cộng dồn ca bị ảnh hưởng từ phiên bản lỗi.
+- [ ] Xác thực OA thật: quyền nhận tin/file, chữ ký webhook và byte sequence theo nhà cung cấp, OA/customer binding, dedupe, thử mất mạng và thất bại xác thực; các trường hợp chưa xác định phải khóa, chuyển người. Không đưa secret/token/tin khách thật vào repo/CI/log công khai.
+- [ ] Kiểm tra Word/PDF/ảnh theo **định dạng gốc phù hợp**, preview, số trang/tờ, khổ, hai mặt/chiều lật; trên **Ricoh + Windows thật** xác minh giấy xuất thực tế, không chỉ dùng trạng thái spooler. Đối chiếu nhật ký lệnh in, chống gửi trùng và UNKNOWN; chỉ chủ phê duyệt in lại.
+- [ ] Kiểm tra người duyệt theo vai trò, khách xác nhận đúng revision/hash/quote; sửa yêu cầu sau chốt phải xác nhận/duyệt lại; không cho AI tự duyệt/in. Kiểm tra luồng thanh toán/giao/đóng ngoại lệ vẫn là các trạng thái riêng; không tự hoàn tiền, xóa nợ hoặc tiêu hủy giấy.
+- [ ] Kiểm tra **iPhone vật lý** theo phạm vi nghiệp vụ, thông báo/khóa duyệt/mất mạng/đồng bộ đa thiết bị. Browser 390×844 synthetic **không** thay thế bước này.
+- [ ] Chốt trước khi thử thật bộ ca đại diện và quy tắc tính **mẫu số nhận diện ≥90%**, mẫu số **hội thoại thông dụng tự xử lý ≥80%**, tiêu chí ca đúng, ca chuyển người hợp lệ và ca ngoài phạm vi. Các định nghĩa chưa được đặc tả ấn định phải được **AI0 tổng hợp để chủ duyệt**, không tự loại ca khó để nâng tỷ lệ.
+
+### B. Bằng chứng từng đơn và nhật ký ngày (không nhập dữ liệu khách thật vào Git)
+
+Chỉ lập sổ trong **kho bằng chứng bảo vệ quyền truy cập**, có người chịu trách nhiệm và đường dẫn tham chiếu; tài liệu Git này chỉ quy định **trường cần ghi**, không chứa nội dung khách, số điện thoại, file gốc, token, ảnh giấy có dữ liệu riêng hoặc khóa API.
+
+| Loại bản ghi | Trường tối thiểu cần lưu trong hệ thống bảo vệ |
+| --- | --- |
+| Phiên nghiệm thu | ID phiên; product SHA và cấu hình thực tế; người cho phép; giờ bắt đầu/kết thúc có múi giờ; tình trạng OA/Windows/Ricoh/iPhone; người đối chiếu; trạng thái PASS/FAIL/BLOCKED/NOT RUN |
+| Một đơn thực tế | ID đơn duy nhất (không cộng trùng replay, in lại hoặc các lần sửa), mốc nhận yêu cầu/khách xác nhận/nhân viên duyệt/gửi lệnh/kiểm giấy/giao và người chịu trách nhiệm; revision/hash/quote; phân loại nhận diện và hội thoại; số trang/tờ/khổ/hai mặt thực xuất; đối chiếu preview–giấy; mã chứng cứ có giới hạn quyền truy cập |
+| Gửi lệnh và đối soát | ID lệnh/job, journal/ACK, số lượt gửi, trạng thái NOT_SENT/SENDING/SENT/UNKNOWN, dấu thời gian, giấy được nhân viên kiểm; riêng UNKNOWN phải có bằng chứng đối soát, **không tự gửi lại** và không dùng spooler làm bằng chứng in xong |
+| Sổ lỗi/ngoại lệ | ID sự cố, ngày giờ và timezone; mã đơn/job/revision liên quan; loại lỗi và mức độ; expected/actual; phiên bản/SHA; ảnh/log đã ẩn danh; cách phát hiện; tác động khách/giấy/tiền; người xử lý/phê duyệt; quyết định dừng/khôi phục; lần kiểm lại và liên kết bằng chứng |
+| Báo cáo mỗi ngày | Khoảng giờ; số đơn thật tiếp nhận, đủ điều kiện, đạt, lỗi, đang chờ/ngoại lệ; số lượng lũy kế **từ phiên sạch**; hai tỷ lệ cùng **tử số + mẫu số đã chốt**; sự cố/nguyên nhân; thay đổi phiên bản; người kiểm tra xác nhận |
+
+- [ ] Phân biệt **đơn thực tế**, **ca hồi quy kỹ thuật**, **fixture mô phỏng**, **DryRun**, **load 100 đơn/ngày mô phỏng** bằng trường nguồn chứng cứ; chỉ đơn thật đạt điều kiện đã đối chiếu mới được xét vào mốc **210 đơn đạt**. Không cộng cùng `order_id` hai lần, không tính ca chưa có đủ bằng chứng, ca FAIL, ca ở bản lỗi, đơn bị in/giao sai hoặc chưa đối soát.
+- [ ] Ghi thời gian bắt đầu/kết thúc từng ngày và cả phiên; xuất báo cáo có thể kiểm toán được, không lấy số lượng message/event/job/print sheet thay cho **số đơn đạt**. Giữ riêng số đơn lỗi, đang treo và ngoại lệ để không che mẫu số.
+- [ ] Lưu file/bằng chứng thật theo chính sách dữ liệu, phân quyền và thời hạn đã phê duyệt (quy tắc 30 ngày từ khi đóng đơn trong đặc tả, các trường hợp chưa đóng và backup còn cần chốt); không mặc định đưa dữ liệu nhạy cảm vào GitHub Actions hoặc PR.
+
+### C. Tiêu chí tổng hợp, dừng và khôi phục
+
+- [ ] **TN-037 bắt buộc:** có **ít nhất 210 đơn đạt trong tối thiểu 7 ngày thử nghiệm sạch, không lỗi nghiêm trọng**; tỷ lệ nhận diện **≥90%** và tự xử lý hội thoại thông dụng **≥80%** dựa vào mẫu số đã được duyệt. **Mô phỏng tải 100 đơn/ngày** được báo cáo thành gate kỹ thuật riêng, không tính là 100 đơn thật hoặc cộng vào 210 đơn.
+- [ ] Kiểm riêng các tình huống mất mạng, restart khi gửi lệnh, replay/mất ACK, chỉnh sửa đơn khi chờ in, in ngoài phần mềm, in lại đúng quyền, nhập liệu thiếu, tài liệu/preview thay đổi, tính giấy và đối soát tiền/giao. Không công nhận PASS chỉ bằng UI, ACK gửi lệnh hoặc spooler.
+- [ ] **DỪNG NGAY** khi có in chưa duyệt, in trùng, sai bản in nghiêm trọng, lộ/mất dữ liệu hoặc lỗi nghiêm trọng khác; giữ hệ thống ở trạng thái an toàn, khóa đường tự động gây tác động và chuyển người có quyền, lưu chứng cứ. Với job UNKNOWN/chưa chắc đã gửi, **không tự retry**; kiểm tra thiết bị/journal thực trước, chỉ chủ được quyết định in lại.
+- [ ] Khi dừng: lập incident với ID, SHA, thời điểm, đơn bị ảnh hưởng, tác động, nguyên nhân (nếu xác minh được), phương án sửa và người phê duyệt. **Loại ca thuộc bản lỗi**, kiểm thử lại đầy đủ các ca liên quan trên bản sửa rồi **tích lũy lại tối thiểu 210 đơn đạt trong tối thiểu 7 ngày sạch không lỗi nghiêm trọng**; không nối chắp kết quả trước lỗi để đủ mốc.
+- [ ] Giữ công nợ/khoản phải hoàn, giấy đã giao/chưa giao trong trường hợp hủy/đóng ngoại lệ; trường hợp đã in, đã thu cọc, cần hoàn hoặc khách không nhận do chủ quyết định. Ghi quyết định và kết quả thực tế riêng; **không giả giao đủ**.
+- [ ] Đóng nghiệm thu chỉ khi mọi gate bắt buộc có chứng cứ, không còn lỗi chặn, thống kê và sổ incident đối chiếu được; **chủ cửa hàng xem báo cáo và phê duyệt**. Chỉ sau phê duyệt mới được xem xét mở toàn bộ đơn hợp lệ theo TN-032, vẫn giữ **nhân viên duyệt mọi lệnh in**. Nếu thiếu bất kỳ gate nào, ghi **BLOCKED/NOT RUN, chưa mở vận hành thật**.
+
+### D. Tình trạng tại thời điểm bổ sung checklist
+
+**CHƯA CHẠY PILOT TN-037.** CI AI5 độc lập trên product PR #85 / overlay PR #86 đã PASS ở [run #38585298107](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38585298107) (PG/Fastify **8/8**, Python DryRun **42/42**, Chromium **28/28 synthetic**); các kết quả này **chỉ là gate kiểm thử kỹ thuật**. Chưa có bằng chứng 210 đơn thật/7 ngày sạch, OA live/chữ ký/danh tính thật, in Ricoh/Windows thật, iPhone vật lý hay chủ ký nghiệm thu. **TN-037 = NOT RUN/BLOCKED, số đơn vận hành thật được xác nhận trong tài liệu này = 0 (chưa có bằng chứng, không phải khẳng định cửa hàng không có đơn).** Không kích hoạt OA, máy in, pilot hoặc deploy từ checklist này.
