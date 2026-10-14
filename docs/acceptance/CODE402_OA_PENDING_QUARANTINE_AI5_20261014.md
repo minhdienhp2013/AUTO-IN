@@ -1,37 +1,56 @@
-# AI5 — CODE-402 official OA runtime / durable pending quarantine acceptance (14/10/2026)
+# AI5 — CODE-402: OA pending quarantine, nghiệm thu độc lập (14/10/2026)
 
-## Evidence boundary
+## 1. Trạng thái hiện hành và bằng chứng chính xác
 
-- Tested target: AI0 PR #31 product SHA `84cef429293eb4b6f49dac31e0078357d51cf1bc`, Draft. AI2 source PR #53 `7e3f66668896aa89b8a5fc37447697140ed0f9fe` (official TEXT-only adapter), not a live-enabled OA runtime. AI5 PR #18 retains its historical branch and may be overlaid as tests-only on exact AI0 SHA to run independent GitHub Actions.
-- Only AI5 owns the new `tests/acceptance/code402-official-quarantine-pg.test.mjs` and its registration in `tests/acceptance/run.mjs`. No edits to `backend/**`, runtime, Zalo adapter, migrations, workflows, authorization, printers, or any live service.
-- The test generates synthetic *cryptographic MAC* vectors using the publicly documented X-ZEvent-Signature construction and test-only random config. These are **NOT captured signed events from Zalo OA**, and image/file/click payload envelopes in these tests are controlled placeholders, **NOT assertions of the official JSON schema**. No real OA keys, app or person are used.
-- A standalone AI2 factory test does NOT prove production Fastify has connected that adapter. Existing AI0 `buildIntegratedApp` takes an optional `zaloWebhook`; production wiring from server-owned official app/OA/verified-user registry to runtime and scheduler is still **BLOCKED / NOT RUN**. Never report the factory-only successful test as a live integration result.
+**Đã PASS các ca CODE-402 quarantine trên môi trường simulation, PostgreSQL thật cô lập. Chưa nghiệm thu Zalo OA thực tế hoặc TN-037.**
 
-## Mandatory independent test matrix
-
-| Case | Must be verified by AI5 on isolated real PostgreSQL | Current expected product owner |
+| Thành phần | SHA hoặc workflow | Kết quả |
 |---|---|---|
-| C402-OA-01 | MAC from original raw bytes; signed TEXT normalizes to configured internal customer/chat, exactly one `zalo_inbound_events` row and one `zalo_process_queue` row across two independent PG pools, failed MAC has no extra write; stays candidate-unprivileged | AI2 component |
-| C402-OA-02 | Signed unsupported image event retained durably as `kind='unsupported'` with trusted `received_at`, event, OA/customer/chat binding and pending processing marker, never auto-accepted as a verified document | **AI2 CODE-402** missing official non-text quarantine |
-| C402-OA-03 | Signed unsupported file event retained with the same durable and non-authorization properties | **AI2 CODE-402** missing official non-text quarantine |
-| C402-OA-04 | Signed unsupported click/button retained as UNTRUSTED, with no `confirmation_postback`, no customer credential/print permission; same event replay does not create duplicate quarantine | **AI2 CODE-402**, plus AI0/AI1 challenge resolver later |
-| C402-OA-RUNTIME | REAL AI0 composition must explicitly configure official verified adapter from server-owned OA/shop and user→customer/chat scope, route exact signed bytes to durable storage without using synthetic verifier | **AI0 composition**, NOT RUN until controlled fixture wiring exists |
-| C402-OA-PILOT | Real Zalo Developers app webhook signature, actual event schema, HTTP delivery retries, official click/postback challenge send, live customer identity | **NOT RUN** pending authorized account and explicit owner permission |
+| Product AI0 do AI5 nghiệm thu độc lập | `25a99ce2d0ddae673489361d7fceca56c3b60151` | Nền mã sản phẩm, không lẫn SHA overlay |
+| AI5-only validation overlay | `413860824677f35a7211174d8f243f0bbb471685` | Product trên + **chỉ** `tests/acceptance/code402-official-quarantine-pg.test.mjs` và `tests/acceptance/run.mjs` |
+| Independent AI5 Simulation integration (PUSH) | [#38489353875](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38489353875) | **SUCCESS**, PostgreSQL **109 PASS / 0 FAIL / 19 SKIP**; HTTP **62 PASS / 0 FAIL / 73 SKIP**; browser **58 PASS / 0 FAIL / 72 SKIP**; Chromium **14/14** trạng thái×viewport |
+| Independent AI5 CODE checks (PUSH) | [#38489353886](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38489353886) | **SUCCESS**, kiểm mã/TypeScript/build |
+| PR #31 AI0 tích hợp hiện tại | `a4de074aff009f26e1c172972369c43f101d653d` — **Draft** | Mới hơn product SHA được AI5 kiểm độc lập |
+| PR #31 Simulation integration | [#38489898052](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38489898052) | **SUCCESS** trên HEAD tích hợp: PostgreSQL **109/0/19**, HTTP **62/0/73**, Chromium **14/14** |
+| PR #31 CODE checks | [#38489897942](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38489897942) | **SUCCESS** trên HEAD tích hợp |
 
-**Quarantine stage 1 contract:** before attempting interpretation, retain a verified but unsupported provider event with a durable queue marker in isolated PostgreSQL so it is never silently dropped or treated as consent. A separate human-review/status presentation beyond this first event-level custody gate remains an integration requirement; success on C402-OA-02/03/04 alone will not prove complete staff triage.
+Các CI của PR #31 là kết quả kiểm tra **AI0 trên SHA tích hợp hiện tại**; không tuyên bố chúng là một lượt chạy AI5 độc lập mới. Lượt nghiệm thu AI5 độc lập thực tế là PUSH của overlay `413860824677f35a7211174d8f243f0bbb471685` trên product `25a99ce2d0ddae673489361d7fceca56c3b60151`.
 
-## Test execution, failure handling
+## 2. Đường composition thực tế được nghiệm thu
 
-- Exact checkout: use a clean GitHub Actions overlay with AI0 SHA above as **direct parent**, changing only AI5 acceptance test, runner and this documentation. The branch PR #18 by itself is an older AI5 history, not an executable proof of new product integration.
-- Test by `node tests/acceptance/run.mjs --integration` with isolated PostgreSQL 18.3 and `AUTOIN_INTEGRATION_SHA` pointing to exactly the checked-out overlay commit. HTTP and Chromium should run in their respective modes and may label PG-only cases SKIP (not PASS).
-- Current official adapter explicitly handles only `user_send_text`. Therefore C402-OA-02/03/04 must report **FAIL / BLOCKED** until AI2 implements the quarantining contract, rather than weakening/removing/asserting that rejecting every unsupported event is sufficient. A FAIL is a release blocker, not permission to enable live OA.
-- On any FAIL, record the actual test name, exact code SHA, CI run/job IDs, PASS/FAIL/SKIP and required owner. Keep PR #31 Draft, no merge main/deploy/real OA/print.
+Bài `tests/acceptance/code402-official-quarantine-pg.test.mjs` đã được cập nhật để chạy qua đường hiện hành:
 
-## Independent execution evidence — actual RED gate (14/10/2026)
+`buildIntegratedApp` / Fastify raw-body `createOfficialZaloWebhookPlugin`
+→ OA/shop và người gửi được ánh xạ từ **registry / identity map ở PostgreSQL phía máy chủ**
+→ AI2 `createOfficialZaloVerifiedIngress`
+→ sự kiện tin chữ đã ánh xạ vào `zalo_inbound_events` + `zalo_process_queue`; sự kiện **đã ký nhưng chưa được hỗ trợ hoặc chưa ánh xạ** vào `zalo_official_quarantine`.
 
-- **Exact product parent:** PR #31 `84cef429293eb4b6f49dac31e0078357d51cf1bc` (Draft); clean isolated test-only overlay [PR #57](https://github.com/minhdienhp2013/AUTO-IN/pull/57) **SHA `3ae9aec659e3b40e8a827f16f2660581bf6d76eb`**. Overlay diff only the new AI5 PG test, AI5 runner and this acceptance document, not AI0/AI1/AI2 product.
-- [CODE checks #38454107898](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38454107898) **SUCCESS**, strict TypeScript, build/web and Chromium demo. [Simulation integration #38454107754](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38454107754): **postgres job #115492255216 FAILED** on product capability with **105 PASS / 3 FAIL / 19 SKIP**. **C402-OA-01 PASS**, C402-OA-02 `user_send_image` FAIL, C402-OA-03 `user_send_file` FAIL, C402-OA-04 `user_click_button` FAIL. Each exits `INVALID_OFFICIAL_EVENT` before durable quarantine. **No assertions removed/weakened or test waived.**
-- Existing exact-checkout suites still passed on this RED integration run: contracts **18/18**, AI1 Core **37/37**, AI2 **85/85**, AI0 composition **25/25**. HTTP mode **62 PASS / 0 FAIL / 72 SKIP** (new PG-only cases deliberately labeled NOT RUN here). Chromium product-browser job #115492255609 **SUCCESS** with AI5 browser-only **58 PASS / 0 FAIL / 71 SKIP**, status×viewport **14/14 PASS**; real Fastify/PostgreSQL desktop and mobile browser smoke PASS.
-- **These RED results do not falsify synthetic CODE-402 79/79 or official text-only unit results.** They prove the additional REQUIRED non-text custody contract is missing. The current official adapter is still factory-only, and runtime integration is **NOT RUN / BLOCKED**, not PASS. The fixture provider signatures are controlled test MACs; provider-side Zalo validation is NOT RUN.
-- **Owner routing:** [AI2 / CODE-402] inside `backend/integrations/zalo/**`: persist verified-but-unrecognized image/file/button as safely scoped `unsupported` with trustworthy server receipt and a durable pending/human-review marker, no download/auto confirmation/print; on replay prevent duplication; do not infer official click payload. [AI0 / CODE-006] wire vetted official verifier, trusted OA/app/customer/chat registry and real PG queue to runtime under isolated controlled test, and ensure staff can see unresolved quarantine. Then [AI5] reruns exactly these required cases + replay/2 workers/HTTP/Chromium on NEW product SHA.
-- **No release claim:** No authorized official OA credential/event schemas, real webhook delivery, official challenge button, Ricoh/Windows/iPhone real tests or TN-037 210 orders/7 days. Keep PR #31 Draft, PR #57 validation-only, no main merge/deploy/live OA/real printer.
+Đây **không còn là** bài kiểm component gọi trực tiếp `createOfficialZaloIngress` chỉ nhận tin chữ, và **không** yêu cầu ảnh/file/click lưu dưới `kind=unsupported`, `QUEUED` trong hàng đợi văn bản. Bản ghi quarantine đang chờ đối soát có `status='NEEDS_HUMAN'`; `kind` được phân loại bảo thủ thành `image`, `file`, `click`, `unknown`. **Không diễn giải click thành CODE-401 consent hoặc tự tải file.**
+
+| Case | Bằng chứng trên overlay AI5 | Kết quả |
+|---|---|---|
+| **C402-OA-01** | Chữ ký synthetic hợp lệ, `user_send_text` có ánh xạ OA/customer/conversation: đúng một event và marker `QUEUED` qua **hai pool PostgreSQL độc lập**; replay không trùng; text `OK` và trường `confirmation_postback` tự khai không tạo xác nhận | **PASS** |
+| **C402-OA-02** | Ảnh ký synthetic, hai Fastify instances / hai pool, một custody receipt bền vững `kind='image'`, `NEEDS_HUMAN`, đúng OA và mapping máy chủ; replay/lost ACK cùng receipt và thời điểm nhận | **PASS** |
+| **C402-OA-03** | File ký synthetic được giữ ở `zalo_official_quarantine`, `kind='file'`, `NEEDS_HUMAN`, không enqueue vào text worker hoặc tin cậy nội dung/tự tải file | **PASS** |
+| **C402-OA-04** | Click/button ký synthetic nhưng chưa có hợp đồng xác nhận được giữ `kind='click'`, `NEEDS_HUMAN`; không tạo CODE-402 candidate, Core confirmation, duyệt hoặc print job | **PASS** |
+| **C402-OA-05** | `user_send_text` ký synthetic **chưa có ánh xạ danh tính máy chủ** được giữ OA-level `kind='unknown'`, `NEEDS_HUMAN`, `customer_id=NULL`, `conversation_id=NULL`; **không lưu body trong hàng đợi text** và không đoán khách/cuộc chat | **PASS** |
+| **C402-OA-RUNTIME (simulation)** | Real Fastify composition được inject **có chủ đích** và kiểm dữ liệu PostgreSQL; mặc định không inject plugin phải trả **HTTP 503 / FEATURE_UNAVAILABLE** | **PASS — simulation only** |
+| **C402-OA-PILOT (real provider)** | Chữ ký thực Zalo OA, schema image/file/callback thực, mapping người thật, delivery/retry thật, xác nhận người dùng | **NOT RUN / BLOCKED** |
+
+**Các assertion an toàn được giữ:** chữ ký MAC sai trả HTTP **403**; payload ký đúng MAC nhưng sai OA đích trả **422**; không tạo bản ghi lặp khi hai worker/replay; hash bytes gốc và `received_at` PostgreSQL được giữ; dữ liệu thiếu mapping không gán customer/chat tùy đoán; quarantine không chuyển thành candidate; **0** `core_confirmations`, `core_approvals`, `core_print_jobs`, `zalo_outbound` từ những ca này. Các case quarantine xác minh không xuất hiện thêm `zalo_inbound_events` / `zalo_process_queue` dành cho tin chữ.
+
+## 3. Lịch sử RED đã được khắc phục — không xóa bằng chứng
+
+- **Lịch sử trên mã sản phẩm cũ** `84cef429293eb4b6f49dac31e0078357d51cf1bc`: overlay `3ae9aec659e3b40e8a827f16f2660581bf6d76eb`, [Simulation #38454107754](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38454107754), PostgreSQL **105 PASS / 3 FAIL / 19 SKIP**. **OA-02/03/04 FAIL lúc đó** vì ingress cũ từ chối sự kiện đã ký không phải text trước khi lưu custody. Đây là **lỗi sản phẩm lịch sử, không phải trạng thái hiện nay**.
+- Khi chuyển sang composition/quarantine hiện hành, overlay AI5 trung gian `f355f21f130224375225e9604e9a5b2ccb537a0c` [Simulation #38489047733](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38489047733) có **3 FAIL do test AI5 thiếu biến `secret`** trong ca kiểm MAC đúng/sai OA (và browser tổng quát timeout). Đây là lỗi harness AI5, không phải mất khả năng lưu quarantine.
+- Sau khi sửa test, **không bỏ, nới assertion hay ẩn FAIL**, đã chạy lại toàn bộ trên overlay `413860824677f35a7211174d8f243f0bbb471685`, CI **SUCCESS** với **C402-OA-01/02/03/04/05 đều PASS**.
+
+## 4. Ranh giới nghiệm thu và điều kiện mở vận hành
+
+**Bằng chứng hiện tại là synthetic-only**, dù sử dụng Fastify thật và PostgreSQL 18.3 thật cô lập: dữ liệu, sự kiện và MAC được tạo bằng secret `synthetic-only-*`. Chưa có bằng chứng Zalo OA thật về **chữ ký header, chuỗi byte ký, schema ảnh/file/click/postback, danh tính khách/OA, callback, retry và SLA**. `user_click_button` trong fixture không chứng minh nút Zalo OA thật có hợp đồng CODE-401 xác nhận.
+
+**Route OA thật vẫn TẮT.** HTTP 503 là hành vi mặc định khi plugin không được cấu hình; bật plugin trong test chỉ là injection runtime simulation có giới hạn, không bật production endpoint hoặc gửi phản hồi Zalo thật. Không dùng dữ liệu synthetic làm xác nhận khách hoặc cho phép in.
+
+**NOT RUN / BLOCKED:** Zalo OA live, Windows/Ricoh thật, iPhone vật lý, kiểm tải 100 đơn/ngày, ≥210 đơn trong ≥7 ngày và toàn bộ TN-037. Các SKIP trong mode HTTP/browser là test PostgreSQL/integration-only không bật trong mode đó, **không phải PASS ngầm**.
+
+**Tiếp theo AI0:** giữ PR #31 **Draft**, lấy tài liệu này làm bằng chứng đã cập nhật; khi SHA product tiếp tục thay đổi, nghiệm thu lại đúng SHA nếu cần. AI0/AI2 chỉ xem xét route official theo tài liệu provider và kiểm soát danh tính/chữ ký/duyệt có quyền sở hữu; AI5 nghiệm thu độc lập trước khi mở pilot thật. **Không merge main, deploy, gửi Zalo OA thật hay in máy thật trong công việc tài liệu này.**
