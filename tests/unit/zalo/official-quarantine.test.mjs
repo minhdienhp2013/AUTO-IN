@@ -96,6 +96,7 @@ test("unknown sender remains OA-level; wrong OA/app or ordinary text cannot muta
  raw=new TextEncoder().encode(JSON.stringify(obj));
  await assert.rejects(receiver.receive(raw,signed(raw)),/INVALID_OFFICIAL_EVENT_SCOPE/);
  obj.oa_id=config.oa_id;obj.event_name="user_send_text";
+ obj.sender.id="sender-1"; // MAPPED text belongs in ordinary event queue only.
  raw=new TextEncoder().encode(JSON.stringify(obj));
  await assert.rejects(receiver.receive(raw,signed(raw)),/UNSUPPORTED_OFFICIAL_QUARANTINE_EVENT/);
  assert.equal(store.data.size,1);
@@ -148,4 +149,46 @@ test("missing/broken quarantine transaction cannot ACK unsupported events as del
  const received=await ingress.receive_webhook(bytes,signed(bytes));
  assert.equal(received.status_code,503);
  assert.equal(received.body.error.code,"OFFICIAL_INGRESS_UNAVAILABLE");
+});
+
+
+test("CODE402 signed unmapped text is durable OA-only, no body; 2 retries and bad MAC zero-write",async()=>{
+ const store=sql(),events=[];
+ const ingress=createOfficialZaloVerifiedIngress(config,{
+   async insert_once(e){events.push(e);return "inserted";}
+ },store);
+ const payload=JSON.parse(RAW);
+ payload.event_name="user_send_text";
+ payload.sender.id="unmapped-user";
+ payload.message={msg_id:"unmapped-text-1",text:"PRIVATE CUSTOMER CONTENT MUST NEVER PERSIST",
+   confirmation_postback:{kind:"verified_confirmation_accept",challenge_token:"fake"}};
+ const data=new TextEncoder().encode(JSON.stringify(payload));
+ const first=await ingress.receive_webhook(data,signed(data));
+ assert.equal(first.status_code,200);
+ assert.equal(first.body.status,"held");
+ assert.equal(first.body.mapped,false);
+ assert.equal(first.body.kind,"unknown");
+ assert.equal(first.body.pending,true);
+ assert.equal(first.body.provider_claimed_event_id,"unmapped-text-1");
+ assert.equal(store.data.size,1);
+ const record=[...store.data.values()][0];
+ assert.equal(record.status,"NEEDS_HUMAN");
+ assert.equal(record.customer_id,null);
+ assert.equal(record.conversation_id,null);
+ assert.equal(record.kind,"unknown");
+ assert.equal(record.provider_claimed_event_id,"unmapped-text-1");
+ assert.equal(Object.values(record).some(v=>typeof v==="string"&&v.includes("PRIVATE CUSTOMER CONTENT")),false);
+ assert.equal(events.length,0,"unmapped TEXT must never reach normal processing");
+ const retry=await ingress.receive_webhook(data,signed(data));
+ assert.equal(retry.status_code,200);
+ assert.equal(retry.body.status,"duplicate");
+ assert.equal(retry.body.receipt_id,first.body.receipt_id);
+ assert.equal(store.data.size,1);
+ const before=store.queries();
+ assert.equal((await ingress.receive_webhook(data,{"x-zevent-signature":"mac="+("0".repeat(64))})).status_code,403);
+ const wrong={...payload,recipient:{id:"foreign-oa"}};
+ const wrongRaw=new TextEncoder().encode(JSON.stringify(wrong));
+ assert.equal((await ingress.receive_webhook(wrongRaw,signed(wrongRaw))).status_code,422);
+ assert.equal(store.queries(),before);
+ assert.equal(events.length,0);
 });

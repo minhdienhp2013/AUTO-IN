@@ -87,6 +87,63 @@ test("REAL PostgreSQL AI2 signed unsupported OA quarantine: two workers, replay,
   await a.query("UPDATE zalo_official_quarantine SET status='REVIEWED',reviewed_at=now(),reviewed_by='test-operator' WHERE oa_id=$1 AND status='NEEDS_HUMAN'",[oa]);
   assert.equal(await countPending(),0);
   assert.equal(await count(),4);
+
+  // EXACT two-pool lock-order witness: the 'approval' transaction takes
+  // the same OA scope lock AI0's Core approve MUST take after locking order.
+  // Real Core HTTP409/zero print-job belongs to AI0/AI1/AI5 integration;
+  // this unit test proves AI2's durable DB receipt is timestamped AFTER lock.
+  const hold=await a.connect();
+  let committed=false;
+  try{
+   await hold.query("BEGIN");
+   await hold.query(
+    "INSERT INTO zalo_official_quarantine_scopes(oa_id) VALUES($1) ON CONFLICT DO NOTHING",[oa]);
+   await hold.query(
+    "SELECT oa_id FROM zalo_official_quarantine_scopes WHERE oa_id=$1 FOR UPDATE",[oa]);
+   const before=(await hold.query("SELECT clock_timestamp() t")).rows[0].t;
+   const delayed=raw("user_send_file","user-"+unique,"delayed-receipt-after-lock");
+   let finished=false;
+   const pending=receiverB.receive(delayed,signer(delayed)).then(x=>{finished=true;return x;});
+   let observed=false;
+   for(let attempt=0;attempt<70;attempt++){
+    const q=await hold.query(
+     "SELECT EXISTS(SELECT 1 FROM pg_stat_activity s WHERE s.pid<>$1 "+
+     "AND s.wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(s.pid))) blocked",
+     [hold.processID]);
+    if(q.rows[0].blocked){observed=true;break;}
+    await new Promise(ok=>setTimeout(ok,30));
+   }
+   assert.equal(observed,true,"independent inbound must demonstrably wait on the held OA scope lock");
+   assert.equal(finished,false,"no premature ACK while waiting for scope lock");
+   const releaseAt=(await hold.query("SELECT clock_timestamp() t")).rows[0].t;
+   assert.ok(releaseAt>before,"approval-side DB clock advanced while inbound is waiting");
+   await hold.query("COMMIT");
+   committed=true;
+   const result=await pending;
+   assert.equal(result.status,"held");
+   assert.equal(result.pending,true);
+   const stamp=await a.query(
+    "SELECT received_at FROM zalo_official_quarantine WHERE id=$1",[result.receipt_id]);
+   assert.equal(stamp.rowCount,1);
+   assert.ok(stamp.rows[0].received_at>releaseAt,
+    "Post-lock clock_timestamp MUST exceed approval's pre-commit DB timestamp; now() is unsafe");
+   assert.equal(await countPending(),1,
+    "new inbound after the lock-release remains PENDING review");
+   const replay=await receiverA.receive(delayed,signer(delayed));
+   assert.equal(replay.status,"duplicate");
+   assert.equal(replay.receipt_id,result.receipt_id);
+   const stored=await a.query(
+    "SELECT received_at FROM zalo_official_quarantine WHERE id=$1",[result.receipt_id]);
+   assert.deepEqual(stored.rows[0].received_at,stamp.rows[0].received_at,
+    "lost-ACK replay MUST keep first commit/receipt time");
+   await a.query(
+    "UPDATE zalo_official_quarantine SET status='REVIEWED',reviewed_at=clock_timestamp(),reviewed_by='ai2-test-only' WHERE id=$1",
+    [result.receipt_id]);
+   assert.equal(await countPending(),0);
+  }finally{
+   if(!committed)await hold.query("ROLLBACK");
+   hold.release();
+  }
  }finally{
   try{await a.query("DELETE FROM zalo_official_quarantine WHERE oa_id=$1",[oa])}
   finally{await Promise.all([a.end(),b.end()])}
