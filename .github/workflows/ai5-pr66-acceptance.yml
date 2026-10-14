@@ -1,0 +1,46 @@
+name: AI5 PR66 isolated acceptance
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  ai5-pr66-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_test_pr66
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_pr66"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_pr66
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_pr66
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_pr66
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+      AUTOIN_INTEGRATION_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          npm ci
+          python -m pip install -r workers/documents/requirements-test.txt
+      - name: Migrate isolated PostgreSQL
+        run: npm run db:migrate
+      - name: Strict product checks and build
+        run: npm run check
+      - name: AI5 standalone PR66 acceptance on real isolated PostgreSQL
+        run: node tests/acceptance/run-pr66.mjs
