@@ -13,6 +13,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Callable, Protocol
 
+from .backend_http import DocumentEvidenceDenied
+
 
 class PrintBlocked(RuntimeError):
     pass
@@ -178,7 +180,13 @@ class PrintAgent:
             return {'status': 'UNKNOWN', 'job_id': job['job_id'],
                     'reason': 'EXISTING_JOURNAL_NO_AUTOMATIC_RETRY'}
         # Server preflight must be authoritative, not a client-provided approved flag.
-        check = self.backend.preflight(job)
+        try:
+            check = self.backend.preflight(job)
+        except DocumentEvidenceDenied:
+            # Only a signed HTTPS server's exact 409 evidence code is BLOCKED
+            # before journal; other HTTP/network/ACK errors propagate UNKNOWN.
+            return {'status': 'BLOCKED', 'job_id': job['job_id'],
+                    'reason': 'DOCUMENT_EVIDENCE_UNVERIFIED'}
         if (check.get('allowed') is not True or check.get('job_id') != job['job_id']
                 or check.get('revision') != job['revision'] or check.get('mode') != 'simulation'
                 or check.get('approval_id') != job['approval_id']):
