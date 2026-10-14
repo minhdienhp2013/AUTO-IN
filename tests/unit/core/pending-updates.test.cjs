@@ -55,18 +55,27 @@ test('CODE-008 old/mismatched JSON revision history never returns CLEAR',async()
 
 test('manual non-Zalo requires staff audit, no OA binding, valid revision/hash',async()=>{
  const manualScope={...scope,conversation_id:null};
- const manual=(override={})=>{
+ const manual=(override={},pending=0,missingQuarantine=false)=>{
   let steps=0;
   return db(async()=>{
    steps++;
-   return steps===1?[{proposals:'core_ai_draft_proposals',audit:'core_audit',
-    users:'core_users',revisions:'core_revisions'}]:
-    [{proposal_count:0,staff_creates:1,initial_data:{files:[]},
-      current_data:{files:[]},request_hash:'hash-3',...override}];
+   if(steps===1)return [{proposals:'core_ai_draft_proposals',audit:'core_audit',
+    users:'core_users',revisions:'core_revisions'}];
+   if(steps===2)return [{proposal_count:0,staff_creates:1,initial_data:{files:[]},
+    current_data:{files:[]},request_hash:'hash-3',...override}];
+   if(steps===3)return [{registry:'core_shop_zalo_oa_registry',
+    quarantine:missingQuarantine?null:'zalo_official_quarantine',
+    scopes:'zalo_official_quarantine_scopes'}];
+   return [{n:pending}];
   });
  };
  assert.equal((await readPendingUpdates(manual(),manualScope)).status,'clear');
  assert.equal((await readPendingUpdates(manual(),{...manualScope,verified_plan_ready:false})).status,'processing');
+ const held=await readPendingUpdates(manual({},2),manualScope);
+ assert.equal(held.status,'processing','manual UI must reflect OA pending hold');
+ assert.equal(held.unresolved_count,2);
+ assert.equal((await readPendingUpdates(manual({},0,true),manualScope)).status,'needs_human',
+  'partly missing quarantine schema can never advertise CLEAR');
  for(const bad of [
   {proposal_count:1},{staff_creates:0},{staff_creates:2},{request_hash:'old-hash'},
   {initial_data:{source:'zalo_ai_suggestion',event_ids:[]}},
