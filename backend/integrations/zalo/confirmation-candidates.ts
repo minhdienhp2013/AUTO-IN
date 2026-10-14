@@ -1,6 +1,7 @@
 import {randomUUID} from "node:crypto";
 import type {CandidateDecision,CandidateInput,ConfirmationCandidatePort} from "../../conversation/confirmation-candidate.ts";
 import {confirmationIntent} from "../../conversation/confirmation-candidate.ts";
+import {isVerifiedConfirmationPostback} from "./protocol.ts";
 import type {PgTransactions,PgTx} from "./postgres-durable.ts";
 
 /** Authenticated, server-issued reply challenge. NEVER construct this from
@@ -28,7 +29,7 @@ export interface VerifiedChallengePort {
   }>):Promise<VerifiedConfirmationChallenge|null>;
 }
 
-type EventRow={conversation_id:string;customer_id:string;occurred_at:Date;payload_json:unknown};
+type EventRow={conversation_id:string;customer_id:string;occurred_at:Date;received_at:Date;payload_json:unknown};
 type ControlRow={generation:string;status:string};
 type RevisionRow={active_revision:number;request_hash:string|null;order_id:string};
 type CandidateRow={candidate_id:string;event_id:string;order_id:string;request_hash:string;
@@ -83,7 +84,7 @@ export class PostgresConfirmationCandidates implements ConfirmationCandidatePort
       // A committed event inserted by the verified Zalo ingress is required.
       // No reliance on the in-memory batch's event ID or raw-text assertion.
       const records=await tx.query<EventRow>(`
-        SELECT conversation_id,customer_id,occurred_at,payload_json
+        SELECT conversation_id,customer_id,occurred_at,received_at,payload_json
         FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2 FOR SHARE`,
         [this.oa,event.event_id]);
       const actual=records.rows[0];
@@ -92,7 +93,19 @@ export class PostgresConfirmationCandidates implements ConfirmationCandidatePort
       const p=typeof actual.payload_json==="string"
         ?JSON.parse(actual.payload_json) as Record<string,unknown>
         :actual.payload_json as Record<string,unknown>;
-      if(p?.kind!=="text"||p?.text!==event.text||
+      // A real postback is never inferred from text, user-filled metadata,
+      // headers or DeepSeek. Only the verifier-normalized persisted fixture
+      // may carry the exact structured challenge evidence.
+      const isPostback=event.kind==="postback" &&
+        isVerifiedConfirmationPostback(event.confirmation_postback);
+      const matchPostback=isPostback && p?.kind==="postback" &&
+        isVerifiedConfirmationPostback(p.confirmation_postback) &&
+        p.confirmation_postback.challenge_id===event.confirmation_postback?.challenge_id &&
+        p.confirmation_postback.challenge_token===event.confirmation_postback?.challenge_token &&
+        !Object.hasOwn(p,"text");
+      const matchText=event.kind==="text"&&p?.kind==="text"&&p?.text===event.text &&
+        !Object.hasOwn(p,"confirmation_postback");
+      if((!matchText&&!matchPostback) ||
         p?.oa_id!==event.oa_id||p?.event_id!==event.event_id||
         p?.customer_id!==event.customer_id||p?.conversation_id!==event.conversation_id)
         return manual("EVENT_CONTENT_MISMATCH");
@@ -104,12 +117,22 @@ export class PostgresConfirmationCandidates implements ConfirmationCandidatePort
       if(!verifiedChallenge(challenge,this.shop,this.oa,event.customer_id,
         event.conversation_id,event.event_id,input.expected_generation))
         return pending("MISSING_OR_UNVERIFIED_CHALLENGE");
+      // For postback only: the trusted AI0 resolver MUST validate the token
+      // against its server-issued challenge. A mismatched challenge ID cannot
+      // journal even a PENDING_AI1_REVIEW candidate.
+      if(isPostback && challenge.challenge_id!==event.confirmation_postback?.challenge_id)
+        return manual("POSTBACK_CHALLENGE_MISMATCH");
       const eventTime=new Date(actual.occurred_at).getTime();
+      // occurred_at comes from the provider and may be backdated or forged.
+      // A reply received by OUR database before the challenge was issued
+      // cannot answer that challenge, regardless of its claimed provider time.
+      const receivedTime=new Date(actual.received_at).getTime();
       const start=safeTime(challenge.issued_at),end=safeTime(challenge.expires_at);
       const now=await tx.query<{now:Date}>("SELECT now() AS now");
       const dbNow=new Date(now.rows[0]?.now??0).getTime();
       if(!Number.isFinite(eventTime)||eventTime<start||eventTime>end||
-        !Number.isFinite(dbNow)||dbNow>end)
+        !Number.isFinite(receivedTime)||receivedTime<start||receivedTime>end||
+        !Number.isFinite(dbNow)||dbNow>end||receivedTime>dbNow)
         return manual("CHALLENGE_EXPIRED_OR_EVENT_STALE");
       // Lock generation, then the exact active order and revision. A human
       // takeover can never race a successful candidate insert unobserved.
