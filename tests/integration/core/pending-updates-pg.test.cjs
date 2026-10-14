@@ -31,6 +31,10 @@ test('REAL PostgreSQL: current.pending_updates trustworthy journal, boundaries, 
   assert.ok(journal.table_name,'Migration 007 must be present before this test');
   const shop=k('pending-shop'),oa=k('pending-oa'),conv=k('pending-chat'),customer=k('pending-customer'),staffId=randomUUID();
   await a.query('INSERT INTO core_shop_settings(shop_id) VALUES($1)',[shop]);
+  // Register only this synthetic positive-proposal scope. Unregistered OA
+  // cases must still fail closed without approval or print job.
+  await a.query('INSERT INTO core_shop_zalo_oa_registry(shop_id,oa_id,app_id) VALUES($1,$2,$3)',
+   [shop,oa,k('pending-app')]);
   await a.query("INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,'staff','fixture-only','staff')",[staffId,shop]);
   const staff={id:staffId,shop_id:shop,role:'staff',verified:true};
   const processor={id:'verified-processor',shop_id:shop,role:'processor',verified:true};
