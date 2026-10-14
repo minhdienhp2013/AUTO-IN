@@ -39,3 +39,39 @@ jobs:
         run: node --import tsx --test tests/integration/composition/*.test.*
       - name: Root typecheck and unit checks
         run: npm run check
+
+  web-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+      - name: Detect AI4 web manifest and lockfile
+        id: detect-web
+        shell: bash
+        run: |
+          if [[ -f web/package.json && -f web/package-lock.json ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Report web validation not applicable on this tree
+        if: steps.detect-web.outputs.available != 'true'
+        run: echo "SKIP — this commit does not contain both web/package.json and web/package-lock.json."
+      - name: Install locked web dependencies
+        if: steps.detect-web.outputs.available == 'true'
+        working-directory: web
+        run: npm ci
+      - name: AI4 UI unit tests
+        if: steps.detect-web.outputs.available == 'true'
+        working-directory: web
+        run: npm test
+      - name: AI4 strict TypeScript check
+        if: steps.detect-web.outputs.available == 'true'
+        working-directory: web
+        run: npm run typecheck
+      - name: AI4 production build
+        if: steps.detect-web.outputs.available == 'true'
+        working-directory: web
+        run: npm run build
