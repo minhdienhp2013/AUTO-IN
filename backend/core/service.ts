@@ -125,7 +125,8 @@ export class OrderService {
    // Initial event_ids and explicitly appended reviews alone can close the gap.
    // AI2 batch DONE or an AI0 artifact draft is NOT evidence of inclusion in this revision.
    const pendingTables=await db.query<{reviews:string|null;events:string|null;proposals:string|null}>(
-    "SELECT to_regclass('public.core_order_inbound_reviews')::text AS reviews,to_regclass('public.zalo_inbound_events')::text AS events,to_regclass('public.core_ai_draft_proposals')::text AS proposals");
+    "SELECT to_regclass('public.core_order_inbound_reviews')::text AS reviews,to_regclass('public.zalo_inbound_events')::text AS events,to_regclass('public.core_ai_draft_proposals')::text AS proposals")
+    .catch(()=>{throw new DomainError('PENDING_INBOUND_REVIEW','Không đọc được các bảng đối soát inbound',409);});
    const tables=pendingTables.rows[0];
    // AI0 migration 005: trusted, non-secret shop↔OA/app registry.
    // Lock the Core order first, then a deterministic set of registered OA
@@ -217,7 +218,9 @@ export class OrderService {
       "WHERE r.shop_id=p.shop_id AND r.oa_id=e.oa_id AND r.event_id=e.event_id "+
       "AND r.order_id=p.order_id AND r.revision<=$2 "+
       "AND COALESCE((recorded.request_data->'event_ids') ? e.event_id,false)) LIMIT 1",
-      [id,o.active_revision]);
+      [id,o.active_revision]).catch(()=>{
+       throw new DomainError('PENDING_INBOUND_REVIEW','Không đọc được event inbound của đơn',409);
+      });
      if(pending.rows.length)
       throw new DomainError('PENDING_INBOUND_REVIEW','Còn tin/file khách gửi chưa đối soát vào phiên bản hiện tại',409);
     }
