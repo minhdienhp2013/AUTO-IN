@@ -1,0 +1,11 @@
+# AI5 CODE-403 independent validation — 14/10/2026
+
+**Product PR #76 HEAD** `0ee0a74892576cf38dcce539889ad017e27be26b` (AI3 PR #74 `77d794348c27001d73846f59658b8c87ab29157d`). Preserve PR #18 branch and history; only AI5 `tests/acceptance/**`, `docs/acceptance/**` permitted.
+
+The new `tests/acceptance/test_code403_print_guard.py` directly tests the real Python product `PrintAgent` with persistent SQLite Journal, `DryRunDriver` and controlled `FakeBackend` (no physical driver). Explicit cases: stale revision, wrong request hash, wrong approval, ambiguous lost mark-sending ACK followed by process restart, repeated UNKNOWN claim, exact DocumentEvidenceDenied before journaling. Every negative case asserts **driver.calls == 0**, and a blocked preflight asserts **no journal/mark side effect**. This is synthetic component evidence, not a real HTTPS/PostgreSQL claim.
+
+**Separately required real product suites** must run in isolated CI on exact AI5 overlay: `pytest -q tests/acceptance/test_code403_print_guard.py`; `pytest -q tests/unit/documents/test_evidence_guard_403.py tests/unit/printing/test_https_evidence_gate_403.py tests/unit/printing/test_evidence_gate_403.py`; `node --import tsx --test tests/integration/composition/https-agent-product-pg.test.mjs` after `npm run db:migrate` with test-only `TEST_DATABASE_URL`. The latter tests real Fastify + PostgreSQL + certificate-verified localhost HTTPS Python agent and tampered source/preview/request-hash/stale revision/UNKNOWN; the positive DryRun baseline sends once by design, so **do not claim driver == 0 for successful test**. In all negative/UNKNOWN cases it must be 0, and no duplicate print jobs must be created.
+
+**Critical execution boundary:** PR #76 existing workflow uses `tests/unit/documents`, `tests/unit/printing`, `tests/integration/composition/*.test.*`, and `npm run check`, but **does not execute `tests/acceptance/**`**. Product CI on #76 is not independent AI5 CI. The AI5 overlay's normal workflow similarly will not execute new standalone tests unless AI0 owns/introduces a validation-only workflow step pointing to the exact overlay SHA. No code or workflow outside scope will be edited here.
+
+**NOT RUN until independently exercised:** new AI5 standalone test. **NOT RUN for actual devices:** Windows/Ricoh, real OA and TN-037. Do not merge/deploy or send/print live.
