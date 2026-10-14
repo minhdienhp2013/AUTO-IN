@@ -75,7 +75,12 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
       if (latest.rows[0]?.quote_revision !== input.quote_revision) return null;
       quote = input.quote_revision ?? null;
     }
-    return { order:o, quote };
+    // Customer confirmation must never be newly minted after real staff approval.
+    // This row lock is the same lock held by OrderService.approve. A committed
+    // pre-approval event can still be replayed idempotently after approval.
+    const approved=await db.query(
+      'SELECT 1 FROM core_approvals WHERE order_id=$1 LIMIT 1',[o.id]);
+    return { order:o, quote, approved:approved.rows.length>0 };
   }
 
   /** Internal issue API: neither a request confirmation nor staff approval. */
@@ -83,7 +88,7 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
     targetOf(input);
     return store.tx(async db=>{
       const bound=await lockedTarget(db,input);
-      if (!bound) return {status:'stale'};
+      if (!bound || bound.approved) return {status:'stale'};
       const id=newId(), token=randomBytes(32).toString('base64url');
       const result=await db.query<{expires_at:Date}>(
         `INSERT INTO core_confirmation_challenges
@@ -142,6 +147,9 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
         return {status:'existing',confirmation_id:challenge.confirmation_id,
           order_id:bound.order.id,revision:input.expected_revision,kind:input.kind,quote_revision:bound.quote};
       }
+      // Staff approval may have won the locked-order race while the
+      // customer clicked an earlier unconsumed challenge. HOLD, never insert.
+      if (bound.approved) return {status:'stale'};
       if (new Date(challenge.expires_at).getTime() <= Date.now())
         throw new DomainError('CONFIRMATION_CHALLENGE_EXPIRED','Challenge expired',409);
       const priorEvent=await db.query<{confirmation_id:string}>(
