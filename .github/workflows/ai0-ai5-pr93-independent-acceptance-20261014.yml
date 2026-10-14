@@ -1,0 +1,64 @@
+name: AI0 independent AI5 PR93 acceptance
+on:
+  push:
+    branches:
+      - ai0/validate-ai5-pr93-d1b5503-20261014
+permissions:
+  contents: read
+jobs:
+  ai5-pr88-postgres:
+    name: AI5 exact-overlay PostgreSQL acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_test_ai5
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_ai5"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_ai5
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_ai5
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_ai5
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+    steps:
+      - name: Checkout exact AI5 overlay
+        uses: actions/checkout@v4
+        with:
+          ref: 69adeedd8731a34d3bdeb2d6ace7d3a67a61cc8b
+          fetch-depth: 0
+          path: source
+      - name: Setup Node 24.19
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - name: Setup Python for document test dependencies
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python document test dependencies
+        working-directory: source
+        run: python -m pip install -r workers/documents/requirements-test.txt
+      - name: Install exact overlay dependencies
+        working-directory: source
+        run: npm ci
+      - name: Apply migrations to isolated PostgreSQL
+        working-directory: source
+        run: npm run db:migrate
+      - name: Run product strict checks on exact overlay
+        working-directory: source
+        run: npm run check
+      - name: Run AI5 strict PR88 PostgreSQL/Fastify acceptance
+        working-directory: source
+        run: node tests/acceptance/run-pr88.mjs --pg
