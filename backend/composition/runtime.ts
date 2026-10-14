@@ -25,7 +25,7 @@ export interface RuntimeOptions {
    * backend/server.ts deliberately never reads or supplies this option.
    * This does not verify Zalo provider compatibility or enable a live OA.
    */
-  officialZaloSimulation?: OfficialZaloWebhookConfig;
+  officialZaloSimulation?: { shop_id: string; webhook: OfficialZaloWebhookConfig };
   zaloWorkerConfigured?: boolean;
   syntheticArtifactIngest?: { artifactRoot: string; scope: SyntheticArtifactScope };
   previewArtifactRoot?: string;

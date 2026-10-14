@@ -58,15 +58,21 @@ test("AI0 CODE-402 runtime: default OFF, signed synthetic quarantine blocks prop
     assert.equal(off.json().error.code,"FEATURE_UNAVAILABLE");
     await disabled.close();disabled=undefined;
 
-    app=buildIntegratedApp({pool:sql,officialZaloSimulation:config});
+    app=buildIntegratedApp({pool:sql,officialZaloSimulation:{shop_id:shop,webhook:config}});
     await app.ready();
+    const initialEvent="msg-"+suffix;
+    const initial=signed("user_send_text",initialEvent,"In A4");
+    const unregistered=await send(initial);
+    assert.equal(unregistered.statusCode,503);
+    assert.equal(unregistered.json().error.code,"OFFICIAL_ZALO_SCOPE_NOT_REGISTERED");
+    assert.equal((await pool.query(
+      "SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1",[oa])).rows[0].n,0);
+    await pool.query("INSERT INTO core_shop_zalo_oa_registry(shop_id,oa_id,app_id) VALUES($1,$2,$3)",
+      [shop,oa,appId]);
     const health=(await app.inject({method:"GET",url:"/health"})).json();
     assert.equal(health.mode,"simulation");
     assert.equal(health.live_enabled,false);
     assert.equal(health.official_zalo_simulation_configured,true);
-
-    const initialEvent="msg-"+suffix;
-    const initial=signed("user_send_text",initialEvent,"In A4");
     assert.equal((await send(initial)).statusCode,200);
     assert.equal((await send(initial)).statusCode,200,"event replay remains acknowledged only after durable insert");
     assert.equal((await pool.query(
@@ -147,6 +153,7 @@ test("AI0 CODE-402 runtime: default OFF, signed synthetic quarantine blocks prop
       await pool.query("DELETE FROM zalo_inbound_events WHERE oa_id=$1",[oa]);
       await pool.query("DELETE FROM zalo_official_quarantine WHERE oa_id=$1",[oa]);
       await pool.query("DELETE FROM zalo_official_quarantine_scopes WHERE oa_id=$1",[oa]);
+      await pool.query("DELETE FROM core_shop_zalo_oa_registry WHERE shop_id=$1",[shop]);
       await pool.query("DELETE FROM core_print_jobs WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)",[shop]);
       await pool.query("DELETE FROM core_approvals WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)",[shop]);
       await pool.query("DELETE FROM core_confirmations WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)",[shop]);
