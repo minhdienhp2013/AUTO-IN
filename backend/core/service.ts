@@ -127,46 +127,84 @@ export class OrderService {
    const pendingTables=await db.query<{reviews:string|null;events:string|null;proposals:string|null}>(
     "SELECT to_regclass('public.core_order_inbound_reviews')::text AS reviews,to_regclass('public.zalo_inbound_events')::text AS events,to_regclass('public.core_ai_draft_proposals')::text AS proposals");
    const tables=pendingTables.rows[0];
-   if(tables?.proposals){
-    const source=await db.query<{oa_id:string;shop_id:string}>(
-     'SELECT oa_id,shop_id FROM core_ai_draft_proposals WHERE order_id=$1',[id]);
-    if(source.rows.length>1||source.rows.some(x=>x.shop_id!==o.shop_id||!x.oa_id))
-     throw new DomainError('PENDING_INBOUND_REVIEW','Không xác định duy nhất OA của đơn, cấm chốt in',409);
-    // Both signed AI2 ingress and Core approval serialize on ONE OA scope row.
-    // Lock ordering: current Core order FOR UPDATE -> OA scope FOR UPDATE ->
-    // durable quarantine read -> approval/job write. No table SHARE lock.
-    if(source.rows.length){
-     const relations=await db.query<{quarantine:string|null;scopes:string|null}>(
-      "SELECT to_regclass('public.zalo_official_quarantine')::text AS quarantine,"+
-      "to_regclass('public.zalo_official_quarantine_scopes')::text AS scopes");
-     const installed=relations.rows[0];
-     // If AI0 has not installed the official integration, its route stays OFF.
-     // A partially installed migration is NEVER sufficient to permit approval.
-     if(Boolean(installed?.quarantine)!==Boolean(installed?.scopes))
-      throw new DomainError('PENDING_INBOUND_REVIEW',
-       'Không đầy đủ bảng khóa OA và lưu quarantine, cấm chốt in',409);
-     if(installed?.quarantine&&installed.scopes){
-      const trustedOa=source.rows[0]!.oa_id;
+   // AI0 migration 005: trusted, non-secret shop↔OA/app registry.
+   // Lock the Core order first, then a deterministic set of registered OA
+   // scope rows. No browser-supplied OA and no customer identity inference.
+   const pendingReview=(detail:string):never=>{
+    throw new DomainError('PENDING_INBOUND_REVIEW',detail,409);
+   };
+   let registeredOas:string[]=[];
+   let source:{oa_id:string;shop_id:string}[]=[];
+   try{
+    const relations=await db.query<{registry:string|null;quarantine:string|null;scopes:string|null}>(
+     "SELECT to_regclass('public.core_shop_zalo_oa_registry')::text AS registry,"+
+     "to_regclass('public.zalo_official_quarantine')::text AS quarantine,"+
+     "to_regclass('public.zalo_official_quarantine_scopes')::text AS scopes");
+    const installed=relations.rows[0];
+    if(!installed)pendingReview('Không xác minh được các bảng đối soát OA');
+    if(tables?.proposals){
+     source=(await db.query<{oa_id:string;shop_id:string}>(
+      'SELECT oa_id,shop_id FROM core_ai_draft_proposals WHERE order_id=$1',[id])).rows;
+     if(source.length>1||source.some(x=>x.shop_id!==o.shop_id||!x.oa_id))
+      pendingReview('Không xác định duy nhất OA của đơn');
+    }
+    // A partially installed registry/quarantine is not a usable gate.
+    if(Boolean(installed.quarantine)!==Boolean(installed.scopes)||
+       (!installed.registry && (installed.quarantine||source.length)))
+     pendingReview('Thiếu registry hoặc bảng lưu/quản lý quarantine OA');
+    if(installed.registry){
+     // Stable registry snapshot: concurrent registry INSERT/DELETE/UPDATE
+     // cannot change the OA set while this approval is being committed.
+     await db.query('LOCK TABLE public.core_shop_zalo_oa_registry IN SHARE MODE');
+     const bindings=await db.query<{oa_id:string;app_id:string}>(
+      'SELECT oa_id,app_id FROM public.core_shop_zalo_oa_registry '+
+      'WHERE shop_id=$1 ORDER BY oa_id,app_id',[o.shop_id]);
+     if(bindings.rows.some(x=>!x.oa_id||!x.app_id)||
+        new Set(bindings.rows.map(x=>x.oa_id)).size!==bindings.rows.length)
+      pendingReview('Registry OA của cửa hàng không duy nhất');
+     registeredOas=bindings.rows.map(x=>x.oa_id);
+     if(source.length && registeredOas.filter(oa=>oa===source[0]!.oa_id).length!==1)
+      pendingReview('OA của proposal không có binding duy nhất trong registry');
+     if(registeredOas.length && (!installed.quarantine||!installed.scopes))
+      pendingReview('OA đã đăng ký nhưng thiếu bảng quarantine hoặc scope');
+     // Every shop OA is locked, including orders created manually without a proposal.
+     // INSERT is required to match AI2 ingress on a previously unseen scope.
+     for(const oa of registeredOas){
       await db.query(
        'INSERT INTO public.zalo_official_quarantine_scopes(oa_id) VALUES($1) '+
-       'ON CONFLICT (oa_id) DO NOTHING',[trustedOa]);
+       'ON CONFLICT (oa_id) DO NOTHING',[oa]);
       const scope=await db.query<{oa_id:string}>(
        'SELECT oa_id FROM public.zalo_official_quarantine_scopes '+
-       'WHERE oa_id=$1 FOR UPDATE',[trustedOa]);
-      if(scope.rows.length!==1||scope.rows[0]?.oa_id!==trustedOa)
-       throw new DomainError('PENDING_INBOUND_REVIEW',
-        'Không xác minh được khóa phạm vi OA, cấm chốt in',409);
+       'WHERE oa_id=$1 FOR UPDATE',[oa]);
+      if(scope.rows.length!==1||scope.rows[0]?.oa_id!==oa)
+       pendingReview('Không xác minh được khóa phạm vi OA');
+     }
+     // Review all registered OA receipts before entering the approval/job writes.
+     // Unknown/unmapped receipts hold the whole shop. Mapped receipts hold
+     // a manual order for its matching customer/conversation (null chat:
+     // conservatively hold any mapped receipt for the same customer).
+     // Proposal orders retain the original stricter OA-wide pending guard.
+     for(const oa of registeredOas){
       const pending=await db.query(
        "SELECT 1 FROM public.zalo_official_quarantine "+
-       "WHERE oa_id=$1 AND status='NEEDS_HUMAN' LIMIT 1",[trustedOa]);
+       "WHERE oa_id=$1 AND status='NEEDS_HUMAN' AND ("+
+       "$4::boolean OR customer_id IS NULL OR conversation_id IS NULL OR "+
+       "(customer_id=$2 AND ($3::text IS NULL OR conversation_id=$3))) LIMIT 1",
+       [oa,o.customer_id,o.conversation_id,source.length>0]);
       if(pending.rows.length)
-       throw new DomainError('PENDING_INBOUND_REVIEW',
-        'Còn sự kiện OA đã nhận đang chờ đối soát (kể cả chưa xác định khách)',409);
+       pendingReview('Còn receipt OA của khách hoặc chưa map đang chờ đối soát');
      }
     }
-    if(source.rows.length && (!tables.events||!tables.reviews))
+   }catch(error){
+    // PostgreSQL failures in a scope/registry lookup MUST NOT become a 500
+    // or a bypass. The enclosing transaction will roll back on this 409.
+    if(error instanceof DomainError && error.code==='PENDING_INBOUND_REVIEW')throw error;
+    pendingReview('Không xác minh được registry/khóa/quarantine OA');
+   }
+   if(tables?.proposals){
+    if(source.length && (!tables.events||!tables.reviews))
      throw new DomainError('PENDING_INBOUND_REVIEW','Không đủ bảng đối soát tin/file, cấm chốt in',409);
-    if(source.rows.length){
+    if(source.length){
      const pending=await db.query<{event_id:string}>(
       "SELECT e.event_id FROM core_ai_draft_proposals p "+
       "JOIN core_revisions initial ON initial.order_id=p.order_id AND initial.revision=1 "+
