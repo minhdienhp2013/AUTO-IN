@@ -202,9 +202,9 @@ export class OrderService {
     pendingReview('Không xác minh được registry/khóa/quarantine OA');
    }
    if(tables?.proposals){
-    if(source.rows.length && (!tables.events||!tables.reviews))
+    if(source.length && (!tables.events||!tables.reviews))
      throw new DomainError('PENDING_INBOUND_REVIEW','Không đủ bảng đối soát tin/file, cấm chốt in',409);
-    if(source.rows.length){
+    if(source.length){
      const pending=await db.query<{event_id:string}>(
       "SELECT e.event_id FROM core_ai_draft_proposals p "+
       "JOIN core_revisions initial ON initial.order_id=p.order_id AND initial.revision=1 "+
