@@ -73,6 +73,10 @@ async function withComposition(run){
     app_id:appId,oa_id:oa,oa_secret_key:secret
    })});
   await Promise.all([appA.ready(),appB.ready()]);
+  // Route OFF is the production default; the fixture plugin is an explicitly
+  // injected, localhost-only simulation exception.
+  unconfigured=buildIntegratedApp({pool:asSqlPool(a)});
+  await unconfigured.ready();
   const fixture=(kind,more={},provider=user)=>{
    const timestamp=Date.now(),event=unique('msg');
    const payload={app_id:appId,timestamp,event_name:kind,
@@ -106,7 +110,7 @@ async function withComposition(run){
     reason+': no automatic outgoing OA message');
   };
   await run({a,b,appA,appB,oa,shop,customer,conversation,user,appId,secret,
-   fixture,send,sql,count,noCoreEffects});
+   fixture,send,sql,count,noCoreEffects,unconfigured});
  }finally{
   for(const app of [appA,appB,unconfigured])if(app)await app.close();
   if(configured){
@@ -133,10 +137,15 @@ const quarantine=async(sql,oa)=> (await sql(
  'WHERE oa_id=$1 ORDER BY received_at,id',[oa])).rows;
 
 test('C402-OA-01 AI0 Fastify: signed mapped TEXT durable queue; text OK cannot mint CODE401 confirmation',gate,async()=>{
- await withComposition(async({appA,appB,fixture,send,sql,count,oa,customer,conversation,secret,noCoreEffects})=>{
+ await withComposition(async({appA,appB,fixture,send,sql,count,oa,customer,conversation,secret,noCoreEffects,unconfigured})=>{
   const w=fixture('user_send_text',{text:'OK',confirmation_postback:{
    kind:'verified_confirmation_accept',challenge_token:'self-declared'
   }});
+  const disabled=await send(unconfigured,w);
+  assert.equal(disabled.statusCode,503,'live OA webhook route must stay OFF by default');
+  assert.equal(disabled.json().error.code,'FEATURE_UNAVAILABLE');
+  assert.equal(await count('zalo_inbound_events','oa_id=$1',[oa]),0,
+   'default server must not consume any OA event');
   const [r1,r2]=await Promise.all([send(appA,w),send(appB,w)]);
   assert.deepEqual([r1.statusCode,r2.statusCode],[200,200]);
   assert.deepEqual([r1.json().status,r2.json().status].sort(),['accepted','duplicate']);
@@ -165,7 +174,7 @@ for(const [code,kind,expected,details] of [
  ['04','user_click_button','click',{payload:'NOT_A_VERIFIED_CHALLENGE',text:'OK'}]
 ]){
  test('C402-OA-'+code+' signed '+kind+' survives AI0 composition as NEEDS_HUMAN (two pools, replay, no effects)',gate,async()=>{
-  await withComposition(async({appA,appB,fixture,send,sql,count,oa,customer,conversation,noCoreEffects})=>{
+  await withComposition(async({appA,appB,fixture,send,sql,count,oa,customer,conversation,secret,noCoreEffects})=>{
    const w=fixture(kind,details);
    // First receipt and lost-ACK replay can race across two real connections;
    // exactly ONE immutable custody row is allowed.
