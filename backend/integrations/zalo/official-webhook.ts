@@ -1,16 +1,20 @@
 import {createHash,timingSafeEqual} from "node:crypto";
 import {ZaloIngress,type EventNormalizer,type InboundEvent,type InboundEventRepository,type WebhookVerifier} from "./protocol.ts";
 
-/** Official Zalo OA webhook subset, verified against the documented
- * X-ZEvent-Signature SHA-256 scheme. Not an enabled live runtime/sender.
+/** Zalo OA webhook subset implementing the SHA-256 concatenation formula
+ * described in public Zalo documentation; NOT verified with an official
+ * Zalo-signed golden vector, and NOT an enabled live runtime/sender.
  *
- * Docs (reviewed 2026-10-14):
+ * Public documentation references (reviewed 2026-10-14):
  * https://developers.zalo.me/docs/official-account/webhook/tin-nhan/su-kien-nguoi-dung-gui-tin-nhan
  * https://developers.zalo.me/docs/official-account/webhook/tong-quan
- * mac=sha256(appId + RAW_JSON_BODY + timestamp + OAsecretKey).
+ * Documented formula: mac=sha256(appId + data + timestamp + OAsecretKey).
+ * This implementation ASSUMES data is the exact raw UTF-8 HTTP JSON body.
+ * Zalo has NOT confirmed the JSON serialization/raw-byte representation of
+ * data or the signed timestamp source with an official signature vector.
  * The app, OA, secret and conversation binding come from trusted SERVER config.
  *
- * ONLY user_send_text is mapped. Images/files/postback require verified
+ * ONLY user_send_text is mapped. Images/files/postback require confirmed
  * official event-specific contracts and immutable artifact handling.
  * No interpretation of arbitrary button/payload as CODE-401 consent.
  */
@@ -72,7 +76,7 @@ export function createOfficialZaloWebhookAdapter(config:OfficialZaloWebhookConfi
         const {timestamp}=readIdentity(raw);
         const sig=headers["x-zevent-signature"]??headers["X-ZEvent-Signature"];
         if(typeof sig!=="string"||!/^mac=[0-9a-fA-F]{64}$/.test(sig))return false;
-        // Byte-level computation, not JSON.stringify(JSON.parse(raw)).
+        // Local raw-body byte assumption; not verified against a Zalo-issued signed vector.
         const signature=createHash("sha256")
           .update(config.app_id,"utf8").update(raw)
           .update(timestamp,"utf8").update(config.oa_secret_key,"utf8")
@@ -85,8 +89,8 @@ export function createOfficialZaloWebhookAdapter(config:OfficialZaloWebhookConfi
   const normalizer:EventNormalizer={
     normalize(raw) {
       const {value,timestamp}=readIdentity(raw);
-      // This function is used ONLY inside ZaloIngress AFTER raw signature
-      // verification. Never export it as proof of verification on its own.
+      // Called ONLY after the local, raw-byte-assumption signature check.
+      // A passing synthetic check is NOT verification against Zalo-issued bytes.
       if(value.event_name!=="user_send_text")
         throw new Error("INVALID_OFFICIAL_EVENT");
       if(stringField(value.sender,"id")===undefined ||
