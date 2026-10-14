@@ -223,7 +223,7 @@ test('REAL PostgreSQL: current.pending_updates trustworthy journal, boundaries, 
   await a.query(
    "INSERT INTO zalo_official_quarantine(id,oa_id,raw_sha256,kind,customer_id,conversation_id,status) "+
    "VALUES($1,$2,$3,'file',$4,$5,'NEEDS_HUMAN')",
-   [oaHoldId,oa,randomUUID().replaceAll('-','').repeat(2),manualBeforePlan.order.customer_id,null]);
+   [oaHoldId,oa,randomUUID().replaceAll('-','').repeat(2),manualBeforePlan.order.customer_id,conv]);
   const manualHeld=(await service.getOrder(staff,manualOrderProof.order_id)).current.pending_updates;
   assert.equal(manualHeld.status,'processing');
   assert.equal(manualHeld.unresolved_count,1);
