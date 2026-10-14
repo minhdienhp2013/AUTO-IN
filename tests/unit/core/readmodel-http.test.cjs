@@ -20,9 +20,15 @@ function mockReadModel(mode, previewVerified, artifactPreview, manualEvidence=fa
   verified_sheets:'5',mode_at_send:mode,cancelled_at:null};
  const db={query:async sql=>{
   // Non-Zalo unit fixture: verify pending read model fails closed only for an OA-linked order.
-  if(sql.startsWith('SELECT to_regclass('))return {rows:[manualEvidence?
-   {proposals:'core_ai_draft_proposals',audit:'core_audit',
-    users:'core_users',revisions:'core_revisions'}:{proposals:null,events:null,reviews:null}]};
+  if(sql.startsWith('SELECT to_regclass(')){
+   if(sql.includes('core_shop_zalo_oa_registry'))return {rows:[{
+    registry:'core_shop_zalo_oa_registry',quarantine:'zalo_official_quarantine',
+    scopes:'zalo_official_quarantine_scopes'}]};
+   return {rows:[manualEvidence?
+    {proposals:'core_ai_draft_proposals',audit:'core_audit',
+     users:'core_users',revisions:'core_revisions'}:{proposals:null,events:null,reviews:null}]};
+  }
+  if(sql.includes('FROM public.zalo_official_quarantine q'))return {rows:[{n:0}]};
   if(sql.startsWith('SELECT (SELECT count(*)::int FROM core_ai_draft_proposals'))
    return {rows:[{proposal_count:0,staff_creates:1,
     initial_data:{files:[]},current_data:{files:[]},request_hash:requestHash}]};
