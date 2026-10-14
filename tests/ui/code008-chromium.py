@@ -186,7 +186,21 @@ def run_case(browser, viewport: tuple[int, int], case: str) -> None:
                 card.click()  # mobile detail is intentionally hidden until selected
             detail.locator('.detail-head h2').filter(has_text=ORDER).wait_for(timeout=15000)
             if case in ('offline', 'api409', 'api503'):
-                page.locator('[data-testid="api-error"]').wait_for(timeout=12000)
+                # The specific API error and the independent fail-closed guard
+                # are BOTH required. Distinct test ids make this contract
+                # unambiguous; do not use .first() to hide duplicate alerts.
+                fault = page.locator('[data-testid="api-error"]')
+                locked = page.locator('[data-testid="api-lock-banner"]')
+                fault.wait_for(state='visible', timeout=12000)
+                locked.wait_for(state='visible', timeout=12000)
+                assert fault.count() == 1, 'exactly one specific API fault must be displayed'
+                assert locked.count() == 1, 'exactly one global read-only API guard must be displayed'
+                expected = ('Mất kết nối API' if case == 'offline'
+                            else 'Synthetic API error 409' if case == 'api409'
+                            else 'Synthetic API error 503')
+                assert expected in fault.inner_text(), 'specific HTTP/network failure must remain visible'
+                assert 'Không xác minh được API' in locked.inner_text()
+                assert 'tạm khóa' in locked.inner_text(), 'read-only gate warning must remain visible'
                 page.locator('[data-testid="code008-blocked"]').wait_for(timeout=12000)
                 assert 'CHƯA XÁC ĐỊNH' in page.locator('[data-testid="code008-blocked"]').inner_text()
             else:
