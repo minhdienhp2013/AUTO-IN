@@ -196,6 +196,7 @@ test('AI5 INDEPENDENT CODE-403: HTTPS real PG + Python DryRun, tamper/stale/ACK/
     const tamperedJobCount=await pool.query(
       'SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[tampered.id]);
     assert.equal(tamperedJobCount.rows[0].n,1,'Evidence rejection must not create a retry job');
+    await assertEvidenceRefusalBeforeJournal(tampered,'tampered-manifest-ai5-driver-counter');
 
 
     const sourceTampered=await orderReadyToDryRun('tampered-source');
@@ -248,6 +249,23 @@ test('AI5 INDEPENDENT CODE-403: HTTPS real PG + Python DryRun, tamper/stale/ACK/
     assert.equal((await pool.query('SELECT count(*)::int n FROM core_approvals WHERE order_id=$1',[staleRevision.id])).rows[0].n,1,
       'a later revision must not manufacture new staff approval');
     assert.equal(code(stalePreflight.json()),'STALE_REVISION');
+    // Independent Python HTTPS witness for the old claimed revision:
+    // even the real agent transport cannot obtain a fresh authorization.
+    const stalePython=[
+      'from agents.windows.agent import DryRunDriver',
+      'from agents.windows.backend_http import HttpBackendClient',
+      'from urllib.error import HTTPError',
+      'import json,os,sys',
+      'd=DryRunDriver();b=HttpBackendClient(sys.argv[1],os.environ["AUTO_IN_AGENT_TOKEN"])',
+      'job=json.loads(sys.argv[2])',
+      'try:b.preflight(job);result="UNEXPECTED_ALLOWED"',
+      'except HTTPError as e:result=str(e.code)',
+      'print(json.dumps({"preflight_status":result,"driver_calls":d.calls}))'
+    ].join('\n');
+    const staleWitness=await run('python3',['-c',stalePython,url,JSON.stringify(staleJob)],{env:pythonEnv});
+    const staleResult=JSON.parse(staleWitness.stdout.trim());
+    assert.equal(staleResult.preflight_status,'409','stale revision denied via actual Python HTTPS client');
+    assert.equal(staleResult.driver_calls,0,'stale revision never enters DryRunDriver');
     assert.equal((await state(staleJob.job_id)).state,'NOT_SENT');
     const staleCount=await pool.query(
       'SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[staleRevision.id]);
