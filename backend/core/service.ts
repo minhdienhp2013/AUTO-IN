@@ -128,7 +128,42 @@ export class OrderService {
     "SELECT to_regclass('public.core_order_inbound_reviews')::text AS reviews,to_regclass('public.zalo_inbound_events')::text AS events,to_regclass('public.core_ai_draft_proposals')::text AS proposals");
    const tables=pendingTables.rows[0];
    if(tables?.proposals){
-    const source=await db.query('SELECT 1 FROM core_ai_draft_proposals WHERE order_id=$1 LIMIT 1',[id]);
+    const source=await db.query<{oa_id:string;shop_id:string}>(
+     'SELECT oa_id,shop_id FROM core_ai_draft_proposals WHERE order_id=$1',[id]);
+    if(source.rows.length>1||source.rows.some(x=>x.shop_id!==o.shop_id||!x.oa_id))
+     throw new DomainError('PENDING_INBOUND_REVIEW','Không xác định duy nhất OA của đơn, cấm chốt in',409);
+    // Both signed AI2 ingress and Core approval serialize on ONE OA scope row.
+    // Lock ordering: current Core order FOR UPDATE -> OA scope FOR UPDATE ->
+    // durable quarantine read -> approval/job write. No table SHARE lock.
+    if(source.rows.length){
+     const relations=await db.query<{quarantine:string|null;scopes:string|null}>(
+      "SELECT to_regclass('public.zalo_official_quarantine')::text AS quarantine,"+
+      "to_regclass('public.zalo_official_quarantine_scopes')::text AS scopes");
+     const installed=relations.rows[0];
+     // If AI0 has not installed the official integration, its route stays OFF.
+     // A partially installed migration is NEVER sufficient to permit approval.
+     if(Boolean(installed?.quarantine)!==Boolean(installed?.scopes))
+      throw new DomainError('PENDING_INBOUND_REVIEW',
+       'Không đầy đủ bảng khóa OA và lưu quarantine, cấm chốt in',409);
+     if(installed?.quarantine&&installed.scopes){
+      const trustedOa=source.rows[0]!.oa_id;
+      await db.query(
+       'INSERT INTO public.zalo_official_quarantine_scopes(oa_id) VALUES($1) '+
+       'ON CONFLICT (oa_id) DO NOTHING',[trustedOa]);
+      const scope=await db.query<{oa_id:string}>(
+       'SELECT oa_id FROM public.zalo_official_quarantine_scopes '+
+       'WHERE oa_id=$1 FOR UPDATE',[trustedOa]);
+      if(scope.rows.length!==1||scope.rows[0]?.oa_id!==trustedOa)
+       throw new DomainError('PENDING_INBOUND_REVIEW',
+        'Không xác minh được khóa phạm vi OA, cấm chốt in',409);
+      const pending=await db.query(
+       "SELECT 1 FROM public.zalo_official_quarantine "+
+       "WHERE oa_id=$1 AND status='NEEDS_HUMAN' LIMIT 1",[trustedOa]);
+      if(pending.rows.length)
+       throw new DomainError('PENDING_INBOUND_REVIEW',
+        'Còn sự kiện OA đã nhận đang chờ đối soát (kể cả chưa xác định khách)',409);
+     }
+    }
     if(source.rows.length && (!tables.events||!tables.reviews))
      throw new DomainError('PENDING_INBOUND_REVIEW','Không đủ bảng đối soát tin/file, cấm chốt in',409);
     if(source.rows.length){
