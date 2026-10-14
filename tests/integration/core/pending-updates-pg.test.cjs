@@ -214,6 +214,37 @@ test('REAL PostgreSQL: current.pending_updates trustworthy journal, boundaries, 
    order_id:manualOrderProof.order_id,revision:2,request_hash:manualOrderProof.request_hash,
    status:'clear',unresolved_count:0,items:[]
   });
+  // The manual order has no OA proposal and no chat, but it shares an
+  // official OA shop: mapped customer and unmapped signed receipts must still
+  // HOLD the UI read-model until reviewed by the authorized external path.
+  const oaHoldId=randomUUID();
+  await a.query(
+   'INSERT INTO zalo_official_quarantine_scopes(oa_id) VALUES($1) ON CONFLICT DO NOTHING',[oa]);
+  await a.query(
+   "INSERT INTO zalo_official_quarantine(id,oa_id,raw_sha256,kind,customer_id,conversation_id,status) "+
+   "VALUES($1,$2,$3,'file',$4,$5,'NEEDS_HUMAN')",
+   [oaHoldId,oa,randomUUID().replaceAll('-','').repeat(2),manualBeforePlan.order.customer_id,null]);
+  const manualHeld=(await service.getOrder(staff,manualOrderProof.order_id)).current.pending_updates;
+  assert.equal(manualHeld.status,'processing');
+  assert.equal(manualHeld.unresolved_count,1);
+  assert.equal(await count(a,'core_print_jobs',manualOrderProof.order_id),0);
+  await a.query(
+   "UPDATE zalo_official_quarantine SET status='REVIEWED',reviewed_at=now(),"+
+   "reviewed_by='synthetic-reviewer' WHERE id=$1",[oaHoldId]);
+  assert.equal((await service.getOrder(staff,manualOrderProof.order_id)).current.pending_updates.status,
+   'clear','external review releases read-only manual-order quarantine status');
+  const unmappedId=randomUUID();
+  await a.query(
+   "INSERT INTO zalo_official_quarantine(id,oa_id,raw_sha256,kind,customer_id,conversation_id,status) "+
+   "VALUES($1,$2,$3,'unknown',NULL,NULL,'NEEDS_HUMAN')",
+   [unmappedId,oa,randomUUID().replaceAll('-','').repeat(2)]);
+  assert.equal((await service.getOrder(staff,manualOrderProof.order_id)).current.pending_updates.status,
+   'processing','unmapped OA receipt blocks even a manual order with no chat');
+  assert.equal(await count(a,'core_approvals',manualOrderProof.order_id),0);
+  assert.equal(await count(a,'core_print_jobs',manualOrderProof.order_id),0);
+  await a.query(
+   "UPDATE zalo_official_quarantine SET status='REVIEWED',reviewed_at=now(),"+
+   "reviewed_by='synthetic-reviewer' WHERE id=$1",[unmappedId]);
 
   // Missing OA mapping for any chat cannot impersonate a safe manual order.
   const disconnected=await service.createDraft(staff,{
