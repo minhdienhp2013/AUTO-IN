@@ -8,7 +8,8 @@
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --experimental-strip-types --test ../tests/ui/*.test.ts",
-    "prebuild": "npm test"
+    "prebuild": "npm test",
+    "test:chromium:code008": "python3 ../tests/ui/code008-chromium.py"
   },
   "dependencies": {
     "react": "19.2.0",
