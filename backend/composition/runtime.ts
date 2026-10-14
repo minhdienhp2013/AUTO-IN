@@ -3,6 +3,8 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { createCoreModule } from '../core/factory.js';
 import { assertStaff, DomainError, type Principal } from '../core/model.js';
 import type { SqlPool } from '../storage/database.js';
+import { createOfficialZaloSimulationWebhook } from './official-zalo-simulation.js';
+import type { OfficialZaloWebhookConfig } from '../integrations/zalo/official-webhook.js';
 import type { RouteRegistrar } from '../api/routes.js';
 import { ingestSyntheticArtifact, type SyntheticArtifactScope } from './synthetic-ingest.js';
 import { loadVerifiedOrderPreview, loadVerifiedOrderPreviewCatalog } from './preview.js';
@@ -19,6 +21,11 @@ export interface RuntimeOptions {
   tls?: { key: Buffer; cert: Buffer };
   /** Only AI2's verifier/pipeline may be injected; absent means explicit 503. */
   zaloWebhook?: FastifyPluginAsync;
+  /** Synthetic-signature contract only. buildIntegratedApp is simulation-only;
+   * backend/server.ts deliberately never reads or supplies this option.
+   * This does not verify Zalo provider compatibility or enable a live OA.
+   */
+  officialZaloSimulation?: { shop_id: string; webhook: OfficialZaloWebhookConfig };
   zaloWorkerConfigured?: boolean;
   syntheticArtifactIngest?: { artifactRoot: string; scope: SyntheticArtifactScope };
   previewArtifactRoot?: string;
@@ -46,6 +53,8 @@ export function identityResolver(identities: readonly ServiceIdentity[]) {
 
 /** Simulation-only composition. Uses AI1 routes exactly once, not CODE-000 routes. */
 export function buildIntegratedApp(options: RuntimeOptions) {
+  if (options.zaloWebhook && options.officialZaloSimulation)
+    throw new Error('CONFLICTING_ZALO_WEBHOOK_CONFIGURATION');
   const core = createCoreModule({ pool: pendingReviewSqlPool(options.pool) });
   const resolve = identityResolver(options.identities ?? []);
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024,
@@ -120,7 +129,8 @@ export function buildIntegratedApp(options: RuntimeOptions) {
   });
   app.get('/health', async () => ({ status: 'ok', mode: 'simulation', live_enabled: false,
     auth_configured: true, configured_operations: ['me', 'listOrders', 'approveOrder', 'claimJob', 'markSending', 'reportJob'],
-    registered_routes: registered, zalo_webhook_configured: !!options.zaloWebhook,
+    registered_routes: registered, zalo_webhook_configured: !!options.zaloWebhook || !!options.officialZaloSimulation,
+    official_zalo_simulation_configured: !!options.officialZaloSimulation,
     zalo_worker_configured: options.zaloWorkerConfigured === true,
     processor_configured: false, preview_configured: !!options.previewArtifactRoot,
     synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
@@ -210,7 +220,9 @@ export function buildIntegratedApp(options: RuntimeOptions) {
   });
   if (options.syntheticVerifiedButton)
     app.register(createSyntheticVerifiedButtonPlugin(options.pool,options.syntheticVerifiedButton));
-  if (options.zaloWebhook) app.register(options.zaloWebhook);
+  if (options.officialZaloSimulation)
+    app.register(createOfficialZaloSimulationWebhook(options.pool, options.officialZaloSimulation));
+  else if (options.zaloWebhook) app.register(options.zaloWebhook);
   else app.post('/webhooks/zalo', async (_request, reply) => reply.code(503).send({ error: {
     code: 'FEATURE_UNAVAILABLE', message: 'Verified pipeline wiring pending', retryable: false } }));
   return app;

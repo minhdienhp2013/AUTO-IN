@@ -29,6 +29,10 @@ test('REAL PostgreSQL CODE-008: pending inbound blocks approval; append same ord
   await a.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/007_active_order_inbound.sql'),'utf8'));
   const shop=k('code008-shop'),oa=k('code008-oa'),conv=k('chat'),customer=k('customer'),staffId=randomUUID();
   await a.query('INSERT INTO core_shop_settings(shop_id) VALUES($1)',[shop]);
+  // Positive proposal fixture: AI0 migration 005 requires an explicit trusted
+  // synthetic shop/OA/app registry binding before any staff approval.
+  await a.query('INSERT INTO core_shop_zalo_oa_registry(shop_id,oa_id,app_id) VALUES($1,$2,$3)',
+   [shop,oa,k('code008-app')]);
   await a.query("INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,'staff','fixture-only','staff')",[staffId,shop]);
   const staff={id:staffId,shop_id:shop,role:'staff',verified:true};
   const processor={id:'verified-processor',shop_id:shop,role:'processor',verified:true};
