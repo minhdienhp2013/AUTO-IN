@@ -42,6 +42,19 @@ test('REAL PostgreSQL CODE-401: verified customer challenge, revision/hash/quote
   const staff=principal(shop,staffId),service=new OrderService(new PgStore(a));
   const portA=createVerifiedConfirmationPort({store:new PgStore(a),trusted:{shop_id:shop,oa_id:oa}});
   const portB=createVerifiedConfirmationPort({store:new PgStore(b),trusted:{shop_id:shop,oa_id:oa}});
+  // CODE-401 boundary: a staff-created offline order without a verified
+  // conversation can never acquire an OA customer-confirmation challenge.
+  const offline=await service.createDraft(staff,{customer_id:customer,
+   request_data:{files:[{file_id:'synthetic-offline.pdf'}]},
+   idempotency_key:k('offline-manual')});
+  await assert.rejects(portA.issue_challenge({
+   order_id:offline.order_id,expected_revision:1,request_hash:offline.request_hash,
+   expected_generation:0,kind:'request'
+  }),e=>e.code==='CONFIRMATION_UNLINKED'&&e.status===403);
+  assert.equal(await count(a,'core_confirmation_challenges',offline.order_id),0);
+  assert.equal(await count(a,'core_confirmations',offline.order_id),0);
+  assert.equal(await count(a,'core_approvals',offline.order_id),0);
+  assert.equal(await count(a,'core_print_jobs',offline.order_id),0);
   const draft=await service.createDraft(staff,{customer_id:customer,conversation_id:conv,
     request_data:{files:[{file_id:'fixture/public/a4.pdf',copies:151,format:'pdf'}]},idempotency_key:k('draft')});
   const processor={id:'verified-processor',shop_id:shop,role:'processor',verified:true};
