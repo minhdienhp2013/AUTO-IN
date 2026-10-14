@@ -1,5 +1,12 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
 
+## AI5 CODE-402 official quarantine — independent real PostgreSQL 14/10/2026
+
+AI0 product SHA **`25a99ce2d0ddae673489361d7fceca56c3b60151`**, AI5-only overlay SHA **`413860824677f35a7211174d8f243f0bbb471685`** (do not confuse overlay with product HEAD). [Simulation integration PUSH #38489353875](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38489353875) **SUCCESS** (PostgreSQL + Chromium); [CODE checks PUSH #38489353886](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38489353886) **SUCCESS**. PG **109 PASS / 0 FAIL / 19 SKIP**, HTTP **62 PASS / 0 FAIL / 73 SKIP**, browser **58 PASS / 0 FAIL / 72 SKIP**; Chromium status×viewport **14/14 PASS**. C402-OA-01..05 **5/5 PASS** against real `createOfficialZaloWebhookPlugin` Fastify raw-body composition and `zalo_official_quarantine`, no old text-only component or false QUEUED/unsupported assumption. Image/file/click => **NEEDS_HUMAN**, 2 independent PostgreSQL pools, replay same receipt and receipt time, verified MAC wrong OA returns 422, bad MAC 403, unbound text remains OA-only with NULL identity and no body. No candidate/Core confirmation/staff approval/print job/outbound; default live route remains **503/OFF**. First overlay `f355f21` had test fixture ReferenceError (3 FAIL), corrected without weakening assertions. **Current PR #31 has subsequently moved past target; recheck on its latest HEAD before calling current integration DONE**. Official live OA/Windows/Ricoh/physical iPhone/TN-037 **NOT RUN**. No merge/deploy.
+
+---
+
+
 ## CODE-401 AI5 độc lập — mới nhất 14/10/2026
 
 AI0 product PR #31 SHA `1c1b75fd8be7063add12c8510eec9d5d6742df54` + **2 file acceptance AI5** = overlay `f1d334bf90f2506157b12ac7c5a56eefe3267f6b`. [Simulation integration PUSH #38451399440](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38451399440) & [CODE checks #38451399746](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38451399746) đều **SUCCESS**. **PG 104 PASS/0 FAIL/19 SKIP**; **HTTP 62/0/68**; **browser 58/0/67**, Chromium pending_updates **14/14 PASS** desktop/mobile. Ca CODE401 mới dùng Core PG 2 pools, strict postback, signed OK fail-closed, sai scope/token/receipt; bắt buộc `received_at` PG và không tin `occurred_at`; replay & lost ACK, stale revision, handover, staff approve. Lỗi browser ở 2 overlay tiền nhiệm là **harness import Core ngoài integration mode**, đã sửa trước khi đo SUCCESS, không waive assertion. [Chi tiết](CODE401_AI5_INDEPENDENT_1C1B75F_20261014.md). **OA/Ricoh/iPhone/TN037 NOT RUN**.
