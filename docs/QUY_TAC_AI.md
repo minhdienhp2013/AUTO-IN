@@ -9,6 +9,14 @@ Nguồn nghiệp vụ: docs/spec/DAC_TA_TN001-TN037.md (bản Word gốc cùng t
 - Trước mọi thao tác ghi code/tài liệu hoặc thay đổi PR/bình luận, AI0 xác minh lại HEAD và diff hiện hành của nhánh/PR bị ảnh hưởng. Nếu không đọc được quy tắc hoặc trạng thái nguồn, dừng thao tác ghi, nêu blocker và tiếp tục phần chỉ đọc độc lập.
 - AI chuyên môn đọc AGENTS.md, file này, docs/PHAN_CONG_AI.md và prompt/assignment hiện hành trước khi nhận nhiệm vụ mới. Trong cùng nhiệm vụ đang tiếp tục, đọc phần thay đổi liên quan và kiểm tra handoff mới nhất.
 
+## Quy tắc prompt sao chép khi AI0 nhận PING
+
+- Khi chủ cửa hàng nhắn **"Kiểm tra và giao việc cho các AI làm tiếp"**, hoặc PING tương đương liệt kê AI đã xong, AI0 phải kiểm tra main, PR/HEAD mới nhất, bình luận bàn giao và kết quả test/CI; không suy diễn từ riêng dòng PING.
+- Trong cùng câu trả lời, **bắt buộc cung cấp prompt giao việc tự đủ thông tin để chủ sao chép** cho từng AI cần tiếp tục. Mỗi prompt mở đầu bằng nhãn `AI1:`, `AI2:`, `AI3:`, `AI4:` hoặc `AI5:` **ở đầu dòng**; không viết "hãy gửi cho AI". Mỗi đoạn dài ít nhất 80 ký tự để phù hợp hệ thống tách tin hiện hành.
+- Mỗi prompt nêu rõ: nhiệm vụ và thứ tự ưu tiên, repo/PR/HEAD/base khi có, phạm vi file được sửa, phương pháp kiểm thử và bằng chứng PASS/FAIL/SKIP/NOT RUN cần trả, blocker hoặc hợp đồng cần AI0 cung cấp, quy định không merge/deploy/OA thật/Ricoh thật khi chưa được phép. Nếu AI không còn việc có thể làm, prompt yêu cầu tạm dừng chứ không lặp lại kiểm tra hoặc commit tài liệu.
+- Trình bày thành các đoạn có thể **sao chép nguyên văn riêng từng AI**. Phần tóm tắt kiểm chứng (nếu có) phải tách khỏi các prompt. Không biến một lời nhắc chung chung thành giao việc; không biến CI tổng SUCCESS thành PASS của ca chưa chạy.
+- Quy tắc định dạng này chỉ điều chỉnh **cách AI0 bàn giao**, không cấp thêm quyền chạy thiết bị, tạo dữ liệu khách, thay đổi mã AI1–AI5 hay tự động merge/deploy.
+
 ## Song song hóa công việc
 
 - AI0 chủ động rà soát mỗi đợt việc để mặc định giao đồng thời cho AI1–AI5 khi có từ hai phần việc độc lập, không phụ thuộc và có ranh giới file/hợp đồng rõ. Mỗi prompt phải nêu đúng AI sở hữu, mục tiêu, file được sửa, base SHA, phụ thuộc, kiểm thử và điều kiện bàn giao.
