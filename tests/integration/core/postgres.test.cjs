@@ -1,6 +1,5 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const fs=require('node:fs');
 const path=require('node:path');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../../.ai1-build/backend');
 const load=m=>require(path.join(root,m+'.js'));
@@ -21,11 +20,22 @@ const run=async()=>{
   // Test database must be isolated/disposable. Never pass the production DATABASE_URL.
   const dbName=(await pool.query('SELECT current_database() AS name')).rows[0].name;
   if(!dbName.includes('test'))throw Error('Refuse migration outside a database with "test" in its name');
-  const sql=fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/001_core.sql'),'utf8');
-  await pool.query(sql);
-  await pool.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/002_send_mode.sql'),'utf8'));
-  await pool.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/003_confirmed_queue.sql'),'utf8'));
-  await pool.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/004_conversation_generation.sql'),'utf8'));
+  // CI has already migrated this isolated database BEFORE test:core.
+  // Never replay DDL here: a concurrent Core worker can hold a row UPDATE
+  // while CREATE INDEX IF NOT EXISTS from 001_core.sql waits for a relation
+  // lock, yielding PostgreSQL 40P01. Assert prerequisites rather than racing
+  // migrations; race/approval/UNKNOWN assertions below are unchanged.
+  const schema=(await pool.query(
+    "SELECT to_regclass('public.core_orders') IS NOT NULL AS orders,"+
+    "to_regclass('public.core_print_jobs') IS NOT NULL AS jobs,"+
+    "to_regclass('public.core_conversation_controls') IS NOT NULL AS conversations,"+
+    "EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' "+
+    "AND table_name='core_print_jobs' AND column_name='mode_at_send') AS send_mode,"+
+    "EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' "+
+    "AND table_name='core_print_jobs' AND column_name='confirmed_at') AS queue"
+  )).rows[0];
+  assert.deepEqual(schema,{orders:true,jobs:true,conversations:true,
+   send_mode:true,queue:true},'Run npm run db:migrate on the isolated test database before Core tests');
   // Clock must be aligned with the live PostgreSQL lease clock, not a future fixed date.
   const dbNow=(await pool.query('SELECT clock_timestamp() AS moment')).rows[0].moment;
   const local=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(dbNow);
