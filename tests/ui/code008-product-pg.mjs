@@ -33,8 +33,10 @@ if(!(await stat('web/package-lock.json')).isFile()||!html.includes('/assets/'))
   throw Error('NOT RUN: genuine web/dist production bundle and lockfile required');
 
 const extraOnly=process.env.AUTOIN_CODE008_EXTRA_ONLY==='YES';
+const browserRead503Only=process.env.AUTOIN_CODE008_BROWSER_503_ONLY==='YES';
+if(extraOnly&&browserRead503Only)throw Error('Choose one CODE008 opt-in suite');
 const pool=new pg.Pool({connectionString:url,max:5,connectionTimeoutMillis:5000,
-  ...(extraOnly?{options:'-c lock_timeout=500ms'}:{})});
+  ...((extraOnly||browserRead503Only)?{options:'-c lock_timeout=500ms'}:{})});
 const id=randomUUID();
 const shop='autoin-test-code008-browser-'+id;
 const oa='synthetic-oa-'+id;
@@ -160,7 +162,96 @@ try{
   const address=app.server.address();
   if(!address||typeof address==='string')throw Error('Fastify did not bind localhost');
   const pageUrl='http://127.0.0.1:'+address.port+'/';
-  if (extraOnly) {
+  if(browserRead503Only){
+    // The old 14 Chromium cases are intentionally NOT invoked by this mode.
+    // Chromium drives the real product UI, and a second PG connection induces
+    // a bounded SQL 55P03 on the authenticated order-detail GET.
+    const env={...process.env,AUTOIN_CODE008_URL:pageUrl,
+      AUTOIN_CODE008_SHOP:shop,AUTOIN_CODE008_USER:'owner',
+      AUTOIN_CODE008_PASSWORD:password,
+      AUTOIN_CODE008_ORDERS:JSON.stringify(orders),
+      AUTOIN_CODE008_BROWSER_MODE:'order_detail_503'};
+    let lockClient=null;
+    let inTransaction=false;
+    try{
+      const status=await new Promise((done,fail)=>{
+        const child=spawn('python3',['tests/ui/code008-product-browser.py'],{
+          cwd:process.cwd(),env,stdio:['pipe','pipe','inherit']
+        });
+        let remainder='',closed=false,serial=Promise.resolve();
+        const abort=error=>{
+          if(closed)return;
+          closed=true;
+          child.kill();
+          fail(error);
+        };
+        const release=async()=>{
+          if(!lockClient)return;
+          const client=lockClient;
+          lockClient=null;
+          try{
+            if(inTransaction)await client.query('ROLLBACK');
+          }finally{
+            inTransaction=false;
+            client.release();
+          }
+        };
+        const control=async line=>{
+          if(line==='CONTROL LOCK_ORDER_DETAIL'){
+            ensure(lockClient===null,'duplicate PostgreSQL lock request');
+            lockClient=await pool.connect();
+            try{
+              await lockClient.query('BEGIN');
+              inTransaction=true;
+              await lockClient.query(
+                'LOCK TABLE public.core_ai_draft_proposals IN ACCESS EXCLUSIVE MODE');
+              child.stdin.write('OK\n');
+            }catch(error){
+              await release();
+              throw error;
+            }
+          }else if(line==='CONTROL RELEASE_ORDER_DETAIL'){
+            ensure(lockClient!==null,'unexpected unlock request');
+            await release();
+            child.stdin.write('OK\n');
+          }else if(line)console.log(line);
+        };
+        child.stdout.setEncoding('utf8');
+        child.stdout.on('data',chunk=>{
+          remainder+=chunk;
+          while(remainder.includes('\n')){
+            const at=remainder.indexOf('\n');
+            const line=remainder.slice(0,at).trimEnd();
+            remainder=remainder.slice(at+1);
+            serial=serial.then(()=>control(line)).catch(abort);
+          }
+        });
+        child.on('error',abort);
+        child.on('close',code=>{
+          void serial.then(async()=>{
+            try{
+              // Also restore after browser failure, unexpected exit or timeout.
+              await release();
+              if(!closed){closed=true;done(code);}
+            }catch(error){abort(error);}
+          });
+        });
+      });
+      const after=await counts(orderIds);
+      console.log('CODE008 REAL BROWSER503 counts_before='+JSON.stringify(before)+
+        ' counts_after='+JSON.stringify(after)+
+        ' business_mutation_requests='+mutationRequests);
+      ensure(JSON.stringify(after)===JSON.stringify(before),
+        'browser GET503 mutated confirmation/approval/print-job tables');
+      ensure(mutationRequests===0,'browser GET503 sent a business mutation request');
+      ensure(status===0,'real Chromium order-detail 503 test failed');
+      console.log('PASS REAL CODE008 BROWSER503 Fastify/PostgreSQL 1440x900+390x844; '+
+        'GET order detail=503 PENDING_READ_UNAVAILABLE, recovery=200, mutation=0');
+    }finally{
+      // No managed transaction survives the child session. Dedicated test DB
+      // is discarded by AI0 CI independently of this process.
+    }
+  }else if (extraOnly) {
     // Runs INSTEAD OF the already-proved 14 Chromium cases. All requests use
     // genuine authenticated Fastify handlers; no route interception or fake
     // HTTP responses. Test setup happens before each immutable snapshot.
