@@ -15,6 +15,7 @@ import {resolve,extname,sep} from 'node:path';
 import pg from 'pg';
 import {createCoreModule} from '../../backend/core/factory.ts';
 import {createAiOrderPort} from '../../backend/core/ai-order-port.ts';
+import {createVerifiedConfirmationPort} from '../../backend/core/verified-confirmation-port.ts';
 import {buildIntegratedApp} from '../../backend/composition/runtime.ts';
 import {createSyntheticZaloIngress} from '../../backend/composition/zalo-simulation.ts';
 import {asSqlPool,assertIsolatedSimulationDatabase} from '../../backend/composition/postgres.ts';
@@ -31,7 +32,9 @@ const html=await readFile(resolve(dist,'index.html'),'utf8');
 if(!(await stat('web/package-lock.json')).isFile()||!html.includes('/assets/'))
   throw Error('NOT RUN: genuine web/dist production bundle and lockfile required');
 
-const pool=new pg.Pool({connectionString:url,max:5,connectionTimeoutMillis:5000});
+const extraOnly=process.env.AUTOIN_CODE008_EXTRA_ONLY==='YES';
+const pool=new pg.Pool({connectionString:url,max:5,connectionTimeoutMillis:5000,
+  ...(extraOnly?{options:'-c lock_timeout=500ms'}:{})});
 const id=randomUUID();
 const shop='autoin-test-code008-browser-'+id;
 const oa='synthetic-oa-'+id;
@@ -157,6 +160,110 @@ try{
   const address=app.server.address();
   if(!address||typeof address==='string')throw Error('Fastify did not bind localhost');
   const pageUrl='http://127.0.0.1:'+address.port+'/';
+  if (extraOnly) {
+    // Runs INSTEAD OF the already-proved 14 Chromium cases. All requests use
+    // genuine authenticated Fastify handlers; no route interception or fake
+    // HTTP responses. Test setup happens before each immutable snapshot.
+    const session=(await core.auth.login(shop,'owner',password)).token;
+    const headers={authorization:'Bearer '+session};
+    const get=async(path,code,errorCode)=>{
+      const reply=await app.inject({method:'GET',url:path,headers});
+      ensure(reply.statusCode===code,path+' expected HTTP '+code+', got '+reply.statusCode);
+      const body=reply.json();
+      if(errorCode)ensure(body?.error?.code===errorCode,
+        path+' expected error.code='+errorCode+', got '+body?.error?.code);
+      console.log('PASS REAL CODE008 EXTRA GET '+path+' HTTP='+code+
+        (errorCode?' error.code='+errorCode:''));
+      return body;
+    };
+    const extraBefore=await counts(orderIds);
+    const challengeCount=async()=>(await pool.query(
+      'SELECT count(*)::int AS n FROM core_confirmation_challenges WHERE order_id=$1',
+      [pendingId])).rows[0].n;
+    const challengesBefore=await challengeCount();
+
+    // 409 is a genuine GET /runtime-status boundary, NOT GET /orders/:id
+    // (which has no expected revision/hash query contract).
+    await pool.query("UPDATE core_shop_settings SET mode='safe' WHERE shop_id=$1",[shop]);
+    try{
+      await get('/api/v1/runtime-status',409,'SIMULATION_REQUIRED');
+    }finally{
+      await pool.query("UPDATE core_shop_settings SET mode='simulation' WHERE shop_id=$1",[shop]);
+    }
+    await get('/api/v1/runtime-status',200);
+
+    // This existing preview route has no configured artifact root; it is a
+    // genuine FEATURE_UNAVAILABLE GET503, not a Core provenance failure.
+    await get('/api/v1/orders/'+processing0.order_id+'/revisions/1/previews',
+      503,'FEATURE_UNAVAILABLE');
+
+    // Induce an actual Core order-detail read timeout via a separate PG
+    // connection locking ONLY this disposable test database. The app pool's
+    // test-only lock_timeout bounds the wait; rollback is mandatory.
+    const blocker=await pool.connect();
+    try{
+      await blocker.query('BEGIN');
+      try{
+        await blocker.query('LOCK TABLE public.core_ai_draft_proposals IN ACCESS EXCLUSIVE MODE');
+        await get('/api/v1/orders/'+processing0.order_id,503,'PENDING_READ_UNAVAILABLE');
+      }finally{
+        await blocker.query('ROLLBACK');
+      }
+    }finally{
+      blocker.release();
+    }
+    await get('/api/v1/orders/'+processing0.order_id,200);
+
+    // Advance the EXISTING verified synthetic OA-bound draft with the actual
+    // OrderService Port, preserving verified event_ids. No fake hash edits.
+    const previous=await core.service.getOrder(actor,pendingId);
+    const oldRevision=previous.order.active_revision;
+    const oldHash=previous.current.request_hash;
+    const source=previous.revisions.find(x=>x.revision===oldRevision)?.request_data;
+    ensure(source&&!Array.isArray(source)&&typeof source==='object',
+      'source revision request_data absent');
+    const revised=await core.service.revise(actor,pendingId,{
+      expected_revision:oldRevision,
+      request_data:{...source,code008_hash_fixture:'changed-'+id},
+      idempotency_key:'real-hash-revision-'+randomUUID()
+    });
+    ensure(revised.revision===oldRevision+1&&revised.request_hash!==oldHash,
+      'real Core revision must change request_hash');
+    const confirm=createVerifiedConfirmationPort({
+      store:core.store,trusted:{shop_id:shop,oa_id:oa}
+    });
+    const target={order_id:pendingId,kind:'request',expected_generation:0};
+    const oldRevisionChallenge=await confirm.issue_challenge({
+      ...target,expected_revision:oldRevision,request_hash:oldHash
+    });
+    const oldHashChallenge=await confirm.issue_challenge({
+      ...target,expected_revision:revised.revision,request_hash:oldHash
+    });
+    ensure(oldRevisionChallenge.status==='stale'&&oldHashChallenge.status==='stale',
+      'old revision/hash must never mint challenge or customer confirmation');
+    const latest=await get('/api/v1/orders/'+pendingId,200);
+    ensure(latest.current?.revision===revised.revision&&
+      latest.current?.request_hash===revised.request_hash&&
+      latest.current?.pending_updates?.request_hash===revised.request_hash,
+      'genuine GET must return only server current revision/hash scope');
+    ensure(!latest.current.request_confirmed&&!latest.current.staff_approved,
+      'stale request_hash must not confirm or approve');
+    const challengesAfter=await challengeCount();
+    ensure(challengesBefore===challengesAfter,
+      'old revision/hash minted confirmation challenge unexpectedly');
+    const extraAfter=await counts(orderIds);
+    ensure(JSON.stringify(extraAfter)===JSON.stringify(extraBefore),
+      'extra GET/stale-hash tests changed confirmation/approval/print-job rows');
+    ensure(mutationRequests===0,'extra read-only HTTP generated business mutation');
+    console.log('PASS REAL CODE008 EXTRA stale-request-hash revision='+
+      oldRevision+'->'+revised.revision+' hash_changed=true challenge_status=stale');
+    console.log('PASS REAL CODE008 EXTRA counts_before='+JSON.stringify(extraBefore)+
+      ' counts_after='+JSON.stringify(extraAfter)+
+      ' challenge_counts='+challengesBefore+'/'+challengesAfter+
+      ' business_mutation_requests='+mutationRequests);
+    console.log('NOT_RUN: browser UI GET-order-detail HTTP409 has no AI1 contract; '+
+      'sealed-artifact stale preview GET409 fixture not supplied; Safari iPhone 10/10');
+  } else {
   const env={...process.env,AUTOIN_CODE008_URL:pageUrl,
     AUTOIN_CODE008_SHOP:shop,AUTOIN_CODE008_USER:'owner',
     AUTOIN_CODE008_PASSWORD:password,
@@ -195,8 +302,9 @@ try{
   ensure(mutationRequests===0,'browser sent unexpected business mutation');
   if(status!==0)throw Error('FAIL: real Fastify/PostgreSQL Chromium test did not pass');
   console.log('PASS CODE008 Fastify+isolated PG browser scope; no business mutation');
-  console.log('NOT_RUN: UI HTTP409 and HTTP503 GET errors need safe AI0 fault fixture; '+
-    'stale request_hash needs genuine server-bound fixture; physical Safari/OA/Ricoh');
+  console.log('NOT_RUN: extra 409/503/stale-hash tests require AUTOIN_CODE008_EXTRA_ONLY=YES; '+
+    'physical Safari/OA/Ricoh');
+  }
 }finally{
   if(app)await app.close();
   await pool.end();
