@@ -10,6 +10,7 @@ import pg from 'pg';
 import {buildIntegratedApp} from '../../../backend/composition/runtime.ts';
 import {asSqlPool, assertIsolatedSimulationDatabase} from '../../../backend/composition/postgres.ts';
 import {createCoreModule} from '../../../backend/core/factory.ts';
+import {printingAllowed} from '../../../backend/core/model.ts';
 
 const execFile=promisify(execFileCallback);
 const databaseUrl=process.env.TEST_DATABASE_URL;
@@ -18,6 +19,24 @@ const run=async (program,args,options={})=>execFile(program,args,{
 });
 const code=payload=>payload?.error?.code;
 const secureHeaders=token=>({authorization:'Bearer '+token});
+
+// Regression for the UTC+07 midnight CI flake: the synthetic HTTPS shop must
+// remain open at 23:59 local. This is a test-only sentinel, not a live-hours
+// change; production shops retain the original exclusive closing boundary.
+test('AI0 HTTPS simulation fixture spans 23:59; real shop closing stays exclusive',()=>{
+  const fixture={
+    shop_id:'autoin-test-hours-only',mode:'simulation',
+    printing_enabled:false,manual_lock:false,holiday_dates:[],
+    open_at:'00:00',close_at:'24:00',timezone:'Asia/Ho_Chi_Minh'
+  };
+  assert.equal(printingAllowed(fixture,new Date('2026-10-15T16:58:00Z')),true);
+  assert.equal(printingAllowed(fixture,new Date('2026-10-15T16:59:00Z')),true);
+  assert.equal(printingAllowed(fixture,new Date('2026-10-15T17:00:00Z')),true);
+  const liveHours={...fixture,mode:'production',printing_enabled:true,
+    open_at:'07:00',close_at:'21:30'};
+  assert.equal(printingAllowed(liveHours,new Date('2026-10-15T14:29:00Z')),true);
+  assert.equal(printingAllowed(liveHours,new Date('2026-10-15T14:30:00Z')),false);
+});
 
 /** This exercise has NO physical driver, no live OA and no remote listener.
  * It proves that a real scoped HTTPS Python agent can use the AI1 Fastify/PG
@@ -48,7 +67,7 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     const agentToken=randomUUID()+randomUUID();
     const customerToken=randomUUID()+randomUUID();
     await pool.query('INSERT INTO core_shop_settings(shop_id,open_at,close_at) VALUES($1,$2,$3)',
-      [shop,'00:00','23:59']);
+      [shop,'00:00','24:00']);
     await core.auth.bootstrapOwner({shop_id:shop,username:'owner',password,bootstrap_enabled:true});
     const login=await core.auth.login(shop,'owner',password);
     app=buildIntegratedApp({pool:asSqlPool(pool),tls:{
