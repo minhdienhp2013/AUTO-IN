@@ -69,10 +69,12 @@ def scenario(browser, viewport, case):
         cards = page.locator('[data-testid="order-list"] .order-card')
         order_id = ORDERS["clear"] if case in ("api401", "offline") else ORDERS[case]
         card = cards.filter(has_text=order_id)
-        card.wait_for(state="visible", timeout=15000)
-        # Selecting a card strips ?revision= from the URL; navigation-stale
-        # must retain that query and rely on App's own deep-link selection.
-        if case != "stale_revision":
+        # A mobile deep-link hides the order list automatically. Verify the
+        # card is attached, not visible; do not click away the stale revision.
+        if case == "stale_revision":
+            card.wait_for(state="attached", timeout=15000)
+        else:
+            card.wait_for(state="visible", timeout=15000)
             card.click()
         detail = page.locator('[data-testid="order-detail"]')
         detail.locator(".detail-head h2").filter(has_text=order_id).wait_for(
