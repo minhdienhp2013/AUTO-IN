@@ -1,5 +1,23 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
 
+## CODE-405 — PR #103 real Fastify/PostgreSQL Chromium (bằng chứng mới 15/10/2026)
+
+**AI5 kiểm tra độc lập log GitHub Actions, không tự nhận đã trực tiếp chạy Chromium hoặc nghiệm thu hiện trường.** AI0 [Draft PR #104](https://github.com/minhdienhp2013/AUTO-IN/pull/104) HEAD `1ac356cdaa57be5babdc46b98ccfc78b6d64da6f` chỉ thêm workflow/rule AI0, là **con trực tiếp** của AI4 [Draft PR #103](https://github.com/minhdienhp2013/AUTO-IN/pull/103) SHA `323b6da983c8848f9b2ba19313d3047223ba6897`; main vẫn `423adb1a40d2b4a3c65dcf13c7ff36dbdbf97338`. Workflow riêng thực sự **checkout và in ra `EXACT_SOURCE_SHA=323b6da983c8848f9b2ba19313d3047223ba6897`** (không phải PR merge ref), khởi chạy PostgreSQL **18.3** cô lập `autoin_test_code008`, build Vite production `VITE_DEMO_MODE=false`, Python Playwright/Chromium và gọi **`node --import tsx tests/ui/code008-product-pg.mjs`**. Không mock/chặn phản hồi HTTP nghiệp vụ; fixture đầu vào tổng hợp, dùng Fastify/Core và PostgreSQL thật, **không phải OA/provider hay máy in thật**.
+
+| Kiểm chứng mới / nguồn SHA | PASS | FAIL | SKIP | NOT RUN / ranh giới |
+| --- | ---: | ---: | ---: | --- |
+| **AI4 PR #103 product-backed Chromium**, [AI0 CI-only run #38773245077](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38773245077), [job #116554228122](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38773245077/job/116554228122) | **14/14** (7 tình huống × desktop 1440×900/mobile 390×844) | **0** | **0** | UI GET **409/503** và **stale backend request_hash** chưa có fixture an toàn: **NOT RUN**; Safari iPhone vật lý **10/10 NOT RUN** |
+| **HTTP mutation nghiệp vụ, dữ liệu order trước/sau** — cùng job, log cuối | **0 request mutation**, `confirmations:0→0`, `approvals:0→0`, `print_jobs:0→0` | **0 vi phạm được ghi nhận** | Không áp dụng | Chỉ xác minh các order tổng hợp trong đúng lượt browser, không suy ra in/duyệt thật |
+
+14 dòng `PASS REAL CODE008 Chromium` gồm `clear`, `processing0`, `needs_human0`, `pending1`, `stale_revision`, `api401` (revoke phiên staff trên PG), `offline` ở **mỗi viewport**; mỗi dòng `mutation=0`. Dòng cuối CI: `CODE008 REAL PG counts_before={"confirmations":0,"approvals":0,"print_jobs":0} counts_after={"confirmations":0,"approvals":0,"print_jobs":0} business_mutation_requests=0`. **CODE-405 phạm vi 14 ca read-only được nghiệm thu PASS theo log kiểm thử kỹ thuật; không tuyên bố V1 PASS.**
+
+**Không đánh đồng workflow:** Push [AI0 PR #104 exact-browser run #38773245077](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38773245077) **SUCCESS**; push composition [#38773244751](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38773244751) **SUCCESS**. Riêng pull_request composition [#38773343245](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38773343245) **FAIL** tại `npm run check`: chạy lại composition **25 PASS/1 FAIL**, liên quan `https-agent-product-pg.test.mjs` và Python DryRun CLI exit 1; trước đó cùng job composition riêng **26/26 PASS**. Chưa có phân tích nguyên nhân xác nhận, **không suy là lỗi 14 browser**, cũng **không coi PR #104 tất cả CI xanh**; yêu cầu AI0 đối chiếu đúng checkout/log và xử lý/retest ca FAIL trước tích hợp.
+
+**Release-gate thực địa vẫn BLOCKED:** Zalo OA provider-signed/identity/callback thật **NOT RUN, route OFF**; Windows/Ricoh/giấy thật **NOT RUN**; Safari iPhone IPH-01…10 **NOT RUN**; TN-037 **≥210 đơn/≥7 ngày sạch NOT RUN**. Không merge, deploy, bật OA hay in thật. AI5 chỉ cập nhật ma trận này từ **log kiểm thử mới**, không thay module AI4, workflow AI0 hoặc assertion của AI khác.
+
+---
+
+
 ## Release-gate HIỆN HÀNH — kiểm tra nguồn 15/10/2026 (giờ Việt Nam)
 
 **Phạm vi:** AI5 đối chiếu HEAD/diff, các báo cáo mới AI2/AI3/AI4 và GitHub Actions vào **15/10/2026**; chỉ cập nhật ma trận release-gate. **Không chạy thêm acceptance hoặc test thiết bị trong lượt cập nhật này.** Các bảng CODE-105/CODE-305/CODE-405 bên dưới là **lịch sử theo SHA**, giữ nguyên; PASS mô phỏng tuyệt đối không đại diện cho PASS vận hành.
