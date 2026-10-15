@@ -1,5 +1,26 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
 
+## CODE-405 — AI0 PR #106 HTTPS DryRun giờ giả lập 23:59 (AI5 nghiệm thu độc lập 16/10/2026)
+
+**Nguồn và phạm vi:** AI0 [Draft PR #106](https://github.com/minhdienhp2013/AUTO-IN/pull/106), HEAD `2b633fac33c9352268200ecb1c60983a56591fcc`, base/main `423adb1a40d2b4a3c65dcf13c7ff36dbdbf97338`; diff **1 file test AI0** `tests/integration/composition/https-agent-product-pg.test.mjs` (**+20/-1**), **không đổi** `backend/core/model.ts`, AI3 agent, sản phẩm hay workflow. [CODE checks #38780145647](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38780145647) **SUCCESS**; [AI0 composition #38780145674](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38780145674), [job #116577909008](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38780145674/job/116577909008) **SUCCESS** trên **GitHub PR merge ref** của #106 (không giả nhận log checkout trực tiếp HEAD). PostgreSQL **18.3** disposable `autoin_test_composition`, Python 3.12, HTTPS localhost và DryRun **mô phỏng**, tuyệt đối không chứng minh in giấy thật.
+
+**Đối chiếu source và logic giờ:** Fixture HTTPS trước đó tạo shop thử `open_at='00:00',close_at='23:59'`; PR #106 thay **riêng dữ liệu test** thành `'00:00'–'24:00'`, thêm assertion trực tiếp `printingAllowed()` cho 23:58, 23:59 và **00:00 ngày kế** (tương ứng `2026-10-15T16:58Z`, `16:59Z`, `17:00Z`, múi giờ `Asia/Ho_Chi_Minh`). Nhánh sản xuất vẫn thử `07:00–21:30`: **21:29 cho phép, 21:30 không cho phép**. Source Core **giữ nguyên** `clock >= open_at && clock < close_at` và các chốt safe/manual lock; không nới giờ hoạt động thật.
+
+| Luồng chạy PR #106 / evidence | PASS | FAIL | SKIP |
+| --- | ---: | ---: | ---: |
+| `node --import tsx --test tests/integration/composition/*.test.*` (gồm 23:59 boundary + HTTPS Python DryRun/UNKNOWN no-resend) | **27/27** | **0** | **0** |
+| `npm run check` chạy lại composition ở cuối job | **27/27** | **0** | **0** |
+| Python pytest | **199** | **0** | **1** |
+| Core `test:core` | **39/39** | **0** | **0** |
+| AI2 `test:zalo` | **93/93** | **0** | **0** |
+| Contracts `npm test` | **18/18** | **0** | **0** |
+
+**Kết luận về FAIL cũ:** [PR #104 workflow #38773343245](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38773343245) attempt 1 chạy HTTPS composition ban đầu **PASS lúc 16:58 UTC/23:58 VN**, nhưng lần gọi lại qua `npm run check` **25 PASS / 1 FAIL lúc 16:59 UTC/23:59 VN**, CLI trả `UNKNOWN / AGENT_UNVERIFIED_FAILURE`; attempt 2 sau 17:00 UTC (sang ngày mới ở VN) **26/26 PASS**. Nguyên nhân **phù hợp chặt** với `close_at='23:59'` và phép so sánh nhỏ hơn giờ đóng; hồi quy PR #106 bao phủ ranh giới đó. **Thiếu HTTP trace của request lỗi cũ nên KHÔNG xác nhận nó thực tế trả 409 `PRINT_CLOSED`, và không gọi lỗi HTTPS/TLS/driver đã được chứng minh.** Một lần CI mới PASS không thay thế test thực địa.
+
+**Release gate còn NOT RUN:** Chromium giao diện với **GET order-detail 503** thật và fail-closed banner; AI3-sealed preview **GET409**; Safari iPhone vật lý **10/10**, Zalo OA live (giữ OFF), Windows/Ricoh/giấy thật và TN-037 **≥210 đơn/≥7 ngày sạch**. AI0 chờ HEAD/test AI4 mới để chạy CI Chromium riêng. **V1 BLOCKED; không merge, deploy, bật OA hoặc in thử.**
+
+---
+
 ## CODE-405 — PR #103 real Fastify/PostgreSQL Chromium (bằng chứng mới 15/10/2026)
 
 **AI5 kiểm tra độc lập log GitHub Actions, không tự nhận đã trực tiếp chạy Chromium hoặc nghiệm thu hiện trường.** AI0 [Draft PR #104](https://github.com/minhdienhp2013/AUTO-IN/pull/104) HEAD `1ac356cdaa57be5babdc46b98ccfc78b6d64da6f` chỉ thêm workflow/rule AI0, là **con trực tiếp** của AI4 [Draft PR #103](https://github.com/minhdienhp2013/AUTO-IN/pull/103) SHA `323b6da983c8848f9b2ba19313d3047223ba6897`; main vẫn `423adb1a40d2b4a3c65dcf13c7ff36dbdbf97338`. Workflow riêng thực sự **checkout và in ra `EXACT_SOURCE_SHA=323b6da983c8848f9b2ba19313d3047223ba6897`** (không phải PR merge ref), khởi chạy PostgreSQL **18.3** cô lập `autoin_test_code008`, build Vite production `VITE_DEMO_MODE=false`, Python Playwright/Chromium và gọi **`node --import tsx tests/ui/code008-product-pg.mjs`**. Không mock/chặn phản hồi HTTP nghiệp vụ; fixture đầu vào tổng hợp, dùng Fastify/Core và PostgreSQL thật, **không phải OA/provider hay máy in thật**.
