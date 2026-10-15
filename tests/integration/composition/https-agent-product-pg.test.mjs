@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFile as execFileCallback} from 'node:child_process';
 import {promisify} from 'node:util';
-import {randomUUID} from 'node:crypto';
-import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {createHash,randomUUID} from 'node:crypto';
+import {chmod, mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import pg from 'pg';
@@ -24,7 +24,7 @@ const secureHeaders=token=>({authorization:'Bearer '+token});
  * lease contract, and DryRun can never become verified paper. */
 test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulation and UNKNOWN no-resend',{
   skip:!databaseUrl?'TEST_DATABASE_URL missing; product HTTPS/PG DryRun NOT VERIFIED':false,
-  timeout:120000
+  timeout:300000
 },async()=>{
   assertIsolatedSimulationDatabase(databaseUrl);
   const scratch=await mkdtemp(join(tmpdir(),'autoin-https-dryrun-'));
@@ -113,6 +113,34 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     assert.equal(outcome.result.job_id,normal.jobId);
     const state=async id=>(await pool.query(
       'SELECT state,verified_sheets,mode_at_send FROM core_print_jobs WHERE id=$1',[id])).rows[0];
+    async function manifestFor(order){
+      const anchor=await pool.query(
+        'SELECT artifact_ref,manifest_sha256 FROM ai0_verified_plan_manifests WHERE shop_id=$1 AND order_id=$2 AND revision=2',
+        [shop,order.id]);
+      assert.equal(anchor.rows.length,1);
+      const path=join(artifactRoot,anchor.rows[0].artifact_ref);
+      const raw=await readFile(path);
+      return {anchor:anchor.rows[0],path,manifest:JSON.parse(raw.toString('utf8'))};
+    }
+    async function assertEvidenceRefusalBeforeJournal(order,label){
+      const journalPath=join(scratch,label+'.sqlite');
+      const attempt=await run('python3',['-m','agents.windows.cli','--api-base-url',url,
+        '--journal',journalPath],{env:pythonEnv}).then(value=>({value}),error=>({error}));
+      assert.ok(attempt.error,'Unverified document evidence must stop the agent');
+      assert.equal(attempt.error.code,2);
+      const output=JSON.parse(attempt.error.stdout.trim());
+      assert.equal(output.result.status,'BLOCKED',JSON.stringify(output));
+      assert.equal(output.result.reason,'DOCUMENT_EVIDENCE_UNVERIFIED',JSON.stringify(output));
+      assert.equal((await state(order.jobId)).state,'NOT_SENT');
+      const journal=await run('python3',['-c',
+        'import sqlite3,sys;d=sqlite3.connect(sys.argv[1]);print(d.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])',
+        journalPath]);
+      assert.equal(journal.stdout.trim(),'0','Evidence rejection must happen before a journal boundary');
+      const count=await pool.query(
+        'SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[order.id]);
+      assert.equal(count.rows[0].n,1,'Evidence rejection must not create another print job');
+    }
+
     const done=await state(normal.jobId);
     assert.equal(done.state,'SIMULATED_DONE');
     assert.equal(done.mode_at_send,'simulation');
@@ -151,6 +179,104 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     const tamperedJobCount=await pool.query(
       'SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[tampered.id]);
     assert.equal(tamperedJobCount.rows[0].n,1,'Evidence rejection must not create a retry job');
+
+
+    const sourceTampered=await orderReadyToDryRun('tampered-source');
+    const sourceManifest=await manifestFor(sourceTampered);
+    const sourcePath=join(artifactRoot,sourceManifest.manifest.files[0].source_artifact_ref);
+    await chmod(sourcePath,0o600);
+    await writeFile(sourcePath,Buffer.from('synthetic altered source bytes'));
+    await assertEvidenceRefusalBeforeJournal(sourceTampered,'tampered-source');
+
+    const previewTampered=await orderReadyToDryRun('tampered-preview');
+    const previewManifest=await manifestFor(previewTampered);
+    const previewPath=join(artifactRoot,previewManifest.manifest.previews[0].ref);
+    await chmod(previewPath,0o600);
+    await writeFile(previewPath,Buffer.from('synthetic altered preview bytes'));
+    await assertEvidenceRefusalBeforeJournal(previewTampered,'tampered-preview');
+
+    const requestHashMismatch=await orderReadyToDryRun('request-hash-mismatch');
+    const requestEvidence=await manifestFor(requestHashMismatch);
+    const mismatchedHash='f'.repeat(64)===requestEvidence.manifest.request_hash
+      ?'e'.repeat(64):'f'.repeat(64);
+    requestEvidence.manifest.request_hash=mismatchedHash;
+    const changedManifest=Buffer.from(JSON.stringify(requestEvidence.manifest),'utf8');
+    await chmod(requestEvidence.path,0o600);
+    await writeFile(requestEvidence.path,changedManifest);
+    const changedManifestHash=createHash('sha256').update(changedManifest).digest('hex');
+    const anchored=await pool.query(
+      'UPDATE ai0_verified_plan_manifests SET manifest_sha256=$1 WHERE shop_id=$2 AND order_id=$3 AND revision=2',
+      [changedManifestHash,shop,requestHashMismatch.id]);
+    assert.equal(anchored.rowCount,1);
+    await assertEvidenceRefusalBeforeJournal(requestHashMismatch,'request-hash-mismatch');
+
+    const staleRevision=await orderReadyToDryRun('stale-revision');
+    const staleClaim=await post('/internal/v1/print-jobs/claim',{
+      printer_id:'RMP7000',idempotency_key:'claim-stale-revision'
+    },agentToken);
+    assert.equal(staleClaim.statusCode,200,JSON.stringify(staleClaim.json()));
+    const staleJob=staleClaim.json().job;
+    assert.ok(staleJob && staleJob.job_id===staleRevision.jobId);
+    const revised=await post('/api/v1/orders/'+staleRevision.id+'/revisions',{
+      expected_revision:2,
+      request_data:{documents:[{artifact_name:'fixture.png',copies:3,duplex:false,paper:'A4'}]},
+      idempotency_key:'revise-after-claim'
+    },login.token);
+    assert.equal(revised.statusCode,200,JSON.stringify(revised.json()));
+    assert.equal(revised.json().revision,3);
+    const stalePreflight=await post('/internal/v1/print-jobs/'+staleJob.job_id+'/preflight',{
+      expected_revision:staleJob.revision,lease_token:staleJob.lease_token
+    },agentToken);
+    assert.equal(stalePreflight.statusCode,409,JSON.stringify(stalePreflight.json()));
+    assert.equal(code(stalePreflight.json()),'STALE_REVISION');
+    assert.equal((await state(staleJob.job_id)).state,'NOT_SENT');
+    const staleCount=await pool.query(
+      'SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[staleRevision.id]);
+    assert.equal(staleCount.rows[0].n,1,'Stale revision must not mint a replacement job');
+
+    const lostAck=await orderReadyToDryRun('lost-mark-ack');
+    const lostAckJournal=join(scratch,'lost-mark-ack.sqlite');
+    const lostAckScript=[
+      'from agents.windows.agent import DryRunDriver,Journal,PrintAgent',
+      'from agents.windows.backend_http import HttpBackendClient',
+      'import json,os,sys',
+      'class LostAckBackend(HttpBackendClient):',
+      ' def mark_sending(self,job):',
+      '  super().mark_sending(job)',
+      '  raise TimeoutError("synthetic lost ACK after committed mark-sending")',
+      'j=Journal(sys.argv[2]);d=DryRunDriver()',
+      'try:',
+      ' a=PrintAgent(LostAckBackend(sys.argv[1],os.environ["AUTO_IN_AGENT_TOKEN"]),j,d)',
+      ' result=a.run_once()',
+      ' print(json.dumps({"result":result,"driver_calls":d.calls}))',
+      'finally:j.close()'
+    ].join('\n');
+    const lostAckResult=await run('python3',['-c',lostAckScript,url,lostAckJournal],{env:pythonEnv});
+    const lostAckOutput=JSON.parse(lostAckResult.stdout.trim());
+    assert.equal(lostAckOutput.result.status,'UNKNOWN',JSON.stringify(lostAckOutput));
+    assert.equal(lostAckOutput.driver_calls,0,'Lost mark ACK must never reach the driver');
+    assert.equal((await state(lostAck.jobId)).state,'UNKNOWN');
+    const lostAckCount=await pool.query(
+      'SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[lostAck.id]);
+    assert.equal(lostAckCount.rows[0].n,1,'Lost mark ACK must not create a retry job');
+
+    const lostAckRestartScript=[
+      'from agents.windows.agent import DryRunDriver,Journal,PrintAgent',
+      'from agents.windows.backend_http import HttpBackendClient',
+      'import json,os,sys',
+      'j=Journal(sys.argv[2]);d=DryRunDriver()',
+      'try:',
+      ' a=PrintAgent(HttpBackendClient(sys.argv[1],os.environ["AUTO_IN_AGENT_TOKEN"]),j,d)',
+      ' recovered=a.recover()',
+      ' result=a.run_once()',
+      ' print(json.dumps({"recovered":recovered,"result":result,"driver_calls":d.calls}))',
+      'finally:j.close()'
+    ].join('\n');
+    const lostAckRestart=await run('python3',['-c',lostAckRestartScript,url,lostAckJournal],{env:pythonEnv});
+    const restartOutput=JSON.parse(lostAckRestart.stdout.trim());
+    assert.equal(restartOutput.result.status,'NO_JOB',JSON.stringify(restartOutput));
+    assert.equal(restartOutput.driver_calls,0,'Restart after lost ACK must not resend');
+    assert.equal((await state(lostAck.jobId)).state,'UNKNOWN');
 
     const crash=await orderReadyToDryRun('crash');
     // Simulated process death AFTER committed SENDING, BEFORE any dry-run driver.
@@ -198,9 +324,9 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     assert.equal(JSON.parse(noRetry.stdout.trim()).result.status,'NO_JOB');
     assert.equal((await state(crash.jobId)).state,'UNKNOWN');
     const outstanding=await pool.query(
-      'SELECT COUNT(*)::int AS jobs FROM core_print_jobs WHERE order_id IN ($1,$2)',
-      [normal.id,crash.id]);
-    assert.equal(outstanding.rows[0].jobs,2,'Neither UNKNOWN nor DryRun can mint a retry job');
+      'SELECT COUNT(*)::int AS jobs FROM core_print_jobs WHERE order_id IN ($1,$2,$3)',
+      [normal.id,crash.id,lostAck.id]);
+    assert.equal(outstanding.rows[0].jobs,3,'DryRun, crash-UNKNOWN and lost-ACK UNKNOWN cannot mint retry jobs');
   }finally{
     if(app)await app.close();
     if(pool)await pool.end();
