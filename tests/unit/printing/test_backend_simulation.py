@@ -55,6 +55,7 @@ class _SimulatedBackend:
                 "job_id": _job()["job_id"], "revision": 2,
                 "allowed": self.state == "NOT_SENT",
                 "mode": "simulation", "approval_id": _job()["approval_id"],
+                "document_evidence_verified": True,
             })
         if action == "mark-sending":
             assert data["idempotency_key"]
