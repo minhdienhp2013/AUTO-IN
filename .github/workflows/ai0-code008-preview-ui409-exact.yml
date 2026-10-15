@@ -1,0 +1,79 @@
+name: AI0 CODE008 exact AI3 sealed preview Chromium stale 409
+on:
+  push:
+    branches:
+      - ai0/code008-preview-ui409-ci-20261016
+permissions:
+  contents: read
+jobs:
+  preview-browser:
+    name: Real AI3 preview 200 to 409 in Chromium desktop/mobile
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_test_previewui
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_previewui"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_previewui
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_previewui
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_previewui
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+    steps:
+      - name: Checkout exact AI4-source plus AI0 driver SHA
+        uses: actions/checkout@v4
+        with:
+          ref: 3c376eb5e5b642e3970b786abb868bd0a7b8a67d
+          persist-credentials: false
+      - name: Enforce reviewed checkout and test-only local PostgreSQL
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "3c376eb5e5b642e3970b786abb868bd0a7b8a67d"
+          echo "EXACT_PREVIEW_UI409_SHA=$(git rev-parse HEAD)"
+          echo "AI4_SOURCE_SHA=d300317a54d2dc03941939df7085d868627983cd"
+          test "$AUTOIN_OPERATION_MODE" = simulation
+          test "$AUTOIN_ALLOW_PG_ACCEPTANCE" = YES_ISOLATED_TEST_DB
+          test "$TEST_DATABASE_URL" = postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_previewui
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Node and genuine AI3 Python renderer
+        shell: bash
+        run: |
+          npm ci
+          python -m pip install -r workers/documents/requirements-test.txt
+          python -m pip install playwright==1.58.0
+          python -m playwright install --with-deps chromium
+          chrome="$(python -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')"
+          test -x "$chrome"
+          mkdir -p "$RUNNER_TEMP/autoin-chromium-bin"
+          ln -sfn "$chrome" "$RUNNER_TEMP/autoin-chromium-bin/chromium"
+          echo "$RUNNER_TEMP/autoin-chromium-bin" >> "$GITHUB_PATH"
+      - name: Migrate disposable PostgreSQL 18.3
+        run: npm run db:migrate
+      - name: Compile actual non-demo React/Vite
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          VITE_DEMO_MODE=false npm run build
+      - name: Exercise genuine AI3 sealed preview stale 409 in two Chromium viewports
+        run: node --import tsx tests/integration/composition/code008-preview-stale-browser-driver.mjs
+      - name: Preserve live gates as NOT RUN
+        if: always()
+        run: |
+          echo "Only genuine isolated PostgreSQL/Fastify/React/Chromium using actual AI3 synthetic artifacts."
+          echo "Physical Safari/OA/Ricoh/TN037 still NOT RUN. No print, no live deployment."
