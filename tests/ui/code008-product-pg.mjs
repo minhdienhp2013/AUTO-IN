@@ -84,6 +84,29 @@ try{
       kind:'synthetic_fixture',shop_id:shop,oa_id:oa,fixture_key:fixtureKey
     })
   });
+
+  // One origin: compiled React assets and actual Fastify business routes.
+  app.get('/',async(_r,reply)=>reply.type('text/html; charset=utf-8')
+    .header('Cache-Control','no-store').send(html));
+  app.get('/assets/*',async(request,reply)=>{
+    const tail=request.params?.['*'];
+    if(typeof tail!=='string'||!tail||!/^[a-zA-Z0-9._/-]+$/.test(tail)||
+       tail.split('/').some(x=>!x||x==='.'||x==='..'))return reply.code(404).send();
+    const path=resolve(dist,'assets',tail);
+    if(!path.startsWith(resolve(dist,'assets')+sep))return reply.code(404).send();
+    const content=await readFile(path).catch(()=>null);
+    return content?reply.header('Cache-Control','no-store')
+      .type(mime[extname(path)]||'application/octet-stream').send(content):reply.code(404).send();
+  });
+  let mutationRequests=0;
+  app.addHook('onRequest',async(request)=>{
+    if(request.url.startsWith('/api/v1/')&&
+      !['GET','HEAD','OPTIONS'].includes(request.method)&&
+      !request.url.startsWith('/api/v1/auth/login')){
+      mutationRequests++;
+      // Don't block the request: an unexpected business POST must FAIL.
+    }
+  });
   const event=(eventId,kind='text')=>({
     synthetic_fixture:true,event_id:eventId,oa_id:oa,
     customer_id:customer,conversation_id:convo,
@@ -129,32 +152,10 @@ try{
   ensure(before.confirmations===0 && before.approvals===0 && before.print_jobs===0,
     'baseline must not contain approval/print/confirmation');
 
-  // One origin: compiled React assets and actual Fastify business routes.
-  app.get('/',async(_r,reply)=>reply.type('text/html; charset=utf-8')
-    .header('Cache-Control','no-store').send(html));
-  app.get('/assets/*',async(request,reply)=>{
-    const tail=request.params?.['*'];
-    if(typeof tail!=='string'||!tail||!/^[a-zA-Z0-9._/-]+$/.test(tail)||
-       tail.split('/').some(x=>!x||x==='.'||x==='..'))return reply.code(404).send();
-    const path=resolve(dist,'assets',tail);
-    if(!path.startsWith(resolve(dist,'assets')+sep))return reply.code(404).send();
-    const content=await readFile(path).catch(()=>null);
-    return content?reply.header('Cache-Control','no-store')
-      .type(mime[extname(path)]||'application/octet-stream').send(content):reply.code(404).send();
-  });
   await app.listen({host:'127.0.0.1',port:0});
   const address=app.server.address();
   if(!address||typeof address==='string')throw Error('Fastify did not bind localhost');
   const pageUrl='http://127.0.0.1:'+address.port+'/';
-  let mutationRequests=0;
-  app.addHook('onRequest',async(request)=>{
-    if(request.url.startsWith('/api/v1/')&&
-      !['GET','HEAD','OPTIONS'].includes(request.method)&&
-      !request.url.startsWith('/api/v1/auth/login')){
-      mutationRequests++;
-      // Don't block the request: an unexpected business POST must FAIL.
-    }
-  });
   const env={...process.env,AUTOIN_CODE008_URL:pageUrl,
     AUTOIN_CODE008_SHOP:shop,AUTOIN_CODE008_USER:'owner',
     AUTOIN_CODE008_PASSWORD:password,
