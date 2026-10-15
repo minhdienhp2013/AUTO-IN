@@ -1,0 +1,147 @@
+name: AI0 isolated AI5 PR96 acceptance
+on:
+  push:
+    branches:
+      - ai0/validate-ai5-pr96-20261015
+permissions:
+  contents: read
+concurrency:
+  group: ai5-pr96-exact-overlay-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  ai5-pr96-postgres:
+    name: AI5 exact-overlay PostgreSQL, HTTP and DryRun
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_test_ai5
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_ai5"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_ai5
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_ai5
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_ai5
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+    steps:
+      - name: Checkout exact AI5 overlay
+        uses: actions/checkout@v4
+        with:
+          ref: 21e6c4f472269572939928e231b044befcc8df85
+          fetch-depth: 0
+          path: source
+      - name: Verify exact overlay and product parent
+        working-directory: source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "21e6c4f472269572939928e231b044befcc8df85"
+          test "$(git rev-parse HEAD^)" = "7bf2127b1eb8bd508021b3069210f67e893490e9"
+          git diff --name-only 7bf2127b1eb8bd508021b3069210f67e893490e9 HEAD
+      - name: Setup Node 24.19
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python document test dependencies
+        working-directory: source
+        run: python -m pip install -r workers/documents/requirements-test.txt
+      - name: Install root dependencies
+        working-directory: source
+        run: npm ci
+      - name: Migrate isolated PostgreSQL
+        working-directory: source
+        run: npm run db:migrate
+      - name: Run product strict checks on exact overlay
+        working-directory: source
+        run: npm run check
+      - name: Run AI5 strict PostgreSQL, Fastify/HTTP and DryRun acceptance
+        working-directory: source
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/acceptance/run-pr96.mjs --pg 2>&1 | tee "$RUNNER_TEMP/ai5-pr96-pg.log"
+      - name: Upload PostgreSQL acceptance log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai5-pr96-postgres-http-dryrun-log
+          path: ${{ runner.temp }}/ai5-pr96-pg.log
+          if-no-files-found: ignore
+
+  ai5-pr96-chromium:
+    name: AI5 exact-overlay Chromium desktop and mobile
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact AI5 overlay
+        uses: actions/checkout@v4
+        with:
+          ref: 21e6c4f472269572939928e231b044befcc8df85
+          fetch-depth: 0
+          path: source
+      - name: Verify exact overlay and product parent
+        working-directory: source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "21e6c4f472269572939928e231b044befcc8df85"
+          test "$(git rev-parse HEAD^)" = "7bf2127b1eb8bd508021b3069210f67e893490e9"
+      - name: Setup Node 24.19
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: source/web/package-lock.json
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install web dependencies
+        working-directory: source/web
+        run: npm ci
+      - name: UI tests, strict TypeScript and production build
+        working-directory: source/web
+        env:
+          VITE_DEMO_MODE: 'false'
+        run: |
+          npm run typecheck
+          npm run build
+      - name: Install Playwright Chromium
+        run: |
+          python -m pip install --disable-pip-version-check playwright==1.58.0
+          python -m playwright install --with-deps chromium
+      - name: Expose Playwright Chromium to AI4 harness
+        shell: bash
+        run: |
+          playwright_chrome="$(python -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')"
+          test -x "$playwright_chrome"
+          mkdir -p "$RUNNER_TEMP/autoin-chromium-bin"
+          ln -sfn "$playwright_chrome" "$RUNNER_TEMP/autoin-chromium-bin/chromium"
+          echo "$RUNNER_TEMP/autoin-chromium-bin" >> "$GITHUB_PATH"
+      - name: Run AI5 strict Chromium acceptance
+        working-directory: source
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/acceptance/run-pr96.mjs --browser 2>&1 | tee "$RUNNER_TEMP/ai5-pr96-browser.log"
+      - name: Upload Chromium acceptance log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai5-pr96-chromium-desktop-mobile-log
+          path: ${{ runner.temp }}/ai5-pr96-browser.log
+          if-no-files-found: ignore
