@@ -34,6 +34,7 @@ const shop409 = 'autoin-test-ai4-' + randomUUID();
 const oa = 'oa-ai4-' + randomUUID();
 const key = randomUUID() + randomUUID();
 const pwd = 'isolated-ai4-' + randomUUID();
+const pwd409 = 'isolated-409-' + randomUUID();
 const customer = 'ai4-product-customer-' + randomUUID();
 const chat = 'ai4-product-chat-' + randomUUID();
 const core = createCoreModule({ pool: asSqlPool(pool) });
@@ -69,7 +70,7 @@ try {
   await core.auth.bootstrapOwner({ shop_id: shop, username: 'owner',
     password: pwd, bootstrap_enabled: true });
   await core.auth.bootstrapOwner({ shop_id: shop409, username: 'owner',
-    password: 'isolated-other-' + uuid(), bootstrap_enabled: true });
+    password: pwd409, bootstrap_enabled: true });
   await pool.query("UPDATE core_shop_settings SET mode='safe' WHERE shop_id=$1", [shop409]);
   const session = await core.auth.login(shop, 'owner', pwd);
   const staff = session.principal;
@@ -155,11 +156,8 @@ try {
     url:'/api/v1/orders/' + ids.clear + '/revisions/1/previews',
     headers: headers(session.token) });
   assert.equal(unavailable.statusCode, 503, 'real unconfigured preview API returns 503');
-  const newPwd = 'isolated-409-' + uuid();
-  // This is a separate simulation shop, never a production switch.
-  await pool.query('UPDATE core_users SET password_hash=$1 WHERE shop_id=$2',
-    [(await import('../../backend/core/auth.ts')).passwordHash(newPwd), shop409]);
-  const forbiddenSession = await core.auth.login(shop409, 'owner', newPwd);
+  // Separate already-authenticated simulation shop; no runtime authentication bypass.
+  const forbiddenSession = await core.auth.login(shop409, 'owner', pwd409);
   const locked = await app.inject({ method:'GET', url:'/api/v1/runtime-status',
     headers: headers(forbiddenSession.token) });
   assert.equal(locked.statusCode, 409, 'real runtime-status safe shop returns 409');
