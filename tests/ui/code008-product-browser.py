@@ -40,7 +40,10 @@ def scenario(browser, viewport, case):
     browser_errors = []
     mutations = []
     details = []
+    auth_failures = []
     page.on("pageerror", lambda error: browser_errors.append(str(error)))
+    page.on("response", lambda response: auth_failures.append(response.status)
+            if response.status == 401 and "/api/v1/" in response.url else None)
 
     def inspect(request):
         from urllib.parse import urlsplit
@@ -104,6 +107,7 @@ def scenario(browser, viewport, case):
             login.wait_for(state="visible", timeout=15000)
             assert page.locator('[data-testid="order-list"]').count() == 0
             assert page.locator('[data-testid="approve-action"]').count() == 0
+            assert 401 in auth_failures, "Real Fastify 401 response was not observed"
         elif case == "offline":
             context.set_offline(True)
             try:
