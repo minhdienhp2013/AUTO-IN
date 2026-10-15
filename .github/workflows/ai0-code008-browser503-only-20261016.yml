@@ -1,0 +1,81 @@
+name: AI0 CODE008 exact Chromium order-detail 503
+on:
+  push:
+    branches:
+      - ai0/code008-browser503-only-20261016
+permissions:
+  contents: read
+jobs:
+  chromium-get503:
+    name: Real UI GET503 fail-closed desktop and mobile
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_test_code008
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_code008"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code008
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code008
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code008
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+      AUTOIN_CODE008_BROWSER_503_ONLY: YES
+    steps:
+      - name: Checkout exact AI4 SHA, never PR merge
+        uses: actions/checkout@v4
+        with:
+          ref: f212da0af2ce9c9298f0bf4d296c78dd4569b0db
+          persist-credentials: false
+      - name: Guard reviewed source and ephemeral localhost PostgreSQL
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "f212da0af2ce9c9298f0bf4d296c78dd4569b0db"
+          echo "EXACT_BROWSER503_SOURCE_SHA=$(git rev-parse HEAD)"
+          test "$AUTOIN_OPERATION_MODE" = simulation
+          test "$AUTOIN_ALLOW_PG_ACCEPTANCE" = YES_ISOLATED_TEST_DB
+          test "$AUTOIN_CODE008_BROWSER_503_ONLY" = YES
+          test "$TEST_DATABASE_URL" = postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code008
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: npm ci
+      - name: Install genuine Playwright Chromium
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check playwright==1.58.0
+          python -m playwright install --with-deps chromium
+          chrome="$(python -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')"
+          test -x "$chrome"
+          mkdir -p "$RUNNER_TEMP/autoin-chromium-bin"
+          ln -sfn "$chrome" "$RUNNER_TEMP/autoin-chromium-bin/chromium"
+          echo "$RUNNER_TEMP/autoin-chromium-bin" >> "$GITHUB_PATH"
+      - name: Migrate disposable PostgreSQL 18.3 DB
+        run: npm run db:migrate
+      - name: Compile actual non-demo Vite React UI
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          VITE_DEMO_MODE=false npm run build
+      - name: Execute two real authenticated Chromium 503 error/recovery cases
+        run: node --import tsx tests/ui/code008-product-pg.mjs
+      - name: Preserve remaining NOT RUN release gates
+        if: always()
+        run: |
+          echo "Only actual browser order-detail GET503 on 1440x900 and 390x844 is under test."
+          echo "This workflow does not rerun existing fourteen cases."
+          echo "No sealed-preview GET409, physical Safari, vendor OA, Ricoh or TN037 validation."
