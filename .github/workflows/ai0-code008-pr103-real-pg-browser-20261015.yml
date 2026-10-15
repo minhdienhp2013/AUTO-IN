@@ -1,0 +1,81 @@
+name: AI0 CODE008 PR103 exact Fastify PostgreSQL Chromium validation
+on:
+  push:
+    branches:
+      - ai0/code008-pr103-exact-ci-and-copy-prompts-20261015
+permissions:
+  contents: read
+jobs:
+  product-browser:
+    name: Exact-PR103 real Fastify + isolated PG + Chromium
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_test_code008
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_code008"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code008
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code008
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code008
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+    steps:
+      - name: Checkout exact reviewed AI4 product/browser SHA (not merge ref)
+        uses: actions/checkout@v4
+        with:
+          ref: 323b6da983c8848f9b2ba19313d3047223ba6897
+          persist-credentials: false
+      - name: Refuse mismatched checkout
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "323b6da983c8848f9b2ba19313d3047223ba6897"
+          echo "EXACT_SOURCE_SHA=$(git rev-parse HEAD)"
+          test "$AUTOIN_OPERATION_MODE" = "simulation"
+          case "$TEST_DATABASE_URL" in
+            postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code008) ;;
+            *) echo "Refusing non-isolated DB" >&2; exit 1 ;;
+          esac
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install root dependencies
+        run: npm ci
+      - name: Install real Playwright Chromium (no page.route mocking)
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check playwright==1.58.0
+          python -m playwright install --with-deps chromium
+          chrome="$(python -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')"
+          test -x "$chrome"
+          mkdir -p "$RUNNER_TEMP/autoin-chromium-bin"
+          ln -sfn "$chrome" "$RUNNER_TEMP/autoin-chromium-bin/chromium"
+          echo "$RUNNER_TEMP/autoin-chromium-bin" >> "$GITHUB_PATH"
+      - name: Migrate disposable PostgreSQL 18.3 test DB
+        run: npm run db:migrate
+      - name: Install UI and compile actual production React bundle
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          VITE_DEMO_MODE=false npm run build
+      - name: Execute 14 PR103 viewport cases with genuine Fastify and PostgreSQL
+        run: node --import tsx tests/ui/code008-product-pg.mjs
+      - name: Explicitly preserve incomplete release gates
+        if: always()
+        run: |
+          echo "This run validates only PR103's 14 planned synthetic-data cases over real Fastify/PostgreSQL."
+          echo "UI GET 409/503 and stale server request_hash require additional controlled fixtures: NOT RUN."
+          echo "Physical Safari, official Zalo OA, Windows/Ricoh and TN037: NOT RUN."
