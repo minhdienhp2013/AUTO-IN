@@ -37,7 +37,10 @@ def scenario(browser, width, height, kind):
             if '/api/' in request.url else None)
     try:
         # A clean browser context is intentionally used for every scenario.
-        page.goto(URL, wait_until='domcontentloaded')
+        # Preserve old notification revision until the genuine backend read.
+        navigation = (URL + '?order_id=' + ORDERS['stale_revision'] +
+                      '&revision=1') if kind == 'stale_revision' else URL
+        page.goto(navigation, wait_until='domcontentloaded')
         form = page.locator('[data-testid="staff-login"]')
         form.wait_for(state='visible')
         fields = form.locator('input')
@@ -45,7 +48,13 @@ def scenario(browser, width, height, kind):
         fields.nth(0).fill(SHOP)
         fields.nth(1).fill('owner')
         fields.nth(2).fill('incorrect-synthetic-password' if kind == 'api401' else PASSWORD)
-        form.locator('button').first.click()
+        with page.expect_response(
+            lambda response: urlsplit(response.url).path == '/api/v1/auth/login'
+            and response.request.method == 'POST', timeout=15000
+        ) as auth_response:
+            form.locator('button').first.click()
+        assert auth_response.value.status == (401 if kind == 'api401' else 200), (
+            'real Fastify login must produce expected HTTP status')
         if kind == 'api401':
             page.locator('[data-testid="api-error"]').wait_for(state='visible')
             # Authentication failure keeps the login form: there is no
@@ -55,9 +64,12 @@ def scenario(browser, width, height, kind):
             assert page.locator('[data-testid="approve-action"]').count() == 0
         else:
             target = ORDERS.get(kind) or ORDERS['clear']
-            card = page.locator('[data-testid="order-list"] .order-card').filter(has_text=target)
-            card.wait_for(state='visible', timeout=20000)
-            card.click()
+            if kind != 'stale_revision':
+                card = page.locator('[data-testid="order-list"] .order-card').filter(has_text=target)
+                card.wait_for(state='visible', timeout=20000)
+                card.click()
+            # For stale notifications, selecting the order again would erase
+            # the old revision query parameter; the app selects it on load.
             detail = page.locator('[data-testid="order-detail"]')
             detail.locator('.detail-head h2').filter(has_text=target).wait_for(timeout=20000)
             approve = detail.locator('[data-testid="approve-action"]')
@@ -89,14 +101,7 @@ def scenario(browser, width, height, kind):
                 assert 'CẦN XÁC NHẬN LẠI' in pending.inner_text().upper() or (
                     pending.locator('[data-testid="code008-reconfirm"]').count() == 1)
             elif kind == 'stale_revision':
-                # Simulate an old version notification AFTER selecting a real order
-                # (doSelect clears revision). A real GET must still show revision 3.
-                page.evaluate("""() => {
-                    const url = new URL(window.location.href);
-                    url.searchParams.set('revision', '1');
-                    window.history.replaceState({}, '', url);
-                }""")
-                page.get_by_role('button', name='Làm mới dữ liệu').click()
+                # Old notification revision is preserved through first real GET.
                 page.locator('[data-testid="api-error"]').filter(
                     has_text='Thông báo thuộc phiên bản 1').wait_for(timeout=15000)
                 pending.locator('[data-testid="code008-reconfirm"]').wait_for(timeout=15000)
