@@ -1,0 +1,65 @@
+name: AI0 CODE008 exact Extra-Only real PG validation
+on:
+  push:
+    branches:
+      - ai0/code008-extra-pg-validation-20261016
+permissions:
+  contents: read
+jobs:
+  extra-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_test_code008
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_code008"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code008
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code008
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code008
+      AUTOIN_OPERATION_MODE: simulation
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_CODE008_EXTRA_ONLY: YES
+    steps:
+      - name: Checkout exact AI4 HEAD, not PR merge ref
+        uses: actions/checkout@v4
+        with:
+          ref: e4b7746fbdcb83b2491435d66f55e47e3f1820be
+          persist-credentials: false
+      - name: Enforce exact source and localhost disposable test database
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "e4b7746fbdcb83b2491435d66f55e47e3f1820be"
+          echo "EXACT_EXTRA_SOURCE_SHA=$(git rev-parse HEAD)"
+          test "$AUTOIN_OPERATION_MODE" = "simulation"
+          test "$AUTOIN_CODE008_EXTRA_ONLY" = "YES"
+          test "$AUTOIN_ALLOW_PG_ACCEPTANCE" = "YES_ISOLATED_TEST_DB"
+          test "$TEST_DATABASE_URL" = "postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code008"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - name: Install root deps and migrate isolated PG
+        run: |
+          npm ci
+          npm run db:migrate
+      - name: Build actual non-demo React assets
+        working-directory: web
+        run: |
+          npm ci
+          VITE_DEMO_MODE=false npm run build
+      - name: Run genuine Fastify GET409 GET503 and Core stale-request-hash Port regressions
+        run: node --import tsx tests/ui/code008-product-pg.mjs
+      - name: Preserve unrelated unexecuted gates
+        if: always()
+        run: |
+          echo "GET order-detail 409 unsupported by current contract."
+          echo "Stale sealed preview GET409 and physical Safari/OA/Ricoh/TN037 NOT RUN."
+          echo "This job does not rerun the older 14 Chromium viewport cases."
