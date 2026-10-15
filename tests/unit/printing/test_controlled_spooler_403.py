@@ -273,3 +273,67 @@ def test_journal_persists_no_automatic_recovery_spooler_call(tmp_path):
     assert submit(replay)['status'] == 'UNKNOWN'
     assert spooler.calls == []
     replay.journal.close()
+
+
+def test_two_interleaved_claims_cannot_bypass_one_job_boundary(tmp_path):
+    """Nested preflight models contenders both passing the first empty check."""
+    base = ticket()
+    spooler = InMemorySpooler()
+    outer_journal = Journal(tmp_path / 'shared.sqlite')
+    inner_journal = Journal(tmp_path / 'shared.sqlite')
+    counts = {'mark': 0}
+
+    def once_mark(j):
+        counts['mark'] += 1
+        return mark(j)
+
+    inner = OneJobWindowsSpoolerSeam(
+        journal=inner_journal, spooler=spooler, ticket=base,
+        observed_printer=observed(base), preflight=preflight,
+        mark_sending=once_mark)
+    interleaved_results = []
+
+    def overlapping_preflight(j):
+        interleaved_results.append(submit(inner))
+        return preflight(j)
+
+    outer = OneJobWindowsSpoolerSeam(
+        journal=outer_journal, spooler=spooler, ticket=base,
+        observed_printer=observed(base), preflight=overlapping_preflight,
+        mark_sending=once_mark)
+    try:
+        result = submit(outer)
+        assert result['reason'] == 'ONE_JOB_ALREADY_JOURNALED_NO_RETRY'
+        assert interleaved_results[0]['reason'] == 'SPOOLER_ACK_NOT_PAPER_EVIDENCE'
+        assert len(spooler.calls) == counts['mark'] == 1
+        assert outer_journal.get(base.job_id)['state'] == 'UNKNOWN'
+        assert outer_journal.db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0] == 1
+    finally:
+        outer_journal.close()
+        inner_journal.close()
+
+
+def test_journal_write_failure_never_marks_or_submits(tmp_path, monkeypatch):
+    """SQLite boundary error must stop before mark and fake spooler call."""
+    a, spooler = setup(tmp_path)
+    marked = []
+
+    def fake_mark(j):
+        marked.append(j['job_id'])
+        return mark(j)
+
+    a.mark_sending = fake_mark
+
+    def fail_write(_job):
+        import sqlite3
+        raise sqlite3.OperationalError('synthetic durable journal write failed')
+
+    monkeypatch.setattr(a.journal, 'begin', fail_write)
+    try:
+        with pytest.raises(Exception, match='journal write failed'):
+            submit(a)
+        assert spooler.calls == []
+        assert marked == []
+        assert a.journal.get('one-job') is None
+    finally:
+        a.journal.close()
