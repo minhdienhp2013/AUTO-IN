@@ -49,7 +49,9 @@ def scenario(browser, width, height, kind):
         form.locator('button').first.click()
         if kind == 'api401':
             page.locator('[data-testid="api-error"]').wait_for(state='visible')
-            assert page.locator('[data-testid="api-lock-banner"]').count() == 1
+            # Authentication failure keeps the login form: there is no
+            # active order UI to show the global detail-read lock banner.
+            assert form.is_visible()
             assert page.locator('[data-testid="order-list"]').count() == 0
             assert page.locator('[data-testid="approve-action"]').count() == 0
         else:
