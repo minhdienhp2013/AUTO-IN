@@ -37,8 +37,7 @@ def scenario(browser, width, height, kind):
             if '/api/' in request.url else None)
     try:
         # A clean browser context is intentionally used for every scenario.
-        navigation = (URL + '?order_id=' + ORDERS['stale_revision'] + '&revision=1') if kind == 'stale_revision' else URL
-        page.goto(navigation, wait_until='domcontentloaded')
+        page.goto(URL, wait_until='domcontentloaded')
         form = page.locator('[data-testid="staff-login"]')
         form.wait_for(state='visible')
         fields = form.locator('input')
@@ -90,8 +89,17 @@ def scenario(browser, width, height, kind):
                 assert 'CẦN XÁC NHẬN LẠI' in pending.inner_text().upper() or (
                     pending.locator('[data-testid="code008-reconfirm"]').count() == 1)
             elif kind == 'stale_revision':
-                # Old notification revision must not supersede latest PG order.
-                pending.locator('[data-testid="code008-reconfirm"]').wait_for(state='visible', timeout=15000)
+                # Simulate an old version notification AFTER selecting a real order
+                # (doSelect clears revision). A real GET must still show revision 3.
+                page.evaluate("""() => {
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('revision', '1');
+                    window.history.replaceState({}, '', url);
+                }""")
+                page.get_by_role('button', name='Làm mới dữ liệu').click()
+                page.locator('[data-testid="api-error"]').filter(
+                    has_text='Thông báo thuộc phiên bản 1').wait_for(timeout=15000)
+                pending.locator('[data-testid="code008-reconfirm"]').wait_for(timeout=15000)
                 assert 'LẦN SỬA 3' in detail.inner_text()
                 assert approve.is_disabled()
             elif kind == 'offline':
