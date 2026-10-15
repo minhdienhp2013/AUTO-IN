@@ -99,13 +99,14 @@ try{
       .type(mime[extname(path)]||'application/octet-stream').send(content):reply.code(404).send();
   });
   let mutationRequests=0;
-  app.addHook('onRequest',async(request)=>{
-    if(request.url.startsWith('/api/v1/')&&
-      !['GET','HEAD','OPTIONS'].includes(request.method)&&
-      !request.url.startsWith('/api/v1/auth/login')){
+  // Passive Node HTTP observation is not a mock/intercept and covers routes
+  // registered earlier by buildIntegratedApp. Never supply a response here.
+  app.server.on('request',request=>{
+    const path=request.url?.split('?')[0]??'';
+    if(path.startsWith('/api/v1/')&&
+      !['GET','HEAD','OPTIONS'].includes(request.method??'')&&
+      !(path==='/api/v1/auth/login'&&request.method==='POST'))
       mutationRequests++;
-      // Don't block the request: an unexpected business POST must FAIL.
-    }
   });
   const event=(eventId,kind='text')=>({
     synthetic_fixture:true,event_id:eventId,oa_id:oa,
