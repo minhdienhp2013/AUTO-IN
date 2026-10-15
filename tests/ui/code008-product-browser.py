@@ -2,8 +2,8 @@
 
 No page.route, route.fulfill, API response intercept, customer/OA/printer credentials
 or runtime endpoint added. Called by code008-product-pg.mjs after isolated seed.
-The 409/503 GET/error and stale-hash cases remain explicitly NOT RUN until
-AI0 supplies a deterministic safe test-side failure/seed contract.
+Optional order_detail_503 mode tests real authenticated GET503 and recovery;
+other 409/503 preview or stale hash cases remain separate from browser PASS.
 """
 import json
 import os
@@ -146,6 +146,112 @@ def scenario(browser, viewport, case):
         context.close()
 
 
+
+def order_detail_503(browser, viewport):
+    """Exercise one real Core read-model 503, not a preview/API mock response."""
+    from urllib.parse import urlsplit
+
+    width, height = viewport
+    mobile = width < 600
+    context = browser.new_context(
+        viewport={"width": width, "height": height},
+        is_mobile=mobile, has_touch=mobile, locale="vi-VN"
+    )
+    page = context.new_page()
+    order_id = ORDERS["clear"]
+    endpoint = "/api/v1/orders/" + order_id
+    mutations = []
+    page_errors = []
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+
+    def is_detail(response, status):
+        return (urlsplit(response.url).path == endpoint and
+                response.request.method == "GET" and response.status == status)
+
+    def inspect(request):
+        path = urlsplit(request.url).path
+        if path.startswith("/api/v1/") and request.method not in ("GET", "HEAD", "OPTIONS"):
+            if not (path == "/api/v1/auth/login" and request.method == "POST"):
+                mutations.append(request.method + " " + path)
+
+    page.on("request", inspect)
+    locked = False
+    try:
+        page.goto(URL, wait_until="domcontentloaded", timeout=20000)
+        login = page.locator('[data-testid="staff-login"]')
+        login.wait_for(state="visible", timeout=15000)
+        fields = login.locator("input")
+        assert fields.count() == 3
+        fields.nth(0).fill(SHOP)
+        fields.nth(1).fill(USER)
+        fields.nth(2).fill(PASSWORD)
+        login.locator("button").first.click()
+        card = page.locator('[data-testid="order-list"] .order-card').filter(has_text=order_id)
+        card.wait_for(state="visible", timeout=15000)
+        card.click()
+        detail = page.locator('[data-testid="order-detail"]')
+        detail.locator(".detail-head h2").filter(has_text=order_id).wait_for(
+            state="visible", timeout=15000
+        )
+        inbound = detail.locator('[data-testid="code008-inbound"]')
+        inbound.locator('[data-testid="code008-clear"]').wait_for(
+            state="visible", timeout=15000
+        )
+        approve = detail.locator('[data-testid="approve-action"]')
+        assert approve.is_disabled(), "Unconfirmed test order must stay disabled"
+
+        print("CONTROL LOCK_ORDER_DETAIL", flush=True)
+        assert sys.stdin.readline().strip() == "OK", "isolated PG lock control missing"
+        locked = True
+        try:
+            with page.expect_response(lambda r: is_detail(r, 503), timeout=20000) as failed:
+                page.get_by_role("button", name="Làm mới dữ liệu").click()
+            fault = failed.value.json()
+            assert fault.get("error", {}).get("code") == "PENDING_READ_UNAVAILABLE", (
+                "Real GET order-detail was 503 but not Core PENDING_READ_UNAVAILABLE"
+            )
+            api_error = page.locator('[data-testid="api-error"]')
+            api_lock = page.locator('[data-testid="api-lock-banner"]')
+            blocked = inbound.locator('[data-testid="code008-blocked"]')
+            api_error.wait_for(state="visible", timeout=15000)
+            api_lock.wait_for(state="visible", timeout=15000)
+            blocked.wait_for(state="visible", timeout=15000)
+            assert api_error.count() == api_lock.count() == 1, (
+                "API error and write-lock banner must remain separate"
+            )
+            assert "tạm khóa" in api_lock.inner_text()
+            assert "CHƯA XÁC ĐỊNH" in blocked.inner_text()
+            assert inbound.locator('[data-testid="code008-clear"]').count() == 0, (
+                "Cached server CLEAR must be hidden on genuine GET503"
+            )
+            assert approve.is_disabled(), "Approval enabled while API details unavailable"
+        finally:
+            print("CONTROL RELEASE_ORDER_DETAIL", flush=True)
+            assert sys.stdin.readline().strip() == "OK", "PostgreSQL ROLLBACK control failed"
+            locked = False
+
+        with page.expect_response(lambda r: is_detail(r, 200), timeout=20000):
+            page.get_by_role("button", name="Làm mới dữ liệu").click()
+        inbound.locator('[data-testid="code008-clear"]').wait_for(
+            state="visible", timeout=15000
+        )
+        assert page.locator('[data-testid="api-error"]').count() == 0
+        assert page.locator('[data-testid="api-lock-banner"]').count() == 0
+        assert approve.is_disabled(), "Recovery must not bypass customer confirmation"
+        assert not mutations, "Business HTTP mutation attempted: " + repr(mutations)
+        assert not page_errors, "Page exception: " + repr(page_errors[:1])
+        print(f"PASS REAL CODE008 Chromium {width}x{height} order_detail_503 "
+              "GET=503 PENDING_READ_UNAVAILABLE rollback_recovery=200 "
+              "api_error=1 api_lock_banner=1 blocked=1 approve_disabled=true "
+              "stale_clear_hidden=true mutation=0", flush=True)
+    finally:
+        if locked:
+            # Node parent also releases the PG transaction on browser exit.
+            print("CONTROL RELEASE_ORDER_DETAIL", flush=True)
+            sys.stdin.readline()
+        context.close()
+
+
 def main():
     if not URL.startswith("http://127.0.0.1:"):
         raise RuntimeError("Must only connect to an isolated localhost Fastify")
@@ -157,13 +263,24 @@ def main():
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         try:
-            for viewport in ((1440, 900), (390, 844)):
-                for case in CASES:
-                    scenario(browser, viewport, case)
+            mode = os.environ.get('AUTOIN_CODE008_BROWSER_MODE', '')
+            if mode == 'order_detail_503':
+                for viewport in ((1440, 900), (390, 844)):
+                    order_detail_503(browser, viewport)
+            elif mode == '':
+                for viewport in ((1440, 900), (390, 844)):
+                    for case in CASES:
+                        scenario(browser, viewport, case)
+            else:
+                raise RuntimeError('Unexpected CODE008 browser mode')
         finally:
             browser.close()
-    print("PASS REAL CODE008 Fastify/PostgreSQL Chromium: 14 viewport-scenarios; "
-          "API 409/503/stale-hash=NOT_RUN; iPhone Safari=NOT_RUN", flush=True)
+    if os.environ.get("AUTOIN_CODE008_BROWSER_MODE") == "order_detail_503":
+        print("PASS REAL CODE008 Browser 503: 2 viewport-scenarios; "
+              "GET 409/order preview=NOT_RUN; iPhone Safari=NOT_RUN", flush=True)
+    else:
+        print("PASS REAL CODE008 Fastify/PostgreSQL Chromium: 14 viewport-scenarios; "
+              "API 409/503/stale-hash=NOT_RUN; iPhone Safari=NOT_RUN", flush=True)
 
 
 if __name__ == "__main__":
