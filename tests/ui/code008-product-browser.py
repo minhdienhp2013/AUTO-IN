@@ -67,7 +67,10 @@ def scenario(browser, viewport, case):
         order_id = ORDERS["clear"] if case in ("api401", "offline") else ORDERS[case]
         card = cards.filter(has_text=order_id)
         card.wait_for(state="visible", timeout=15000)
-        card.click()
+        # Selecting a card strips ?revision= from the URL; navigation-stale
+        # must retain that query and rely on App's own deep-link selection.
+        if case != "stale_revision":
+            card.click()
         detail = page.locator('[data-testid="order-detail"]')
         detail.locator(".detail-head h2").filter(has_text=order_id).wait_for(
             state="visible", timeout=15000
