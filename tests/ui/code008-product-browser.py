@@ -93,8 +93,16 @@ def scenario(browser, viewport, case):
                 assert "ĐANG CHỜ AI XỬ LÝ" in msg
             expected_count = 1 if case == "pending1" else 0
             assert inbound.locator(".inbound-item").count() == expected_count
+            pending_label = inbound.locator('[data-testid="code008-pending-count"]')
+            assert pending_label.count() == 1
+            state_name = "needs_human" if case == "needs_human0" else "processing"
+            assert state_name in pending_label.inner_text()
             if case == "pending1":
+                assert "Có 1 tin/file chưa xử lý" in pending_label.inner_text()
+                assert "Tệp tin cần đối soát" in inbound.inner_text()
                 assert "đã ghép vào đơn" not in inbound.inner_text().lower()
+            else:
+                assert "Chưa có mục được liệt kê" in pending_label.inner_text()
         elif case == "stale_revision":
             error = page.locator('[data-testid="api-error"]')
             error.wait_for(state="visible", timeout=15000)
