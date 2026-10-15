@@ -37,7 +37,8 @@ def scenario(browser, width, height, kind):
             if '/api/' in request.url else None)
     try:
         # A clean browser context is intentionally used for every scenario.
-        page.goto(URL, wait_until='domcontentloaded')
+        navigation = (URL + '?order_id=' + ORDERS['stale_revision'] + '&revision=1') if kind == 'stale_revision' else URL
+        page.goto(navigation, wait_until='domcontentloaded')
         form = page.locator('[data-testid="staff-login"]')
         form.wait_for(state='visible')
         fields = form.locator('input')
@@ -67,26 +68,29 @@ def scenario(browser, width, height, kind):
                 label.wait_for(state='visible')
                 assert 'đúng mã đơn' in label.inner_text()
             elif kind == 'processing0':
+                pending.locator('[data-testid="code008-blocked"]').filter(has_text='ĐANG CHỜ AI XỬ LÝ').wait_for()
                 assert 'ĐANG CHỜ AI XỬ LÝ' in pending.inner_text()
                 assert 'Chưa có mục được liệt kê' in pending.inner_text()
             elif kind == 'needs_human0':
+                pending.locator('[data-testid="code008-blocked"]').filter(has_text='CẦN NHÂN VIÊN ĐỐI SOÁT').wait_for()
                 assert 'CẦN NHÂN VIÊN ĐỐI SOÁT' in pending.inner_text()
                 assert 'Chưa có mục được liệt kê' in pending.inner_text()
             elif kind == 'pending1':
+                pending.locator('.inbound-item').wait_for(state='visible', timeout=15000)
                 assert 'ĐANG CHỜ AI XỬ LÝ' in pending.inner_text()
                 assert 'Có 1 tin/file chưa xử lý' in pending.inner_text()
                 assert pending.locator('.inbound-item').count() == 1
                 assert 'đã ghép vào đơn' not in pending.inner_text().lower()
             elif kind == 'stale_hash':
+                pending.locator('[data-testid="code008-reconfirm"]').wait_for(state='visible', timeout=15000)
                 assert pending.locator('[data-testid="code008-clear"]').count() == 0
                 assert 'ĐANG CHỜ AI XỬ LÝ' in pending.inner_text()
                 assert 'CẦN XÁC NHẬN LẠI' in pending.inner_text().upper() or (
                     pending.locator('[data-testid="code008-reconfirm"]').count() == 1)
             elif kind == 'stale_revision':
-                # Real navigation to a previous revision; actual backend returns latest.
-                # This MUST NOT replay an obsolete approval or change current order.
-                assert 'đúng mã đơn' in pending.inner_text() or (
-                    pending.locator('[data-testid="code008-blocked"]').count() == 1)
+                # Old notification revision must not supersede latest PG order.
+                pending.locator('[data-testid="code008-reconfirm"]').wait_for(state='visible', timeout=15000)
+                assert 'LẦN SỬA 3' in detail.inner_text()
                 assert approve.is_disabled()
             elif kind == 'offline':
                 ctx.set_offline(True)  # browser network disabled; NO route.fulfill/interception
