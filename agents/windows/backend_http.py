@@ -25,6 +25,10 @@ def urlopen(request, timeout):
     return build_opener(_RejectRedirects()).open(request, timeout=timeout)
 
 
+class DocumentEvidenceDenied(RuntimeError):
+    """Only verified HTTPS preflight HTTP 409 with exact AI0 evidence code."""
+
+
 class HttpBackendClient:
     """Use with a scoped print_agent server token and DryRunDriver only."""
 
@@ -42,6 +46,9 @@ class HttpBackendClient:
         self.token = token
         self.printer_id = printer_id
         self.timeout = timeout
+        # In-memory only: never serialize a preflight proof or trust any client
+        # supplied document_evidence_verified field on a claimed job.
+        self._verified_identity: tuple[Any, ...] | None = None
 
     def _post(self, suffix: str, body: dict[str, Any]) -> dict[str, Any]:
         request = Request(self.base_url + suffix,
@@ -74,7 +81,22 @@ class HttpBackendClient:
     def _lease_payload(job: dict[str, Any]) -> dict[str, Any]:
         return {'expected_revision': job['revision'], 'lease_token': job['lease_token']}
 
+    @staticmethod
+    def _identity(job: dict[str, Any]) -> tuple[Any, ...]:
+        # Include the entire claimed job/lease identity. A cached preflight for
+        # an old lease, order, hash or approval is NEVER sufficient for sending.
+        return tuple(job.get(name) for name in (
+            'job_id', 'order_id', 'revision', 'request_hash',
+            'approval_id', 'lease_token'
+        ))
+
+    def evidence_verified(self, job: dict[str, Any]) -> bool:
+        return (self._verified_identity is not None and
+                self._verified_identity == self._identity(job))
+
     def claim(self) -> dict[str, Any] | None:
+        # Any new claim invalidates preflight proof, even if HTTP fails.
+        self._verified_identity = None
         # New idempotency key on each independent poll. Never retry an ambiguous
         # POST without reconciling it with server and local journal first.
         data = self._post('/internal/v1/print-jobs/claim',
@@ -85,9 +107,43 @@ class HttpBackendClient:
         return job
 
     def preflight(self, job: dict[str, Any]) -> dict[str, Any]:
-        return self._post(self._job_path(job, 'preflight'), self._lease_payload(job))
+        # Never carry preflight evidence across independent attempts.
+        self._verified_identity = None
+        try:
+            value = self._post(self._job_path(job, 'preflight'),
+                               self._lease_payload(job))
+        except HTTPError as error:
+            # Only this EXACT HTTP 409 wire error is a safe deterministic
+            # denial. Malformed 409, 503, timeouts or lost ACK remain UNKNOWN
+            # and must not be silently retried as an unapproved print.
+            if error.code == 409:
+                try:
+                    raw = error.read(4097)
+                    if len(raw) <= 4096:
+                        payload = json.loads(raw)
+                        if (isinstance(payload, dict) and
+                                isinstance(payload.get('error'), dict) and
+                                payload['error'].get('code') == 'DOCUMENT_EVIDENCE_UNVERIFIED'):
+                            raise DocumentEvidenceDenied('DOCUMENT_EVIDENCE_UNVERIFIED')
+                except (ValueError, UnicodeError, TypeError):
+                    pass
+            raise
+        if (value.get('document_evidence_verified') is True and
+                value.get('allowed') is True and
+                value.get('job_id') == job.get('job_id') and
+                type(value.get('revision')) is int and
+                value['revision'] == job.get('revision') and
+                value.get('approval_id') == job.get('approval_id') and
+                value.get('mode') == job.get('mode') == 'simulation'):
+            self._verified_identity = self._identity(job)
+        return value
 
     def mark_sending(self, job: dict[str, Any]) -> dict[str, Any]:
+        # A new mark requires a fresh preflight and matching exact lease.
+        # Clear proof even if HTTP fails/ACK is lost (UNKNOWN path).
+        if not self.evidence_verified(job):
+            raise RuntimeError('Preflight document proof stale or missing')
+        self._verified_identity = None
         return self._post(self._job_path(job, 'mark-sending'),
                           {**self._lease_payload(job),
                            'idempotency_key': self._idempotency(job, 'mark-sending')})

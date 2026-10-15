@@ -80,6 +80,23 @@ export async function readPendingUpdates(db:SqlConnection,scope:PendingUpdatesSc
     return true;
    };
    if(!safeManualData(row.initial_data)||!safeManualData(row.current_data))return unknown();
+   // CODE-008: a staff-authored order can share its customer with an official
+   // OA. Do not advertise CLEAR while Core.approve would 409 on an unmapped or
+   // customer-mapped NEEDS_HUMAN receipt. This is display-only, not approval.
+   const gate=(await db.query<{registry:string|null;quarantine:string|null;scopes:string|null}>(
+    "SELECT to_regclass('public.core_shop_zalo_oa_registry')::text AS registry,"+
+    "to_regclass('public.zalo_official_quarantine')::text AS quarantine,"+
+    "to_regclass('public.zalo_official_quarantine_scopes')::text AS scopes")).rows[0];
+   if(!gate?.registry||!gate.quarantine||!gate.scopes)return unknown();
+   const held=await db.query<CountRow>(
+    "SELECT count(*)::int AS n FROM public.zalo_official_quarantine q "+
+    "JOIN public.core_shop_zalo_oa_registry r ON r.oa_id=q.oa_id "+
+    "WHERE r.shop_id=$1 AND q.status='NEEDS_HUMAN' "+
+    "AND (q.customer_id IS NULL OR q.conversation_id IS NULL OR q.customer_id=$2)",
+    [scope.shop_id,scope.customer_id]);
+   const total=held.rows[0]?dbSafeInteger(held.rows[0].n,'pending.manual_quarantine'):-1;
+   if(total<0)return unknown();
+   if(total>0)return {...emptyPending(scope,'processing'),unresolved_count:total};
    return emptyPending(scope,scope.verified_plan_ready?'clear':'processing');
   }
   const t=(await db.query<RelationRow>(
