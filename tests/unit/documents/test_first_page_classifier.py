@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import sys
+from types import ModuleType, SimpleNamespace
 from statistics import median
 from time import perf_counter
 import zipfile
@@ -288,9 +290,19 @@ def test_oversized_first_tiff_frame_rejected_before_decode(monkeypatch):
     assert_clean(result)
 
 
+def _fake_pytesseract(monkeypatch):
+    """Optional OCR dependency is absent in default CI; fake it, never install."""
+    fake = ModuleType("pytesseract")
+    fake.pytesseract = SimpleNamespace(tesseract_cmd="tesseract")
+    fake.image_to_string = lambda *_a, **_k: pytest.fail("unexpected OCR invocation")
+    fake.get_languages = lambda *_a, **_k: pytest.fail("unbounded language listing")
+    monkeypatch.setitem(sys.modules, "pytesseract", fake)
+    return fake
+
+
 def test_unbounded_get_languages_is_never_called_and_hung_discovery_times_out(monkeypatch):
     import subprocess
-    import pytesseract
+    pytesseract = _fake_pytesseract(monkeypatch)
     from workers.documents import first_page_classifier as module
 
     def discovery_timeout(command, *, capture_output, check, timeout):
@@ -314,7 +326,7 @@ def test_unbounded_get_languages_is_never_called_and_hung_discovery_times_out(mo
 
 def test_local_ocr_uses_remaining_budget_for_recognition(monkeypatch):
     import subprocess
-    import pytesseract
+    pytesseract = _fake_pytesseract(monkeypatch)
     from workers.documents import first_page_classifier as module
 
     # Deterministic monotonic ticks: 4-second end-to-end budget, not 4+4.
@@ -347,7 +359,7 @@ def test_local_ocr_uses_remaining_budget_for_recognition(monkeypatch):
 
 def test_discovery_consumes_ocr_budget_recognition_is_never_started(monkeypatch):
     import subprocess
-    import pytesseract
+    pytesseract = _fake_pytesseract(monkeypatch)
     from workers.documents import first_page_classifier as module
 
     ticks = iter([100.0, 100.0, 104.0])
@@ -368,7 +380,7 @@ def test_discovery_consumes_ocr_budget_recognition_is_never_started(monkeypatch)
 
 def test_discovery_error_does_not_leak_exception_or_attempt_ocr(monkeypatch):
     import subprocess
-    import pytesseract
+    pytesseract = _fake_pytesseract(monkeypatch)
     from workers.documents import first_page_classifier as module
 
     monkeypatch.setattr(module.subprocess, "run",
