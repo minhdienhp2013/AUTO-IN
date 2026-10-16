@@ -132,7 +132,7 @@ async function run(){
  try{
    const version=await sql('SHOW server_version_num');
    const major=Number(version.rows[0].server_version_num);
-   if(major<180300||major>=180400)stop('POSTGRES_VERSION_REQUIRED','Need isolated PostgreSQL 18.3, found '+major);
+   if(major!==180003)stop('POSTGRES_VERSION_REQUIRED','Need isolated PostgreSQL 18.3, found '+major);
    root=await mkdtemp(join(tmpdir(),'autoin-load100-'));
    const inbound=join(root,'inbound'),output=join(root,'rendered');
    await mkdir(inbound,{mode:0o700});await mkdir(output,{mode:0o700});
@@ -190,9 +190,10 @@ async function run(){
    const auth={Authorization:'Bearer '+login.data.token};
    // Test-only synthetic fixture verifier: never Zalo provider-signed identity.
    const sign={'x-test-fixture-key':fixtureKey};
+   const replayTimestamp=new Date().toISOString();
    const send=async c=>http('POST','/webhooks/zalo',{
      synthetic_fixture:true,event_id:c.event_id,oa_id:oa,customer_id:c.customer_id,
-     conversation_id:c.conversation_id,occurred_at:new Date().toISOString(),
+     conversation_id:c.conversation_id,occurred_at:replayTimestamp,
      kind:c.kind,filename:c.filename,file_ref:'untrusted-'+c.event_id
    },sign,'webhook');
    const baseline=async()=>{
