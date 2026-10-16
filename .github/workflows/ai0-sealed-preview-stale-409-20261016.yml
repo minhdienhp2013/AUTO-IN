@@ -32,12 +32,12 @@ jobs:
       - name: Checkout exact reviewed test and product SHA
         uses: actions/checkout@v4
         with:
-          ref: 40c3e879674fde7e21b44bdc6283610734640ab0
+          ref: de52c11e123037c7fe16c555494a9b7774baa2bd
           persist-credentials: false
       - name: Enforce exact source and disposable PG isolation
         shell: bash
         run: |
-          test "$(git rev-parse HEAD)" = "40c3e879674fde7e21b44bdc6283610734640ab0"
+          test "$(git rev-parse HEAD)" = "de52c11e123037c7fe16c555494a9b7774baa2bd"
           echo "EXACT_PREVIEW409_SOURCE_SHA=$(git rev-parse HEAD)"
           test "$AUTOIN_OPERATION_MODE" = simulation
           test "$AUTOIN_ALLOW_PG_ACCEPTANCE" = YES_ISOLATED_TEST_DB
