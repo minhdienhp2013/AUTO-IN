@@ -1,0 +1,64 @@
+name: AI0 AI3 sealed preview stale revision real Fastify PostgreSQL
+on:
+  push:
+    branches:
+      - ai0/preview-stale-409-product-20261016
+permissions:
+  contents: read
+jobs:
+  sealed-preview:
+    name: Real staff preview catalog/png 200 to 409 after revision
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_test_preview
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_preview"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_preview
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_preview
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_preview
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+    steps:
+      - name: Checkout exact reviewed test and product SHA
+        uses: actions/checkout@v4
+        with:
+          ref: de52c11e123037c7fe16c555494a9b7774baa2bd
+          persist-credentials: false
+      - name: Enforce exact source and disposable PG isolation
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "de52c11e123037c7fe16c555494a9b7774baa2bd"
+          echo "EXACT_PREVIEW409_SOURCE_SHA=$(git rev-parse HEAD)"
+          test "$AUTOIN_OPERATION_MODE" = simulation
+          test "$AUTOIN_ALLOW_PG_ACCEPTANCE" = YES_ISOLATED_TEST_DB
+          test "$TEST_DATABASE_URL" = postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_preview
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install node and real AI3 Python renderer dependencies
+        run: |
+          npm ci
+          python -m pip install -r workers/documents/requirements-test.txt
+      - name: Migrate disposable PostgreSQL 18.3
+        run: npm run db:migrate
+      - name: Exercise authenticated real GET preview 200 to 409
+        run: node --import tsx --test tests/integration/composition/sealed-preview-stale-product-pg.test.mjs
+      - name: Preserve physical acceptance gates
+        if: always()
+        run: |
+          echo "Only Fastify/isolated PG and actual AI3 synthetic file rendering are tested."
+          echo "OA provider signed, Windows/Ricoh, physical Safari, TN037 remain NOT RUN."
