@@ -1,12 +1,13 @@
 import { actionPath, depositShortfall, hasValidApprovalInputs, validMoney, type ActionKind, type Mutation, type OrderView, type Snapshot, type StaffSession, type OperationMode, type ConversationState, type VerifiedFileFact } from './domain.ts';
 import { demoOrders, demoSession } from './fixtures.ts';
 import { canEditPrintRequest, enrichOrderWithCode008 } from './code008.ts';
+import { parseShopSchedule, type ShopSchedule, type SchedulePatch, type SchedulePort } from './shop-schedule.ts';
 
 export class ApiFault extends Error {
   readonly status: number; readonly code: string; readonly currentRevision?: number;
   constructor(status: number, code: string, message: string, currentRevision?: number) { super(message); this.name = 'ApiFault'; this.status = status; this.code = code; this.currentRevision = currentRevision; }
 }
-export interface PrintPort {
+export interface PrintPort extends SchedulePort {
   login(shopId: string, username: string, password: string): Promise<StaffSession>;
   logout(): Promise<void>;
   me(): Promise<StaffSession>;
@@ -262,6 +263,19 @@ export class HttpPrintPort implements PrintPort {
     const raw = await this.call(`/api/v1/orders/${encodeURIComponent(id)}`);
     return mapCoreOrderDetail(raw);
   }
+  async getShopSchedule(): Promise<ShopSchedule> {
+    try { return parseShopSchedule(await this.call('/api/v1/settings/schedule')); }
+    catch(e) {
+      if(e instanceof ApiFault) throw e;
+      throw new ApiFault(503,'INVALID_SCHEDULE_READMODEL','Lịch shop không hợp lệ; không cho sửa.');
+    }
+  }
+  async patchShopSchedule(change:SchedulePatch): Promise<ShopSchedule> {
+    const payload=await this.call('/api/v1/settings/schedule',{method:'PATCH',
+      body:JSON.stringify(change),headers:{'Idempotency-Key':change.idempotency_key}});
+    try { return parseShopSchedule(payload); }
+    catch { throw new ApiFault(503,'INVALID_SCHEDULE_RECEIPT','Biên nhận lịch không hợp lệ; phải đọc lại.'); }
+  }
   async loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{pages:Blob[];files:VerifiedFileFact[]}> {
     const {order_id,revision,request_hash}=order;
     if (!this.token || !/^[0-9a-f-]{36}$/i.test(order_id) ||
@@ -409,6 +423,12 @@ export class DemoPrintPort implements PrintPort {
     this.checkNetwork(); const found = this.orders.find(o => o.order_id === id);
     if (!found) throw new ApiFault(404, 'NOT_FOUND', 'Không tìm thấy đơn mô phỏng.');
     return structuredClone(found);
+  }
+  async getShopSchedule(): Promise<ShopSchedule> {
+    throw new ApiFault(503,'DEMO_SCHEDULE_DISABLED','Demo không lưu lịch vận hành shop.');
+  }
+  async patchShopSchedule(_change:SchedulePatch): Promise<ShopSchedule> {
+    throw new ApiFault(503,'DEMO_SCHEDULE_DISABLED','Demo không được ghi lịch shop.');
   }
   async loadVerifiedPreviewPages(): Promise<{pages:Blob[];files:VerifiedFileFact[]}> {
     // Demo images cannot be used as verified processor proof.
