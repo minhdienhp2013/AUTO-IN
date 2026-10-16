@@ -92,7 +92,8 @@ export function formatBoundFirstPageQuestion(
      metadata.schema_version!=="tn005.first_page.v1"||
      metadata.status!=="SUGGESTED"||metadata.confidence_label!=="high"||
      metadata.analyzed_page_count!==1||metadata.reason_code!=="NONE"||
-     typeof metadata.method!=="string"||!/^[a-z0-9_]{1,64}$/.test(metadata.method)||
+     !["pymupdf_page0_text","pymupdf_page0_local_ocr",
+       "pillow_frame0_local_ocr"].includes(String(metadata.method))||
      typeof metadata.category!=="string"||
      !Object.prototype.hasOwnProperty.call(categories,metadata.category))return safe();
   const label=categories[metadata.category as Category];
