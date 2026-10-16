@@ -12,21 +12,11 @@ const reject=(code:string):never=>{throw new DomainError(code,
   'Staff must reconcile the original AI2 suggestion',409)};
 const uuid=/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
-/**
- * Simulation-only bridge AI2 suggestion -> exactly ONE existing AI1 order.
- *
- * The staff, not AI2 nor a customer file_ref, chooses paper/copies. The source
- * must have been signed-ingressed and frozen by AI0. A durable reservation is
- * written BEFORE calling AI1.revise; a crash/ACK loss leaves PENDING, which is
- * deliberately fail-closed and must be reconciled by an owner. No auto-retry
- * and no createDraft/new order are possible here.
- */
-export async function adoptSyntheticSuggestedSource(
-  pool:SqlPool, service:Pick<OrderService,'revise'>,root:string,
-  scope:SyntheticArtifactScope,actor:Principal,
+/** Read-only provenance check, before reserving an HTTP receipt. */
+export async function verifySyntheticSuggestionTarget(
+  pool:SqlPool,root:string,scope:SyntheticArtifactScope,actor:Principal,
   input:{order_id:string;event_id:string;paper:'A4'|'A3';copies:number;duplex:boolean}
-):Promise<{status:'adopted';order_id:string;revision:number;
-  requires_customer_confirmation:true;preview_trusted:false}>{
+){
   assertStaff(actor);
   if(actor.shop_id!==scope.shop_id||!uuid.test(input?.order_id??''))
     return reject('SOURCE_ADOPTION_SCOPE_DENIED');
@@ -53,6 +43,25 @@ export async function adoptSyntheticSuggestedSource(
      !Array.isArray(snapshot.event_ids)||snapshot.event_ids.length!==1||
      snapshot.event_ids[0]!==input.event_id)
     return reject('SOURCE_ADOPTION_PROVENANCE_MISMATCH');
+  return {request_data,settingsHash};
+}
+
+/**
+ * Simulation-only bridge AI2 suggestion -> exactly ONE existing AI1 order.
+ *
+ * The staff, not AI2 nor a customer file_ref, chooses paper/copies. The source
+ * must have been signed-ingressed and frozen by AI0. A durable reservation is
+ * written BEFORE calling AI1.revise; a crash/ACK loss leaves PENDING, which is
+ * deliberately fail-closed and must be reconciled by an owner. No auto-retry
+ * and no createDraft/new order are possible here.
+ */
+export async function adoptSyntheticSuggestedSource(
+  pool:SqlPool, service:Pick<OrderService,'revise'>,root:string,
+  scope:SyntheticArtifactScope,actor:Principal,
+  input:{order_id:string;event_id:string;paper:'A4'|'A3';copies:number;duplex:boolean}
+):Promise<{status:'adopted';order_id:string;revision:number;
+  requires_customer_confirmation:true;preview_trusted:false}>{
+  const {request_data,settingsHash}=await verifySyntheticSuggestionTarget(pool,root,scope,actor,input);
   const reserved=await pool.query(
     "INSERT INTO ai0_inbound_artifact_drafts "+
     "(shop_id,oa_id,event_id,actor_id,settings_sha256) "+

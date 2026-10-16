@@ -10,6 +10,7 @@ import { ingestSyntheticArtifact, type SyntheticArtifactScope } from './syntheti
 import { loadVerifiedOrderPreview, loadVerifiedOrderPreviewCatalog } from './preview.js';
 import { createSyntheticInboundDraft } from './inbound-draft.js';
 import { reconcileSyntheticInboundDraft } from './inbound-reconcile.js';
+import { adoptSyntheticSourceHttp } from './source-adoption-http.js';
 import { createSyntheticVerifiedButtonPlugin, type SyntheticButtonScope } from './synthetic-verified-button.js';
 import { pendingReviewSqlPool } from './pending-review-errors.js';
 import { assertApprovedPrintJobEvidence, type ApprovedDocumentEvidenceOptions } from './approved-document-evidence.js';
@@ -179,6 +180,16 @@ export function buildIntegratedApp(options: RuntimeOptions) {
       options.syntheticArtifactIngest.artifactRoot,options.syntheticArtifactIngest.scope,
       actor,{...body,event_id:eventId});
     return reply.code(result.status==='created'?201:200).send(result);
+  });
+  app.post('/internal/simulation/inbound-artifacts/:event_id/adopt', async (request, reply) => {
+    if (!options.syntheticArtifactIngest) throw new DomainError('FEATURE_UNAVAILABLE', 'Synthetic adoption unavailable', 503);
+    const token=request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    const actor=await core.auth.principal(token);
+    const eventId=(request.params as {event_id:string}).event_id;
+    const result=await adoptSyntheticSourceHttp(options.pool,core.service,
+      options.syntheticArtifactIngest.artifactRoot,options.syntheticArtifactIngest.scope,
+      actor,eventId,request.body);
+    return reply.header('Cache-Control','no-store').code(200).send(result);
   });
   app.post('/internal/simulation/inbound-artifacts/:event_id/reconcile', async (request, reply) => {
     if (!options.syntheticArtifactIngest) throw new DomainError('FEATURE_UNAVAILABLE', 'Synthetic reconciliation unavailable', 503);
