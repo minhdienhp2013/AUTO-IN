@@ -104,6 +104,9 @@ def run_schedule_case(browser,viewport,case):
                     if case=="offline":offline["recovered"]=True
                     box.locator('[data-testid="schedule-refresh"]').click()
                     err.wait_for(state="hidden",timeout=15000)
+                    # The warning clears before GET completes; do not count
+                    # a transient loading-disabled form as a failed recovery.
+                    page.wait_for_function("() => { const x=document.querySelector('[data-testid=schedule-open-at]'); return !!x && !x.disabled; }",timeout=15000)
                     assert input_open.is_enabled()
         assert count["extra"]==0
         assert count["patch"]==(0 if role=="staff" else 1)
