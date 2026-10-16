@@ -264,3 +264,120 @@ Hồi quy `tests/integration/core/official-quarantine-approval-pg.test.cjs` dùn
 **PostgreSQL acceptance:** `tests/integration/core/official-quarantine-approval-pg.test.cjs` giữ nguyên các assertion proposal cũ, bổ sung test real PG hai pools cho đơn manual cùng customer/chat, unmapped held, OA thứ hai, đăng ký sai/mất binding, ingress khóa trước → duyệt chờ rồi 409/0 approval/0 job, duyệt khóa trước → ingress commit sau duyệt, lost ACK/replay `raw_sha256` không sinh receipt mới; toàn bộ dùng migration 005 **đúng từ AI0 staging**, không thay DDL hoặc trigger của AI0. Source PR #59 có base cũ **không chứa** migration 005; CI ở base đó không thể chứng minh trường hợp registry mới. AI0 cần ghép ba blob AI1 sang đúng staging #88 rồi chạy GitHub CI trên **HEAD tích hợp mới**. Không dùng CI cũ hoặc các SKIP thay thế cho PostgreSQL thật.
 
 **Chưa kiểm chứng vận hành:** Zalo provider golden MAC/raw-byte, OA live, Ricoh/Windows, iPhone thật, AI5 độc lập/TN-037 NOT RUN. Không merge/deploy/bật route.
+
+
+## CODE501 — Đề xuất hợp đồng lịch theo shop và khóa vận hành (16/10/2026; **chỉ tài liệu, chờ AI0 chốt**)
+
+**Nền và ranh giới:** main `cb2be7a7b84d689dbe6c2c773192f111897c4063`; yêu cầu từ `docs/prompts/DOT_HOAN_THIEN_20261016.md` tại `3bcddc5f`, TN-028/TN-035. Đây là **API đề xuất, chưa tồn tại, chưa chạy PostgreSQL/HTTP**. Không sửa CODE008/401, Zalo/AI2, Windows/AI3, React/AI4, driver hoặc hợp đồng shared trước khi AI0 đồng ý.
+
+### 1. API/định danh/quyền (đề xuất)
+
+- `GET /api/v1/settings/schedule`: **owner hoặc staff** có bearer session hợp lệ được xem lịch shop của chính mình; không hiển thị shop khác. `PATCH /api/v1/settings/schedule`: **owner duy nhất** (`assertOwner`). Principal phải do `AuthService.principal(bearer)` lấy từ `core_sessions` và `core_users` trên máy chủ: `principal.shop_id` quyết định hàng DB; **không nhận** shop từ URL, query, body, cookie, header tự khai hay vai trò gửi bởi browser. Anonymous/customer/agent/processor không xem/ghi lịch staff. Staff GET hợp lệ nhưng PATCH 403.
+- Hai route chỉ xử lý **lịch khóa in của shop** trong `core_shop_settings`: `open_at`, `close_at`, `timezone`, `holiday_dates`, `manual_lock`. `manual_lock` ở đây là **shop-level print pause**, KHÔNG phải `core_orders.manual_lock` của từng đơn hoặc nút dừng AI. `mode` và `printing_enabled` có thể được trả **read-only** ở mục `operational_guard` cho UI hiển thị trạng thái, nhưng **mọi request PATCH chứa chúng phải 422**, kể cả giá trị `simulation`/`false` hoặc nằm trong object lồng. Tuyệt đối không có nhánh PATCH nào bật `production`/`controlled_test` hoặc đổi `printing_enabled`; AI0 giữ quy trình phê duyệt mở vận hành riêng.
+- Không tự `INSERT ... ON CONFLICT` settings từ PATCH: chỉ cập nhật hàng shop đã được bootstrap; hàng thiếu trả lỗi và không sửa nhầm shop. GET cũng phải xác thực trước query, trả `Cache-Control: no-store` (tránh tái sử dụng trạng thái khóa cũ), không để body mới điều khiển credential.
+
+### 2. JSON wire đề xuất
+
+```http
+GET /api/v1/settings/schedule
+Authorization: Bearer <staff-or-owner-session>
+
+HTTP/1.1 200 OK
+Cache-Control: no-store
+```
+```json
+{
+  "shop_id": "autoin-test-shop-a",
+  "version": 8,
+  "open_at": "07:00",
+  "close_at": "21:30",
+  "timezone": "Asia/Ho_Chi_Minh",
+  "holiday_dates": ["2026-10-20"],
+  "manual_lock": false,
+  "operational_guard": {"mode": "simulation", "printing_enabled": false}
+}
+```
+
+```http
+PATCH /api/v1/settings/schedule
+Authorization: Bearer <owner-session>
+Content-Type: application/json
+```
+```json
+{
+  "expected_version": 8,
+  "idempotency_key": "owner-schedule-20261016-001",
+  "open_at": "08:00",
+  "close_at": "19:00",
+  "timezone": "Asia/Ho_Chi_Minh",
+  "holiday_dates": ["2026-10-20", "2026-10-21"],
+  "manual_lock": true
+}
+```
+
+```json
+{
+  "shop_id": "autoin-test-shop-a",
+  "version": 9,
+  "open_at": "08:00",
+  "close_at": "19:00",
+  "timezone": "Asia/Ho_Chi_Minh",
+  "holiday_dates": ["2026-10-20", "2026-10-21"],
+  "manual_lock": true,
+  "changed": true,
+  "operational_guard": {"mode": "simulation", "printing_enabled": false}
+}
+```
+
+PATCH nhận **tập con không rỗng** của năm field cho phép; `holiday_dates` là **thay toàn bộ tập**, không hợp nhất ngầm. `expected_version` và `idempotency_key` bắt buộc, không phải field cấu hình. Không nhận null, number thay string, field lạ/giả mạo (`shop_id`, `actor_id`, `role`, `mode`, `printing_enabled`, `operational_guard`, `version`, `updated_at`, `__proto__`,...) hoặc object thừa; validate whitelist **trước khi ghi**. Response vẫn chứa nguyên trạng `mode/printing_enabled` read-only để chứng minh không nâng quyền vận hành. Không đưa thông tin lease/token vào response/audit.
+
+### 3. Validation cụ thể, version và idempotency
+
+- `open_at`, `close_at`: chuỗi `HH:mm` chính xác hai chữ số; phút 00–59; `00:00 <= open_at < close_at <= 24:00`; riêng `24:00` **chỉ cho close_at** (giữ tương thích test 23:59), không cho `24:01`, `23:60`, bằng nhau, khoảng qua nửa đêm. `open_at`/ `close_at` không có giây. So sánh cả cặp giá trị *cuối cùng* sau khi merge PATCH với row hiện tại. Qua đêm cần contract riêng trước triển khai, không âm thầm diễn giải sai.
+- `timezone`: giai đoạn này chỉ chấp nhận `Asia/Ho_Chi_Minh`, vì `printingAllowed` hiện fail-closed với tất cả zone khác (`backend/core/model.ts`); không quảng cáo hỗ trợ IANA rộng hơn khi Core chưa làm. `holiday_dates`: mảng các ngày thực sự hợp lệ `YYYY-MM-DD` theo lịch Gregorian (ví dụ 2026-02-29 lỗi, 2028-02-29 hợp lệ); duy nhất, chuẩn hóa thứ tự tăng dần khi lưu/đọc, từ chối trùng và ngày không tồn tại, giới hạn số phần tử (đề xuất tối đa **730 ngày**, AI0 quyết số cuối); ngày này cấm claim/preflight/mark-sending nhưng KHÔNG tự tắt AI tư vấn. `manual_lock` chỉ nhận boolean thật. Không tự xóa ngày nghỉ đã qua trừ khi owner cập nhật.
+- Migration cần thiết: `core_shop_settings.schedule_version BIGINT NOT NULL DEFAULT 1 CHECK (schedule_version >= 1)` và nên có `schedule_updated_at timestamptz`, `schedule_updated_by uuid` tham chiếu chủ; bổ sung bảng audit **shop-specific** (đề xuất `core_shop_schedule_audit` với shop_id/actor_id/old_version/new_version/old_value/new_value/created_at), vì `core_audit.order_id` hiện `NOT NULL`, không phù hợp audit cấu hình không có order. AI0 quyết số migration, DDL và việc giữ lịch sử hữu hạn, không sửa migration cũ tại giai đoạn1.
+- `PATCH` gọi `PgStore.tx`, tái dùng `PgStore.once` ở action riêng `shop.schedule.patch`, scope `shop_id + actor_id + action + idempotency_key` với payload chứa cả `expected_version` và các field. Trong callback, `SELECT * FROM core_shop_settings WHERE shop_id=principal.shop_id FOR UPDATE`, so `expected_version` với `schedule_version`, validate cả bộ, `UPDATE` chỉ whitelist + `schedule_version = schedule_version + 1` (nếu có thay đổi), ghi audit cùng transaction. Replay **cùng key + payload** trả response đã lưu, không cộng version/audit thêm; cùng key khác payload trả 409 `IDEMPOTENCY_CONFLICT`. Nếu **key mới + version cũ**, luôn 409 `STALE_SETTINGS_VERSION` ngay cả khi field trùng; GET lại để thao tác thủ công. No-op với version đúng trả `changed:false` và không tăng version. Version số nguyên an toàn >0, tránh overflow.
+- Mẫu lỗi (cùng envelope hiện tại `{error:{code,message,retryable}}`):
+  - Không bearer / session hết hạn: HTTP **401** `UNAUTHENTICATED`.
+  - Staff cố PATCH, customer/agent cố GET/PATCH: HTTP **403** `OWNER_REQUIRED` hoặc `FORBIDDEN` (theo route).
+  - Body `{ "expected_version":8, "idempotency_key":"k", "mode":"production" }`: HTTP **422** `READ_ONLY_OPERATION_FIELDS`; body sai định dạng/lịch sai: **422** `INVALID_SCHEDULE`; shop_id từ caller hoặc field lạ: **422** `INVALID_INPUT`. Không tạo thay đổi.
+  - Client A đã lên version 9, client B gửi `expected_version:8` key khác: HTTP **409** `STALE_SETTINGS_VERSION`, trả `current_version:9` (bổ sung meta có kiểm soát trong response, AI0 chốt wire).
+  - Cùng idempotency key nhưng payload khác: HTTP **409** `IDEMPOTENCY_CONFLICT`.
+  - Shop settings thật sự không tồn tại: HTTP **404** `SHOP_SETTINGS_NOT_FOUND`; DB unavailable: **503** `SCHEDULE_UNAVAILABLE`/fail-closed, không trả cached unlocked success.
+
+### 4. Race PATCH lịch vs. claim/preflight/mark_sending (ràng buộc không gửi trùng)
+
+Hiện trạng `OrderService.claim`: lock `core_orders` → job `NOT_SENT` → `checkGates` lock `core_shop_settings FOR UPDATE`; `preflight` và `markSending` cũng `checkGates` trong transaction và đối chiếu lease/revision/order. Vì vậy PATCH chỉ lấy **shop settings row FOR UPDATE** để tuần tự hóa; **không quét/khóa core_orders hoặc core_print_jobs trong transaction PATCH** (tránh đảo thứ tự order→job→settings và gây deadlock). Hai trình tự cần bảo đảm:
+
+1. Owner PATCH khóa/ngày nghỉ/giờ đóng **commit trước khi** claim/preflight/mark_sending đọc gate: lệnh nhận `PRINT_CLOSED` (hoặc claim `{job:null}` tùy contract AI0 chốt), **không chuyển sang SENDING**, không driver effect. Claim đã cấp lease trước PATCH không đồng nghĩa quyền in; mark_sending **phải kiểm lại sau PATCH**, từ chối nếu đã khóa. Log lịch sử lease chưa gửi để agent đối soát an toàn.
+2. Agent `mark_sending` **commit trước** PATCH: job đã `SENDING` với `mode_at_send` bất biến. PATCH được quyền khóa *lần gửi kế tiếp* nhưng KHÔNG rollback/revoke hoặc biến lệnh SENDING thành NOT_SENT, UNKNOWN/VERIFIED_DONE. Agent report theo mode snapshot cũ; mất ACK giữ **UNKNOWN / manual reconciliation**, tuyệt đối không retry/auto-resend. Sau mở khóa hay hết ngày nghỉ, chỉ các job chắc chắn `NOT_SENT`, revision/approval/plan còn hợp lệ, chưa bị order manual_lock, chưa quá hạn và đủ gate mới có thể được claim; không tạo job mới hay duyệt lại.
+3. Hai owner PATCH đồng thời: cùng version 8, mỗi request có key khác; đúng một thành công lên 9, request còn lại chờ row lock rồi 409 `STALE_SETTINGS_VERSION` và không ghi; replay key cũ trả response cũ. Hai shop khác nhau cập nhật độc lập.
+4. Không đổi hợp đồng xác nhận CODE401, queue, agent journal/lease, quyền reprint owner hoặc `printingAllowed` hiện hành trong giai đoạn1. Nếu chính sách cần tắt cả câu trả lời đang xử lý, đó là **AI response pause contract riêng** với AI2: print `manual_lock` không được giả là khóa AI.
+
+### 5. TN-028: quyết định liên module mà API năm field chưa đủ biểu diễn
+
+**Gap đặc tả:** TN-028 cho phép owner chỉnh **giờ AI trả lời ngày đặc biệt** ngoài 07:00–21:30, và ngày nghỉ AI vẫn tư vấn theo lịch nhưng **không in thật**; còn nút **tạm dừng AI và chặn câu trả lời đang xử lý**. `core_shop_settings` hiện không có per-date override hay `ai_paused`; `printingAllowed` chỉ gác **in**, không phải AI2 reply gate. Vì vậy **không được tuyên bố CODE501 năm field là đã hoàn thành TN-028**, cũng không được đưa `manual_lock` từ print sang AI2 tự động.
+- **Đề nghị AI0 chốt:** giai đoạn2 chỉ quản lý *print schedule/lock* trên các field hiện có rồi giao một hợp đồng riêng `ai_reply_schedule`/`special_date_hours`/`ai_paused` cho AI2+AI4 sau; **hoặc** mở rộng cùng đợt bằng thiết kế DB/Port shared có ownership rõ trước khi code. Với ngày nghỉ, giờ AI và giờ in vẫn phải khác trục; không cho special AI hours mở khóa print. Giữ `mode=simulation` và `printing_enabled=false` bất biến tại mọi quyết định này.
+- Lịch `close_at` Core hiện có so sánh exclusive, nên 21:30 đóng đúng 21:30. Thay thời gian phải được kiểm cả timezone/date trong transaction gửi, không sử dụng cache client cho khóa an toàn.
+
+### 6. File triển khai *dự kiến sau duyệt*, ma trận PostgreSQL hai pool (**NOT RUN**)
+
+- **AI1 stage2** sau AI0 phê duyệt: `backend/core/shop-schedule.ts` (service/policy validation; giữ `backend/core/model.ts` `printingAllowed` nguyên nếu không có thay đổi đã chốt); `backend/api/routes.ts` thêm GET/PATCH sau khi AI0 thống nhất `RouteRegistrar.patch`; `backend/core/factory.ts`; migration mới theo số AI0 cấp dưới `backend/storage/migrations/` (AI1 sở hữu file riêng sau chốt), `tests/unit/core/shop-schedule.test.cjs`, `tests/integration/core/shop-schedule-pg.test.cjs`. **AI0 sở hữu** `backend/composition/runtime.ts` register PATCH, hợp đồng/OpenAPI shared `contracts/**`, root migration runner và CI. **AI4 sở hữu** SettingsView gọi API sau khi contract được duyệt. Không sửa các file đó trong giai đoạn1.
+- Ma trận thực thi chỉ trên PostgreSQL 18.3 cô lập `autoin_test*`, `Pool A/B` độc lập, Fastify thật + Core auth thật; tuyệt đối không mock API/role, không in thật. Mỗi case chụp `core_shop_settings`, version, audit/idempotency, `core_print_jobs` state, approvals và số job trước/sau:
+  1. 401 GET/PATCH không bearer, bearer hết hạn; 403 PATCH staff/customer/agent; cross-shop: owner A cố gửi shop B qua body/query/URL phải bị 422/403, DB shop B không đổi, GET chủ A không bao giờ thấy dữ liệu B.
+  2. Validate time/date/timezone/null/duplicate/unknown fields, kể cả `mode` và `printing_enabled`; đều 422, *không thay* version/audit/mode/printing_enabled.
+  3. Hai pool owner A1/A2 PATCH cùng version; đúng **1×200, 1×409**, version tăng một, audit một; cùng key/payload replay trả nguyên response, không tăng thêm; cùng key khác payload 409; no-op không tăng version.
+  4. Pool A giữ row `core_shop_settings FOR UPDATE` và cập nhật `manual_lock=true`/holiday; Pool B claim hoặc `mark_sending` đã có lease bị chờ; A commit rồi B fail-closed `PRINT_CLOSED`, giữ `NOT_SENT`, **0 new print effect / 0 duplicate job**. Test riêng preflight đọc sau update; không coi claim lease đã lấy là in.
+  5. Pool B mark_sending thực (test simulation, agent credential scoped, manifest hợp lệ) **commit SENDING trước**; Pool A PATCH khóa sau: giữ `SENDING` + immutable `mode_at_send`, report thành UNKNOWN khi không rõ, không auto-resend/downgrade. Test lease ACK mất và owner mở khóa lại: chỉ `NOT_SENT` đủ điều kiện, không claim lại UNKNOWN/SENDING.
+  6. Pool A/B shop khác nhau đổi lịch độc lập, không rò rỉ version/audit; query shop settings đúng scope; rollback khi DB fail. Nếu kiểm thử agent mark ở AI0 composition cần fixture verified document; AI0 cấp test-only producer, không bypass guard.
+- **Kiểm tra giai đoạn1 thực tế:** chỉ đối chiếu source `backend/core/model.ts:printingAllowed`, `backend/core/service.ts:checkGates/claim/preflight/markSending/report`, `backend/storage/database.ts:once`, `backend/api/routes.ts`, migration 001 và TN-028/TN-035. **0 test mới chạy, PostgreSQL/HTTP stage2 NOT RUN**. Không merge/deploy/in thật; V1 vẫn BLOCKED.
+
+**AI0 cần quyết định trước CODE501 giai đoạn2:** (a) tên route + GET staff/owner, (b) version/audit migration + ngày nghỉ bound/timezone/tối đa/qua đêm, (c) tách AI schedule/pausing/special-date override theo TN-028, (d) điều phối ownership `RouteRegistrar.patch`/composition/OpenAPI và cách trả `claim` khi shop đóng. Chỉ sau khi chốt mới triển khai.
+
+## CODE501 — Giai đoạn2 triển khai theo quyết định AI0 (16/10/2026)
+
+**AI0 đã phê duyệt:** `docs/architecture/CODE009_CONTRACT_DECISIONS_20261016.md` ở PR118. Implement trong AI1: `backend/core/shop-schedule.ts`, `backend/api/routes.ts`, `backend/core/factory.ts`, `backend/storage/migrations/008_shop_schedule.sql`, manifest Core và test Core. GET staff/owner, PATCH owner từ phiên server; shop lấy từ principal, không nhận caller-supplied shop. Runtime registration PATCH và OpenAPI do AI0 nối sau bàn giao, không được tuyên bố endpoint đã hoạt động trên composition trước đó.
+
+- PATCH thay đúng 5 trường print schedule, strict 422 với bất kỳ `mode`/`printing_enabled`; trả `operational_guard` read-only. Gregorian max730, `Asia/Ho_Chi_Minh`, close-only 24:00, không qua đêm. `schedule_version` BIGINT checked safe integer, `PgStore.once`, CAS và audit shop không có order_id. Replay không tạo version/audit mới.
+- Chỉ giữ khóa `core_shop_settings FOR UPDATE` khi PATCH; existing agent gate lock order→job→settings tiếp tục nguyên trạng. Không chỉnh `SENDING/UNKNOWN`, `mode_at_send`, in lại, claim hay print driver. Lịch AI, special-day, AI paused nằm ngoài CODE501.
+- CI cần migration008, build TypeScript, test unit+PostgreSQL18.3 two independent pools, auth Fastify và mark_sending arbitration; nếu composition thiếu `RouteRegistrar.patch`, AI0 bổ sung wrapper method; không thay `backend/composition/**` trong PR AI1.

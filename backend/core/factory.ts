@@ -1,5 +1,6 @@
 import { AuthService } from './auth.js';
 import { OrderService } from './service.js';
+import { ShopScheduleService } from './shop-schedule.js';
 import { DomainError, type Principal } from './model.js';
 import { PgStore, type SqlPool } from '../storage/database.js';
 import { registerCoreRoutes, type RouteRegistrar, type CoreRouteDependencies } from '../api/routes.js';
@@ -14,6 +15,7 @@ export interface CoreModule {
   store: PgStore;
   auth: AuthService;
   service: OrderService;
+  schedule: ShopScheduleService;
   registerRoutes: (app: RouteRegistrar, identities: VerifiedIdentityPorts) => void;
 }
 
@@ -41,15 +43,16 @@ export function createCoreModule(options: {pool: SqlPool; now?: () => Date}): Co
   const store = new PgStore(options.pool);
   const auth = new AuthService(store);
   const service = new OrderService(store, options.now ?? (() => new Date()));
+  const schedule = new ShopScheduleService(store);
   return {
-    store, auth, service,
+    store, auth, service, schedule,
     registerRoutes(app, identities) {
       if (typeof identities?.resolveVerifiedCustomer !== 'function' ||
           typeof identities?.resolvePrintAgent !== 'function')
         throw new DomainError('VERIFIED_IDENTITY_PORTS_REQUIRED','Thiếu adapter xác thực kênh khách/agent',503);
       // The staff resolver uses bearer sessions in AuthService; never fabricate roles.
       registerCoreRoutes(app, {
-        auth, service,
+        auth, service, schedule,
         async resolveVerifiedCustomer(request) {
           const principal = await identities.resolveVerifiedCustomer(request);
           if (!validCustomer(principal))
