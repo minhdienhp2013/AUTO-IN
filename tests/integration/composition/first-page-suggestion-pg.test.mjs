@@ -10,6 +10,7 @@ import {asSqlPool,assertIsolatedSimulationDatabase} from '../../../backend/compo
 import {createCoreModule} from '../../../backend/core/factory.ts';
 import {buildIntegratedApp} from '../../../backend/composition/runtime.ts';
 import {classifyBoundFirstPage,isolatedFirstPageWorker} from '../../../backend/composition/first-page-suggestion.ts';
+import {previewBoundFirstPageQuestion} from '../../../backend/composition/first-page-question-port.ts';
 
 const url=process.env.TEST_DATABASE_URL;
 test('TN005 real Fastify/PG: sealed page0, tenant and revision CAS, timeout and no print mutation',{
@@ -66,6 +67,18 @@ test('TN005 real Fastify/PG: sealed page0, tenant and revision CAS, timeout and 
     assert.ok(!JSON.stringify(result).includes('Cau 1'));
     assert.deepEqual((await app.inject({method:'POST',url:endpoint(1),headers:auth})).json(),result,
       'replay returns advisory metadata without another classification');
+    const questionUrl='/internal/simulation/orders/'+orderId+'/revisions/1/first-page-question';
+    assert.equal((await app.inject({method:'GET',url:questionUrl})).statusCode,401);
+    const foreignQuestion=await app.inject({method:'GET',url:questionUrl,
+      headers:{authorization:'Bearer '+otherSession.token}});
+    assert.equal(foreignQuestion.statusCode,200);
+    assert.equal(foreignQuestion.json().used_suggestion,false);
+    const question=await app.inject({method:'GET',url:questionUrl,headers:auth});
+    assert.equal(question.statusCode,200,question.body);
+    assert.equal(question.headers['cache-control'],'no-store');
+    assert.equal(question.json().used_suggestion,true,question.body);
+    assert.match(question.json().text,/phiếu học tập/);
+    assert.ok(!question.body.includes('Cau 1'));
     const stored=(await pool.query('SELECT request_hash,artifact_sha256,metadata '+
       'FROM ai0_first_page_suggestions WHERE shop_id=$1 AND order_id=$2',[shop,orderId])).rows;
     assert.equal(stored.length,1);
@@ -73,9 +86,25 @@ test('TN005 real Fastify/PG: sealed page0, tenant and revision CAS, timeout and 
     assert.equal(stored[0].artifact_sha256,result.artifact_sha256);
     const requestData=(await pool.query('SELECT request_data FROM core_revisions '+
       'WHERE order_id=$1 AND revision=1',[orderId])).rows[0].request_data;
-    await core.service.revise(login.principal,orderId,{expected_revision:1,request_data:requestData,
-      idempotency_key:'test-revise-'+id});
+    // Competing Core revision commits after the consistent read but before
+    // the final current-state check: discard the suggestion, never enqueue.
+    let raced=false;const db=asSqlPool(second);
+    const racePool={...db,async query(sql,args){
+      if(!raced&&sql.startsWith('SELECT o.active_revision,r.request_hash,a.sha256')){
+        raced=true;
+        await core.service.revise(login.principal,orderId,{expected_revision:1,
+          request_data:requestData,idempotency_key:'test-read-race-'+id});
+      }
+      return db.query(sql,args);
+    }};
+    const racedQuestion=await previewBoundFirstPageQuestion(racePool,root,scope,
+      login.principal,orderId,1);
+    assert.equal(raced,true);
+    assert.equal(racedQuestion.used_suggestion,false);
     assert.equal((await app.inject({method:'POST',url:endpoint(1),headers:auth})).statusCode,409);
+    const staleQuestion=await app.inject({method:'GET',url:questionUrl,headers:auth});
+    assert.equal(staleQuestion.statusCode,200);
+    assert.equal(staleQuestion.json().used_suggestion,false);
     // A competing revision during the child must invalidate the DB insert.
     await assert.rejects(classifyBoundFirstPage(asSqlPool(second),root,scope,login.principal,
       orderId,2,async()=>{
@@ -90,6 +119,8 @@ test('TN005 real Fastify/PG: sealed page0, tenant and revision CAS, timeout and 
     const file=join(root,source);
     await chmod(file,0o600);await writeFile(file,Buffer.from('tampered source'));
     assert.equal((await app.inject({method:'POST',url:endpoint(3),headers:auth})).statusCode,409);
+    const changedSourceQuestion=await app.inject({method:'GET',url:questionUrl,headers:auth});
+    assert.equal(changedSourceQuestion.json().used_suggestion,false);
     for(const table of ['core_confirmations','core_approvals','core_print_jobs'])
       assert.equal((await pool.query('SELECT count(*)::int n FROM '+table+' WHERE order_id=$1',[orderId])).rows[0].n,0);
     // A deliberately sleeping executable verifies the parent's hard kill.
@@ -100,7 +131,7 @@ test('TN005 real Fastify/PG: sealed page0, tenant and revision CAS, timeout and 
       {code:'CLASSIFIER_TIMEOUT'})}finally{
       if(old===undefined)delete process.env.AUTOIN_PYTHON;else process.env.AUTOIN_PYTHON=old;
     }
-    console.log('PASS TN005 PG/HTTP page0=true cross_shop=403 stale=409 timeout=bounded print_jobs=0');
+    console.log('PASS TN005 PG/HTTP page0=true cross_shop=403 stale=409 question_read_race=generic timeout=bounded print_jobs=0');
   }finally{
     if(app)await app.close();await pool.end();await second.end();
     await rm(tmp,{recursive:true,force:true});

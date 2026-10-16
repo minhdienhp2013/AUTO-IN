@@ -26,3 +26,21 @@ verified upload or connected to AI2 customer questions. That next composition
 step needs an explicit trigger and independent same-SHA acceptance. No live OA,
 external AI, native Word page boundary, print driver or real customer file is
 used by this candidate.
+
+## AI2 question preview follow-up
+
+AI2 PR126 supplies a pure whitelist-only question formatter. The next AI0
+candidate imports its two blobs unchanged and adds a staff-authenticated,
+simulation-only GET `.../first-page-question` preview. AI0 derives customer,
+conversation and OA identity from the order and completed inbound draft; the
+client supplies only an order/revision selector. A repeatable-read PostgreSQL
+snapshot binds Core revision/hash, registered sealed source and stored advisory.
+The source manifest and bytes are verified through that snapshot, followed by
+a fresh revision/hash/source check before returning a suggested category.
+Missing, stale, tampered or uncertain evidence yields the fixed generic
+question. This preview never queues or sends a message.
+
+Automatic AI2 outbound wiring is still NOT RUN. Before a later enqueue, AI0
+must atomically recheck shop/order/current revision/request hash/sealed source
+SHA and conversation AI generation in the outbox transaction. A preview read
+cannot authorize a later send after a revision or handover race.
