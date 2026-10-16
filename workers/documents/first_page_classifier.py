@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import io
 import re
+import subprocess
+from time import monotonic
 import unicodedata
 import zipfile
 from collections.abc import Callable
@@ -19,6 +21,7 @@ SCHEMA_VERSION = "tn005.first_page.v1"
 MAX_SOURCE_BYTES = 25 * 1024 * 1024
 MAX_FIRST_PAGE_PIXELS = 12_000_000
 MAX_EXTRACTED_CHARS = 16_000
+MAX_OCR_SECONDS = 4.0
 IMAGE_FORMATS = {
     "png": "PNG", "jpg": "JPEG", "jpeg": "JPEG", "tif": "TIFF",
     "tiff": "TIFF", "bmp": "BMP", "webp": "WEBP",
@@ -82,19 +85,60 @@ def _suggest(text: str, method: str) -> dict[str, Any]:
                 else "COVER_OR_INSUFFICIENT_EVIDENCE")
 
 
+class _OCRDeadlineExceeded(Exception):
+    """OCR discovery and recognition exceeded a single local time budget."""
+
+
+def _remaining_ocr_seconds(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise _OCRDeadlineExceeded()
+    return remaining
+
+
 def _local_ocr(image: Any) -> str:
-    """Local Tesseract only; no OCR/network package is required for installation."""
-    import pytesseract  # optional dependency; import failure is caught by caller
-    # No network provider. Enumerate locally installed language packs; use
-    # Vietnamese when available, otherwise English only (never invent OCR).
-    languages = set(pytesseract.get_languages(config=""))
+    """Discover languages and OCR under ONE 4-second Tesseract time budget.
+
+    pytesseract.get_languages() has no timeout: never call it. Instead run the
+    local executable directly with --list-langs and a deadline. The remaining
+    time, not a fresh 4 seconds, is passed to image_to_string(). A parent
+    worker deadline is still required for in-process Python/image preparation.
+    """
+    import pytesseract  # optional, local only; does not call a cloud provider
+
+    deadline = monotonic() + MAX_OCR_SECONDS
+    try:
+        discovery = subprocess.run(
+            [pytesseract.pytesseract.tesseract_cmd, "--list-langs"],
+            capture_output=True, check=False,
+            timeout=_remaining_ocr_seconds(deadline),
+        )
+    except FileNotFoundError as exc:
+        raise ImportError("Local OCR executable missing") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise _OCRDeadlineExceeded() from exc
+    if discovery.returncode != 0:
+        raise ImportError("OCR language discovery unavailable")
+    # Tesseract versions may list languages on stdout or stderr. No command
+    # output (which can include local installation paths) is ever surfaced.
+    language_lines = (discovery.stdout + b"\n" + discovery.stderr).decode(
+        "utf-8", errors="replace").splitlines()
+    languages = {line.strip() for line in language_lines}
     available = [lang for lang in ("vie", "eng") if lang in languages]
     if not available:
         raise ImportError("No supported local OCR language pack")
-    # Do not retain OCR output outside this private call; bounded subprocess.
-    return pytesseract.image_to_string(image, lang="+".join(available),
-                                       config="--psm 6", timeout=4)
 
+    try:
+        result = pytesseract.image_to_string(
+            image, lang="+".join(available),
+            config="--psm 6", timeout=_remaining_ocr_seconds(deadline),
+        )
+    except (subprocess.TimeoutExpired, RuntimeError) as exc:
+        # pytesseract raises RuntimeError for its subprocess timeout; returning
+        # UNKNOWN is safer than forwarding provider/executable exception text.
+        raise _OCRDeadlineExceeded() from exc
+    _remaining_ocr_seconds(deadline)
+    return result
 
 def _ocr_image(image: Any, *, ocr_reader: OCRReader | None,
                allow_local_ocr: bool, method: str) -> dict[str, Any]:
@@ -112,6 +156,8 @@ def _ocr_image(image: Any, *, ocr_reader: OCRReader | None,
         return _suggest(raw, method)
     except ImportError:
         return _out("UNKNOWN", pages=1, method=method, reason="OCR_UNAVAILABLE")
+    except _OCRDeadlineExceeded:
+        return _out("UNKNOWN", pages=1, method=method, reason="OCR_TIMEOUT")
     except Exception:
         # No exception text, filename or any OCR bytes may escape.
         return _out("UNKNOWN", pages=1, method=method, reason="OCR_FAILED")
@@ -180,14 +226,22 @@ def classify_first_page(data: bytes, *, format_hint: str, expected_sha256: str,
     if fmt in IMAGE_FORMATS:
         try:
             from PIL import Image, ImageOps
-            Image.MAX_IMAGE_PIXELS = 40_000_000
             with Image.open(io.BytesIO(data)) as image:
                 if image.format != IMAGE_FORMATS[fmt]:
                     return _out("NEEDS_HUMAN", reason="EXTENSION_CONTENT_MISMATCH")
-                image.seek(0)  # TIFF/animated images: only first frame.
-                frame = ImageOps.exif_transpose(image).convert("RGB")
-                if frame.width * frame.height > MAX_FIRST_PAGE_PIXELS:
+                # Image.open() reads only the header. Reject oversized first
+                # frames BEFORE seek/decode/exif_transpose/convert allocations.
+                width, height = image.size
+                if (width <= 0 or height <= 0 or
+                        width > MAX_FIRST_PAGE_PIXELS // height):
                     return _out("NEEDS_HUMAN", reason="FIRST_PAGE_TOO_LARGE")
+                image.seek(0)  # TIFF/animated images: only first frame.
+                width, height = image.size
+                if (width <= 0 or height <= 0 or
+                        width > MAX_FIRST_PAGE_PIXELS // height):
+                    return _out("NEEDS_HUMAN", reason="FIRST_PAGE_TOO_LARGE")
+                # Do not mutate process-wide Pillow decompression-bomb limits.
+                frame = ImageOps.exif_transpose(image).convert("RGB")
                 return _ocr_image(frame, ocr_reader=ocr_reader,
                                   allow_local_ocr=allow_local_ocr,
                                   method="pillow_frame0_local_ocr")
