@@ -246,3 +246,137 @@ def test_pdf_blank_first_page_cannot_read_later_page_for_label():
     assert out["category"] == "UNKNOWN"
     assert out["analyzed_page_count"] == 1
     assert_clean(out)
+
+
+def test_oversized_png_rejected_from_header_without_decode_or_global_change(monkeypatch):
+    from PIL import ImageOps
+
+    # Genuine 14MP PNG but 1-bit synthetic pixels keep test memory/bytes low.
+    output = io.BytesIO()
+    with Image.new("1", (4000, 3500), 0) as src:
+        src.save(output, format="PNG")
+    source = output.getvalue()
+    previous_limit = Image.MAX_IMAGE_PIXELS
+
+    def must_not_decode(*_args, **_kwargs):
+        raise AssertionError("Oversized header must reject before decode/EXIF/RGB")
+
+    monkeypatch.setattr(ImageOps, "exif_transpose", must_not_decode)
+    result = call(source, "png", ocr_reader=must_not_decode)
+    assert (result["status"], result["reason_code"], result["analyzed_page_count"]) == (
+        "NEEDS_HUMAN", "FIRST_PAGE_TOO_LARGE", 0)
+    assert Image.MAX_IMAGE_PIXELS == previous_limit
+    assert_clean(result)
+
+
+def test_oversized_first_tiff_frame_rejected_before_decode(monkeypatch):
+    from PIL import ImageOps
+
+    buf = io.BytesIO()
+    with Image.new("1", (4000, 3500), 0) as img:
+        img.save(buf, format="TIFF", compression="tiff_lzw")
+    before = Image.MAX_IMAGE_PIXELS
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("TIFF first frame must not be decoded")
+
+    monkeypatch.setattr(ImageOps, "exif_transpose", forbidden)
+    result = call(buf.getvalue(), "tiff", ocr_reader=forbidden)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "FIRST_PAGE_TOO_LARGE"
+    assert Image.MAX_IMAGE_PIXELS == before
+    assert_clean(result)
+
+
+def test_unbounded_get_languages_is_never_called_and_hung_discovery_times_out(monkeypatch):
+    import subprocess
+    import pytesseract
+    from workers.documents import first_page_classifier as module
+
+    def discovery_timeout(command, *, capture_output, check, timeout):
+        assert command[-1] == "--list-langs"
+        assert capture_output and check is False
+        assert 0 < timeout <= module.MAX_OCR_SECONDS
+        raise subprocess.TimeoutExpired(command, timeout, output=b"private-language-output")
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("No OCR recognition after discovery timeout")
+
+    monkeypatch.setattr(module.subprocess, "run", discovery_timeout)
+    monkeypatch.setattr(pytesseract, "get_languages", forbidden)
+    monkeypatch.setattr(pytesseract, "image_to_string", forbidden)
+    result = call(png(), "png")
+    assert (result["status"], result["reason_code"]) == ("UNKNOWN", "OCR_TIMEOUT")
+    assert result["analyzed_page_count"] == 1
+    assert "private-language-output" not in str(result)
+    assert_clean(result)
+
+
+def test_local_ocr_uses_remaining_budget_for_recognition(monkeypatch):
+    import subprocess
+    import pytesseract
+    from workers.documents import first_page_classifier as module
+
+    # Deterministic monotonic ticks: 4-second end-to-end budget, not 4+4.
+    ticks = iter([100.0, 101.0, 102.0, 103.0])
+    monkeypatch.setattr(module, "monotonic", lambda: next(ticks))
+    called = []
+
+    def list_languages(command, *, capture_output, check, timeout):
+        called.append(("discover", timeout))
+        return subprocess.CompletedProcess(
+            command, 0, stdout=b"List of available languages (2):\neng\nvie\n",
+            stderr=b"")
+
+    def recognize(_image, *, lang, config, timeout):
+        called.append(("recognize", timeout))
+        assert lang == "vie+eng" and config == "--psm 6"
+        return WORKSHEET
+
+    monkeypatch.setattr(module.subprocess, "run", list_languages)
+    monkeypatch.setattr(pytesseract, "image_to_string", recognize)
+    monkeypatch.setattr(pytesseract, "get_languages",
+                        lambda *_args, **_kwargs: pytest.fail("no unbounded discovery"))
+    result = call(png(), "png")
+    assert result["status"] == "SUGGESTED"
+    assert result["category"] == "WORKSHEET"
+    assert called == [("discover", pytest.approx(3.0)),
+                      ("recognize", pytest.approx(2.0))]
+    assert_clean(result)
+
+
+def test_discovery_consumes_ocr_budget_recognition_is_never_started(monkeypatch):
+    import subprocess
+    import pytesseract
+    from workers.documents import first_page_classifier as module
+
+    ticks = iter([100.0, 100.0, 104.0])
+    monkeypatch.setattr(module, "monotonic", lambda: next(ticks))
+
+    def discovered(command, *, capture_output, check, timeout):
+        assert timeout == pytest.approx(module.MAX_OCR_SECONDS)
+        return subprocess.CompletedProcess(command, 0, stdout=b"eng\n", stderr=b"")
+
+    monkeypatch.setattr(module.subprocess, "run", discovered)
+    monkeypatch.setattr(pytesseract, "image_to_string",
+                        lambda *_args, **_kwargs: pytest.fail("no time for OCR"))
+    result = call(png(), "png")
+    assert result["status"] == "UNKNOWN"
+    assert result["reason_code"] == "OCR_TIMEOUT"
+    assert_clean(result)
+
+
+def test_discovery_error_does_not_leak_exception_or_attempt_ocr(monkeypatch):
+    import subprocess
+    import pytesseract
+    from workers.documents import first_page_classifier as module
+
+    monkeypatch.setattr(module.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(
+                            a, 1, stdout=b"", stderr=b"private-customer-id-123"))
+    monkeypatch.setattr(pytesseract, "image_to_string",
+                        lambda *_args, **_kwargs: pytest.fail("discovery failed"))
+    out = call(png(), "png")
+    assert (out["status"], out["reason_code"]) == ("UNKNOWN", "OCR_UNAVAILABLE")
+    assert "private-customer-id-123" not in str(out)
+    assert_clean(out)
