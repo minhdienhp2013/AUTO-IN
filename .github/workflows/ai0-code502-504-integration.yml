@@ -1,0 +1,87 @@
+name: AI0 CODE502-504 integration one SHA
+on:
+  push:
+    branches: [ai0/integrate-code502-504-20261016]
+permissions:
+  contents: read
+jobs:
+  code502-504-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_test_code502504
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_code502504"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code502504
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code502504
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_code502504
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record and enforce one candidate SHA
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "EXACT_CODE502_504_INTEGRATION_SHA=$(git rev-parse HEAD)"
+          test "$AUTOIN_OPERATION_MODE" = simulation
+          test "$AUTOIN_ALLOW_PG_ACCEPTANCE" = YES_ISOLATED_TEST_DB
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install locked dependencies and Chromium
+        run: |
+          npm ci
+          npm ci --prefix web
+          python -m pip install -r workers/documents/requirements-test.txt
+          python -m pip install playwright==1.58.0
+          python -m playwright install --with-deps chromium
+          chrome="$(python -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')"
+          test -x "$chrome"
+          mkdir -p "$RUNNER_TEMP/autoin-chromium-bin"
+          ln -sfn "$chrome" "$RUNNER_TEMP/autoin-chromium-bin/chromium"
+          echo "$RUNNER_TEMP/autoin-chromium-bin" >> "$GITHUB_PATH"
+      - name: Python documents and native Word static fake-probe checks
+        run: |
+          python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing
+          python -m pytest -q tests/unit/documents tests/unit/printing
+      - name: Isolated migrations and strict product suites including HTTPS DryRun
+        run: |
+          npm run db:migrate
+          npm run check
+      - name: React unit checks and production build
+        working-directory: web
+        run: |
+          npm test
+          npm run typecheck
+          VITE_DEMO_MODE=false npm run build
+          npm run test:chromium:code008
+      - name: Real Fastify PostgreSQL Chromium fourteen baseline cases
+        run: node --import tsx tests/ui/code008-product-pg.mjs
+      - name: Real Fastify PostgreSQL four extra regression groups
+        env:
+          AUTOIN_CODE008_EXTRA_ONLY: YES
+        run: node --import tsx tests/ui/code008-product-pg.mjs
+      - name: Real Fastify PostgreSQL Chromium two GET503 recovery cases
+        env:
+          AUTOIN_CODE008_BROWSER_503_ONLY: YES
+        run: node --import tsx tests/ui/code008-product-pg.mjs
+      - name: Real AI3 sealed preview Chromium two stale409 cases
+        run: node --import tsx tests/integration/composition/code008-preview-stale-browser-driver.mjs
+      - name: Physical release gates
+        if: always()
+        run: echo 'NOT RUN - physical Safari 10/10, provider-signed OA OFF, native Windows Word/Ricoh paper, TN037. V1 BLOCKED. No merge or deployment.'

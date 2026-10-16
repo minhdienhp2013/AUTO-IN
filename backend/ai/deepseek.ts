@@ -38,10 +38,25 @@ export interface DeepSeekOptions {
   transport?: typeof fetch;
 }
 export class DeepSeekIntentAdapter {
-  private readonly options:DeepSeekOptions;
+  private readonly options:Readonly<DeepSeekOptions>;
   private readonly budget:BudgetPort;
   constructor(options:DeepSeekOptions,budget:BudgetPort) {
-    this.options=options;this.budget=budget;
+    // All costs are micro-USD per MILLION tokens. Zero-rate is valid.
+    for (const rate of [options.rate_micro_usd_per_million_input,
+      options.rate_micro_usd_per_million_output]) {
+      if (typeof rate !== "number" || !Number.isFinite(rate) ||
+          rate < 0 || rate > Number.MAX_SAFE_INTEGER)
+        throw new Error("INVALID_AI_RATE");
+    }
+    // Node clamps oversized or noninteger timeouts to a near-immediate timer.
+    if (options.timeout_ms !== undefined &&
+        (!Number.isSafeInteger(options.timeout_ms) || options.timeout_ms < 1 ||
+          options.timeout_ms > 2_147_483_647))
+      throw new Error("INVALID_AI_TIMEOUT");
+    // Copy AFTER validation: caller mutations must not change the validated rates,
+    // timeout, model, credentials or transport used by this instance.
+    this.options=Object.freeze({...options});
+    this.budget=budget;
   }
   async classify(text: string): Promise<AiCall> {
     if (!await this.budget.can_spend()) throw new Error("AI_BUDGET_EXHAUSTED");
@@ -78,10 +93,15 @@ export class DeepSeekIntentAdapter {
       if (typeof input !== "number" || typeof output !== "number" ||
           !Number.isSafeInteger(input) || !Number.isSafeInteger(output) ||
           input < 0 || output < 0) throw new Error("AI_USAGE_MISSING");
+      const microUsdPerMillion =
+        input * this.options.rate_micro_usd_per_million_input +
+        output * this.options.rate_micro_usd_per_million_output;
+      const cost = Math.ceil(microUsdPerMillion / 1_000_000);
+      if (!Number.isFinite(microUsdPerMillion) || microUsdPerMillion < 0 ||
+          !Number.isSafeInteger(cost) || cost < 0)
+        throw new Error("AI_COST_INVALID");
       const usage:AiUsage={
-        input_tokens:input as number,output_tokens:output as number,
-        cost_micro_usd:Math.ceil(((input as number)*this.options.rate_micro_usd_per_million_input+
-          (output as number)*this.options.rate_micro_usd_per_million_output)/1_000_000)
+        input_tokens:input,output_tokens:output,cost_micro_usd:cost
       };
       await this.budget.record(usage);
       return {result,usage};
