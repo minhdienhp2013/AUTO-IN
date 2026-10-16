@@ -69,6 +69,7 @@ for(const [name,mutate] of [
  ["extra raw OCR field",v=>{v.advisory.metadata.raw_ocr="OCR PRIVATE SOURCE"}],
  ["invalid schema version",v=>{v.advisory.metadata.schema_version="tn005.other"}],
  ["invalid method",v=>{v.advisory.metadata.method="OCR PRIVATE SOURCE"}],
+ ["not_run method cannot produce trusted suggestion",v=>{v.advisory.metadata.method="not_run"}],
 ])test("TN005 safe fallback: "+name,()=>{
  const value=trusted();mutate(value);fallback(value);
 });
