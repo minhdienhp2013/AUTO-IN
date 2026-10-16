@@ -1,5 +1,35 @@
 # AUTO-IN — ma trận nghiệm thu CODE-105/CODE-305/CODE-405
 
+## CODE-405 — AI0 PR #110 tích hợp cùng SHA (nghiệm thu độc lập 16/10/2026)
+
+**Nguồn và phạm vi:** [Draft PR #110](https://github.com/minhdienhp2013/AUTO-IN/pull/110), nhánh `ai0/integration-reviewed-gates-20261016`, product/candidate HEAD **`ee9c8b2718e987118247d07193f7a160f2727251`**, base/main `423adb1a40d2b4a3c65dcf13c7ff36dbdbf97338`, tree `e3794dfc0e45dc45b60c9965df1dfee5ce014a85`. AI5 đối chiếu độc lập **9/9 blob nhập nguyên trạng** từ AI3 #101 `7fcb80e` (3 file), AI4 #103 `d300317` (3 file), AI0 #106 `2b633fac`, #108 `2026acfb`, #109 `d36f273` (mỗi PR 1 file), theo `docs/architecture/AI0_TIEP_QUAN_20261016.md`. Diff với main đúng **11 file**: 9 blob trên, workflow và tài liệu tiếp quản; không thay backend/web runtime, workers processor hoặc contracts. Fake spooler không phải thiết bị thật.
+
+**Đúng SHA thực thi:** [Run #38885284839 / job #116921422121](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38885284839/job/116921422121) **SUCCESS**; workflow mới checkout `github.sha`, kiểm HEAD bằng `GITHUB_SHA`, log **`EXACT_REVIEWED_INTEGRATION_SHA=ee9c8b2718e987118247d07193f7a160f2727251`**. PostgreSQL **18.3** localhost cô lập `autoin_test_reviewed`, simulation, Fastify thật, Python/AI3 renderer thật, React/Vite production `VITE_DEMO_MODE=false` và Chromium. Đây là kết quả CI mới cùng candidate SHA, AI5 đọc log độc lập; không phải chạy lại PostgreSQL tại container AI5 hoặc dùng PASS các PR cũ thay thế.
+
+| Suite/nhóm trên candidate `ee9c8b2` | PASS | FAIL | SKIP | Phạm vi chứng minh |
+| --- | ---: | ---: | ---: | --- |
+| Python documents/printing và fake spooler | **244** | **0** | **1** | Giữ nguyên SKIP, không chuyển thành PASS hoặc nghiệm thu Windows/Ricoh |
+| Contracts | **18** | **0** | **0** | Check/generate, TypeScript/build cũng hoàn tất |
+| Core PostgreSQL | **39** | **0** | **0** | Core chạy với PostgreSQL cô lập |
+| AI2 | **93** | **0** | **0** | Synthetic/provider fixture; OA thật vẫn OFF |
+| Composition PostgreSQL/HTTP/HTTPS DryRun | **28** | **0** | **0** | Có dòng PASS HTTPS Python DryRun/UNKNOWN/no-resend và HTTP AI3 sealed-preview 200→409 |
+| UI unit | **72** | **0** | **0** | Workflow in 72 PASS hai lần do harness gọi lại; không cộng thành 144 ca khác nhau |
+| Chromium **synthetic**, 14 scenario × 2 viewport | **28** | **0** | **0** | Tính riêng, không thay thế E2E Fastify/PostgreSQL |
+| Chromium thật baseline, 7 scenario × 2 viewport | **14** | **0** | **0** | clear, processing0, needs_human0, pending1, stale_revision, api401, offline |
+| HTTP extra, **4 nhóm** | **4 nhóm** | **0** | **0** | runtime 409 SIMULATION_REQUIRED; preview 503 FEATURE_UNAVAILABLE; detail 503 PENDING_READ_UNAVAILABLE→200; stale request hash/revision và challenge stale |
+| Chromium thật detail GET503/recovery | **2** | **0** | **0** | Desktop 1440×900/mobile 390×844; 503→200, api-error/lock banner, approve disabled, dữ liệu clear cũ ẩn |
+| Chromium thật AI3 sealed-preview stale409 | **2** | **0** | **0** | Hai viewport: catalog/PNG ban đầu 200; catalog cũ 409, ảnh cũ bị bỏ, refresh revision 3, approve disabled |
+
+**Tổng browser thật là 18 ca = 14 + 2 + 2**, tách khỏi 28 synthetic và 4 nhóm HTTP. Browser stale409 chỉ chứng minh **catalog** cũ trả 409; raster URL cũ trả 409 được xác nhận riêng trong HTTP composition sealed-preview. Những dòng NOT_RUN của từng harness/mode vẫn là giới hạn riêng của mode đó; lượt workflow này có bước sau thực sự chạy HTTP extra và stale-preview, không bỏ qua lịch sử hoặc cộng số trùng.
+
+**Mutation/quyền:** Log baseline, HTTP extra, GET503 và stale409 đều có `counts_before={"confirmations":0,"approvals":0,"print_jobs":0}` = `counts_after` trên các order fixture, browser/business observer mutation **0**. Fixture vẫn tạo đơn và thực hiện mutation kiểm thử có chủ đích; riêng stale409 ghi **`intentional_staff_revision_posts=2`** để chuyển revision 2→3, hash mới khác hash cũ. Không gọi toàn backend/DB mutation bằng 0; không có khách thật, tin OA hoặc lệnh in thật.
+
+**Đóng giới hạn SQL anchor cũ của PR #108:** Source bổ sung `de52c11e123037c7fe16c555494a9b7774baa2bd`, được PR108 HEAD `2026acfb` pin và [run #38833864141 / job #116758461317](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38833864141/job/116758461317) chạy **1 PASS/0 FAIL/0 SKIP**, đã đọc lại và `deepEqual` đủ **`artifact_ref,manifest_sha256,request_hash`** sau POST revision, ngoài kiểm rowCount=1 và byte manifest/PNG bất biến. Blob test này nhập nguyên vào PR110 và chạy **PASS trong 28 composition** trên candidate mới. Do đó giới hạn COUNT-only được ghi trong mục lịch sử PR108 bên dưới **đã được đóng trên các SHA có assertion mới**; không sửa ngược bằng chứng của SHA cũ. Assertion ba cột thuộc **HTTP-only test**, không gán cho driver Chromium vốn vẫn chỉ kiểm COUNT anchor.
+
+**Cổng vận hành:** Safari iPhone vật lý **10/10 NOT RUN**, Zalo OA chữ ký provider thật **NOT RUN/OFF**, Windows/Ricoh/giấy thật **NOT RUN**, TN-037 **≥210 đơn/≥7 ngày sạch NOT RUN**. Một Python SKIP chưa thành PASS. **V1 vẫn BLOCKED**; CI tích hợp không cấp quyền merge/deploy/bật OA/in thật. Phần này chỉ cập nhật ma trận từ log đã chạy; không chạy lại test, không thay sản phẩm và giữ toàn bộ lịch sử dưới đây.
+
+---
+
 ## CODE-405 — AI0 PR #109 Chromium AI3-sealed preview stale 409 (nghiệm thu độc lập 16/10/2026)
 
 **SHA/nhánh/ranh giới diff:** AI4 [Draft PR #103](https://github.com/minhdienhp2013/AUTO-IN/pull/103) HEAD `d300317a54d2dc03941939df7085d868627983cd` giữ nguyên test Chromium `tests/ui/code008-preview-stale-browser.py`. AI0 [Draft PR #109](https://github.com/minhdienhp2013/AUTO-IN/pull/109) HEAD `d36f2731df7467b3986a194a1fbcb02a45e91515`, base trực tiếp AI4 HEAD; compare base→PR109 có **3 commits**, chỉ **2 file AI0 mới**: `tests/integration/composition/code008-preview-stale-browser-driver.mjs` (+231) và `.github/workflows/ai0-code008-preview-ui409-exact.yml` (+79). Commit test/source `3c376eb5e5b642e3970b786abb868bd0a7b8a67d` là 1 file driver, **hai commit sau chỉ thao tác workflow AI0**, không sửa AI4, Core, AI3, sản phẩm hoặc backend runtime. Job [Actions #38797342425 / #116637089278](https://github.com/minhdienhp2013/AUTO-IN/actions/runs/38797342425/job/116637089278) **SUCCESS lần đầu trên SHA workflow hiện tại**; checkout log thực tế `EXACT_PREVIEW_UI409_SHA=3c376eb5e5b642e3970b786abb868bd0a7b8a67d`, không phải PR merge ref; `AI4_SOURCE_SHA=d300317...` được workflow cố định. PostgreSQL **18.3** localhost `autoin_test_previewui` được validator `assertIsolatedSimulationDatabase` chấp nhận, `simulation`, Vite/React production `VITE_DEMO_MODE=false`, Fastify có login nhân viên thật, Playwright Chromium, Python/Pillow và bridge AI3 qua `scripts/process-order.ts` tạo **manifest/PNG niêm phong thật từ file PNG tổng hợp**, không mock/ghi đè response HTTP, không dùng Zalo thật hoặc driver máy in.
