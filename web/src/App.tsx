@@ -449,10 +449,30 @@ function Overview({totals,orders,open}:{totals:{waiting:number;attention:number;
 }
 function SettingsView({mode,session,onLogout}:{mode:OperationMode;session:StaffSession|null;onLogout:()=>void}) {
   const [permission,setPermission] = useState(notificationCapability);
+  const [permissionBusy,setPermissionBusy] = useState(false);
+  const permissionInFlight = useRef(false);
+  const askNotificationPermission = async () => {
+    // Prevent duplicate prompts and never prompt outside a real user click.
+    if (permissionInFlight.current) return;
+    const current = notificationCapability();
+    if (current !== 'needs-permission') { setPermission(current); return; }
+    permissionInFlight.current = true;
+    setPermissionBusy(true);
+    try {
+      setPermission(await requestLocalNotifications());
+    } catch {
+      // Defensive UI boundary if the adapter unexpectedly fails later.
+      const latest = notificationCapability();
+      setPermission(latest === 'needs-permission' ? 'permission-error' : latest);
+    } finally {
+      permissionInFlight.current = false;
+      setPermissionBusy(false);
+    }
+  };
   return <section className="settings-page"><p className="eyebrow">CẤU HÌNH VẬN HÀNH</p><h1>Cài đặt & lịch</h1><p className="subtext">Những chức năng chưa có API sẽ hiển thị chưa sẵn sàng, không tự lưu trên trình duyệt.</p>
     <div className="settings-grid"><div className="settings-box"><div className="setting-heading"><Clock3/><div><h3>Giờ hoạt động & ngày nghỉ</h3><p>Mặc định 07:00–21:30, múi giờ Việt Nam</p></div></div><p>Lịch ngoại lệ có thể nằm ngoài khung mặc định. Ngày nghỉ không gửi lệnh in thật, kể cả khi AI vẫn tư vấn.</p><button className="outline-btn" disabled>Chỉnh lịch — chờ API quyền</button></div>
     <div className="settings-box"><div className="setting-heading"><ShieldCheck/><div><h3>Chế độ vận hành</h3><p>{labelMode(mode)}</p></div></div><p>Chỉ chủ được mở chính thức sau nghiệm thu. Giao diện không tự thay chế độ máy chủ.</p><button className="outline-btn" disabled>Đổi chế độ — chưa có API</button></div>
-    <div className="settings-box"><div className="setting-heading"><Bell/><div><h3>Thông báo thiết bị</h3><p>{permission==='unsupported'?'Trình duyệt chưa hỗ trợ':permission==='granted-no-subscription'?'Đã cấp quyền, chưa nối Web Push':permission==='permission-denied'?'Đã từ chối quyền':'Chưa cấp quyền thông báo'}</p></div></div><p>Web Push thật chưa được kết nối; thông báo sẽ mở đúng đơn sau khi có backend phát Push được xác thực.</p><button className="outline-btn" disabled={permission!=='needs-permission'} onClick={async()=>setPermission(await requestLocalNotifications())}>Yêu cầu quyền thiết bị</button></div>
+    <div className="settings-box"><div className="setting-heading"><Bell/><div><h3>Thông báo thiết bị</h3><p role={permission==='permission-error'?'alert':undefined}>{permission==='unsupported'?'Trình duyệt hoặc kết nối HTTPS chưa hỗ trợ thông báo':permission==='granted-no-subscription'?'Đã cấp quyền, chưa nối Web Push':permission==='permission-denied'?'Đã từ chối quyền — kiểm tra cài đặt trình duyệt':permission==='permission-error'?'Yêu cầu quyền thất bại. Có thể thử lại; Web Push chưa kết nối.':'Chưa cấp quyền thông báo'}</p></div></div><p>Web Push thật chưa được kết nối; thông báo sẽ mở đúng đơn sau khi có backend phát Push được xác thực.</p><button className="outline-btn" disabled={permissionBusy || (permission!=='needs-permission' && permission!=='permission-error')} onClick={()=>{void askNotificationPermission();}}>{permissionBusy?'Đang yêu cầu quyền…':permission==='permission-error'?'Thử lại yêu cầu quyền':'Yêu cầu quyền thiết bị'}</button></div>
     <div className="settings-box"><div className="setting-heading"><SlidersHorizontal/><div><h3>Quy tắc khách quen</h3><p>Quy tắc chỉ hiệu lực sau phê duyệt</p></div></div><p>Quy tắc khách, nhật ký sửa và phục hồi phiên bản đang chờ hợp đồng API.</p><button className="outline-btn" disabled>Quản lý quy tắc — chờ API</button></div></div>
     <div className="account-box"><span><UserRound size={19}/>{session?.display_name??'Chưa có tài khoản'} · {session?.role==='owner'?'Chủ':'Nhân viên'}</span><button className="outline-btn" onClick={onLogout}><LogOut size={16}/> Đăng xuất</button></div>
   </section>;
