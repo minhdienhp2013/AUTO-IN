@@ -159,9 +159,12 @@ test('AI0 sealed AI3 preview: current GET200 and both old-revision GET409 after 
     assert.equal(sha(await readFile(join(artifactRoot,item.ref))),
       item.sha256,'old AI3 PNG must remain immutable');
     const retained=await pool.query(
-      'SELECT COUNT(*)::int AS n FROM ai0_verified_plan_manifests '+
+      'SELECT artifact_ref,manifest_sha256,request_hash '+
+      'FROM ai0_verified_plan_manifests '+
       'WHERE shop_id=$1 AND order_id=$2 AND revision=2',[shop,orderId]);
-    assert.equal(retained.rows[0].n,1,'old DB anchor must remain intact');
+    assert.equal(retained.rowCount,1,'old DB anchor must remain intact');
+    assert.deepEqual(retained.rows[0],proof,
+      'old DB anchor ref, manifest hash and request hash must remain immutable');
     console.log('PASS REAL AI0 SEALED PREVIEW GET catalog=200 png=200 -> '+ 
       'catalog=409 STALE_OR_UNVERIFIED_PREVIEW png=409 STALE_OR_UNVERIFIED_PREVIEW');
     console.log('PASS AI3 sealed manifest sha256='+proof.manifest_sha256+
