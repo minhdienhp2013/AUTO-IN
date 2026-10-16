@@ -102,8 +102,8 @@ test('CODE501 real PostgreSQL 18 two pools and Fastify owner/shop/race contract'
   });
   await t.test('two independent PG pools serialize writes to one version',async()=>{
    const before=(await sa.get(owner)).version;
-   const one=sa.patch(owner,{expected_version:before,idempotency_key:key('poolA'),manual_lock:false});
-   const two=sb.patch(owner,{expected_version:before,idempotency_key:key('poolB'),manual_lock:true});
+   const one=sa.patch(owner,{expected_version:before,idempotency_key:key('poolA'),manual_lock:true});
+   const two=sb.patch(owner,{expected_version:before,idempotency_key:key('poolB'),open_at:'01:00'});
    const results=await Promise.allSettled([one,two]);
    assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
    assert.equal(results.filter(r=>r.status==='rejected'&&r.reason.code==='STALE_SETTINGS_VERSION').length,1);
