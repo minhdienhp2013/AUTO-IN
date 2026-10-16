@@ -14,6 +14,7 @@ import {
   type ActionKind, type OrderView, type OperationMode, type StaffSession, type VerifiedFileFact
 } from './domain.ts';
 import { notificationCapability, orderFromNavigation, requestLocalNotifications } from './notifications.ts';
+import { canEditShopSchedule, draftFromSchedule, saveShopScheduleAndRead, scheduleErrorText, type ShopSchedule, type ScheduleDraft } from './shop-schedule.ts';
 import { canApproveAfterInboundReview, canEditPrintRequest, groupOpenOrdersByChat, hasClearPendingInbound,
   requiresCustomerReconfirmation } from './code008.ts';
 
@@ -451,6 +452,57 @@ function SettingsView({mode,session,onLogout}:{mode:OperationMode;session:StaffS
   const [permission,setPermission] = useState(notificationCapability);
   const [permissionBusy,setPermissionBusy] = useState(false);
   const permissionInFlight = useRef(false);
+  const [shopSchedule,setShopSchedule] = useState<ShopSchedule|null>(null);
+  const [scheduleDraft,setScheduleDraft] = useState<ScheduleDraft|null>(null);
+  const [scheduleLoading,setScheduleLoading] = useState(false);
+  const [scheduleSaving,setScheduleSaving] = useState(false);
+  const [scheduleError,setScheduleError] = useState<string|null>(null);
+  const [scheduleLocalError,setScheduleLocalError] = useState<string|null>(null);
+  const [scheduleMessage,setScheduleMessage] = useState<string|null>(null);
+  const scheduleInFlight = useRef(false);
+  const scheduleWriteAllowed = !useDemo && canEditShopSchedule(session?.role,session?.can_manage_schedule===true);
+  useEffect(()=>{
+    let cancelled=false;
+    if(useDemo||!session){setShopSchedule(null);setScheduleDraft(null);return;}
+    setScheduleLoading(true);setScheduleError(null);setScheduleMessage(null);
+    void port.getShopSchedule().then(value=>{
+      if(!cancelled){setShopSchedule(value);setScheduleDraft(draftFromSchedule(value));}
+    }).catch((error:unknown)=>{
+      if(!cancelled){setShopSchedule(null);setScheduleDraft(null);setScheduleError(scheduleErrorText(error));}
+    }).finally(()=>{if(!cancelled)setScheduleLoading(false);});
+    return ()=>{cancelled=true;};
+  },[session?.actor_id]);
+  const refreshSchedule=async()=>{
+    if(useDemo||!session||scheduleInFlight.current||scheduleLoading||scheduleSaving)return;
+    scheduleInFlight.current=true;setScheduleLoading(true);
+    setScheduleError(null);setScheduleLocalError(null);setScheduleMessage(null);
+    try{
+      const value=await port.getShopSchedule();
+      setShopSchedule(value);setScheduleDraft(draftFromSchedule(value));
+    }catch(error){
+      setShopSchedule(null);setScheduleDraft(null);setScheduleError(scheduleErrorText(error));
+    }finally{scheduleInFlight.current=false;setScheduleLoading(false);}
+  };
+  const saveSchedule=async()=>{
+    if(!scheduleWriteAllowed||!shopSchedule||!scheduleDraft||scheduleError||
+       scheduleLoading||scheduleSaving||scheduleInFlight.current)return;
+    scheduleInFlight.current=true;setScheduleSaving(true);
+    setScheduleLocalError(null);setScheduleMessage(null);
+    try{
+      const result=await saveShopScheduleAndRead(port,shopSchedule,scheduleDraft,newMutationKey());
+      if(result.fresh){
+        setShopSchedule(result.fresh);setScheduleDraft(draftFromSchedule(result.fresh));
+      }
+      if(result.kind==='unchanged')setScheduleMessage('Lịch không có thay đổi.');
+      else if(result.kind==='saved')setScheduleMessage('Đã lưu và GET xác minh lại phiên bản lịch từ máy chủ.');
+      else setScheduleError(scheduleErrorText(result.failure)+
+        (result.readbackFailed?' Không đọc lại được; không tự gửi lại PATCH.':
+        ' Đã đọc lại dữ liệu máy chủ; kiểm tra rồi bấm Tải lại để sửa tiếp.'));
+    }catch(error){
+      setScheduleLocalError(error instanceof Error?error.message:'Dữ liệu lịch không hợp lệ.');
+    }finally{scheduleInFlight.current=false;setScheduleSaving(false);}
+  };
+
   const askNotificationPermission = async () => {
     // Prevent duplicate prompts and never prompt outside a real user click.
     if (permissionInFlight.current) return;
@@ -470,7 +522,33 @@ function SettingsView({mode,session,onLogout}:{mode:OperationMode;session:StaffS
     }
   };
   return <section className="settings-page"><p className="eyebrow">CẤU HÌNH VẬN HÀNH</p><h1>Cài đặt & lịch</h1><p className="subtext">Những chức năng chưa có API sẽ hiển thị chưa sẵn sàng, không tự lưu trên trình duyệt.</p>
-    <div className="settings-grid"><div className="settings-box"><div className="setting-heading"><Clock3/><div><h3>Giờ hoạt động & ngày nghỉ</h3><p>Mặc định 07:00–21:30, múi giờ Việt Nam</p></div></div><p>Lịch ngoại lệ có thể nằm ngoài khung mặc định. Ngày nghỉ không gửi lệnh in thật, kể cả khi AI vẫn tư vấn.</p><button className="outline-btn" disabled>Chỉnh lịch — chờ API quyền</button></div>
+    <div className="settings-grid"><div className="settings-box" data-testid="schedule-box">
+      <div className="setting-heading"><Clock3/><div><h3>Giờ hoạt động & ngày nghỉ</h3>
+      <p>{shopSchedule?'Lịch shop · phiên bản '+shopSchedule.version:scheduleLoading?'Đang đọc lịch từ máy chủ':'Chưa xác minh lịch shop'}</p></div></div>
+      <p>Đây là lịch và khóa <strong>gửi lệnh in</strong> của cửa hàng; không tạm dừng AI tư vấn hoặc tự bật in thật.</p>
+      {useDemo ? <p data-testid="schedule-demo">Chế độ demo: không có API lịch shop, không lưu thay đổi.</p>
+      : <>
+        {scheduleError && <p role="alert" data-testid="schedule-error" className="schedule-alert">{scheduleError}</p>}
+        {scheduleLocalError && <p role="alert" data-testid="schedule-validation-error" className="schedule-alert">{scheduleLocalError}</p>}
+        {scheduleMessage && <p role="status" data-testid="schedule-status">{scheduleMessage}</p>}
+        {!scheduleWriteAllowed && <p data-testid="schedule-view-only">Chỉ chủ cửa hàng được sửa lịch; nhân viên có quyền xem.</p>}
+        {shopSchedule && scheduleDraft && <>
+          <p data-testid="schedule-guard" className="hint">Múi giờ: {shopSchedule.timezone}; mode máy chủ: {shopSchedule.operational_guard.mode}; printing_enabled: {String(shopSchedule.operational_guard.printing_enabled)} (chỉ đọc; không xác nhận máy đang in).</p>
+          <form data-testid="schedule-form" onSubmit={event=>{event.preventDefault();void saveSchedule();}}>
+            <fieldset className="shop-schedule-fields" disabled={!scheduleWriteAllowed||!!scheduleError||scheduleLoading||scheduleSaving}>
+              <label>Giờ mở in (HH:mm)<input data-testid="schedule-open-at" value={scheduleDraft.open_at} inputMode="numeric" onChange={e=>setScheduleDraft({...scheduleDraft,open_at:e.target.value})} /></label>
+              <label>Giờ đóng in (HH:mm)<input data-testid="schedule-close-at" value={scheduleDraft.close_at} inputMode="numeric" onChange={e=>setScheduleDraft({...scheduleDraft,close_at:e.target.value})} /></label>
+              <label className="schedule-full-width">Ngày nghỉ (YYYY-MM-DD, cách nhau dấu phẩy / xuống dòng)
+                <textarea data-testid="schedule-holidays" rows={2} value={scheduleDraft.holiday_dates} onChange={e=>setScheduleDraft({...scheduleDraft,holiday_dates:e.target.value})}/>
+              </label>
+              <label className="schedule-manual-lock schedule-full-width"><input type="checkbox" data-testid="schedule-manual-lock" checked={scheduleDraft.manual_lock} onChange={e=>setScheduleDraft({...scheduleDraft,manual_lock:e.target.checked})}/> Tạm khóa gửi lệnh in của shop (không dừng AI)</label>
+            </fieldset>
+            {scheduleWriteAllowed && <button type="submit" data-testid="schedule-save" className="outline-btn" disabled={!!scheduleError||scheduleLoading||scheduleSaving}>{scheduleSaving?'Đang ghi và xác minh…':'Lưu lịch (chủ cửa hàng)'}</button>}
+          </form>
+        </>}
+        <button className="outline-btn" data-testid="schedule-refresh" disabled={scheduleLoading||scheduleSaving} onClick={()=>{void refreshSchedule();}}>{scheduleLoading?'Đang tải lịch…':'Tải lại lịch từ máy chủ'}</button>
+      </>}
+    </div>
     <div className="settings-box"><div className="setting-heading"><ShieldCheck/><div><h3>Chế độ vận hành</h3><p>{labelMode(mode)}</p></div></div><p>Chỉ chủ được mở chính thức sau nghiệm thu. Giao diện không tự thay chế độ máy chủ.</p><button className="outline-btn" disabled>Đổi chế độ — chưa có API</button></div>
     <div className="settings-box"><div className="setting-heading"><Bell/><div><h3>Thông báo thiết bị</h3><p role={permission==='permission-error'?'alert':undefined}>{permission==='unsupported'?'Trình duyệt hoặc kết nối HTTPS chưa hỗ trợ thông báo':permission==='granted-no-subscription'?'Đã cấp quyền, chưa nối Web Push':permission==='permission-denied'?'Đã từ chối quyền — kiểm tra cài đặt trình duyệt':permission==='permission-error'?'Yêu cầu quyền thất bại. Có thể thử lại; Web Push chưa kết nối.':'Chưa cấp quyền thông báo'}</p></div></div><p>Web Push thật chưa được kết nối; thông báo sẽ mở đúng đơn sau khi có backend phát Push được xác thực.</p><button className="outline-btn" disabled={permissionBusy || (permission!=='needs-permission' && permission!=='permission-error')} onClick={()=>{void askNotificationPermission();}}>{permissionBusy?'Đang yêu cầu quyền…':permission==='permission-error'?'Thử lại yêu cầu quyền':'Yêu cầu quyền thiết bị'}</button></div>
     <div className="settings-box"><div className="setting-heading"><SlidersHorizontal/><div><h3>Quy tắc khách quen</h3><p>Quy tắc chỉ hiệu lực sau phê duyệt</p></div></div><p>Quy tắc khách, nhật ký sửa và phục hồi phiên bản đang chờ hợp đồng API.</p><button className="outline-btn" disabled>Quản lý quy tắc — chờ API</button></div></div>

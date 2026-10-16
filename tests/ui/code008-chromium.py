@@ -267,6 +267,12 @@ def main() -> int:
                 for viewport in ((1440, 900), (390, 844)):
                     for case in CASES:
                         run_case(browser, viewport, case)
+                # Additional CODE501 synthetic UI tests. The original 28 CODE008
+                # test cases and their assertions remain untouched.
+                from shop_schedule_browser import CASES as SHOP_CASES, run_schedule_case
+                for viewport in ((1440, 900), (390, 844)):
+                    for case in SHOP_CASES:
+                        run_schedule_case(browser, viewport, case)
             finally:
                 browser.close()
     finally:
