@@ -59,7 +59,14 @@ test('OpenAPI contains distinct endpoints and resolvable shared schema reference
   const api = JSON.parse(await readFile(new URL('../../../contracts/generated/openapi.json', import.meta.url), 'utf8'));
   assert.equal(api.openapi, '3.1.0');
   assert.equal(api.paths['/internal/v1/print-jobs/{job_id}/mark-sending'].post.operationId, 'markSending');
-  assert.equal(Object.keys(api.paths).length, 20);
+  const schedule = api.paths['/api/v1/settings/schedule'];
+  assert.equal(schedule.get.operationId, 'getShopSchedule');
+  assert.deepEqual(schedule.get['x-roles'], ['owner', 'staff']);
+  assert.equal(schedule.patch.operationId, 'patchShopSchedule');
+  assert.deepEqual(schedule.patch['x-roles'], ['owner']);
+  assert.equal(schedule.patch.requestBody.content['application/json'].schema.$ref,
+    '#/components/schemas/ShopSchedulePatch');
+  assert.equal(Object.keys(api.paths).length, 21);
   const walk = (value: any) => {
     if (!value || typeof value !== 'object') return;
     if (value.$ref) assert.ok(api.components.schemas[value.$ref.split('/').at(-1)]);

@@ -62,6 +62,18 @@ Object.assign(Principal, { allOf: [
   { if: { properties: { role: { const: 'agent' } }, required: ['role'] }, then: { required: ['agent_id', 'printer_ids'], properties: { printer_ids: { minItems: 1 } } } }
 ] });
 export const ErrorResponse = object({ error: object({ code: T.String({ minLength: 1 }), message: T.String(), retryable: T.Boolean(), current_revision: T.Optional(Revision) }) });
+const HolidayDate = T.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' });
+export const ShopSchedule = object({ shop_id: Id, version: Revision,
+  open_at: T.String({ pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' }),
+  close_at: T.String({ pattern: '^(([01]\\d|2[0-3]):[0-5]\\d|24:00)$' }),
+  timezone: T.Literal('Asia/Ho_Chi_Minh'), holiday_dates: T.Array(HolidayDate, { maxItems: 730 }),
+  manual_lock: T.Boolean(), operational_guard: object({ mode: Mode, printing_enabled: T.Boolean() }),
+  changed: T.Optional(T.Boolean()) });
+export const ShopSchedulePatch = object({ expected_version: Revision,
+  idempotency_key: T.String({ minLength: 1, maxLength: 128 }),
+  open_at: T.Optional(ShopSchedule.properties.open_at), close_at: T.Optional(ShopSchedule.properties.close_at),
+  timezone: T.Optional(ShopSchedule.properties.timezone),
+  holiday_dates: T.Optional(ShopSchedule.properties.holiday_dates), manual_lock: T.Optional(T.Boolean()) });
 export const LoginRequest = object({ username: T.String({ minLength: 1, maxLength: 128 }), password: T.String({ minLength: 1, maxLength: 1024 }) });
 export const LoginResponse = object({ authenticated: T.Literal(true), principal: Principal });
 export const EmptyRequest = object({});
@@ -98,7 +110,8 @@ export const OrderQuery = object({ customer_id: T.Optional(Id), limit: T.Optiona
 export const schemas = { Id, Hash, Revision, Count, Money, Timestamp, Mode, JobState, Role, Principal, Settings, Document, RequestManifest,
   Counts, Quote, Confirmation, Approval, StateAxes, Order, Evidence, PrintJob, ErrorResponse, LoginRequest, LoginResponse, EmptyRequest, Ack,
   CreateOrderRequest, ReviseOrderRequest, ConfirmRequest, ApproveRequest, QuoteRequest, PaymentRequest, DeliveryRequest, ManualRequest,
-  ConversationRequest, ConversationResponse, ClaimRequest, ClaimResponse, JobActionRequest, SendingResponse, ReportRequest, OrderList, OrderQuery };
+  ConversationRequest, ConversationResponse, ClaimRequest, ClaimResponse, JobActionRequest, SendingResponse, ReportRequest, OrderList, OrderQuery,
+  ShopSchedule, ShopSchedulePatch };
 export type SchemaName = keyof typeof schemas;
 export type AuthPrincipal = Static<typeof Principal>;
 export type Manifest = Static<typeof RequestManifest>;

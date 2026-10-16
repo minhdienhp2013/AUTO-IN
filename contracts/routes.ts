@@ -1,6 +1,6 @@
 import type { SchemaName } from './schemas.js';
 export interface RouteContract {
-  operation: string; method: 'GET' | 'POST'; path: string; owner: 'AI1' | 'AI2';
+  operation: string; method: 'GET' | 'POST' | 'PATCH'; path: string; owner: 'AI1' | 'AI2';
   input?: SchemaName; output: SchemaName; roles: readonly string[]; permission?: string;
 }
 const staff = ['owner', 'staff'];
@@ -10,6 +10,8 @@ export const routes: readonly RouteContract[] = [
   { operation: 'login', method: 'POST', path: '/api/v1/auth/login', owner: 'AI1', input: 'LoginRequest', output: 'LoginResponse', roles: [] },
   { operation: 'logout', method: 'POST', path: '/api/v1/auth/logout', owner: 'AI1', input: 'EmptyRequest', output: 'Ack', roles: staff },
   { operation: 'me', method: 'GET', path: '/api/v1/auth/me', owner: 'AI1', output: 'Principal', roles: staff },
+  { operation: 'getShopSchedule', method: 'GET', path: '/api/v1/settings/schedule', owner: 'AI1', output: 'ShopSchedule', roles: staff },
+  { operation: 'patchShopSchedule', method: 'PATCH', path: '/api/v1/settings/schedule', owner: 'AI1', input: 'ShopSchedulePatch', output: 'ShopSchedule', roles: ['owner'] },
   { operation: 'listOrders', method: 'GET', path: '/api/v1/orders', owner: 'AI1', input: 'OrderQuery', output: 'OrderList', roles: staff, permission: 'orders:read' },
   { operation: 'createOrder', method: 'POST', path: '/api/v1/orders', owner: 'AI1', input: 'CreateOrderRequest', output: 'Order', roles: staff, permission: 'orders:write' },
   { operation: 'getOrder', method: 'GET', path: '/api/v1/orders/{order_id}', owner: 'AI1', output: 'Order', roles: staff, permission: 'orders:read' },

@@ -68,7 +68,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
         message: 'Request failed', retryable: false } });
   });
   const registered: string[] = [];
-  const register = (method: 'GET' | 'POST', path: string,
+  const register = (method: 'GET' | 'POST' | 'PATCH', path: string,
     handler: Parameters<RouteRegistrar['post']>[1]) => {
     registered.push(`${method} ${path}`);
     app.route({ method, url: path, handler: async (request, reply) => {
@@ -83,7 +83,8 @@ export function buildIntegratedApp(options: RuntimeOptions) {
         if (settings.rows[0]?.mode !== 'simulation')
           throw new DomainError('SIMULATION_REQUIRED', 'Simulation shop required', 409);
       }
-      if (method === 'POST' && (request.body === null || typeof request.body !== 'object' || Array.isArray(request.body)))
+      if ((method === 'POST' || method === 'PATCH') &&
+          (request.body === null || typeof request.body !== 'object' || Array.isArray(request.body)))
         throw new DomainError('INVALID_INPUT', 'JSON object required', 422);
       const headers = Object.fromEntries(Object.entries(request.headers)
         .filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
@@ -124,7 +125,8 @@ export function buildIntegratedApp(options: RuntimeOptions) {
       return result;
     } });
   };
-  core.registerRoutes({ get: (p, h) => register('GET', p, h), post: (p, h) => register('POST', p, h) }, {
+  core.registerRoutes({ get: (p, h) => register('GET', p, h), post: (p, h) => register('POST', p, h),
+    patch: (p, h) => register('PATCH', p, h) }, {
     resolveVerifiedCustomer: resolve, resolvePrintAgent: resolve
   });
   app.get('/health', async () => ({ status: 'ok', mode: 'simulation', live_enabled: false,
