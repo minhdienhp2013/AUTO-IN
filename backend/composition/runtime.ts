@@ -11,6 +11,7 @@ import { loadVerifiedOrderPreview, loadVerifiedOrderPreviewCatalog } from './pre
 import { createSyntheticInboundDraft } from './inbound-draft.js';
 import { reconcileSyntheticInboundDraft } from './inbound-reconcile.js';
 import { adoptSyntheticSourceHttp } from './source-adoption-http.js';
+import {classifyBoundFirstPage} from './first-page-suggestion.js';
 import { createSyntheticVerifiedButtonPlugin, type SyntheticButtonScope } from './synthetic-verified-button.js';
 import { pendingReviewSqlPool } from './pending-review-errors.js';
 import { assertApprovedPrintJobEvidence, type ApprovedDocumentEvidenceOptions } from './approved-document-evidence.js';
@@ -193,6 +194,20 @@ export function buildIntegratedApp(options: RuntimeOptions) {
       actor,eventId,request.body);
     return reply.header('Cache-Control','no-store').code(200).send(result);
   });
+  app.post('/internal/simulation/orders/:order_id/revisions/:revision/first-page-suggestion',
+    async (request, reply) => {
+      if(!options.syntheticArtifactIngest)
+        throw new DomainError('FEATURE_UNAVAILABLE','First-page suggestion unavailable',503);
+      const token=request.headers.authorization?.startsWith('Bearer ')
+        ? request.headers.authorization.slice(7) : '';
+      const actor=await core.auth.principal(token);
+      const params=request.params as {order_id:string;revision:string};
+      const result=await classifyBoundFirstPage(options.pool,
+        options.syntheticArtifactIngest.artifactRoot,options.syntheticArtifactIngest.scope,
+        actor,params.order_id,Number(params.revision));
+      return reply.header('Cache-Control','no-store')
+        .header('X-Content-Type-Options','nosniff').send(result);
+    });
   app.post('/internal/simulation/inbound-artifacts/:event_id/reconcile', async (request, reply) => {
     if (!options.syntheticArtifactIngest) throw new DomainError('FEATURE_UNAVAILABLE', 'Synthetic reconciliation unavailable', 503);
     const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';

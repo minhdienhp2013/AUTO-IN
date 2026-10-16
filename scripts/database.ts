@@ -32,6 +32,7 @@ try {
       await connection.query(await readFile(new URL('../backend/composition/migrations/004_pending_approval_gate.sql', import.meta.url), 'utf8'));
       await connection.query(await readFile(new URL('../backend/composition/migrations/005_official_zalo_shop_registry.sql', import.meta.url), 'utf8'));
       await connection.query(await readFile(new URL('../backend/composition/migrations/006_source_adoption_receipts.sql', import.meta.url), 'utf8'));
+      await connection.query(await readFile(new URL('../backend/composition/migrations/007_first_page_suggestions.sql', import.meta.url), 'utf8'));
       await connection.query('COMMIT');
     } catch (error) { await connection.query('ROLLBACK'); throw error; }
     finally { connection.release(); }
