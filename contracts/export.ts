@@ -17,7 +17,7 @@ for (const route of routes) {
     security: route.roles.length ? [{ serverCredential: [] }] : [],
     'x-roles': route.roles, 'x-permission': route.permission,
     ...(parameters.length ? { parameters } : {}),
-    ...(route.input && route.method === 'POST' ? { requestBody: { required: true, content: { 'application/json': { schema: { $ref: `#/components/schemas/${route.input}` } } } } } : {}),
+    ...(route.input && (route.method === 'POST' || route.method === 'PATCH') ? { requestBody: { required: true, content: { 'application/json': { schema: { $ref: `#/components/schemas/${route.input}` } } } } } : {}),
     responses: { '200': { description: 'Operation result; absent modules return 503', content: { 'application/json': { schema: { $ref: `#/components/schemas/${route.output}` } } } }, ...errors }
   };
   (paths[route.path] ??= {})[route.method.toLowerCase()] = entry;

@@ -10,5 +10,6 @@ export const CORE_MIGRATIONS = [
   '004_conversation_generation.sql',
   '005_ai_order_port.sql',
   '006_verified_confirmation.sql',
-  '007_active_order_inbound.sql'
+  '007_active_order_inbound.sql',
+  '008_shop_schedule.sql'
 ] as const;
