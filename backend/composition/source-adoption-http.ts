@@ -3,8 +3,7 @@ import {assertStaff,canonical,DomainError,type Principal} from '../core/model.js
 import type {OrderService} from '../core/service.js';
 import type {SqlPool} from '../storage/database.js';
 import type {SyntheticArtifactScope} from './synthetic-ingest.js';
-import {verifiedSyntheticSource} from './inbound-draft.js';
-import {adoptSyntheticSuggestedSource} from './synthetic-suggestion-adopt.js';
+import {adoptSyntheticSuggestedSource,verifySyntheticSuggestionTarget} from './synthetic-suggestion-adopt.js';
 
 type Result=Awaited<ReturnType<typeof adoptSyntheticSuggestedSource>>;
 const fail=(code:string,status=409):never=>{
@@ -55,7 +54,7 @@ export async function adoptSyntheticSourceHttp(
   };
   if(previous.rows.length)return replay();
   // Validate the server-bound frozen source before reserving its receipt.
-  await verifiedSyntheticSource(pool,root,scope,eventId);
+  await verifySyntheticSuggestionTarget(pool,root,scope,actor,settings);
   const inserted=await pool.query(
     'INSERT INTO ai0_source_adoption_receipts '+
     '(shop_id,actor_id,idempotency_key,oa_id,event_id,payload_sha256) '+

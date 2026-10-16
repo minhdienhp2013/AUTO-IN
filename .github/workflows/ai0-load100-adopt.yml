@@ -53,6 +53,9 @@ jobs:
         run: |
           set -o pipefail
           node --import tsx tests/acceptance/load100-product-pg.mjs | tee /tmp/autoin-load100.tap
+      - name: Read-only worker backlog diagnostics
+        if: always()
+        run: node --import tsx scripts/load100-diagnostics.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

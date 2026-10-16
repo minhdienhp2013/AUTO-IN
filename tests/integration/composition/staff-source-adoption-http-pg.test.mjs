@@ -34,13 +34,14 @@ test('AI0 staff adoption HTTP: existing AI2 order, lost-response replay, scope a
   const pngFile = join(scratch, 'fixture.png');
   const python = process.env.AUTOIN_PYTHON ?? 'python3';
   const pool = new pg.Pool({connectionString:databaseUrl, max:5, connectionTimeoutMillis:5000});
+  const secondPool = new pg.Pool({connectionString:databaseUrl, max:5, connectionTimeoutMillis:5000});
   const id = randomUUID(), shop = 'autoin-test-zalo-file-' + id, oa = 'oa-' + id;
   const key = randomUUID()+randomUUID(), ownerPassword='synthetic-owner-'+randomUUID();
   const buttonKey=randomUUID()+randomUUID();
   const scope={shop_id:shop,oa_id:oa};
   const headers=token=>({authorization:'Bearer '+token});
   const query=(sql,args=[])=>pool.query(sql,args);
-  let app, created=false;
+  let app, secondApp, created=false;
   try {
     await mkdir(root,{mode:0o700});
     await mkdir(renderedRoot,{mode:0o700});
@@ -72,6 +73,9 @@ test('AI0 staff adoption HTTP: existing AI2 order, lost-response replay, scope a
       syntheticVerifiedButton:{kind:'synthetic_fixture',shop_id:shop,oa_id:oa,fixture_secret:buttonKey},
       previewArtifactRoot:renderedRoot});
     await app.ready();
+    secondApp=buildIntegratedApp({pool:asSqlPool(secondPool),
+      syntheticArtifactIngest:{artifactRoot:root,scope}});
+    await secondApp.ready();
     const fixture=(eventId,customer,conversation)=>({
       synthetic_fixture:true,event_id:eventId,oa_id:oa,customer_id:customer,
       conversation_id:conversation,occurred_at:'2026-10-12T00:00:00Z',
@@ -150,8 +154,12 @@ test('AI0 staff adoption HTTP: existing AI2 order, lost-response replay, scope a
     await core.auth.bootstrapOwner({shop_id:otherShop,username:'owner',password:ownerPassword,bootstrap_enabled:true});
     const other=await core.auth.login(otherShop,'owner',ownerPassword);
     assert.equal((await invoke(body,other.token)).statusCode,403);
+    assert.equal((await invoke({...body,order_id:randomUUID()})).statusCode,409);
+    assert.equal((await query('SELECT count(*)::int n FROM ai0_source_adoption_receipts WHERE shop_id=$1',[shop])).rows[0].n,0,
+      'invalid target must not reserve or poison the event');
     // Server succeeds, the hypothetical client discards response and retries.
-    const simultaneous=await Promise.all([invoke(),invoke()]);
+    const simultaneous=await Promise.all([invoke(),secondApp.inject({
+      method:'POST',url:path,headers:headers(session.token),payload:body})]);
     assert.ok(simultaneous.every(r=>[200,409].includes(r.statusCode)),
       simultaneous.map(r=>r.body).join('\n'));
     const first=simultaneous.find(r=>r.statusCode===200);
@@ -192,7 +200,9 @@ test('AI0 staff adoption HTTP: existing AI2 order, lost-response replay, scope a
     console.log('PASS STAFF ADOPT HTTP one_order=true replay_same_receipt=true conflict=409 pending=409 guards=0');
   }finally{
     if(app)await app.close();
+    if(secondApp)await secondApp.close();
     await pool.end();
+    await secondPool.end();
     await rm(scratch,{recursive:true,force:true});
   }
 });
