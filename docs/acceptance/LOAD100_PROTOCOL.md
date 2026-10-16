@@ -54,6 +54,13 @@ Lệnh `--check-fixture` chỉ xác minh manifest + SHA-256 của file PNG/PDF v
 4. Nhân viên adopt nguồn **vào chính order ID do AI2 đã tạo** bằng API xác thực, không tạo thêm order. AI0 phải cung cấp hợp đồng hợp lệ dưới đây. Trong 20 trường hợp đầu, client chủ động **bỏ body phản hồi 2xx thành công** rồi gửi lại cùng HTTP method, path, body và `idempotency_key` — đây chỉ là client lost-success-ACK synthetic, **không** chứng minh rơi ACK máy in/provider. Các trường hợp khác adopt một lần.
 5. Dùng **2 processor Node→AI3 Python thật** chạy `scripts/process-order.ts` cho từng order, không dùng fake plan. Từ DB lấy revision/hash, chứng cứ staff source, SHA-256 manifest AI3 và source SHA đã đăng ký; staff GET preview catalog revision 3 qua Fastify auth 200; giữ confirmations/approvals/print_jobs **0→0**; outlet Zalo `tick_outbound().disabled=true`.
 
+## Rà soát tính idempotent của adopt trước khi nối CI
+
+- Kiểm tra tĩnh trên BASE: `adoptSyntheticSuggestedSource` tại `backend/composition/synthetic-suggestion-adopt.ts` **chưa nhận client idempotency_key**. Sau lần adopt đầu, revision tăng thành 2, reservation thành `CREATED`; khi replay, hàm hiện từ chối do `active_revision!==1`. Không thể chỉ gắn hàm này vào một HTTP route rồi cho rằng 20 lần bỏ ACK đã PASS.
+- Contract AI0 cần xử lý cùng shop/OA/event/order và **khóa idempotency_key + canonical request body**: replay y hệt sau COMMIT trả cùng receipt `existing`, không tạo revision mới; cùng key nhưng body khác trả conflict; khi reservation `PENDING`/không rõ Core đã COMMIT phải giữ fail-closed/reconcile có thẩm quyền, không tự ghi nhận thành công.
+- Route phải xác thực principal staff và ràng buộc scope ở server; không lấy `shop_id`, source-ref/hash từ client. Việc kiểm 20 replays và 100 mapping không được hạ chuẩn để vượt BLOCKED. AI0 cần kiểm thử race và nguồn gốc/idempotency trong phạm vi module của AI0 trước khi chạy LOAD100.
+- `CODE305_RUNBOOK` **không tìm thấy dưới tên file đó trong tree BASE**; tài liệu gần nhất đã đối chiếu là `docs/prompts/dot-3/AI5_CODE305.md`. Nếu runbook lưu ngoài nhánh hiện có, AI0 cần cung cấp vị trí/SHA để kiểm tra trước nghiệm thu sản phẩm.
+
 ## Hợp đồng thiếu trên BASE — yêu cầu AI0
 
 Đã kiểm `backend/composition/runtime.ts` ở `cb2be7a7`: hiện chỉ có staff upload `POST /internal/simulation/inbound-artifacts`, staff draft/reconcile; chưa có staff API **adopt nguồn vào order AI2 existing**. Module `adoptSyntheticSuggestedSource` ở `backend/composition/synthetic-suggestion-adopt.ts` có kiểm provenance và dùng Core.revise, nhưng hiện chỉ được gọi trực tiếp bởi test tích hợp, **không phải HTTP route**. Gọi module trực tiếp từ AI5 hoặc dùng draft API sẽ vi phạm mục tiêu nghiệm thu 100 mapping AI2.
