@@ -110,3 +110,29 @@ test('PG-17 same job has at most one successful mark-sending',{skip},()=>run('ap
  assert.equal(rs.filter(r=>!r.ok&&r.error?.code==='NOT_SENDABLE').length,1,JSON.stringify(rs));
  assert.equal((await a.snapshot()).driver_calls,0);
 }));
+
+test('DRYRUN-18 crash AFTER mark-sending journals UNKNOWN, never resends',{skip},()=>run('approved_unsent',async a=>{
+ const recovered=await a.dryrunCrashAfterMark();
+ assert.equal(recovered.state,'UNKNOWN');
+ assert.equal(recovered.driver_calls,0);
+ assert.equal(recovered.server_reclaimed,false);
+ const s=await a.snapshot();
+ assert.equal(s.print_state,'UNKNOWN');
+ assert.equal(s.driver_calls,0,'DryRunDriver must not be invoked on ambiguous crash');
+ const after=await a.act('claim',claim(),{actor:'agent'});
+ assert.equal(after.ok,true,JSON.stringify(after));
+ assert.equal(after.job,null,'UNKNOWN must not be eligible for auto-retry');
+}));
+
+test('PG-19 AI1 generation gate blocks late AI callback after handover, explicit return resumes',{skip},()=>run('unapproved_order',async a=>{
+ const r=await a.checkGenerationGate();
+ assert.equal(r.old_generation_blocked,true);
+ assert.equal(r.generation,2);
+ assert.equal(r.callback_count,2);
+ assert.equal(r.mode,'AI');
+}));
+test('PG-20 independent staff/owner handover can advance generation only once',{skip},()=>run('unapproved_order',async a=>{
+ const r=await a.checkConcurrentHandover();
+ assert.equal(r.grants,1);
+ assert.equal(r.rejected_stale,1);
+}));

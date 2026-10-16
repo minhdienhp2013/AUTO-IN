@@ -11,7 +11,7 @@ def main():
         assert callable(Journal) and callable(DryRunDriver)
         print('AI3_JOURNAL_AND_DRYRUN_IMPORTED')
         return
-    if verb not in ('begin','send') or len(sys.argv)!=3: raise SystemExit('Only begin/send allowed')
+    if verb not in ('begin','send','recover') or len(sys.argv)!=3: raise SystemExit('Only begin/send/recover allowed')
     job=json.loads(sys.stdin.read())
     if job.get('mode')!='simulation' or job.get('printer_id')!='RMP7000':
         raise PrintBlocked('Non-simulation or unexpected printer')
@@ -20,6 +20,13 @@ def main():
         if verb=='begin':
             journal.begin(job)
             print(json.dumps({'state':'BOUNDARY','job_id':job['job_id']}))
+        elif verb=='recover':
+            prior=journal.get(job['job_id'])
+            if not prior or prior['state'] not in ('BOUNDARY','ARMED','DRIVER_CALLED'):
+                raise PrintBlocked('Nothing uncertain to recover')
+            journal.state(job['job_id'],'UNKNOWN',{'evidence_kind':'agent_uncertain',
+                'reason':'synthetic_crash_boundary_no_auto_retry'})
+            print(json.dumps({'state':'UNKNOWN','job_id':job['job_id'],'driver_calls':0}))
         else:
             prior=journal.get(job['job_id'])
             if not prior or prior['state']!='BOUNDARY': raise PrintBlocked('Journal must precede driver')
