@@ -19,8 +19,9 @@
     "file": {
       "file": "source.pdf",
       "mime": "application/pdf",
-      "sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
-      "bytes": 604
+      "sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
+      "bytes": 609,
+      "font_policy": "no_fonts_vector_only"
     }
   },
   "cases": [
@@ -135,7 +136,7 @@
         "customer_id": "load100-customer-005",
         "conversation_id": "load100-conversation-005",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -255,7 +256,7 @@
         "customer_id": "load100-customer-010",
         "conversation_id": "load100-conversation-010",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -375,7 +376,7 @@
         "customer_id": "load100-customer-015",
         "conversation_id": "load100-conversation-015",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -495,7 +496,7 @@
         "customer_id": "load100-customer-020",
         "conversation_id": "load100-conversation-020",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -615,7 +616,7 @@
         "customer_id": "load100-customer-025",
         "conversation_id": "load100-conversation-025",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -735,7 +736,7 @@
         "customer_id": "load100-customer-030",
         "conversation_id": "load100-conversation-030",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -855,7 +856,7 @@
         "customer_id": "load100-customer-035",
         "conversation_id": "load100-conversation-035",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -975,7 +976,7 @@
         "customer_id": "load100-customer-040",
         "conversation_id": "load100-conversation-040",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -1095,7 +1096,7 @@
         "customer_id": "load100-customer-045",
         "conversation_id": "load100-conversation-045",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -1215,7 +1216,7 @@
         "customer_id": "load100-customer-050",
         "conversation_id": "load100-conversation-050",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -1335,7 +1336,7 @@
         "customer_id": "load100-customer-055",
         "conversation_id": "load100-conversation-055",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -1455,7 +1456,7 @@
         "customer_id": "load100-customer-060",
         "conversation_id": "load100-conversation-060",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -1575,7 +1576,7 @@
         "customer_id": "load100-customer-065",
         "conversation_id": "load100-conversation-065",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -1695,7 +1696,7 @@
         "customer_id": "load100-customer-070",
         "conversation_id": "load100-conversation-070",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -1815,7 +1816,7 @@
         "customer_id": "load100-customer-075",
         "conversation_id": "load100-conversation-075",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -1935,7 +1936,7 @@
         "customer_id": "load100-customer-080",
         "conversation_id": "load100-conversation-080",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -2055,7 +2056,7 @@
         "customer_id": "load100-customer-085",
         "conversation_id": "load100-conversation-085",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -2175,7 +2176,7 @@
         "customer_id": "load100-customer-090",
         "conversation_id": "load100-conversation-090",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -2295,7 +2296,7 @@
         "customer_id": "load100-customer-095",
         "conversation_id": "load100-conversation-095",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,
@@ -2415,7 +2416,7 @@
         "customer_id": "load100-customer-100",
         "conversation_id": "load100-conversation-100",
         "unique_order_for_event": true,
-        "source_sha256": "8ca5f8fe268afc0ec8910a2fd7623c3e6aca1b9b2b4c4b8bfa6dd66b5aba4420",
+        "source_sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
         "revisions": [
           1,
           2,

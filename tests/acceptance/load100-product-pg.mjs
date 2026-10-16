@@ -24,10 +24,12 @@ const report={schema:'autoin.load100.acceptance.v1',mode:'simulation',status:'NO
   dataset:'load100-fixed-v1', limits:{http_concurrency:5,workers:2,worker_pools:2,processors:2},
   timeouts:TIMEOUT,submitted:0,completed:0,failed:0,unique_order_ids:0,
   replay_events:0,lost_success_response_replays:0,
-  controlled_core_revisions:0,latency_ms:{},http_errors:[],
+  controlled_core_revisions:0,revisions_verified:0,latency_ms:{},http_errors:[],
+  expected_source_sha256:{},observed_source_sha256:{},worker_counters:{ingested:0,claimed:0,processed:0,held:0,needs_human:0,retry:0},
+  product_commit_sha:null,fixture_variant:'80 PNG / 20 PDF, two shared byte-identical assets',
   elapsed_ms:null,throughput_orders_per_second:null,queue_peak:null,queue_drain:null,
   guards_before:null,guards_after:null,reason:null,live:{oa:false,deepseek:false,ricoh:false,ios_safari:false,tn037_7d:false}};
-let started=performance.now(),finished=false;
+let started=performance.now(),finished=false,runAbortController=null;
 const observations={webhook:[],upload:[],adopt:[],preview:[],processor:[]};
 const stop=(code,msg)=>{const e=new Error(msg);e.code=code;throw e};
 function quantiles(samples){
@@ -41,7 +43,7 @@ async function emit(exit=2){
  report.elapsed_ms=Math.round(performance.now()-started);
  report.latency_ms=Object.fromEntries(Object.entries(observations).map(([k,v])=>[k,quantiles(v)]));
  report.throughput_orders_per_second=report.elapsed_ms>0?
-   Math.round(report.completed*1000/report.elapsed_ms)/100:null;
+   Math.round(report.completed*100000/report.elapsed_ms)/100:null;
  const output=JSON.stringify(report);
  console.log('LOAD100_JSON '+output);
  const filename=process.env.AUTOIN_LOAD100_REPORT;
@@ -58,15 +60,24 @@ async function emit(exit=2){
  console.log('1..1');
  process.exitCode=exit;
 }
-function bounded(items,limit,handler){
- let index=0,active=0,peak=0;
+// Failures cancel outstanding HTTP/processors, then WAIT for every task to settle
+// before app/pool/artifact cleanup. Promise.all alone would release resources early.
+async function bounded(items,limit,handler){
+ let index=0,active=0,peak=0,firstError=null;
  const threads=Array.from({length:Math.min(limit,items.length)},async()=>{
-   while(index<items.length){
+   while(index<items.length&&!firstError&&!runAbortController?.signal.aborted){
      const item=items[index++];active++;peak=Math.max(peak,active);
-     try{await handler(item)}finally{active--}
+     try{await handler(item)}
+     catch(e){if(!firstError){firstError=e;runAbortController?.abort(e)}}
+     finally{active--}
    }
  });
- return Promise.all(threads).then(()=>peak);
+ const settled=await Promise.allSettled(threads);
+ const unexpected=settled.find(x=>x.status==='rejected');
+ if(firstError)throw firstError;
+ if(unexpected)throw unexpected.reason;
+ if(runAbortController?.signal.aborted)stop('RUN_TIMEOUT','Global run deadline exceeded');
+ return peak;
 }
 async function readFixture(){
  const m=JSON.parse(await readFile(join(FIXTURE,'manifest.json'),'utf8'));
@@ -99,6 +110,7 @@ async function readFixture(){
    assert.ok(!known.has(c.event_id)&&!customers.has(c.customer_id)&&!conversations.has(c.conversation_id));
    known.add(c.event_id);customers.add(c.customer_id);conversations.add(c.conversation_id);
  }
+ report.expected_source_sha256=Object.fromEntries(m.cases.map(c=>[c.event_id,c.expected.source_sha256]));
  return {cases:m.cases,assets};
 }
 function guardDatabase(url){
@@ -120,16 +132,26 @@ async function run(){
    import('../../backend/core/factory.ts'),import('../../backend/composition/postgres.ts'),
    import('../../backend/composition/zalo-simulation.ts'),import('../../backend/composition/runtime.ts')]);
  assertIsolatedSimulationDatabase(url);
- const a=new pg.Pool({connectionString:url,max:5,connectionTimeoutMillis:5000});
- const b=new pg.Pool({connectionString:url,max:5,connectionTimeoutMillis:5000});
+ // Every SQL query is bounded as well; the global watchdog is not an uncancellable DB query.
+ const poolOptions={connectionString:url,max:5,connectionTimeoutMillis:5000,
+   query_timeout:TIMEOUT.http_ms,statement_timeout:TIMEOUT.http_ms};
+ const a=new pg.Pool(poolOptions);
+ const b=new pg.Pool(poolOptions);
  let app=null,root=null;
  const runId=randomUUID(),shop='autoin-test-load100-'+runId,oa='oa-'+runId;
  const fixtureKey=randomUUID()+randomUUID(),password='test-only-'+randomUUID();
  const scope={shop_id:shop,oa_id:oa},python=process.env.AUTOIN_PYTHON||'python3';
+ runAbortController=new AbortController();
+ const watchdog=setTimeout(()=>runAbortController.abort(new Error('RUN_TIMEOUT')),TIMEOUT.run_ms);
+ watchdog.unref();
  const startDeadline=performance.now()+TIMEOUT.run_ms;
- const remaining=()=>{if(performance.now()>startDeadline)stop('RUN_TIMEOUT','20-minute technical test deadline exceeded')};
+ const remaining=()=>{if(runAbortController.signal.aborted||performance.now()>startDeadline)
+   stop('RUN_TIMEOUT','20-minute technical test deadline exceeded')};
  const sql=(statement,args=[])=>a.query(statement,args);
  try{
+   const git=await execFile('git',['rev-parse','HEAD'],{timeout:5000});
+   report.product_commit_sha=git.stdout.trim();
+   assert.match(report.product_commit_sha,/^[a-f0-9]{40}$/);
    const version=await sql('SHOW server_version_num');
    const major=Number(version.rows[0].server_version_num);
    if(major!==180003)stop('POSTGRES_VERSION_REQUIRED','Need isolated PostgreSQL 18.3, found '+major);
@@ -166,7 +188,7 @@ async function run(){
      try{
        response=await fetch(base+path,{
          method,headers:{...(body?{'Content-Type':'application/json'}:{}),...headers},
-         ...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(TIMEOUT.http_ms)
+         ...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.any([AbortSignal.timeout(TIMEOUT.http_ms),runAbortController.signal])
        });
        const status=response.status;
        // Dropped-response fixture: server has succeeded, client deliberately
@@ -221,11 +243,20 @@ async function run(){
      assert.equal(r.data.status,'registered');
      assert.equal(r.data.preview_trusted,false);
    });
+   // An event is COMMITTED after enqueue; the batch is DONE only after processing.
+   // Both independent durable queues must drain. Do not call COMMITTED an order.
    const sampleQueues=async()=>{
-     const r=await sql(
-       'SELECT count(*)::int AS pending FROM zalo_batches WHERE oa_id=$1 AND status<>$2',[oa,'DONE']);
-     const q=r.rows[0].pending;
-     report.queue_peak=Math.max(report.queue_peak||0,q);
+     const x=(await sql(
+       "SELECT (SELECT count(*)::int FROM zalo_batches WHERE oa_id=$1 AND status<>'DONE') batches_pending,"+
+       " (SELECT count(*)::int FROM zalo_process_queue WHERE oa_id=$1 AND status<>'COMMITTED') events_pending,"+
+       " (SELECT count(*)::int FROM zalo_batches WHERE oa_id=$1 AND status='DONE') batches_done,"+
+       " (SELECT count(*)::int FROM zalo_process_queue WHERE oa_id=$1 AND status='COMMITTED') events_committed",
+       [oa])).rows[0];
+     const q={batches_pending:x.batches_pending,events_pending:x.events_pending,
+       combined_pending:x.batches_pending+x.events_pending,
+       batches_done:x.batches_done,events_committed:x.events_committed};
+     report.queue_peak=Math.max(report.queue_peak||0,q.combined_pending);
+     report.queue_drain=q;
      return q;
    };
    let proposalCount=0,loop=0;
@@ -236,14 +267,33 @@ async function run(){
      // Advance synthetic batching deadlines only; never fake DONE/PROCESSED rows.
      await sql("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' WHERE oa_id=$1 AND status='OPEN'",[oa]);
      await sampleQueues();
-     const work=await Promise.all([
-       r1.tick_inbound({ingest_limit:25,batch_limit:10}),
-       r2.tick_inbound({ingest_limit:25,batch_limit:10})
-     ]);
-     if(work.some(w=>w.errors>0))stop('WORKER_ERRORS','AI2 worker '+JSON.stringify(work));
+     const work=[];
+     await bounded([r1,r2],2,async runtime=>{
+       const tick=await runtime.tick_inbound({ingest_limit:25,batch_limit:10});
+       for(const field of ['ingested','claimed','processed','held','needs_human','retry']){
+         if(!Number.isSafeInteger(tick[field])||tick[field]<0)
+           stop('INVALID_WORKER_RESULT','Invalid durable worker counter '+field);
+         report.worker_counters[field]+=tick[field];
+       }
+       assert.equal(tick.claimed,tick.processed+tick.held+tick.needs_human+tick.retry,
+         'AI2 worker claimed accounting');
+       work.push(tick);
+     });
+     // Retried effects may not be safely inferred to have completed. In LOAD100,
+     // any held/needs_human/retry outcome is a FAIL, with DB state left for diagnosis.
+     if(work.some(w=>w.held||w.needs_human||w.retry)){
+       await sampleQueues();
+       stop('WORKER_NOT_CLEAN','AI2 held/needs_human/retry '+JSON.stringify(work));
+     }
      proposalCount=(await sql('SELECT count(*)::int n FROM core_ai_draft_proposals WHERE shop_id=$1',[shop])).rows[0].n;
      if(loop>100)stop('WORKER_BACKLOG','AI2 did not drain after 100 bounded worker ticks');
    }
+   const queuesAfterWorkers=await sampleQueues();
+   assert.deepEqual({batches_pending:queuesAfterWorkers.batches_pending,
+     events_pending:queuesAfterWorkers.events_pending},
+     {batches_pending:0,events_pending:0},'Both AI2 queues must drain');
+   assert.equal(queuesAfterWorkers.batches_done,100);
+   assert.equal(queuesAfterWorkers.events_committed,100);
    // Outbound adapter must remain disabled even though queued requests may exist.
    const outbound=await r1.tick_outbound();
    assert.equal(outbound.disabled,true,'live outbound must not be enabled');
@@ -266,12 +316,26 @@ async function run(){
        const first=await http('POST',path,body,auth,'adopt',true);
        assert.ok(first.status===200||first.status===201);
        const replay=await http('POST',path,body,auth,'adopt');
+       assert.equal(replay.status,first.status,'HTTP ACK replay response code');
        assert.equal(replay.data.order_id,body.order_id);
-       assert.ok(['existing','adopted'].includes(replay.data.status));
+       assert.equal(replay.data.status,'adopted');
+       assert.equal(replay.data.revision,2);
+       assert.equal(replay.data.requires_customer_confirmation,true);
+       assert.equal(replay.data.preview_trusted,false);
+       // Check the exact persisted server receipt, not just order/revision guesses.
+       const receipts=(await sql(
+         'SELECT response FROM ai0_source_adoption_receipts WHERE shop_id=$1 AND oa_id=$2 AND event_id=$3',
+         [shop,oa,c.event_id])).rows;
+       assert.equal(receipts.length,1);
+       assert.deepEqual(replay.data,receipts[0].response);
        report.lost_success_response_replays++;
      }else{
        const result=await http('POST',path,body,auth,'adopt');
        assert.equal(result.data.order_id,body.order_id);
+       assert.equal(result.data.status,'adopted');
+       assert.equal(result.data.revision,2);
+       assert.equal(result.data.requires_customer_confirmation,true);
+       assert.equal(result.data.preview_trusted,false);
      }
      report.controlled_core_revisions++;
    });
@@ -279,7 +343,7 @@ async function run(){
      remaining();const at=performance.now(),orderId=idByCase.get(c.event_id);
      const child=await execFile(process.execPath,
        ['--import','tsx','scripts/process-order.ts',shop,orderId],{
-       cwd:process.cwd(),timeout:TIMEOUT.processor_ms,maxBuffer:1024*1024,
+       cwd:process.cwd(),timeout:TIMEOUT.processor_ms,killSignal:'SIGKILL',signal:runAbortController.signal,maxBuffer:1024*1024,
        env:{...process.env,DATABASE_URL:url,AUTOIN_INPUT_ROOT:inbound,AUTOIN_ARTIFACT_ROOT:output,
          AUTOIN_PYTHON:python,AUTOIN_PROCESSOR_ID:'load100-processor'}
      });
@@ -297,6 +361,20 @@ async function run(){
      'WHERE o.shop_id=$1',[shop])).rows;
    assert.equal(stored.length,100,'scope leakage, orphan, or duplicate orders');
    assert.equal(new Set(stored.map(x=>x.order_id)).size,100);
+   const allRevisions=(await sql(
+     'SELECT order_id::text,revision,request_hash FROM core_revisions WHERE order_id=ANY($1::uuid[]) ORDER BY order_id,revision',
+     [[...expectedOrders]])).rows;
+   assert.equal(allRevisions.length,300,'No missing/extra historical revisions');
+   const revisionsByOrder=new Map();
+   for(const revision of allRevisions){
+     assert.match(revision.request_hash,/^[a-f0-9]{64}$/);
+     const list=revisionsByOrder.get(revision.order_id)||[];
+     list.push(revision.revision);revisionsByOrder.set(revision.order_id,list);
+   }
+   for(const id of expectedOrders){
+     assert.deepEqual(revisionsByOrder.get(id),[1,2,3],'Exact order history 1->2->3');
+     report.revisions_verified++;
+   }
    for(const c of cases){
      const orderId=idByCase.get(c.event_id);
      assert.ok(expectedOrders.has(orderId));
@@ -314,11 +392,15 @@ async function run(){
        [shop,oa,c.event_id])).rows;
      assert.equal(source.length,1);
      assert.equal(source[0].sha256,c.expected.source_sha256);
+     report.observed_source_sha256[c.event_id]=source[0].sha256;
      const manifest=await readFile(join(output,row.artifact_ref));
      assert.equal(hash(manifest),row.manifest_sha256);
      const m=JSON.parse(manifest.toString('utf8'));
      assert.equal(m.schema,'ai3.document_bridge.v1');
      assert.equal(m.request_hash,row.request_hash);
+     assert.equal(m.files.length,1);
+     assert.equal(m.files[0].file_sha256,c.expected.source_sha256,
+       'AI3 sealed source SHA mismatch against the event ID');
      report.completed++;
    }
    await bounded(cases,5,async c=>{
@@ -330,7 +412,11 @@ async function run(){
    report.guards_after=await baseline();
    assert.deepEqual(report.guards_after,report.guards_before);
    report.queue_drain=await sampleQueues();
-   assert.equal(report.queue_drain,0,'AI2 backlog not drained');
+   assert.equal(report.queue_drain.batches_pending,0,'Batch backlog not drained');
+   assert.equal(report.queue_drain.events_pending,0,'Event queue backlog not drained');
+   assert.equal(report.queue_drain.batches_done,100);
+   assert.equal(report.queue_drain.events_committed,100);
+   assert.deepEqual(report.observed_source_sha256,report.expected_source_sha256);
    assert.equal(report.submitted,100);
    assert.equal(report.completed,100);
    assert.equal(report.replay_events,20);
@@ -340,9 +426,14 @@ async function run(){
    report.unique_order_ids=expectedOrders.size;
    report.status='PASS';report.reason='100/100 synthetic verified in isolated batch, not 100 per day or TN037';
  }finally{
+   // bounded() has settled all in-flight work (including child processors)
+   // before a rejected operation reaches this cleanup. Cancelling the watchdog
+   // prevents a late timeout during app.close()/database teardown.
+   clearTimeout(watchdog);
    if(app)await app.close();
-   await a.end();await b.end();
+   await Promise.allSettled([a.end(),b.end()]);
    if(root)await rm(root,{recursive:true,force:true});
+   runAbortController=null;
  }
 }
 try{await run();if(!finished)await emit(report.status==='PASS'?0:2)}
