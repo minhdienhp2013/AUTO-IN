@@ -84,4 +84,4 @@ jobs:
           if-no-files-found: warn
       - name: Preserve release gate and measurement limitations
         if: always()
-        run: echo 'Diagnostic only. AI5 throughput/worker assertion review pending. Physical OA/Ricoh/Safari/TN037 NOT RUN. No merge/deploy/print.'
+        run: echo 'Unified candidate diagnostic. AI5 reviewed prior SHA only; review this SHA and artifact separately. Physical OA/Ricoh/Safari/TN037 NOT RUN. No merge/deploy/print.'
