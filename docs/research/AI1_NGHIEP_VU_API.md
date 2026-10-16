@@ -373,3 +373,11 @@ Hiện trạng `OrderService.claim`: lock `core_orders` → job `NOT_SENT` → `
 - **Kiểm tra giai đoạn1 thực tế:** chỉ đối chiếu source `backend/core/model.ts:printingAllowed`, `backend/core/service.ts:checkGates/claim/preflight/markSending/report`, `backend/storage/database.ts:once`, `backend/api/routes.ts`, migration 001 và TN-028/TN-035. **0 test mới chạy, PostgreSQL/HTTP stage2 NOT RUN**. Không merge/deploy/in thật; V1 vẫn BLOCKED.
 
 **AI0 cần quyết định trước CODE501 giai đoạn2:** (a) tên route + GET staff/owner, (b) version/audit migration + ngày nghỉ bound/timezone/tối đa/qua đêm, (c) tách AI schedule/pausing/special-date override theo TN-028, (d) điều phối ownership `RouteRegistrar.patch`/composition/OpenAPI và cách trả `claim` khi shop đóng. Chỉ sau khi chốt mới triển khai.
+
+## CODE501 — Giai đoạn2 triển khai theo quyết định AI0 (16/10/2026)
+
+**AI0 đã phê duyệt:** `docs/architecture/CODE009_CONTRACT_DECISIONS_20261016.md` ở PR118. Implement trong AI1: `backend/core/shop-schedule.ts`, `backend/api/routes.ts`, `backend/core/factory.ts`, `backend/storage/migrations/008_shop_schedule.sql`, manifest Core và test Core. GET staff/owner, PATCH owner từ phiên server; shop lấy từ principal, không nhận caller-supplied shop. Runtime registration PATCH và OpenAPI do AI0 nối sau bàn giao, không được tuyên bố endpoint đã hoạt động trên composition trước đó.
+
+- PATCH thay đúng 5 trường print schedule, strict 422 với bất kỳ `mode`/`printing_enabled`; trả `operational_guard` read-only. Gregorian max730, `Asia/Ho_Chi_Minh`, close-only 24:00, không qua đêm. `schedule_version` BIGINT checked safe integer, `PgStore.once`, CAS và audit shop không có order_id. Replay không tạo version/audit mới.
+- Chỉ giữ khóa `core_shop_settings FOR UPDATE` khi PATCH; existing agent gate lock order→job→settings tiếp tục nguyên trạng. Không chỉnh `SENDING/UNKNOWN`, `mode_at_send`, in lại, claim hay print driver. Lịch AI, special-day, AI paused nằm ngoài CODE501.
+- CI cần migration008, build TypeScript, test unit+PostgreSQL18.3 two independent pools, auth Fastify và mark_sending arbitration; nếu composition thiếu `RouteRegistrar.patch`, AI0 bổ sung wrapper method; không thay `backend/composition/**` trong PR AI1.
