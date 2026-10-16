@@ -100,3 +100,88 @@ jobs:
         if: hashFiles('tests/ui/code008-chromium.py') != ''
         working-directory: web
         run: npm run test:chromium:code008
+
+  unified-schedule-adopt-load100:
+    if: github.event_name == 'pull_request' && github.head_ref == 'ai0/integrate-schedule-adopt-load100-20261016'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_test_load100
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_load100"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_load100
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_load100
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_load100
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Prove exact PR head and audited harness blob
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          echo "EXACT_UNIFIED_CANDIDATE_SHA=$(git rev-parse HEAD)"
+          test "$(git hash-object tests/acceptance/load100-product-pg.mjs)" = 0cc595dd75741b04c2da5cce169cc857eb687647
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm ci --prefix web
+      - run: python -m pip install -r workers/documents/requirements-test.txt
+      - name: Install Chromium for desktop and mobile synthetic UI
+        run: |
+          python -m pip install playwright==1.58.0
+          python -m playwright install --with-deps chromium
+          chrome="$(python -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')"
+          test -x "$chrome"
+          mkdir -p "$RUNNER_TEMP/autoin-chromium-bin"
+          ln -sfn "$chrome" "$RUNNER_TEMP/autoin-chromium-bin/chromium"
+          echo "$RUNNER_TEMP/autoin-chromium-bin" >> "$GITHUB_PATH"
+      - run: python -m pytest -q tests/unit/documents tests/unit/printing
+      - run: npm run db:migrate
+      - name: Strict contracts Core AI2 composition PostgreSQL HTTP checks
+        run: npm run check
+      - name: UI unit typecheck build and Chromium on exact SHA
+        working-directory: web
+        run: |
+          npm test
+          npm run typecheck
+          VITE_DEMO_MODE=false npm run build
+          npm run test:chromium:code008
+      - name: Run audited AI5 LOAD100 and emit JSON TAP
+        env:
+          AUTOIN_LOAD100_REPORT: /tmp/autoin-load100-report.json
+        run: |
+          set -o pipefail
+          node --import tsx tests/acceptance/load100-product-pg.mjs | tee /tmp/autoin-load100.tap
+          sha="$(git rev-parse HEAD)"
+          node -e "const r=require('/tmp/autoin-load100-report.json');if(r.status!=='PASS'||r.product_commit_sha!==process.argv[1])process.exit(1)" "$sha"
+          grep -F "\"product_commit_sha\":\"$sha\"" /tmp/autoin-load100.tap
+      - name: Read-only worker backlog diagnostics
+        if: always()
+        run: node --import tsx scripts/load100-diagnostics.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unified-load100-${{ github.event.pull_request.head.sha }}
+          path: |
+            /tmp/autoin-load100-report.json
+            /tmp/autoin-load100.tap
+          if-no-files-found: warn
+      - name: Preserve release gates
+        if: always()
+        run: echo 'Synthetic only. OA/Ricoh/Safari/TN037 NOT RUN; no merge/deploy/print.'
