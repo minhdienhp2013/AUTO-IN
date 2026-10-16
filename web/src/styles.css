@@ -50,3 +50,16 @@
 .inbound-item{border-top:1px solid #e6d9c7;padding:8px 0;overflow-wrap:anywhere}
 .inbound-item p{margin:3px 0}
 @media(max-width:760px){.chat-group-heading{align-items:stretch}.chat-group-heading button{width:100%}.chat-open-order{font-size:.82rem}}
+
+
+/* AI4 CODE501: schedule stays inside the existing SettingsView two-column grid. */
+.shop-schedule-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px;border:0;padding:0;margin:13px 0;min-width:0}
+.shop-schedule-fields label{display:grid;gap:6px;min-width:0;color:#5c7566;font-size:11px;font-weight:700}
+.shop-schedule-fields input:not([type=checkbox]),.shop-schedule-fields textarea{width:100%;min-width:0;border:1px solid #dce6dd;border-radius:8px;background:#fff;padding:8px 10px;font:inherit;font-size:12px;color:#25463b}
+.shop-schedule-fields textarea{resize:vertical;line-height:1.5}
+.shop-schedule-fields .schedule-full-width{grid-column:1/-1}
+.shop-schedule-fields .schedule-manual-lock{display:flex;align-items:flex-start;gap:8px;line-height:1.55}
+.shop-schedule-fields .schedule-manual-lock input{margin:2px 0 0;accent-color:#287d5d}
+.settings-box[data-testid=schedule-box] .outline-btn{margin:6px 8px 0 0;max-width:100%;white-space:normal}
+.settings-box .schedule-alert{color:#aa4a36;font-weight:700}
+@media(max-width:450px){.shop-schedule-fields{grid-template-columns:minmax(0,1fr)}}
