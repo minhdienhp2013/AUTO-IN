@@ -424,3 +424,29 @@ Chạy `python -m compileall -q workers/documents agents/windows tests/unit/docu
 - [ ] Sau thử: vô hiệu hóa/thu hồi credential thử, khóa quyền in thật nếu có, xác nhận không còn job chờ, lưu biên bản nội bộ theo quyền truy cập; **không tự chuyển sang vận hành/deploy**.
 
 **Tình trạng hiện tại:** mới có **DryRun/synthetic + product-backed PostgreSQL/HTTPS**, không có bằng chứng Windows/Ricoh thực. Trong bàn giao AI0 PR #74 có thông tin overlay validation [PR #76](https://github.com/minhdienhp2013/AUTO-IN/pull/76) HEAD `0ee0a74892576cf38dcce539889ad017e27be26b` PASS `compileall`, `199 passed / 1 skipped` Python và `26/26` PostgreSQL/HTTPS integration trên **SHA PR #76**, nhưng đó vẫn là DryRun. **Thiếu:** máy Windows được kiểm soát + xác minh serial/driver/port/queue, adapter driver thật được review và duyệt riêng, chấp thuận một job thật của chủ, người giám sát đếm giấy, quyền/credential/TLS/ACL phù hợp, biên bản đối soát thực tế. **Không thực hiện các bước kết nối/in ở phiên cập nhật tài liệu này.**
+
+## TN005-1PAGE — phân loại gợi ý **chỉ trang đầu** (AI3, 16/10/2026)
+
+**Nguồn yêu cầu:** [PR #112 TN005](https://github.com/minhdienhp2013/AUTO-IN/pull/112) HEAD `dca8e4726dce2f6340dcfa2e33b6974591855f91`. Phần CODE503 (tiền kiểm Word tĩnh) đã bàn giao độc lập qua PR #116, **không thay đổi** trong nhánh này. Mã mới không sửa bộ xử lý đếm toàn trang, manifest, preview, font guard, nhân viên duyệt, giá, job in hoặc DryRun.
+
+**Port đề nghị AI0 chốt (chưa kết nối backend):**
+```python
+from workers.documents.first_page_classifier import classify_first_page
+result = classify_first_page(
+    verified_source_bytes,                   # chỉ bytes từ nguồn đã niêm phong thuộc shop/order
+    format_hint="pdf",                       # metadata định dạng do server xác minh, không dựa tên file
+    expected_sha256=trusted_source_sha256,   # giá trị từ manifest/DB tin cậy, KHÔNG do khách khai
+    allow_local_ocr=True,                    # Tesseract máy cục bộ nếu đã cài, không gọi cloud
+)
+```
+Shape JSON đóng, không có text trích xuất hay OCR:
+```json
+{"schema_version":"tn005.first_page.v1","status":"SUGGESTED","category":"WORKSHEET","confidence_label":"high","analyzed_page_count":1,"method":"pymupdf_page0_text","reason_code":"NONE"}
+```
+`status=SUGGESTED|UNKNOWN|NEEDS_HUMAN`; `category=WORKSHEET|EXAM|APPLICATION_FORM|CONTRACT_MINUTES|LESSON_PLAN|CV_PROFILE|ADMINISTRATIVE|GENERAL_DOCUMENT|UNKNOWN`; `confidence_label=high|none` ở phiên luật bảo thủ này (**không phải xác suất đã hiệu chuẩn**). Method phân biệt `pymupdf_page0_text`, `pymupdf_page0_local_ocr`, `pillow_frame0_local_ocr`, `not_run`. `reason_code` là enum không chứa PII: ví dụ `OCR_UNAVAILABLE`, `OCR_FAILED`, `NO_READABLE_TEXT`, `COVER_OR_INSUFFICIENT_EVIDENCE`, `WORD_NATIVE_FIRST_PAGE_UNVERIFIED`, `SOURCE_HASH_MISMATCH`, `PDF_UNREADABLE`. AI0 quyết định lưu gợi ý ở đâu, quyền/shop scope, revision/content-hash CAS, lifetime, đối soát khi file thay đổi; AI3 **không tự ghi vào DB**.
+
+**Cơ chế:** mở PDF trong RAM, chỉ `doc.load_page(0)` và đọc `page.get_text("text")`; khi page đầu là raster thiếu text thì rasterize **chỉ page 0** (khống chế kích thước ≤1600 px/cạnh, ≤12 triệu px), OCR cục bộ nếu `pytesseract` + Tesseract + ngôn ngữ `vie`/`eng` đã có; subprocess Tesseract deadline 4 giây, không cài thêm dependency. Nếu OCR thiếu/lỗi hoặc nội dung không có đủ tiêu chí **tiêu đề + ít nhất hai tín hiệu cấu trúc độc lập**, trả `UNKNOWN`; không nhìn trang 2, không dùng tên file suy đoán. PNG/JPG/TIFF/WebP/BMP dùng Pillow đọc đúng **frame 0**. Word/DOCX hợp lệ trả `UNKNOWN` với `analyzed_page_count=0` do chưa chứng minh renderer Word native phân trang, không suy từ `document.xml`; DOCX hỏng trả `NEEDS_HUMAN`. Source SHA-256 không khớp hoặc file không hợp lệ trả `NEEDS_HUMAN`. Dữ liệu văn bản/OCR không trả response, không ghi log, không upload ra API.
+
+**Thử nghiệm AI3:** `tests/unit/documents/test_first_page_classifier.py` dùng hai PDF thật, trang đầu bài tập/trang hai hợp đồng và đảo ngược (test còn monkeypatch cấm `load_page(1)`), ảnh PDF scan hai trang, TIFF hai frame, OCR fake **được gắn nhãn riêng**, OCR unavailable, trang bìa/blank, PDF và DOCX lỗi, thiếu hash, rò PII, tám nhãn đại diện. `pytest -q` trên Linux local: **25 PASS / 0 FAIL / 0 SKIP**; `compileall -q` PASS. Một thử OCR **cục bộ** Tesseract/Pillow ảnh tổng hợp trả `SUGGESTED/WORKSHEET`; **không suy thành tỷ lệ nhận diện thực tế**. Benchmark `perf_counter` bốn file tổng hợp *không chạy OCR*: **1,193 / 0,799 / 0,698 / 0,666 ms**, trung vị **0,748 ms**, Python/Linux local; **không phải SLA**, không có số đo OCR thực/Windows.
+
+**Chưa chạy/giới hạn:** HTTP/Fastify/PostgreSQL, cache, deadline khi tích hợp AI0, AI2 lời hỏi khách, fixture thật, Word native, OCR tiếng Việt trên bộ tài liệu thực tế, 210 đơn/7 ngày, Windows/Ricoh/Zalo OA thật: **NOT RUN**. Gợi ý **không** cấp quyền in, không đổi `plan.ready`, không định màu/bản, không báo giá, không phát sinh in hoặc gửi khách. AI0 cần chốt Port nguồn SHA đã niêm phong + revision trước khi nối; AI5 độc lập kiểm đúng production SHA, không nhận diện nhãn thủ công như AI đã hiểu nội dung mọi tài liệu.
