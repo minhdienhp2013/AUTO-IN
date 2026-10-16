@@ -118,5 +118,13 @@ def run_schedule_case(browser,viewport,case):
         assert not failures, "Chromium JS exception "+repr(failures[:1])
         print("PASS CODE501 SYNTHETIC Chromium "+str(width)+"x"+str(height)+
               " "+case+" GET="+str(count["get"])+" PATCH="+str(count["patch"]),flush=True)
+    except Exception:
+        # Synthetic fixtures only: useful stack trace with no live credentials.
+        import traceback
+        print("FAIL CODE501 SYNTHETIC "+str(width)+"x"+str(height)+
+              " case="+case+" GET="+str(count["get"])+
+              " PATCH="+str(count["patch"]),flush=True)
+        traceback.print_exc()
+        raise
     finally:
         ctx.close()
