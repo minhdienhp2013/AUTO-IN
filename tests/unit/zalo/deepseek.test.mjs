@@ -44,13 +44,16 @@ const baseOptions=()=>({
  rate_micro_usd_per_million_input:1_000_000,
  rate_micro_usd_per_million_output:3_000_000,
 });
-const mockReply=(input=120,output=20)=>({
+const mockReply=(...tokenCounts)=>{
+ const [input,output]=tokenCounts.length===0?[120,20]:tokenCounts;
+ return ({
  ok:true,async json(){return {
   choices:[{finish_reason:"stop",message:{content:JSON.stringify({
    intent:"PRINT",requires_clarification:false
   })}}],usage:{prompt_tokens:input,completion_tokens:output}
  }}
-});
+ });
+};
 
 test("CODE502 invalid rates and timeouts reject before mock transport or budget record",async()=>{
  let requests=0,records=0,checks=0;
