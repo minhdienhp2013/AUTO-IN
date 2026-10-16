@@ -102,7 +102,7 @@ jobs:
         run: npm run test:chromium:code008
 
   unified-schedule-adopt-load100:
-    if: github.event_name == 'pull_request' && github.head_ref == 'ai0/integrate-schedule-adopt-load100-20261016'
+    if: github.event_name == 'pull_request' && (github.head_ref == 'ai0/integrate-schedule-adopt-load100-20261016' || github.head_ref == 'ai0/tn005-first-page-port-20261016')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -153,6 +153,9 @@ jobs:
           echo "$RUNNER_TEMP/autoin-chromium-bin" >> "$GITHUB_PATH"
       - run: python -m pytest -q tests/unit/documents tests/unit/printing
       - run: npm run db:migrate
+      - name: TN005 sealed Port PostgreSQL Fastify and timeout cases
+        if: github.head_ref == 'ai0/tn005-first-page-port-20261016'
+        run: node --import tsx --test tests/integration/composition/first-page-suggestion-pg.test.mjs
       - name: Strict contracts Core AI2 composition PostgreSQL HTTP checks
         run: npm run check
       - name: UI unit typecheck build and Chromium on exact SHA
