@@ -104,9 +104,8 @@ def _local_ocr(image: Any) -> str:
     time, not a fresh 4 seconds, is passed to image_to_string(). A parent
     worker deadline is still required for in-process Python/image preparation.
     """
-    import pytesseract  # optional, local only; does not call a cloud provider
-
     deadline = monotonic() + MAX_OCR_SECONDS
+    import pytesseract  # optional, local only; does not call a cloud provider
     try:
         discovery = subprocess.run(
             [pytesseract.pytesseract.tesseract_cmd, "--list-langs"],
@@ -133,10 +132,14 @@ def _local_ocr(image: Any) -> str:
             image, lang="+".join(available),
             config="--psm 6", timeout=_remaining_ocr_seconds(deadline),
         )
-    except (subprocess.TimeoutExpired, RuntimeError) as exc:
-        # pytesseract raises RuntimeError for its subprocess timeout; returning
-        # UNKNOWN is safer than forwarding provider/executable exception text.
+    except subprocess.TimeoutExpired as exc:
         raise _OCRDeadlineExceeded() from exc
+    except RuntimeError as exc:
+        # Pytesseract also uses RuntimeError for ordinary OCR errors: only its
+        # exact subprocess timeout signal should become OCR_TIMEOUT.
+        if str(exc) == "Tesseract process timeout":
+            raise _OCRDeadlineExceeded() from exc
+        raise
     _remaining_ocr_seconds(deadline)
     return result
 
