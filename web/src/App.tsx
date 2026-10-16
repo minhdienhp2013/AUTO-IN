@@ -14,6 +14,7 @@ import {
   type ActionKind, type OrderView, type OperationMode, type StaffSession, type VerifiedFileFact
 } from './domain.ts';
 import { notificationCapability, orderFromNavigation, requestLocalNotifications } from './notifications.ts';
+import { canEditShopSchedule, draftFromSchedule, saveShopScheduleAndRead, scheduleErrorText, type ShopSchedule, type ScheduleDraft } from './shop-schedule.ts';
 import { canApproveAfterInboundReview, canEditPrintRequest, groupOpenOrdersByChat, hasClearPendingInbound,
   requiresCustomerReconfirmation } from './code008.ts';
 
@@ -451,6 +452,57 @@ function SettingsView({mode,session,onLogout}:{mode:OperationMode;session:StaffS
   const [permission,setPermission] = useState(notificationCapability);
   const [permissionBusy,setPermissionBusy] = useState(false);
   const permissionInFlight = useRef(false);
+  const [shopSchedule,setShopSchedule] = useState<ShopSchedule|null>(null);
+  const [scheduleDraft,setScheduleDraft] = useState<ScheduleDraft|null>(null);
+  const [scheduleLoading,setScheduleLoading] = useState(false);
+  const [scheduleSaving,setScheduleSaving] = useState(false);
+  const [scheduleError,setScheduleError] = useState<string|null>(null);
+  const [scheduleLocalError,setScheduleLocalError] = useState<string|null>(null);
+  const [scheduleMessage,setScheduleMessage] = useState<string|null>(null);
+  const scheduleInFlight = useRef(false);
+  const scheduleWriteAllowed = !useDemo && canEditShopSchedule(session?.role,session?.can_manage_schedule===true);
+  useEffect(()=>{
+    let cancelled=false;
+    if(useDemo||!session){setShopSchedule(null);setScheduleDraft(null);return;}
+    setScheduleLoading(true);setScheduleError(null);setScheduleMessage(null);
+    void port.getShopSchedule().then(value=>{
+      if(!cancelled){setShopSchedule(value);setScheduleDraft(draftFromSchedule(value));}
+    }).catch((error:unknown)=>{
+      if(!cancelled){setShopSchedule(null);setScheduleDraft(null);setScheduleError(scheduleErrorText(error));}
+    }).finally(()=>{if(!cancelled)setScheduleLoading(false);});
+    return ()=>{cancelled=true;};
+  },[session?.actor_id]);
+  const refreshSchedule=async()=>{
+    if(useDemo||!session||scheduleInFlight.current||scheduleLoading||scheduleSaving)return;
+    scheduleInFlight.current=true;setScheduleLoading(true);
+    setScheduleError(null);setScheduleLocalError(null);setScheduleMessage(null);
+    try{
+      const value=await port.getShopSchedule();
+      setShopSchedule(value);setScheduleDraft(draftFromSchedule(value));
+    }catch(error){
+      setShopSchedule(null);setScheduleDraft(null);setScheduleError(scheduleErrorText(error));
+    }finally{scheduleInFlight.current=false;setScheduleLoading(false);}
+  };
+  const saveSchedule=async()=>{
+    if(!scheduleWriteAllowed||!shopSchedule||!scheduleDraft||scheduleError||
+       scheduleLoading||scheduleSaving||scheduleInFlight.current)return;
+    scheduleInFlight.current=true;setScheduleSaving(true);
+    setScheduleLocalError(null);setScheduleMessage(null);
+    try{
+      const result=await saveShopScheduleAndRead(port,shopSchedule,scheduleDraft,newMutationKey());
+      if(result.fresh){
+        setShopSchedule(result.fresh);setScheduleDraft(draftFromSchedule(result.fresh));
+      }
+      if(result.kind==='unchanged')setScheduleMessage('Lịch không có thay đổi.');
+      else if(result.kind==='saved')setScheduleMessage('Đã lưu và GET xác minh lại phiên bản lịch từ máy chủ.');
+      else setScheduleError(scheduleErrorText(result.failure)+
+        (result.readbackFailed?' Không đọc lại được; không tự gửi lại PATCH.':
+        ' Đã đọc lại dữ liệu máy chủ; kiểm tra rồi bấm Tải lại để sửa tiếp.'));
+    }catch(error){
+      setScheduleLocalError(error instanceof Error?error.message:'Dữ liệu lịch không hợp lệ.');
+    }finally{scheduleInFlight.current=false;setScheduleSaving(false);}
+  };
+
   const askNotificationPermission = async () => {
     // Prevent duplicate prompts and never prompt outside a real user click.
     if (permissionInFlight.current) return;
