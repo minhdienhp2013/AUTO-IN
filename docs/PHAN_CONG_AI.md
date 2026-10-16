@@ -92,3 +92,19 @@ AI0 sở hữu thêm backend/composition/**, scripts/** và tests/integration/co
 | AI5 | CODE-405 | Chạy acceptance đúng integration SHA; PG/HTTP/Chromium/DryRun và ghi rõ LIVE NOT RUN | #18 |
 
 Phạm vi file giữ nguyên bảng CODE-101–105 và bổ sung AI0 `backend/composition/**`, `scripts/**`, `tests/integration/composition/**`; không có file hai chủ. Mỗi AI tự viết và chạy test trong phạm vi, bàn giao commit/PR 6 dòng. Comment PR là kênh lưu giao việc, **không tự khởi động phiên AI khác**. Chưa được merge, deploy, Zalo OA thật hoặc Ricoh thật; chỉ chủ cho phép thử thật.
+
+
+## Đợt hoàn thiện CODE501–505 và AI0 CODE009 — 16/10/2026
+
+Theo yêu cầu chủ giao tiếp cho các AI sau merge PR110. BASE: `cb2be7a7b84d689dbe6c2c773192f111897c4063`. [Prompt và điều kiện chi tiết](prompts/DOT_HOAN_THIEN_20261016.md).
+
+| AI | Việc mới | Phạm vi và phụ thuộc |
+| --- | --- | --- |
+| AI1 CODE501 | Contract API quản lý lịch/khóa | Giai đoạn1 chỉ docs/research/AI1_NGHIEP_VU_API.md; chưa code endpoint/schema trước AI0 chốt |
+| AI2 CODE502 | Sửa chi phí AI âm/không hợp lệ, lỗi mới đã tái hiện | backend/ai/deepseek.ts + tests/unit/zalo/deepseek.test.mjs; OA thậtOFF, không nghiên cứu chữ ký lặp |
+| AI3 CODE503 | Probe Word native Windows chỉ đọc, không in | 2file mới agents/windows/native_word_preflight.py và tests/unit/printing/test_native_word_preflight.py + researchAI3; không bật driver/COM automation |
+| AI4 CODE504 | Xử lý permission Promise rejection, lỗi mới đã tái hiện | notifications.ts + App.tsx SettingsView và test thuộc AI4; không đổi layout/backend/SW |
+| AI5 CODE505 | LOAD100 batch thực thi, tiếp assignment hiện có | tests/acceptance/load100-product-pg.mjs + fixtures/public/load100 + docs/acceptance/LOAD100_PROTOCOL.md; AI0 nốiCI sau HEAD |
+| AI0 CODE009 | Chốt contract, root/CI/composition, tích hợp | Giữ ownership AI0, không sửa module chuyên môn |
+
+Các phần cũ đã PASS giữ nguyên. Nhiệm vụ mới không cho phép merge/deploy/OA/Ricoh thật; scope giai đoạn2 chỉ mở sau contract AI0. Báo cáo6dòng và tách thật/mock/NOTRUN. V1 vẫnBLOCKED.
