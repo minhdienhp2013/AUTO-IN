@@ -26,7 +26,7 @@ const report={schema:'autoin.load100.acceptance.v1',mode:'simulation',status:'NO
   replay_events:0,lost_success_response_replays:0,
   controlled_core_revisions:0,revisions_verified:0,latency_ms:{},http_errors:[],
   expected_source_sha256:{},observed_source_sha256:{},worker_counters:{ingested:0,claimed:0,processed:0,held:0,needs_human:0,retry:0},
-  product_commit_sha:null,fixture_variant:'80 PNG / 20 PDF, two shared byte-identical assets',
+  product_commit_sha:null,fixture_variant:'100 unique SHA256 (80 PNG case tEXt, 20 text-free PDF case comments)',
   elapsed_ms:null,throughput_orders_per_second:null,queue_peak:null,queue_drain:null,
   guards_before:null,guards_after:null,reason:null,live:{oa:false,deepseek:false,ricoh:false,ios_safari:false,tn037_7d:false}};
 let started=performance.now(),finished=false,runAbortController=null;
@@ -79,6 +79,60 @@ async function bounded(items,limit,handler){
  if(runAbortController?.signal.aborted)stop('RUN_TIMEOUT','Global run deadline exceeded');
  return peak;
 }
+// Same two reviewed template binaries are kept unchanged in git. Add a legal PNG
+// tEXt chunk or a PDF comment before startxref: each source now has a unique
+// byte-level SHA, while image pixels / the text-free vector PDF stay renderable.
+// No runtime-random bytes: immutable manifest contains every expected SHA.
+function pngCrc32(bytes){
+ let crc=0xffffffff;
+ for(const byte of bytes){
+   crc^=byte;
+   for(let bit=0;bit<8;bit++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);
+ }
+ return (crc^0xffffffff)>>>0;
+}
+function sourceForCase(base,c){
+ const label='AUTO-IN-LOAD100:'+c.event_id;
+ if(c.kind==='file'){
+   const marker=Buffer.from('startxref\n','ascii');
+   const off=base.lastIndexOf(marker);
+   assert.ok(off>0&&base.subarray(off).includes(Buffer.from('%%EOF')),
+     'Expected reviewed text-free vector PDF trailer');
+   return Buffer.concat([base.subarray(0,off),
+     Buffer.from('% '+label+'\n','ascii'),base.subarray(off)]);
+ }
+ assert.equal(c.kind,'image');
+ assert.equal(base.subarray(base.length-8,base.length-4).toString('ascii'),'IEND');
+ const body=Buffer.from('Comment\0'+label,'ascii');
+ const payload=Buffer.concat([Buffer.from('tEXt','ascii'),body]);
+ const chunk=Buffer.alloc(12+body.length);
+ chunk.writeUInt32BE(body.length,0);
+ payload.copy(chunk,4);
+ chunk.writeUInt32BE(pngCrc32(payload),8+body.length);
+ return Buffer.concat([base.subarray(0,-12),chunk,base.subarray(-12)]);
+}
+function assertCaseSource(c,bytes){
+ assert.equal(hash(bytes),c.expected.source_sha256,
+   'LOAD100_EVENT_SOURCE_MISMATCH '+c.event_id);
+}
+function assertSwapRejected(cases,sources){
+ const types=[['image','PNG'],['file','PDF']];
+ for(const [kind,name] of types){
+   const pair=cases.filter(c=>c.kind===kind).slice(0,2);
+   assert.equal(pair.length,2);
+   const [a,b]=pair;
+   assert.notEqual(a.expected.source_sha256,b.expected.source_sha256,
+     name+' sources must be distinguishable');
+   // Negative control: simulate a real cross-customer same-format source swap,
+   // verify the very same assertion used before HTTP upload rejects BOTH ways.
+   assert.throws(()=>assertCaseSource(a,sources.get(b.event_id)),
+     /LOAD100_EVENT_SOURCE_MISMATCH/);
+   assert.throws(()=>assertCaseSource(b,sources.get(a.event_id)),
+     /LOAD100_EVENT_SOURCE_MISMATCH/);
+   console.log('LOAD100_NEGATIVE_SWAP '+name+' same-kind cross-customer: REJECTED both directions');
+ }
+}
+
 async function readFixture(){
  const m=JSON.parse(await readFile(join(FIXTURE,'manifest.json'),'utf8'));
  assert.equal(m.schema,'autoin.load100.fixture.v1');
@@ -86,8 +140,8 @@ async function readFixture(){
  assert.equal(m.expected_unique_customers,100);
  assert.equal(m.expected_unique_conversations,100);
  assert.equal(m.expected_unique_orders,100);
- const known=new Set(),customers=new Set(),conversations=new Set();
- const assets={};
+ const known=new Set(),customers=new Set(),conversations=new Set(),sourceHashes=new Set();
+ const assets={},sources=new Map();
  for(const [kind,filename] of Object.entries({image:'source.png',file:'source.pdf'})){
    const buf=await readFile(join(FIXTURE,filename));
    assert.equal(hash(buf),m.assets[kind].sha256,'Fixture hash mismatch '+filename);
@@ -102,7 +156,11 @@ async function readFixture(){
    assert.equal(c.conversation_id,'load100-conversation-'+num);
    assert.equal(c.kind,i%5===4?'file':'image');
    assert.equal(c.filename,c.kind==='file'?'source.pdf':'source.png');
-   assert.equal(c.expected.source_sha256,m.assets[c.kind].sha256);
+   const bytes=sourceForCase(assets[c.kind],c);
+   assertCaseSource(c,bytes);
+   assert.ok(!sourceHashes.has(c.expected.source_sha256),'Shared source SHA '+c.event_id);
+   sourceHashes.add(c.expected.source_sha256);
+   sources.set(c.event_id,bytes);
    assert.deepEqual(c.expected.revisions,[1,2,3]);
    assert.equal(c.expected.event_id,c.event_id);
    assert.equal(c.expected.customer_id,c.customer_id);
@@ -110,8 +168,10 @@ async function readFixture(){
    assert.ok(!known.has(c.event_id)&&!customers.has(c.customer_id)&&!conversations.has(c.conversation_id));
    known.add(c.event_id);customers.add(c.customer_id);conversations.add(c.conversation_id);
  }
+ assert.equal(sourceHashes.size,100,'100 distinct source SHA-256 required');
+ assertSwapRejected(m.cases,sources);
  report.expected_source_sha256=Object.fromEntries(m.cases.map(c=>[c.event_id,c.expected.source_sha256]));
- return {cases:m.cases,assets};
+ return {cases:m.cases,sources};
 }
 function guardDatabase(url){
  if(process.env.AUTOIN_OPERATION_MODE!=='simulation'||process.env.AUTOIN_ALLOW_PG_ACCEPTANCE!=='YES_ISOLATED_TEST_DB')
@@ -119,9 +179,9 @@ function guardDatabase(url){
  if(!url||url.includes('?')||url.includes('#'))stop('DATABASE_REQUIRED','isolated local PostgreSQL URL required');
 }
 async function run(){
- const {cases,assets}=await readFixture();
+ const {cases,sources}=await readFixture();
  if(process.argv.includes('--check-fixture')){
-   report.status='FIXTURE_ONLY';report.reason='100 fixed cases and binary SHA256 validated; product NOT RUN';
+   report.status='FIXTURE_ONLY';report.reason='100 distinct source SHA-256 validated, 4 cross-customer swap negatives rejected; product NOT RUN';
    await emit(0);return;
  }
  const url=process.env.TEST_DATABASE_URL;
@@ -239,7 +299,7 @@ async function run(){
    await bounded(cases,5,async c=>{
      const r=await http('POST','/internal/simulation/inbound-artifacts',
        {event_id:c.event_id,filename:c.filename,
-         content_base64:assets[c.kind].toString('base64')},auth,'upload');
+         content_base64:sources.get(c.event_id).toString('base64')},auth,'upload');
      assert.equal(r.data.status,'registered');
      assert.equal(r.data.preview_trusted,false);
    });
