@@ -282,6 +282,35 @@ test('AI0 REAL PG: ONE Zalo PDF -> AI2 suggestion -> staff-scoped AI3 preview ->
       printer_id:'RMP7000',idempotency_key:'claim-'+id});
     assert.equal(claim.job?.order_id,orderId);
     assert.equal(claim.job?.mode,'simulation');
+    const preflight=await core.service.preflight(printAgent,claim.job.job_id,{
+      expected_revision:3,lease_token:claim.job.lease_token});
+    assert.equal(preflight.allowed,true);
+    assert.equal(preflight.mode,'simulation');
+    assert.deepEqual(Object.keys(preflight.review_receipt).sort(),[
+      'decision','evidence_sha256','order_id','receipt_id','request_hash',
+      'reviewed_at','reviewer_id','revision','shop_id'
+    ].sort());
+    assert.equal(preflight.review_receipt.decision,'checked');
+    assert.equal(preflight.review_receipt.order_id,orderId);
+    assert.equal(preflight.review_receipt.evidence_sha256,currentEvidence.evidence_sha256);
+    assert.deepEqual(Object.keys(preflight.trusted_evidence).sort(),[
+      'evidence_sha256','order_id','preview_sha256','printer_capability_sha256',
+      'printer_id','renderer_sha256','request_hash','revision','schema',
+      'settings_sha256','shop_id'
+    ].sort());
+    assert.equal(preflight.trusted_evidence.evidence_sha256,currentEvidence.evidence_sha256);
+    assert.ok(Array.isArray(preflight.trusted_evidence.preview_sha256));
+    assert.ok(preflight.trusted_evidence.preview_sha256.length>0);
+    assert.ok(preflight.trusted_evidence.preview_sha256.every(hash=>/^[0-9a-f]{64}$/.test(hash)));
+    assert.deepEqual(Object.keys(preflight.trusted_job).sort(),[
+      'approval_id','evidence_sha256','job_id','mode','order_id','printer_id',
+      'request_hash','revision','shop_id','state'
+    ].sort());
+    assert.equal(preflight.trusted_job.job_id,claim.job.job_id);
+    assert.equal(preflight.trusted_job.state,'NOT_SENT');
+    assert.equal(preflight.trusted_job.mode,'simulation');
+    assert.equal(preflight.physical_print_verified,undefined,
+      'Internal review receipt is evidence only, not physical-print permission');
     const sending=await core.service.markSending(printAgent,claim.job.job_id,{
       expected_revision:3,lease_token:claim.job.lease_token,
       idempotency_key:'send-'+id
