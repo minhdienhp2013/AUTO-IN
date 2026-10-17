@@ -1,0 +1,2431 @@
+{
+  "schema": "autoin.load100.fixture.v1",
+  "dataset": "load100-fixed-v1",
+  "purpose": "Synthetic only; independent 100-customer/100-conversation/100-order expected mapping, never real TN037.",
+  "expected_unique_customers": 100,
+  "expected_unique_conversations": 100,
+  "expected_unique_orders": 100,
+  "expected_replays": {
+    "event_duplicates": 20,
+    "lost_success_response_same_idempotency_key": 20
+  },
+  "assets": {
+    "image": {
+      "file": "source.png",
+      "mime": "image/png",
+      "sha256": "d16adb1bdd203c2d26eec5fdbcf327dcda70d0282ea253d7c75d230d2b425510",
+      "bytes": 233
+    },
+    "file": {
+      "file": "source.pdf",
+      "mime": "application/pdf",
+      "sha256": "2f23535722b9d2fcc65f136aa39a55ba36226512318a2dd610a2ba7e42fcf8e8",
+      "bytes": 609,
+      "font_policy": "no_fonts_vector_only"
+    }
+  },
+  "cases": [
+    {
+      "index": 1,
+      "event_id": "load100-event-001",
+      "customer_id": "load100-customer-001",
+      "conversation_id": "load100-conversation-001",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-001",
+        "customer_id": "load100-customer-001",
+        "conversation_id": "load100-conversation-001",
+        "unique_order_for_event": true,
+        "source_sha256": "3fda070afe81614cb18355fb8438d152cf0b832f7cdbf86f827d1b46fea77c95",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 2,
+      "event_id": "load100-event-002",
+      "customer_id": "load100-customer-002",
+      "conversation_id": "load100-conversation-002",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-002",
+        "customer_id": "load100-customer-002",
+        "conversation_id": "load100-conversation-002",
+        "unique_order_for_event": true,
+        "source_sha256": "08a716a4ef8a6dd73f3231bedafd919297ea53cd789f39909b613ce24581c376",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 3,
+      "event_id": "load100-event-003",
+      "customer_id": "load100-customer-003",
+      "conversation_id": "load100-conversation-003",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-003",
+        "customer_id": "load100-customer-003",
+        "conversation_id": "load100-conversation-003",
+        "unique_order_for_event": true,
+        "source_sha256": "100ae9bbddf13583420bc6245cea26298ff8ac54501fc8e702ae9fd61a3cb47d",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 4,
+      "event_id": "load100-event-004",
+      "customer_id": "load100-customer-004",
+      "conversation_id": "load100-conversation-004",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-004",
+        "customer_id": "load100-customer-004",
+        "conversation_id": "load100-conversation-004",
+        "unique_order_for_event": true,
+        "source_sha256": "529bae44e400f95661fa24086e6c5a7368aac8bed4d0e7d2ca8d0e1176055dc3",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 5,
+      "event_id": "load100-event-005",
+      "customer_id": "load100-customer-005",
+      "conversation_id": "load100-conversation-005",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-005",
+        "customer_id": "load100-customer-005",
+        "conversation_id": "load100-conversation-005",
+        "unique_order_for_event": true,
+        "source_sha256": "c1d21709aeaa3bf5d652bc9fc7d7e50c04437f327f8bc710f43c5432c191daba",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 6,
+      "event_id": "load100-event-006",
+      "customer_id": "load100-customer-006",
+      "conversation_id": "load100-conversation-006",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-006",
+        "customer_id": "load100-customer-006",
+        "conversation_id": "load100-conversation-006",
+        "unique_order_for_event": true,
+        "source_sha256": "710baa681b0aa9aa9a2fb333cc11b80cab7ce1afd18c2c2f0b733079f8b428a0",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 7,
+      "event_id": "load100-event-007",
+      "customer_id": "load100-customer-007",
+      "conversation_id": "load100-conversation-007",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-007",
+        "customer_id": "load100-customer-007",
+        "conversation_id": "load100-conversation-007",
+        "unique_order_for_event": true,
+        "source_sha256": "c576dd4a483db80cccdbd48b98110888005e1c2802cdb7b7d900562dd95c04db",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 8,
+      "event_id": "load100-event-008",
+      "customer_id": "load100-customer-008",
+      "conversation_id": "load100-conversation-008",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-008",
+        "customer_id": "load100-customer-008",
+        "conversation_id": "load100-conversation-008",
+        "unique_order_for_event": true,
+        "source_sha256": "dc67577237c22152ac669484744701fc367b667e46b2951b8bbec4c355937e14",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 9,
+      "event_id": "load100-event-009",
+      "customer_id": "load100-customer-009",
+      "conversation_id": "load100-conversation-009",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-009",
+        "customer_id": "load100-customer-009",
+        "conversation_id": "load100-conversation-009",
+        "unique_order_for_event": true,
+        "source_sha256": "9a7f10057d51b456bd13df81a4532543bdd60a63f04eca0153dd89ef179510ef",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 10,
+      "event_id": "load100-event-010",
+      "customer_id": "load100-customer-010",
+      "conversation_id": "load100-conversation-010",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-010",
+        "customer_id": "load100-customer-010",
+        "conversation_id": "load100-conversation-010",
+        "unique_order_for_event": true,
+        "source_sha256": "9ebb666487b417c404a62a42bd453782e31833b203660b9f59f0b19a8d8c1c6a",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 11,
+      "event_id": "load100-event-011",
+      "customer_id": "load100-customer-011",
+      "conversation_id": "load100-conversation-011",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-011",
+        "customer_id": "load100-customer-011",
+        "conversation_id": "load100-conversation-011",
+        "unique_order_for_event": true,
+        "source_sha256": "98d3ee3741e5c3952ba154acdef2a1c5ea7d8b41d19c4e57a4bc79d335bc4ec0",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 12,
+      "event_id": "load100-event-012",
+      "customer_id": "load100-customer-012",
+      "conversation_id": "load100-conversation-012",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-012",
+        "customer_id": "load100-customer-012",
+        "conversation_id": "load100-conversation-012",
+        "unique_order_for_event": true,
+        "source_sha256": "319c8a439b8c30aad473398f06f5cfa9a2a3ee1e8187e0080e1d8923c637297d",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 13,
+      "event_id": "load100-event-013",
+      "customer_id": "load100-customer-013",
+      "conversation_id": "load100-conversation-013",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-013",
+        "customer_id": "load100-customer-013",
+        "conversation_id": "load100-conversation-013",
+        "unique_order_for_event": true,
+        "source_sha256": "64a53f8737d594f63f339442baf8324e64f1de63cd7774c0db8559e7b7e9f765",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 14,
+      "event_id": "load100-event-014",
+      "customer_id": "load100-customer-014",
+      "conversation_id": "load100-conversation-014",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-014",
+        "customer_id": "load100-customer-014",
+        "conversation_id": "load100-conversation-014",
+        "unique_order_for_event": true,
+        "source_sha256": "4fef3c04e8dce124f68eca876017bc21f38ca95544bee02fda696d1a2f1288a4",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 15,
+      "event_id": "load100-event-015",
+      "customer_id": "load100-customer-015",
+      "conversation_id": "load100-conversation-015",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-015",
+        "customer_id": "load100-customer-015",
+        "conversation_id": "load100-conversation-015",
+        "unique_order_for_event": true,
+        "source_sha256": "2bd1ad38a7218ade4021e9dcd3360c2cd313ab9e12ac2c04774ff65a8489095e",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 16,
+      "event_id": "load100-event-016",
+      "customer_id": "load100-customer-016",
+      "conversation_id": "load100-conversation-016",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-016",
+        "customer_id": "load100-customer-016",
+        "conversation_id": "load100-conversation-016",
+        "unique_order_for_event": true,
+        "source_sha256": "59a744c78725f6d849ab8f0a46ab27e5cf6af2d3dba3d27331c26a37e70914ff",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 17,
+      "event_id": "load100-event-017",
+      "customer_id": "load100-customer-017",
+      "conversation_id": "load100-conversation-017",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-017",
+        "customer_id": "load100-customer-017",
+        "conversation_id": "load100-conversation-017",
+        "unique_order_for_event": true,
+        "source_sha256": "eaa79aed735cdd84f2451ce214cd246935f1072d5dccd4b6decfd8b360da42d0",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 18,
+      "event_id": "load100-event-018",
+      "customer_id": "load100-customer-018",
+      "conversation_id": "load100-conversation-018",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-018",
+        "customer_id": "load100-customer-018",
+        "conversation_id": "load100-conversation-018",
+        "unique_order_for_event": true,
+        "source_sha256": "68c1d64fdfa7428f519a719b0f71babe495baabc355b7b58aa51f34a6cdcae00",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 19,
+      "event_id": "load100-event-019",
+      "customer_id": "load100-customer-019",
+      "conversation_id": "load100-conversation-019",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-019",
+        "customer_id": "load100-customer-019",
+        "conversation_id": "load100-conversation-019",
+        "unique_order_for_event": true,
+        "source_sha256": "ea7acbde4d3fe41bb6f13934998151e7d0c5a6799d6afe84fb5bbc6b94692820",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 20,
+      "event_id": "load100-event-020",
+      "customer_id": "load100-customer-020",
+      "conversation_id": "load100-conversation-020",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": true,
+      "lost_success_ack_replay": true,
+      "expected": {
+        "event_id": "load100-event-020",
+        "customer_id": "load100-customer-020",
+        "conversation_id": "load100-conversation-020",
+        "unique_order_for_event": true,
+        "source_sha256": "aa3eff96d594c5369fa871b62ae721efa763dcc52487e0f7547a57220467b0a6",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 21,
+      "event_id": "load100-event-021",
+      "customer_id": "load100-customer-021",
+      "conversation_id": "load100-conversation-021",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-021",
+        "customer_id": "load100-customer-021",
+        "conversation_id": "load100-conversation-021",
+        "unique_order_for_event": true,
+        "source_sha256": "76d4e1cb5f22f55959a9e6f442607047a17eb15bf3e2b593fc94c52660a5c85c",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 22,
+      "event_id": "load100-event-022",
+      "customer_id": "load100-customer-022",
+      "conversation_id": "load100-conversation-022",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-022",
+        "customer_id": "load100-customer-022",
+        "conversation_id": "load100-conversation-022",
+        "unique_order_for_event": true,
+        "source_sha256": "cacbbb05126b4d7a449e1298bfd5104518f2bb0d5cb69846f306dbbed9b17376",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 23,
+      "event_id": "load100-event-023",
+      "customer_id": "load100-customer-023",
+      "conversation_id": "load100-conversation-023",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-023",
+        "customer_id": "load100-customer-023",
+        "conversation_id": "load100-conversation-023",
+        "unique_order_for_event": true,
+        "source_sha256": "c6442bcfb42f83493a30b7c07faa91298a7260ac2641efdd3506ec4ad0e53f06",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 24,
+      "event_id": "load100-event-024",
+      "customer_id": "load100-customer-024",
+      "conversation_id": "load100-conversation-024",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-024",
+        "customer_id": "load100-customer-024",
+        "conversation_id": "load100-conversation-024",
+        "unique_order_for_event": true,
+        "source_sha256": "fe8f80aeaf5691fb95aab72fbf6fd1bbb7099f8736b6a8dffa9cba4101ba93ef",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 25,
+      "event_id": "load100-event-025",
+      "customer_id": "load100-customer-025",
+      "conversation_id": "load100-conversation-025",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-025",
+        "customer_id": "load100-customer-025",
+        "conversation_id": "load100-conversation-025",
+        "unique_order_for_event": true,
+        "source_sha256": "3a8566a640f76400d4b114cff98940581c7f7533b7f7a1515112712fc1928038",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 26,
+      "event_id": "load100-event-026",
+      "customer_id": "load100-customer-026",
+      "conversation_id": "load100-conversation-026",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-026",
+        "customer_id": "load100-customer-026",
+        "conversation_id": "load100-conversation-026",
+        "unique_order_for_event": true,
+        "source_sha256": "edfb6bbe84c333121f31bf9d73a58a3fae5a390fe23a5e12485658de8f120777",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 27,
+      "event_id": "load100-event-027",
+      "customer_id": "load100-customer-027",
+      "conversation_id": "load100-conversation-027",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-027",
+        "customer_id": "load100-customer-027",
+        "conversation_id": "load100-conversation-027",
+        "unique_order_for_event": true,
+        "source_sha256": "3fa9339781139eb0baa2e3dbfd5a74f6c39f452e95ba6a34bae3e8f571098440",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 28,
+      "event_id": "load100-event-028",
+      "customer_id": "load100-customer-028",
+      "conversation_id": "load100-conversation-028",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-028",
+        "customer_id": "load100-customer-028",
+        "conversation_id": "load100-conversation-028",
+        "unique_order_for_event": true,
+        "source_sha256": "b608a280e9ca2af41478af37bab2ea8322135734fd1536fb6ee8fc1cd290d45e",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 29,
+      "event_id": "load100-event-029",
+      "customer_id": "load100-customer-029",
+      "conversation_id": "load100-conversation-029",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-029",
+        "customer_id": "load100-customer-029",
+        "conversation_id": "load100-conversation-029",
+        "unique_order_for_event": true,
+        "source_sha256": "4f2380c2ea31d7237566cbd94d6df8ed3796a51e413e80ed46d6a37d5723debe",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 30,
+      "event_id": "load100-event-030",
+      "customer_id": "load100-customer-030",
+      "conversation_id": "load100-conversation-030",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-030",
+        "customer_id": "load100-customer-030",
+        "conversation_id": "load100-conversation-030",
+        "unique_order_for_event": true,
+        "source_sha256": "0a6581fe17a760ca020c7c94882e38e0b8a9f6b0d112423f4be12e295eb62262",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 31,
+      "event_id": "load100-event-031",
+      "customer_id": "load100-customer-031",
+      "conversation_id": "load100-conversation-031",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-031",
+        "customer_id": "load100-customer-031",
+        "conversation_id": "load100-conversation-031",
+        "unique_order_for_event": true,
+        "source_sha256": "15af74e29422b6bb9d6932e7be3e09c2ec6456e69dc479dbfd73dc19c54e4001",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 32,
+      "event_id": "load100-event-032",
+      "customer_id": "load100-customer-032",
+      "conversation_id": "load100-conversation-032",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-032",
+        "customer_id": "load100-customer-032",
+        "conversation_id": "load100-conversation-032",
+        "unique_order_for_event": true,
+        "source_sha256": "241ff38d54fb3bf4d3fb0abfd7290debefde6314274c4f759349a34726cdab71",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 33,
+      "event_id": "load100-event-033",
+      "customer_id": "load100-customer-033",
+      "conversation_id": "load100-conversation-033",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-033",
+        "customer_id": "load100-customer-033",
+        "conversation_id": "load100-conversation-033",
+        "unique_order_for_event": true,
+        "source_sha256": "4a58271ae941d644b27fe5df78b9089b458b90025a9d38d8f8c719a77ea92f11",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 34,
+      "event_id": "load100-event-034",
+      "customer_id": "load100-customer-034",
+      "conversation_id": "load100-conversation-034",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-034",
+        "customer_id": "load100-customer-034",
+        "conversation_id": "load100-conversation-034",
+        "unique_order_for_event": true,
+        "source_sha256": "d7dec1bbcabf30985ff56ac8effb3bd3219e4cdf0e6e8b7fd66a26cc49a16664",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 35,
+      "event_id": "load100-event-035",
+      "customer_id": "load100-customer-035",
+      "conversation_id": "load100-conversation-035",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-035",
+        "customer_id": "load100-customer-035",
+        "conversation_id": "load100-conversation-035",
+        "unique_order_for_event": true,
+        "source_sha256": "97f461ce95d52e029b8e5d82daabfeee34a1dc613d3bca172872eef854f62880",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 36,
+      "event_id": "load100-event-036",
+      "customer_id": "load100-customer-036",
+      "conversation_id": "load100-conversation-036",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-036",
+        "customer_id": "load100-customer-036",
+        "conversation_id": "load100-conversation-036",
+        "unique_order_for_event": true,
+        "source_sha256": "81afd5a8dbbff9c1f363c89bf4b1f1a0510ee502fc2f7f77c7c614740560992e",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 37,
+      "event_id": "load100-event-037",
+      "customer_id": "load100-customer-037",
+      "conversation_id": "load100-conversation-037",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-037",
+        "customer_id": "load100-customer-037",
+        "conversation_id": "load100-conversation-037",
+        "unique_order_for_event": true,
+        "source_sha256": "4e013fce5474e0d4d1e54d5309f78eed0af2243b433c62a2600129201cc0d366",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 38,
+      "event_id": "load100-event-038",
+      "customer_id": "load100-customer-038",
+      "conversation_id": "load100-conversation-038",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-038",
+        "customer_id": "load100-customer-038",
+        "conversation_id": "load100-conversation-038",
+        "unique_order_for_event": true,
+        "source_sha256": "ddcb1615fa9201161321bbdf771aabe141640b14aebb7b7a27bfc93d7fe1bb5a",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 39,
+      "event_id": "load100-event-039",
+      "customer_id": "load100-customer-039",
+      "conversation_id": "load100-conversation-039",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-039",
+        "customer_id": "load100-customer-039",
+        "conversation_id": "load100-conversation-039",
+        "unique_order_for_event": true,
+        "source_sha256": "13f605a951d56a9fedd181842b637076b2b5d1ceb54198d3e9ce5784f0b111fc",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 40,
+      "event_id": "load100-event-040",
+      "customer_id": "load100-customer-040",
+      "conversation_id": "load100-conversation-040",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-040",
+        "customer_id": "load100-customer-040",
+        "conversation_id": "load100-conversation-040",
+        "unique_order_for_event": true,
+        "source_sha256": "5ffaa63002ef791a7528b9e23ae2a87c65e536d263c1591672fc2e0f22df4ffb",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 41,
+      "event_id": "load100-event-041",
+      "customer_id": "load100-customer-041",
+      "conversation_id": "load100-conversation-041",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-041",
+        "customer_id": "load100-customer-041",
+        "conversation_id": "load100-conversation-041",
+        "unique_order_for_event": true,
+        "source_sha256": "795bae309dac32ba2268b6d7b1f96d1518ae8047e36bcc8e95c79371dc039942",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 42,
+      "event_id": "load100-event-042",
+      "customer_id": "load100-customer-042",
+      "conversation_id": "load100-conversation-042",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-042",
+        "customer_id": "load100-customer-042",
+        "conversation_id": "load100-conversation-042",
+        "unique_order_for_event": true,
+        "source_sha256": "12bebf4f1dc5ca9bbd0395282ad4ec8ad80f136b2099a697370858abbf2100b2",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 43,
+      "event_id": "load100-event-043",
+      "customer_id": "load100-customer-043",
+      "conversation_id": "load100-conversation-043",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-043",
+        "customer_id": "load100-customer-043",
+        "conversation_id": "load100-conversation-043",
+        "unique_order_for_event": true,
+        "source_sha256": "2040348e16313596b9ef90be5e8a6b97da9b45ddd6b7420a0fd747dcfe9d0289",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 44,
+      "event_id": "load100-event-044",
+      "customer_id": "load100-customer-044",
+      "conversation_id": "load100-conversation-044",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-044",
+        "customer_id": "load100-customer-044",
+        "conversation_id": "load100-conversation-044",
+        "unique_order_for_event": true,
+        "source_sha256": "ebe799af7a0004ec714d5691155b72b07aa4518261f294d3a8549df5b5632b16",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 45,
+      "event_id": "load100-event-045",
+      "customer_id": "load100-customer-045",
+      "conversation_id": "load100-conversation-045",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-045",
+        "customer_id": "load100-customer-045",
+        "conversation_id": "load100-conversation-045",
+        "unique_order_for_event": true,
+        "source_sha256": "6330d46f2ea708f25727305bdc08799218a455cd02c331a0e5d1676c84a92fb9",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 46,
+      "event_id": "load100-event-046",
+      "customer_id": "load100-customer-046",
+      "conversation_id": "load100-conversation-046",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-046",
+        "customer_id": "load100-customer-046",
+        "conversation_id": "load100-conversation-046",
+        "unique_order_for_event": true,
+        "source_sha256": "18244a559d0fe117d43a470f04b72fce0d1f7f247b610fd674b43da70a90c63b",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 47,
+      "event_id": "load100-event-047",
+      "customer_id": "load100-customer-047",
+      "conversation_id": "load100-conversation-047",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-047",
+        "customer_id": "load100-customer-047",
+        "conversation_id": "load100-conversation-047",
+        "unique_order_for_event": true,
+        "source_sha256": "9e89db5d3b41d13cb2b3501e94421d812642d5f0d41cd1b203321d74fb7d5108",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 48,
+      "event_id": "load100-event-048",
+      "customer_id": "load100-customer-048",
+      "conversation_id": "load100-conversation-048",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-048",
+        "customer_id": "load100-customer-048",
+        "conversation_id": "load100-conversation-048",
+        "unique_order_for_event": true,
+        "source_sha256": "c1a41ee659ca600d6bdac41c9de76c24117648e6ece5d8d82ccb773cf43eb73a",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 49,
+      "event_id": "load100-event-049",
+      "customer_id": "load100-customer-049",
+      "conversation_id": "load100-conversation-049",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-049",
+        "customer_id": "load100-customer-049",
+        "conversation_id": "load100-conversation-049",
+        "unique_order_for_event": true,
+        "source_sha256": "f57776bb92e9e389f9359daa8877049eff38f155e8766e154dcbae7d86b39f0e",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 50,
+      "event_id": "load100-event-050",
+      "customer_id": "load100-customer-050",
+      "conversation_id": "load100-conversation-050",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-050",
+        "customer_id": "load100-customer-050",
+        "conversation_id": "load100-conversation-050",
+        "unique_order_for_event": true,
+        "source_sha256": "b14fe0bffcff81df59ebba8efa88345e8a91ec9e608f97aea730a0ccd2f7e10e",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 51,
+      "event_id": "load100-event-051",
+      "customer_id": "load100-customer-051",
+      "conversation_id": "load100-conversation-051",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-051",
+        "customer_id": "load100-customer-051",
+        "conversation_id": "load100-conversation-051",
+        "unique_order_for_event": true,
+        "source_sha256": "8d65f647dee72a1c8b702f73cfb03c9a3c18444357b3f1b3853e27dae3524e2b",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 52,
+      "event_id": "load100-event-052",
+      "customer_id": "load100-customer-052",
+      "conversation_id": "load100-conversation-052",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-052",
+        "customer_id": "load100-customer-052",
+        "conversation_id": "load100-conversation-052",
+        "unique_order_for_event": true,
+        "source_sha256": "61297b0dcd19e8326550afada8e3111da0d9f548ca8213a13dd89482afbb358d",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 53,
+      "event_id": "load100-event-053",
+      "customer_id": "load100-customer-053",
+      "conversation_id": "load100-conversation-053",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-053",
+        "customer_id": "load100-customer-053",
+        "conversation_id": "load100-conversation-053",
+        "unique_order_for_event": true,
+        "source_sha256": "d335fa638bbeb80eb40aeb0f808fa71051bddf4d266610ebb35eeb3dffb23ee7",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 54,
+      "event_id": "load100-event-054",
+      "customer_id": "load100-customer-054",
+      "conversation_id": "load100-conversation-054",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-054",
+        "customer_id": "load100-customer-054",
+        "conversation_id": "load100-conversation-054",
+        "unique_order_for_event": true,
+        "source_sha256": "5a34158535b61e87977e94f999f3e863c74174c7bd68bbb8384ebaf2388520b1",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 55,
+      "event_id": "load100-event-055",
+      "customer_id": "load100-customer-055",
+      "conversation_id": "load100-conversation-055",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-055",
+        "customer_id": "load100-customer-055",
+        "conversation_id": "load100-conversation-055",
+        "unique_order_for_event": true,
+        "source_sha256": "7cddfd281736cd60d8b9fbf559098103b7f38c29802d5493b28e2203ca745e69",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 56,
+      "event_id": "load100-event-056",
+      "customer_id": "load100-customer-056",
+      "conversation_id": "load100-conversation-056",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-056",
+        "customer_id": "load100-customer-056",
+        "conversation_id": "load100-conversation-056",
+        "unique_order_for_event": true,
+        "source_sha256": "b18401b2cb0add7854a5f163a408eaa42e9752f700c47ad46851b5d4a5877567",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 57,
+      "event_id": "load100-event-057",
+      "customer_id": "load100-customer-057",
+      "conversation_id": "load100-conversation-057",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-057",
+        "customer_id": "load100-customer-057",
+        "conversation_id": "load100-conversation-057",
+        "unique_order_for_event": true,
+        "source_sha256": "1b323f98fe0d33c0b0c2637ff0531dbca6093a65d9f995a8a43981e97b9550ab",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 58,
+      "event_id": "load100-event-058",
+      "customer_id": "load100-customer-058",
+      "conversation_id": "load100-conversation-058",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-058",
+        "customer_id": "load100-customer-058",
+        "conversation_id": "load100-conversation-058",
+        "unique_order_for_event": true,
+        "source_sha256": "8d9732bc1d5db187df4d84bb6b82b7544a18e06087b951256dfcb43506934061",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 59,
+      "event_id": "load100-event-059",
+      "customer_id": "load100-customer-059",
+      "conversation_id": "load100-conversation-059",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-059",
+        "customer_id": "load100-customer-059",
+        "conversation_id": "load100-conversation-059",
+        "unique_order_for_event": true,
+        "source_sha256": "827b3f11accd9c8332e3812caea226796aa4e48f83f56ed5f700be372ff8cb22",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 60,
+      "event_id": "load100-event-060",
+      "customer_id": "load100-customer-060",
+      "conversation_id": "load100-conversation-060",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-060",
+        "customer_id": "load100-customer-060",
+        "conversation_id": "load100-conversation-060",
+        "unique_order_for_event": true,
+        "source_sha256": "72250d9b44c71cf1d4fcf9d726344db20e913b21b650ab5e73bf829156c26873",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 61,
+      "event_id": "load100-event-061",
+      "customer_id": "load100-customer-061",
+      "conversation_id": "load100-conversation-061",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-061",
+        "customer_id": "load100-customer-061",
+        "conversation_id": "load100-conversation-061",
+        "unique_order_for_event": true,
+        "source_sha256": "873b4b1e145f4531e4884d8c9409253658517383e86ede4f2fa511dbf1ac49aa",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 62,
+      "event_id": "load100-event-062",
+      "customer_id": "load100-customer-062",
+      "conversation_id": "load100-conversation-062",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-062",
+        "customer_id": "load100-customer-062",
+        "conversation_id": "load100-conversation-062",
+        "unique_order_for_event": true,
+        "source_sha256": "18dcdbc13689cd80e861c41a6dcb00c04c650e397c29d42156b2880ccba0d439",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 63,
+      "event_id": "load100-event-063",
+      "customer_id": "load100-customer-063",
+      "conversation_id": "load100-conversation-063",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-063",
+        "customer_id": "load100-customer-063",
+        "conversation_id": "load100-conversation-063",
+        "unique_order_for_event": true,
+        "source_sha256": "ecfbdf5c8231b342a847037ba73c729494ebec1ce9053ca8208aa4171e142a5d",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 64,
+      "event_id": "load100-event-064",
+      "customer_id": "load100-customer-064",
+      "conversation_id": "load100-conversation-064",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-064",
+        "customer_id": "load100-customer-064",
+        "conversation_id": "load100-conversation-064",
+        "unique_order_for_event": true,
+        "source_sha256": "8368d63df24d73b8053a724c330288a2a2d030b85bc115d31304276288e54bc4",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 65,
+      "event_id": "load100-event-065",
+      "customer_id": "load100-customer-065",
+      "conversation_id": "load100-conversation-065",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-065",
+        "customer_id": "load100-customer-065",
+        "conversation_id": "load100-conversation-065",
+        "unique_order_for_event": true,
+        "source_sha256": "2997b2fd7ca647d55ca6ed0508643a47cc495e274455adadf4008a3e543989e0",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 66,
+      "event_id": "load100-event-066",
+      "customer_id": "load100-customer-066",
+      "conversation_id": "load100-conversation-066",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-066",
+        "customer_id": "load100-customer-066",
+        "conversation_id": "load100-conversation-066",
+        "unique_order_for_event": true,
+        "source_sha256": "48f598dee3edb8f2a4d0b77c4cb56fd5aee85bf4f05bb1a443911994af86c317",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 67,
+      "event_id": "load100-event-067",
+      "customer_id": "load100-customer-067",
+      "conversation_id": "load100-conversation-067",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-067",
+        "customer_id": "load100-customer-067",
+        "conversation_id": "load100-conversation-067",
+        "unique_order_for_event": true,
+        "source_sha256": "7699b4646be1514df9e7d2778edf81fac0d0022ddbc9e974775b54751ee65d61",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 68,
+      "event_id": "load100-event-068",
+      "customer_id": "load100-customer-068",
+      "conversation_id": "load100-conversation-068",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-068",
+        "customer_id": "load100-customer-068",
+        "conversation_id": "load100-conversation-068",
+        "unique_order_for_event": true,
+        "source_sha256": "2bad25aa4f515543d86810f6c3fd1b52df4e8ad37a21ba9ea0656fc9d5eb9b04",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 69,
+      "event_id": "load100-event-069",
+      "customer_id": "load100-customer-069",
+      "conversation_id": "load100-conversation-069",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-069",
+        "customer_id": "load100-customer-069",
+        "conversation_id": "load100-conversation-069",
+        "unique_order_for_event": true,
+        "source_sha256": "66309bae7f03e2fd2858f367c71969594956eff4b80deb6d0895d2a52c39c6cc",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 70,
+      "event_id": "load100-event-070",
+      "customer_id": "load100-customer-070",
+      "conversation_id": "load100-conversation-070",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-070",
+        "customer_id": "load100-customer-070",
+        "conversation_id": "load100-conversation-070",
+        "unique_order_for_event": true,
+        "source_sha256": "13c028ad60f39e3763f13a63a1464134a226bf96eb1bf12ec412bdf6b8f586f0",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 71,
+      "event_id": "load100-event-071",
+      "customer_id": "load100-customer-071",
+      "conversation_id": "load100-conversation-071",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-071",
+        "customer_id": "load100-customer-071",
+        "conversation_id": "load100-conversation-071",
+        "unique_order_for_event": true,
+        "source_sha256": "c79b6710119b177a61f0916ee0c7d624a066d7174caaa9b8c4013cf51374fb4d",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 72,
+      "event_id": "load100-event-072",
+      "customer_id": "load100-customer-072",
+      "conversation_id": "load100-conversation-072",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-072",
+        "customer_id": "load100-customer-072",
+        "conversation_id": "load100-conversation-072",
+        "unique_order_for_event": true,
+        "source_sha256": "bf04021aa515d7e9ab325925c2051ba25c51d125c1265101b07de49504de8b9e",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 73,
+      "event_id": "load100-event-073",
+      "customer_id": "load100-customer-073",
+      "conversation_id": "load100-conversation-073",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-073",
+        "customer_id": "load100-customer-073",
+        "conversation_id": "load100-conversation-073",
+        "unique_order_for_event": true,
+        "source_sha256": "a731d2f0984d7675910ce94e4bafc27575f91b8eff6b700a66c13f3d5be2fdeb",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 74,
+      "event_id": "load100-event-074",
+      "customer_id": "load100-customer-074",
+      "conversation_id": "load100-conversation-074",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-074",
+        "customer_id": "load100-customer-074",
+        "conversation_id": "load100-conversation-074",
+        "unique_order_for_event": true,
+        "source_sha256": "ea3ff478e9f4c73d6af10b7e7526fc27d513f34b1df81b41dd6aa8f553b57613",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 75,
+      "event_id": "load100-event-075",
+      "customer_id": "load100-customer-075",
+      "conversation_id": "load100-conversation-075",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-075",
+        "customer_id": "load100-customer-075",
+        "conversation_id": "load100-conversation-075",
+        "unique_order_for_event": true,
+        "source_sha256": "0639e1be692b89e39e8f42fa75f54a8011182854c02a9e091d06d8379c4e6d92",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 76,
+      "event_id": "load100-event-076",
+      "customer_id": "load100-customer-076",
+      "conversation_id": "load100-conversation-076",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-076",
+        "customer_id": "load100-customer-076",
+        "conversation_id": "load100-conversation-076",
+        "unique_order_for_event": true,
+        "source_sha256": "f00fca4c2084f5ba34b38750d349549fecc00faab753b46134ce40adff101333",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 77,
+      "event_id": "load100-event-077",
+      "customer_id": "load100-customer-077",
+      "conversation_id": "load100-conversation-077",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-077",
+        "customer_id": "load100-customer-077",
+        "conversation_id": "load100-conversation-077",
+        "unique_order_for_event": true,
+        "source_sha256": "ee7970e6f6ade0b1b1bbdb4948be5e24cfeee8a4a6e9208579d1ea70645e04ed",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 78,
+      "event_id": "load100-event-078",
+      "customer_id": "load100-customer-078",
+      "conversation_id": "load100-conversation-078",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-078",
+        "customer_id": "load100-customer-078",
+        "conversation_id": "load100-conversation-078",
+        "unique_order_for_event": true,
+        "source_sha256": "3a399665613080f2791b6a7546a9a32f97f1d9efcf7754c6cce7e233892d60d5",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 79,
+      "event_id": "load100-event-079",
+      "customer_id": "load100-customer-079",
+      "conversation_id": "load100-conversation-079",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-079",
+        "customer_id": "load100-customer-079",
+        "conversation_id": "load100-conversation-079",
+        "unique_order_for_event": true,
+        "source_sha256": "47d10d55c2e523021d0861342e749e405446e29a435b7abbef0ea1446114da39",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 80,
+      "event_id": "load100-event-080",
+      "customer_id": "load100-customer-080",
+      "conversation_id": "load100-conversation-080",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-080",
+        "customer_id": "load100-customer-080",
+        "conversation_id": "load100-conversation-080",
+        "unique_order_for_event": true,
+        "source_sha256": "b805a9c91c3da628479b1c294959fdc40a8e95f3450d1db5e7356ec2f26fa735",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 81,
+      "event_id": "load100-event-081",
+      "customer_id": "load100-customer-081",
+      "conversation_id": "load100-conversation-081",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-081",
+        "customer_id": "load100-customer-081",
+        "conversation_id": "load100-conversation-081",
+        "unique_order_for_event": true,
+        "source_sha256": "ed7858836696cf90f2e7e68f4a0e2e8729c6eb68b0f61f134dfec04744002f82",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 82,
+      "event_id": "load100-event-082",
+      "customer_id": "load100-customer-082",
+      "conversation_id": "load100-conversation-082",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-082",
+        "customer_id": "load100-customer-082",
+        "conversation_id": "load100-conversation-082",
+        "unique_order_for_event": true,
+        "source_sha256": "3955da5a5526d1ed1197f91cf94cd8860070a284269c29cf43369117c85db7a8",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 83,
+      "event_id": "load100-event-083",
+      "customer_id": "load100-customer-083",
+      "conversation_id": "load100-conversation-083",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-083",
+        "customer_id": "load100-customer-083",
+        "conversation_id": "load100-conversation-083",
+        "unique_order_for_event": true,
+        "source_sha256": "95052b521c1909846dcdbe574ab0248f4473997ebe97b5c8c58def63265d362a",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 84,
+      "event_id": "load100-event-084",
+      "customer_id": "load100-customer-084",
+      "conversation_id": "load100-conversation-084",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-084",
+        "customer_id": "load100-customer-084",
+        "conversation_id": "load100-conversation-084",
+        "unique_order_for_event": true,
+        "source_sha256": "f56add10b95f48da26082dc5c0b398a2434f33f846ecf9603fc4294ccaa42e79",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 85,
+      "event_id": "load100-event-085",
+      "customer_id": "load100-customer-085",
+      "conversation_id": "load100-conversation-085",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-085",
+        "customer_id": "load100-customer-085",
+        "conversation_id": "load100-conversation-085",
+        "unique_order_for_event": true,
+        "source_sha256": "a604c579452b157c2fe84131a2f9d69cb1ed405ee7f4d62e663b4b664e841df3",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 86,
+      "event_id": "load100-event-086",
+      "customer_id": "load100-customer-086",
+      "conversation_id": "load100-conversation-086",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-086",
+        "customer_id": "load100-customer-086",
+        "conversation_id": "load100-conversation-086",
+        "unique_order_for_event": true,
+        "source_sha256": "cc6dd78846601886b4a9aa9b9304773d6d07e7e90c49e41ac9f22e1378c5f12f",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 87,
+      "event_id": "load100-event-087",
+      "customer_id": "load100-customer-087",
+      "conversation_id": "load100-conversation-087",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-087",
+        "customer_id": "load100-customer-087",
+        "conversation_id": "load100-conversation-087",
+        "unique_order_for_event": true,
+        "source_sha256": "c4554e82a49025384f105928d6c3c58f0483ecf1cd957d7f1c717a44d5a660dc",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 88,
+      "event_id": "load100-event-088",
+      "customer_id": "load100-customer-088",
+      "conversation_id": "load100-conversation-088",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-088",
+        "customer_id": "load100-customer-088",
+        "conversation_id": "load100-conversation-088",
+        "unique_order_for_event": true,
+        "source_sha256": "c06f2048f27e62e500d778543d78afa591896afc5e1c3c5379459c788563e040",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 89,
+      "event_id": "load100-event-089",
+      "customer_id": "load100-customer-089",
+      "conversation_id": "load100-conversation-089",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-089",
+        "customer_id": "load100-customer-089",
+        "conversation_id": "load100-conversation-089",
+        "unique_order_for_event": true,
+        "source_sha256": "5dcdfe4d491746553cdb32d7632b9ba28afc4f8efab8069f95d08577f484435c",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 90,
+      "event_id": "load100-event-090",
+      "customer_id": "load100-customer-090",
+      "conversation_id": "load100-conversation-090",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-090",
+        "customer_id": "load100-customer-090",
+        "conversation_id": "load100-conversation-090",
+        "unique_order_for_event": true,
+        "source_sha256": "6626d4df2d042f115c1c5c676f98c1828338ba457dbcce98d606721490c8d861",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 91,
+      "event_id": "load100-event-091",
+      "customer_id": "load100-customer-091",
+      "conversation_id": "load100-conversation-091",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-091",
+        "customer_id": "load100-customer-091",
+        "conversation_id": "load100-conversation-091",
+        "unique_order_for_event": true,
+        "source_sha256": "1ed13fc2fa0acbf184ba0777bcbc1fff2e2a85762575fc619f265fbcb5189cc2",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 92,
+      "event_id": "load100-event-092",
+      "customer_id": "load100-customer-092",
+      "conversation_id": "load100-conversation-092",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-092",
+        "customer_id": "load100-customer-092",
+        "conversation_id": "load100-conversation-092",
+        "unique_order_for_event": true,
+        "source_sha256": "b07a61f3b716299931bdb07fc975ec55416e2b824d86f90a87a7c1c74967a775",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 93,
+      "event_id": "load100-event-093",
+      "customer_id": "load100-customer-093",
+      "conversation_id": "load100-conversation-093",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-093",
+        "customer_id": "load100-customer-093",
+        "conversation_id": "load100-conversation-093",
+        "unique_order_for_event": true,
+        "source_sha256": "4ca244e737b59219a57327b3bf61df175b3291bfaf92039fbb7abf95cb503d44",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 94,
+      "event_id": "load100-event-094",
+      "customer_id": "load100-customer-094",
+      "conversation_id": "load100-conversation-094",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-094",
+        "customer_id": "load100-customer-094",
+        "conversation_id": "load100-conversation-094",
+        "unique_order_for_event": true,
+        "source_sha256": "84d78aceb108896ba42a366a0f7dc98321ca95961110f919467934ae04d73e3e",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 95,
+      "event_id": "load100-event-095",
+      "customer_id": "load100-customer-095",
+      "conversation_id": "load100-conversation-095",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-095",
+        "customer_id": "load100-customer-095",
+        "conversation_id": "load100-conversation-095",
+        "unique_order_for_event": true,
+        "source_sha256": "729f4894151fe469408b4063d459dcaf3ed5a3313fd0e46eb8dfb57b7c0bdec3",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 96,
+      "event_id": "load100-event-096",
+      "customer_id": "load100-customer-096",
+      "conversation_id": "load100-conversation-096",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-096",
+        "customer_id": "load100-customer-096",
+        "conversation_id": "load100-conversation-096",
+        "unique_order_for_event": true,
+        "source_sha256": "7f2a5061edcb21fbe4537c300dae07389543f63ad89ae960c623171e11ad6ecf",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 97,
+      "event_id": "load100-event-097",
+      "customer_id": "load100-customer-097",
+      "conversation_id": "load100-conversation-097",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-097",
+        "customer_id": "load100-customer-097",
+        "conversation_id": "load100-conversation-097",
+        "unique_order_for_event": true,
+        "source_sha256": "4c3b4af6890ea5d51c2553dd549812afd208dcce9448a69190703dcf91995268",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 98,
+      "event_id": "load100-event-098",
+      "customer_id": "load100-customer-098",
+      "conversation_id": "load100-conversation-098",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-098",
+        "customer_id": "load100-customer-098",
+        "conversation_id": "load100-conversation-098",
+        "unique_order_for_event": true,
+        "source_sha256": "6efd077677e6b16e1e3cd32954d425ac7bcf200886aed18be46fa23b0e850095",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 99,
+      "event_id": "load100-event-099",
+      "customer_id": "load100-customer-099",
+      "conversation_id": "load100-conversation-099",
+      "kind": "image",
+      "filename": "source.png",
+      "input_fixture": "source.png",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-099",
+        "customer_id": "load100-customer-099",
+        "conversation_id": "load100-conversation-099",
+        "unique_order_for_event": true,
+        "source_sha256": "69093acd72d5779510a021e74dc33730add7ae83a9dce9a7fc466e0b94df5ea1",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    },
+    {
+      "index": 100,
+      "event_id": "load100-event-100",
+      "customer_id": "load100-customer-100",
+      "conversation_id": "load100-conversation-100",
+      "kind": "file",
+      "filename": "source.pdf",
+      "input_fixture": "source.pdf",
+      "duplicate_event_replay": false,
+      "lost_success_ack_replay": false,
+      "expected": {
+        "event_id": "load100-event-100",
+        "customer_id": "load100-customer-100",
+        "conversation_id": "load100-conversation-100",
+        "unique_order_for_event": true,
+        "source_sha256": "c1070627d8a23af82f92bd32a2d2845bf850c2db4bcc795b2a8a4cf46104c0bd",
+        "revisions": [
+          1,
+          2,
+          3
+        ],
+        "hash_policy": "computed_from_actual_server_revision_and_sealed_manifest_not_preinvented"
+      }
+    }
+  ],
+  "expected_unique_source_sha256": 100,
+  "source_variant": "deterministic per-event PNG tEXt / font-free vector PDF comment before startxref"
+}
