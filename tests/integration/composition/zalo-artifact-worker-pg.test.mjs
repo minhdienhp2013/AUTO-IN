@@ -188,6 +188,35 @@ test('AI0 REAL PG: ONE Zalo PDF -> AI2 suggestion -> staff-scoped AI3 preview ->
       store:new PgStore(asSqlPool(pool)),trusted:scope,evidence});
     const target={order_id:orderId,expected_revision:3,request_hash:(await query('SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=3',[orderId])).rows[0].request_hash,
       kind:'request',expected_generation:0};
+    const beforeReview=await core.service.getOrder(staff,orderId);
+    const currentEvidence=beforeReview.current.print_evidence;
+    assert.equal(currentEvidence?.revision,3);
+    assert.equal(currentEvidence?.request_hash,target.request_hash);
+    assert.match(currentEvidence?.evidence_sha256??'',/^[0-9a-f]{64}$/);
+    await assert.rejects(confirm.issue_challenge(target),
+      e=>e.code==='PREVIEW_REVIEW_REQUIRED',
+      'Customer challenge must wait for staff review of this exact preview');
+    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_confirmation_challenges WHERE order_id=$1',[orderId])).rows[0].n,0,
+      'Rejected challenge must not persist before preview review');
+    const noAuthReview=await app.inject({method:'POST',
+      url:`/api/v1/orders/${orderId}/preview-reviews`,
+      payload:{expected_revision:3,expected_request_hash:target.request_hash,
+        expected_evidence_sha256:currentEvidence.evidence_sha256,decision:'checked',
+        idempotency_key:'preview-review-unauthorized-'+id}});
+    assert.equal(noAuthReview.statusCode,401,'Preview review route requires authenticated staff');
+    const reviewed=await app.inject({method:'POST',
+      url:`/api/v1/orders/${orderId}/preview-reviews`,
+      headers:headers(session.token),
+      payload:{expected_revision:3,expected_request_hash:target.request_hash,
+        expected_evidence_sha256:currentEvidence.evidence_sha256,decision:'checked',
+        idempotency_key:'preview-review-'+id}});
+    assert.equal(reviewed.statusCode,200,JSON.stringify(reviewed.json()));
+    assert.equal(reviewed.json().order_id,orderId);
+    assert.equal(reviewed.json().revision,3);
+    assert.equal(reviewed.json().evidence_sha256,currentEvidence.evidence_sha256);
+    const afterReview=await core.service.getOrder(staff,orderId);
+    assert.equal(afterReview.current.preview_review.status,'matching');
+    assert.equal(afterReview.current.preview_review.receipt_id,reviewed.json().receipt_id);
     const requestChallenge=await confirm.issue_challenge(target);
     assert.equal(requestChallenge.status,'issued');
     await assert.rejects(core.service.approve(staff,orderId,{
