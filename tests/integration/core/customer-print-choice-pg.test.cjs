@@ -135,7 +135,7 @@ test('REAL PostgreSQL customer print-choice evidence is scope/hash/source bound 
    });
    const wrongPayload={...choiceInput,duplex:false};
    await assert.rejects(f.portA.apply(wrongPayload),e=>e.code==='CUSTOMER_PRINT_CHOICE_INVALID_INPUT');
-   await assert.rejects(f.portA.apply({...choiceInput,idempotency_key:key('different'),
+   await assert.rejects(f.portA.apply({...choiceInput,
     event_ids:[await f.addEvent('in 4 bản')]}),e=>e.code==='CUSTOMER_PRINT_CHOICE_IDEMPOTENCY_CONFLICT');
    assert.equal((await a.query('SELECT count(*)::int n FROM core_revisions WHERE order_id=$1',[f.orderId])).rows[0].n,3);
   });
@@ -218,10 +218,16 @@ test('REAL PostgreSQL customer print-choice evidence is scope/hash/source bound 
     e=>e.code==='CUSTOMER_PRINT_CHOICE_STALE_BINDING');
    await a.query('UPDATE core_revisions SET request_data=$2::jsonb WHERE order_id=$1 AND revision=2',
     [f.orderId,JSON.stringify(f.adoptedData)]);
-   await a.query('UPDATE ai0_inbound_document_artifacts SET sha256=$4 WHERE shop_id=$1 AND oa_id=$2 AND event_id=$3',
-    [f.shop,f.oa,f.sourceEvent,sha('tampered-source')]);
+   const tamperedSourceSha=sha('tampered-source');
+   const tamperedArtifactRef=f.file.replace(f.sourceSha,tamperedSourceSha);
+   const tamperedAdoptionData={documents:[{...f.adoptedData.documents[0],artifact_name:tamperedArtifactRef}]};
+   const tamperedRequestHash=sha(canonical(tamperedAdoptionData));
+   await a.query('UPDATE ai0_inbound_document_artifacts SET artifact_ref=$4,sha256=$5 WHERE shop_id=$1 AND oa_id=$2 AND event_id=$3',
+    [f.shop,f.oa,f.sourceEvent,tamperedArtifactRef,tamperedSourceSha]);
+   await a.query('UPDATE core_revisions SET request_hash=$2,request_data=$3::jsonb WHERE order_id=$1 AND revision=2',
+    [f.orderId,tamperedRequestHash,JSON.stringify(tamperedAdoptionData)]);
    await assert.rejects(f.portA.apply({...f.base,idempotency_key:key('source-tamper'),
-    expected_source_sha256:sha('tampered-source'),event_ids:[event]}),
+    expected_request_hash:tamperedRequestHash,expected_source_sha256:tamperedSourceSha,event_ids:[event]}),
     e=>e.code==='CUSTOMER_PRINT_CHOICE_ADOPTION_TAMPERED');
    assert.deepEqual(await snapshot(a,f.orderId),before);
   });
