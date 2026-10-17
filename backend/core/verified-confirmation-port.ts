@@ -164,13 +164,13 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
         return {status:'existing',confirmation_id:challenge.confirmation_id,
           order_id:bound.order.id,revision:input.expected_revision,kind:input.kind,quote_revision:bound.quote};
       }
-      const evidence=await evidenceHash(db,bound.order);
-      if(evidence){
+      const printEvidence=await evidenceHash(db,bound.order);
+      if(printEvidence){
        const challengeProof=(await db.query<{details:{evidence_sha256?:string}}>(
         "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 "+
         "AND action='customer.challenge_evidence' AND details->>'challenge_id'=$3",
         [shopId,bound.order.id,challenge.id])).rows[0];
-       if(challengeProof?.details?.evidence_sha256!==evidence)return {status:'stale'};
+       if(challengeProof?.details?.evidence_sha256!==printEvidence)return {status:'stale'};
       }
       // Staff approval may have won the locked-order race while the
       // customer clicked an earlier unconsumed challenge. HOLD, never insert.
@@ -198,7 +198,7 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
         [newId(),shopId,'verified-oa:'+oaId,bound.order.id,
          JSON.stringify({event_id:input.event_id,confirmation_id:confirmationId,revision:input.expected_revision,
            request_hash:input.request_hash,kind:input.kind,quote_revision:bound.quote,
-           ...(evidence?{evidence_sha256:evidence}:{})})]);
+           ...(printEvidence?{evidence_sha256:printEvidence}:{})})]);
       return {status:'confirmed',confirmation_id:confirmationId,order_id:bound.order.id,
         revision:input.expected_revision,kind:input.kind,quote_revision:bound.quote};
     });
