@@ -10,6 +10,7 @@ import {asSqlPool,assertIsolatedSimulationDatabase} from '../../../backend/compo
 import {createVerifiedSyntheticTn005Outbox} from '../../../backend/composition/tn005-sealed-outbox-port.ts';
 import {buildIntegratedApp} from '../../../backend/composition/runtime.ts';
 import {createCoreModule} from '../../../backend/core/factory.ts';
+import {createSyntheticZaloRuntime} from '../../../backend/composition/zalo-simulation.ts';
 
 const url=process.env.TEST_DATABASE_URL;
 const code=(expected)=>error=>error?.code===expected;
@@ -30,6 +31,9 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
     const core=createCoreModule({pool:sql});
     await core.auth.bootstrapOwner({shop_id:shop,username:'owner',password,bootstrap_enabled:true});
     const login=await core.auth.login(shop,'owner',password);
+    const zaloRuntime=createSyntheticZaloRuntime(pool,{kind:'synthetic_fixture',
+      shop_id:shop,oa_id:oa,fixture_key:randomUUID()+randomUUID()},
+      {store:core.store,artifactRoot:root});
     app=buildIntegratedApp({pool:sql,syntheticArtifactIngest:{artifactRoot:root,scope}});
     await app.ready();
 
@@ -65,12 +69,13 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
       const ctrl=(await pool.query('SELECT generation::text AS generation,status FROM core_conversation_controls '+
         'WHERE shop_id=$1 AND conversation_id=$2',[shop,conversation])).rows[0];
       assert.equal(ctrl?.status,'AI');
-      const input={outbound_id:randomUUID(),idempotency_key:'tn005:'+randomUUID(),order_id:orderId,
+      const outbound_id=randomUUID();
+      const input={outbound_id,idempotency_key:'tn005:'+outbound_id,order_id:orderId,
         revision:1,generation:Number(ctrl.generation),request_hash:suggestion.json().request_hash,
         source_sha256:suggestion.json().artifact_sha256,text:question.json().text};
       const artifact=(await pool.query('SELECT artifact_ref FROM ai0_inbound_document_artifacts '+
         'WHERE shop_id=$1 AND oa_id=$2 AND event_id=$3',[shop,oa,event])).rows[0].artifact_ref;
-      return {orderId,conversation,headers,requestData:(await pool.query(
+      return {orderId,customer,conversation,headers,requestData:(await pool.query(
         'SELECT request_data FROM core_revisions WHERE order_id=$1 AND revision=1',[orderId])).rows[0].request_data,
         input,artifactPath:join(root,artifact),sealed:await readFile(join(root,artifact))};
     }
@@ -85,11 +90,15 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
       assert.equal(text,valid.input.text);
     }};
     const valid=await createOrder('valid');
+    const handed=await createOrder('handover');
+    const orderIds=[valid.orderId,handed.orderId];
     const guardsBefore=(await pool.query(
       'SELECT (SELECT count(*)::int FROM core_confirmations WHERE order_id=ANY($1::uuid[])) confirmations,'+
       '(SELECT count(*)::int FROM core_approvals WHERE order_id=ANY($1::uuid[])) approvals,'+
       '(SELECT count(*)::int FROM core_print_jobs WHERE order_id=ANY($1::uuid[])) print_jobs',
-      [[valid.orderId]])).rows[0];
+      [orderIds])).rows[0];
+    assert.deepEqual(guardsBefore,{confirmations:0,approvals:0,print_jobs:0},
+      'TN005 starts without confirmation, approval, or print mutations');
 
     // The composition callback must hash both the registered manifest and the
     // actual bytes; altered bytes cannot create an outbox row.
@@ -101,6 +110,29 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
     await writeFile(valid.artifactPath,valid.sealed);
     await chmod(valid.artifactPath,0o400);
 
+    const validScope={shop_id:shop,order_id:valid.orderId,revision:1,oa_id:oa,
+      customer_id:valid.customer,conversation_id:valid.conversation};
+    const composed=await zaloRuntime.queue_first_page_suggested_question({
+      outbound_id:valid.input.outbound_id,scope:validScope});
+    assert.deepEqual(composed,{status:'queued',outbound_id:valid.input.outbound_id,
+      text:valid.input.text});
+    assert.deepEqual(await zaloRuntime.queue_first_page_suggested_question({
+      outbound_id:valid.input.outbound_id,scope:validScope}),composed,
+      'replaying the same adapter call must remain idempotent');
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM core_tn005_suggested_outbox '+
+      'WHERE order_id=$1',[valid.orderId])).rows[0].n,1);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM zalo_outbound WHERE shop_id=$1 AND oa_id=$2',
+      [shop,oa])).rows[0].n,0,'TN005 must not use the ordinary Zalo outbox');
+    const beforeForeign=(await pool.query('SELECT count(*)::int AS n FROM core_tn005_suggested_outbox '+
+      'WHERE shop_id=$1',[shop])).rows[0].n;
+    assert.equal((await zaloRuntime.queue_first_page_suggested_question({
+      outbound_id:randomUUID(),scope:{...validScope,shop_id:'other-shop'}})).status,'blocked');
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM core_tn005_suggested_outbox '+
+      'WHERE shop_id=$1',[shop])).rows[0].n,beforeForeign,
+      'cross-shop conversation input must not create an advisory outbox row');
+
+    // AI2's composition path and AI1's lower-level adapter share the same
+    // deterministic idempotency key and cannot create duplicate TN005 rows.
     assert.deepEqual(await outbox.enqueue(valid.input),
       {status:'queued',outbound_id:valid.input.outbound_id});
     const lease=await outbox.reserve(valid.input.outbound_id);
@@ -117,6 +149,9 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
       'WHERE outbound_id=$1',[valid.input.outbound_id])).rows[0].status,'SENT');
     await core.service.revise(login.principal,valid.orderId,{expected_revision:1,
       request_data:valid.requestData,idempotency_key:'revise-'+id});
+    assert.equal((await zaloRuntime.queue_first_page_suggested_question({
+      outbound_id:randomUUID(),scope:validScope})).status,'blocked',
+      'old first-page evidence must not enqueue after a new order revision');
     await assert.rejects(outbox.enqueue(valid.input),code('TN005_STALE'));
 
     // Real other-tenant Core order fails closed at AI1's fixed shop scope.
@@ -132,7 +167,11 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
       'WHERE order_id=$1',[foreign.order_id])).rows[0].n,0);
 
     // Handover after reservation cancels the advisory before the fake provider.
-    const handed=await createOrder('handover');
+    const handedScope={shop_id:shop,order_id:handed.orderId,revision:1,oa_id:oa,
+      customer_id:handed.customer,conversation_id:handed.conversation};
+    assert.deepEqual(await zaloRuntime.queue_first_page_suggested_question({
+      outbound_id:handed.input.outbound_id,scope:handedScope}),
+      {status:'queued',outbound_id:handed.input.outbound_id,text:handed.input.text});
     assert.deepEqual(await outbox.enqueue(handed.input),
       {status:'queued',outbound_id:handed.input.outbound_id});
     const handoverLease=await outbox.reserve(handed.input.outbound_id);
@@ -143,15 +182,19 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
     assert.equal(await outbox.deliverReserved(handoverLease,fakeSender),'blocked');
     assert.equal((await pool.query('SELECT status FROM core_tn005_suggested_outbox '+
       'WHERE outbound_id=$1',[handed.input.outbound_id])).rows[0].status,'CANCELLED');
+    assert.equal((await zaloRuntime.queue_first_page_suggested_question({
+      outbound_id:randomUUID(),scope:handedScope})).status,'blocked',
+      'a human handover blocks a new AI2 TN005 enqueue');
     assert.equal(providerCalls,1,'handover never reached the fake provider');
 
-    const orderIds=[valid.orderId,handed.orderId];
     const guardsAfter=(await pool.query(
       'SELECT (SELECT count(*)::int FROM core_confirmations WHERE order_id=ANY($1::uuid[])) confirmations,'+
       '(SELECT count(*)::int FROM core_approvals WHERE order_id=ANY($1::uuid[])) approvals,'+
       '(SELECT count(*)::int FROM core_print_jobs WHERE order_id=ANY($1::uuid[])) print_jobs',
       [orderIds])).rows[0];
     assert.deepEqual(guardsAfter,guardsBefore);
+    assert.deepEqual(guardsAfter,{confirmations:0,approvals:0,print_jobs:0},
+      'TN005 leaves confirmations, approvals, and print jobs at exactly zero');
     console.log('PASS TN005 composition PG/Fastify: real sealed bytes+manifest, cross-shop, stale revision, handover, fake provider only, 0 print mutations');
   }finally{
     if(app)await app.close();

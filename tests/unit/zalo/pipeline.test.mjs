@@ -47,6 +47,17 @@ const event=new TextEncoder().encode(JSON.stringify({synthetic_fixture:true,even
   kind:'text',text:'In A4'}));
 const synthetic={kind:'synthetic_fixture',verifier:new SyntheticTestVerifier('fixture-key'),
   normalizer:new SyntheticFixtureNormalizer()};
+const firstPageScope={shop_id:requirements.trusted_shop_id,
+  order_id:'12345678-1234-4123-8123-123456789abc',revision:2,oa_id:requirements.trusted_oa_id,
+  customer_id:'customer-1',conversation_id:'conv-1'};
+const firstPageSnapshot={
+  current:{...firstPageScope,active_revision:2,request_hash:'a'.repeat(64),
+    source_sha256:'b'.repeat(64),sealed_source_verified:true},
+  advisory:{shop_id:firstPageScope.shop_id,order_id:firstPageScope.order_id,revision:2,
+    request_hash:'a'.repeat(64),artifact_sha256:'b'.repeat(64),metadata:{
+      schema_version:'tn005.first_page.v1',status:'SUGGESTED',category:'WORKSHEET',
+      confidence_label:'high',analyzed_page_count:1,method:'pymupdf_page0_text',reason_code:'NONE'}}
+};
 test('factory fails closed without configured verifier and sender',async()=>{
   const x=fakeDb(),pipeline=createZaloPipeline({...requirements,db:x.db});
   const response=await pipeline.receive_webhook(event,{'x-test-fixture-key':'fixture-key'});
@@ -55,6 +66,23 @@ test('factory fails closed without configured verifier and sender',async()=>{
   assert.equal(x.sends,0);
   assert.throws(()=>createZaloPipeline({...requirements,db:x.db,mode:'production'}),/LIVE_DISABLED/);
   assert.throws(()=>createZaloPipeline({...requirements,db:x.db,mode:'controlled_test'}),/LIVE_DISABLED/);
+});
+test('Zalo pipeline exposes TN005 enqueue only through injected Core CAS',async()=>{
+  const x=fakeDb();let reads=0,calls=0,providerBoundaries=0,seen;
+  const pipeline=createZaloPipeline({...requirements,db:x.db,
+    first_page_question_reader:{async read_bound(scope){reads++;assert.deepEqual(scope,firstPageScope);return firstPageSnapshot}},
+    first_page_core_cas:{
+      async compare_and_enqueue_suggested(input){calls++;seen=input;return {status:'queued',outbound_id:input.outbound_id}},
+      async compare_reserved_before_provider_io(){providerBoundaries++;return {status:'current',outbound_id:seen?.outbound_id}}
+    }
+  });
+  const outbound_id='22345678-1234-4123-8123-123456789abc';
+  const result=await pipeline.queue_first_page_suggested_question({outbound_id,scope:firstPageScope});
+  assert.equal(result.status,'queued');assert.equal(result.outbound_id,outbound_id);
+  assert.equal(reads,1);assert.equal(calls,1);assert.equal(providerBoundaries,0);
+  assert.equal(seen.intent.evidence.source_sha256,'b'.repeat(64));
+  assert.equal(x.sqlLog.some(sql=>sql.includes('INSERT INTO zalo_outbound')),false);
+  assert.equal(x.sends,0);
 });
 test('synthetic webhook uses raw-byte verifier before durable insert and dedupe',async()=>{
   const x=fakeDb(),pipeline=createZaloPipeline({...requirements,db:x.db,synthetic_provider:synthetic});

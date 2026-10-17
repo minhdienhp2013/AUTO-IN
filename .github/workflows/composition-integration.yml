@@ -102,7 +102,7 @@ jobs:
         run: npm run test:chromium:code008
 
   unified-schedule-adopt-load100:
-    if: github.event_name == 'pull_request' && (github.head_ref == 'ai0/integrate-schedule-adopt-load100-20261016' || github.head_ref == 'ai0/tn005-first-page-port-20261016' || github.head_ref == 'ai0/load100-v2-on-tn005-20261016' || github.head_ref == 'ai0/tn005-question-read-port-20261016' || github.head_ref == 'ai0/tn005-cas-combined-20261017' || github.head_ref == 'ai0/tn005-combined-cas-20261017')
+    if: github.event_name == 'pull_request' && (github.head_ref == 'ai0/integrate-schedule-adopt-load100-20261016' || github.head_ref == 'ai0/tn005-first-page-port-20261016' || github.head_ref == 'ai0/load100-v2-on-tn005-20261016' || github.head_ref == 'ai0/tn005-question-read-port-20261016' || github.head_ref == 'ai0/tn005-cas-combined-20261017' || github.head_ref == 'ai0/tn005-combined-cas-20261017' || github.head_ref == 'ai0/tn005-ai2-composition-20261017')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -131,7 +131,7 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
           echo "EXACT_UNIFIED_CANDIDATE_SHA=$(git rev-parse HEAD)"
-          if [[ "${{ github.head_ref }}" == 'ai0/load100-v2-on-tn005-20261016' || "${{ github.head_ref }}" == 'ai0/tn005-question-read-port-20261016' || "${{ github.head_ref }}" == 'ai0/tn005-cas-combined-20261017' || "${{ github.head_ref }}" == 'ai0/tn005-combined-cas-20261017' ]]; then
+          if [[ "${{ github.head_ref }}" == 'ai0/load100-v2-on-tn005-20261016' || "${{ github.head_ref }}" == 'ai0/tn005-question-read-port-20261016' || "${{ github.head_ref }}" == 'ai0/tn005-cas-combined-20261017' || "${{ github.head_ref }}" == 'ai0/tn005-combined-cas-20261017' || "${{ github.head_ref }}" == 'ai0/tn005-ai2-composition-20261017' ]]; then
             test "$(git hash-object tests/acceptance/load100-product-pg.mjs)" = 60156ee0ac78819f422ba8bfde88eed2fe814128
           else
             test "$(git hash-object tests/acceptance/load100-product-pg.mjs)" = 0cc595dd75741b04c2da5cce169cc857eb687647
@@ -158,7 +158,7 @@ jobs:
       - run: python -m pytest -q tests/unit/documents tests/unit/printing
       - run: npm run db:migrate
       - name: TN005 sealed Port PostgreSQL Fastify and timeout cases
-        if: github.head_ref == 'ai0/tn005-first-page-port-20261016' || github.head_ref == 'ai0/load100-v2-on-tn005-20261016' || github.head_ref == 'ai0/tn005-question-read-port-20261016' || github.head_ref == 'ai0/tn005-cas-combined-20261017' || github.head_ref == 'ai0/tn005-combined-cas-20261017'
+        if: github.head_ref == 'ai0/tn005-first-page-port-20261016' || github.head_ref == 'ai0/load100-v2-on-tn005-20261016' || github.head_ref == 'ai0/tn005-question-read-port-20261016' || github.head_ref == 'ai0/tn005-cas-combined-20261017' || github.head_ref == 'ai0/tn005-combined-cas-20261017' || github.head_ref == 'ai0/tn005-ai2-composition-20261017'
         run: node --import tsx --test tests/integration/composition/first-page-suggestion-pg.test.mjs
       - name: Strict contracts Core AI2 composition PostgreSQL HTTP checks
         run: npm run check
@@ -178,7 +178,7 @@ jobs:
           sha="$(git rev-parse HEAD)"
           node -e "const r=require('/tmp/autoin-load100-report.json');if(r.status!=='PASS'||r.product_commit_sha!==process.argv[1])process.exit(1)" "$sha"
           grep -F "\"product_commit_sha\":\"$sha\"" /tmp/autoin-load100.tap
-          if [[ "${{ github.head_ref }}" == 'ai0/load100-v2-on-tn005-20261016' || "${{ github.head_ref }}" == 'ai0/tn005-question-read-port-20261016' || "${{ github.head_ref }}" == 'ai0/tn005-cas-combined-20261017' || "${{ github.head_ref }}" == 'ai0/tn005-combined-cas-20261017' ]]; then
+          if [[ "${{ github.head_ref }}" == 'ai0/load100-v2-on-tn005-20261016' || "${{ github.head_ref }}" == 'ai0/tn005-question-read-port-20261016' || "${{ github.head_ref }}" == 'ai0/tn005-cas-combined-20261017' || "${{ github.head_ref }}" == 'ai0/tn005-combined-cas-20261017' || "${{ github.head_ref }}" == 'ai0/tn005-ai2-composition-20261017' ]]; then
             node -e "const r=require('/tmp/autoin-load100-report.json');const e=r.expected_source_sha256,o=r.observed_source_sha256;const k=Object.keys(e);if(k.length!==100||new Set(Object.values(e)).size!==100||Object.keys(o).length!==100||k.some(id=>e[id]!==o[id]))process.exit(1)"
             grep -F 'LOAD100_NEGATIVE_SWAP PNG same-kind cross-customer: REJECTED both directions' /tmp/autoin-load100.tap
             grep -F 'LOAD100_NEGATIVE_SWAP PDF same-kind cross-customer: REJECTED both directions' /tmp/autoin-load100.tap

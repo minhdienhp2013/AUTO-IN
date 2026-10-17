@@ -5,6 +5,11 @@ import type { GatePort,GateSnapshot } from "./gate.ts";
 import type { AiInterpretation } from "../ai/deepseek.ts";
 import {confirmationIntent,type ConfirmationCandidatePort} from "./confirmation-candidate.ts";
 import {classifyIncomingOrderBatch,type IncomingOrderChange} from "./order-batch-intent.ts";
+import {prepareFirstPageSuggestedIntent} from "./first-page-delivery-intent.ts";
+import {gateFirstPageEnqueue,type FirstPageCasDecision,
+  type FirstPageCoreCasPort} from "./first-page-core-cas.ts";
+import {SAFE_FIRST_PAGE_QUESTION,type FirstPageQuestionReadPort,
+  type FirstPageQuestionScope} from "./first-page-question.ts";
 
 /** AI1 MUST compare expected_generation under its authoritative shop-scoped
  * PostgreSQL row lock in the SAME transaction as each business effect.
@@ -43,6 +48,16 @@ export interface DocumentFactsPort {
 export interface ReplyQueuePort {
   enqueue(data:{outbound_id:string;conversation_id:string;generation:number;text:string}):Promise<void>;
 }
+/** Trusted internal ports supplied by AI0 composition. The question reader is
+ * shop/OA-bound; Core owns the atomic compare-and-enqueue and later delivery.
+ * This path never routes a TN005 suggestion through ReplyQueuePort.enqueue().
+ */
+export interface FirstPageSuggestionIntegration {
+  readonly trusted_shop_id:string;
+  readonly trusted_oa_id:string;
+  readonly questions:FirstPageQuestionReadPort;
+  readonly core:FirstPageCoreCasPort;
+}
 function batchIdentity(batch:Batch):{event_ids:string[];key:string} {
   const first=batch.events[0];
   if(!first)throw new Error("EMPTY_BATCH");
@@ -74,16 +89,46 @@ export class ConversationProcessor {
   private readonly reply:ReplyQueuePort;
   private readonly classifier:ClassifierPort|undefined;
   private readonly confirmations:ConfirmationCandidatePort|undefined;
+  private readonly firstPage:FirstPageSuggestionIntegration|undefined;
   constructor(gate:GatePort,documents:DocumentFactsPort,orders:OrderDraftPort,
-    reply:ReplyQueuePort,classifier?:ClassifierPort,confirmations?:ConfirmationCandidatePort) {
+    reply:ReplyQueuePort,classifier?:ClassifierPort,confirmations?:ConfirmationCandidatePort,
+    firstPage?:FirstPageSuggestionIntegration) {
     this.gate=gate;this.documents=documents;this.orders=orders;
     this.reply=reply;this.classifier=classifier;this.confirmations=confirmations;
+    this.firstPage=firstPage;
   }
   private async current(snapshot:GateSnapshot,batch:Batch):Promise<boolean> {
     const now=this.gate.read_verified_batch
       ? await this.gate.read_verified_batch(batch)
       : await this.gate.read(snapshot.conversation_id);
     return now.mode==="AI"&&now.generation===snapshot.generation;
+  }
+  /** Internal AI0 composition entry for a Core-bound TN005 suggestion.
+   * Scope is supplied by trusted order resolution, and the current snapshot
+   * and conversation generation are read again here. The injected Core CAS
+   * is the ONLY enqueue path; stale/missing/unavailable evidence fails closed.
+   * Provider delivery and terminal outbox state remain AI1 Core-owned.
+   */
+  async queueFirstPageSuggestedQuestion(input:{outbound_id:string;
+    scope:Readonly<FirstPageQuestionScope>}):Promise<FirstPageCasDecision> {
+    const blocked:FirstPageCasDecision={status:"blocked",
+      text:SAFE_FIRST_PAGE_QUESTION};
+    const integration=this.firstPage,scope=input?.scope;
+    if(!integration||!scope||scope.shop_id!==integration.trusted_shop_id||
+       scope.oa_id!==integration.trusted_oa_id)return blocked;
+    try {
+      const snapshot=await integration.questions.read_bound(scope);
+      const gate=await this.gate.read(scope.conversation_id);
+      const prepared=prepareFirstPageSuggestedIntent(scope,snapshot,gate);
+      // Generic prose belongs to the ordinary conversation flow. It is never
+      // a fallback enqueue for this suggestion-only path.
+      if(prepared.status!=="suggested")return blocked;
+      return await gateFirstPageEnqueue(input.outbound_id,prepared.intent,
+        scope,snapshot,gate,integration.core);
+    } catch {
+      // Do not expose DB/source errors or fall back to an ordinary reply.
+      return blocked;
+    }
   }
   async consume(batch:Batch):Promise<"processed"|"human"|"held"> {
     const first=batch.events[0];

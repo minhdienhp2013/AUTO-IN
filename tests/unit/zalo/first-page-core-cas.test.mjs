@@ -5,6 +5,7 @@ import {
  gateFirstPageEnqueue,gateFirstPageDelivery
 } from '../../../backend/conversation/first-page-core-cas.ts';
 import {SAFE_FIRST_PAGE_QUESTION} from '../../../backend/conversation/first-page-question.ts';
+import {ConversationProcessor} from '../../../backend/conversation/processor.ts';
 
 // SYNTHETIC PostgreSQL-style row/CAS fixture and fake provider. No real OA,
 // customer record, outbox SQL, provider I/O, printer or production credentials.
@@ -66,6 +67,61 @@ function fakeCore(){
  };
  return {core,rows,outbox,stats:()=>({inserts,checks,sendCalls,printJobs,approvals})};
 }
+
+function processorWithFirstPage({core,read=async()=>snapshot(),currentGate=gate,
+  trustedShop=shop,trustedOa=scope.oa_id}={}){
+ let ordinaryEnqueueCalls=0,questionReads=0;
+ const processor=new ConversationProcessor(
+  {async read(){return currentGate}},
+  {async inspect(){assert.fail('unused document inspection')}},
+  {async suggest_draft(){assert.fail('unused order draft')},
+   async route_human(){assert.fail('unused handover')}},
+  {async enqueue(){ordinaryEnqueueCalls++;assert.fail('TN005 must never use ordinary enqueue')}},
+  undefined,undefined,
+  core===undefined?undefined:{trusted_shop_id:trustedShop,trusted_oa_id:trustedOa,
+   questions:{async read_bound(value){questionReads++;return read(value)}},core}
+ );
+ return {processor,stats:()=>({ordinaryEnqueueCalls,questionReads})};
+}
+
+test('conversation TN005 integration reads trusted binding then enqueues only through Core CAS',async()=>{
+ const f=fakeCore(),p=processorWithFirstPage({core:f.core});
+ const result=await p.processor.queueFirstPageSuggestedQuestion({outbound_id:id,scope});
+ assert.deepEqual(result,{status:'queued',outbound_id:id,
+  text:'Trang đầu có vẻ là phiếu học tập. '+SAFE_FIRST_PAGE_QUESTION});
+ assert.deepEqual(p.stats(),{ordinaryEnqueueCalls:0,questionReads:1});
+ assert.equal(f.stats().checks,1);assert.equal(f.stats().inserts,1);
+ assert.equal(f.stats().sendCalls,0);
+});
+
+test('conversation TN005 integration blocks absent, wrong-shop, unreadable or handed-over bindings',async()=>{
+ const missing=processorWithFirstPage();
+ assert.deepEqual(await missing.processor.queueFirstPageSuggestedQuestion({outbound_id:id,scope}),blocked);
+ assert.deepEqual(missing.stats(),{ordinaryEnqueueCalls:0,questionReads:0});
+
+ const f=fakeCore(),wrong=processorWithFirstPage({core:f.core});
+ assert.deepEqual(await wrong.processor.queueFirstPageSuggestedQuestion({outbound_id:id,
+  scope:{...scope,shop_id:'other-shop'}}),blocked);
+ assert.deepEqual(wrong.stats(),{ordinaryEnqueueCalls:0,questionReads:0});
+
+ const unavailable=processorWithFirstPage({core:f.core,read:async()=>{throw Error('PRIVATE SOURCE')}});
+ assert.deepEqual(await unavailable.processor.queueFirstPageSuggestedQuestion({outbound_id:id,scope}),blocked);
+ assert.deepEqual(unavailable.stats(),{ordinaryEnqueueCalls:0,questionReads:1});
+
+ const handed=processorWithFirstPage({core:f.core,currentGate:{...gate,mode:'HUMAN',generation:6}});
+ assert.deepEqual(await handed.processor.queueFirstPageSuggestedQuestion({outbound_id:id,scope}),blocked);
+ assert.equal(f.stats().checks,0);assert.equal(f.stats().inserts,0);
+});
+
+test('conversation TN005 integration stale Core CAS asks for rebind without ordinary enqueue',async()=>{
+ const f=fakeCore();
+ f.core.compare_and_enqueue_suggested=async()=>({status:'stale_source_sha'});
+ const p=processorWithFirstPage({core:f.core});
+ assert.deepEqual(await p.processor.queueFirstPageSuggestedQuestion({outbound_id:id,scope}),stale);
+ assert.deepEqual(p.stats(),{ordinaryEnqueueCalls:0,questionReads:1});
+ assert.equal(f.stats().sendCalls,0);assert.equal(f.stats().printJobs,0);
+});
+
 test('TN005 missing Core CAS port is fail-closed at both boundaries, never enqueue',async()=>{
  const proof=intent();
  assert.deepEqual(await gateFirstPageEnqueue(id,proof,scope,snapshot(),gate),blocked);
