@@ -26,8 +26,92 @@ ROOT=pathlib.Path(__file__).resolve().parents[3]
 MANIFEST=ROOT/"tests/fixtures/public/v1-word-pdf/matrix.json"
 HEX40=re.compile(r"[a-f0-9]{40}\Z")
 HEX64=re.compile(r"[a-f0-9]{64}\Z")
-GATES=("source_sha256","settings_digest","request_hash","revision")
+GATES=("source_sha256","settings_sha256","request_hash","revision","manifest_sha256",
+       "renderer_sha256","plan_sha256","printer_capability_sha256","evidence_sha256")
 COUNTS=("confirmations","approvals","print_jobs")
+
+
+def canonical_sha256(value):
+    return hashlib.sha256(json.dumps(
+        value,ensure_ascii=False,sort_keys=True,separators=(",",":")
+    ).encode("utf-8")).hexdigest()
+
+
+def stale_digest_evidence_issues(case_id, details):
+    """Require product-original stale actions, not a fixture-only digest check."""
+    mutation={
+        "V1-025": "manifest_sha256",
+        "V1-026": "previews[0].sha256",
+        "V1-027": "renderer_sha256",
+    }[case_id]
+    issues=[]
+    earlier,later=details.get("evidence_before"),details.get("evidence_after")
+    if not isinstance(earlier,dict) or not isinstance(later,dict):
+        return [case_id+": authoritative PrintEvidenceV1 before/after missing"]
+    keys=("schema","shop_id","order_id","revision","request_hash","sources",
+          "source_set_sha256","settings_sha256","manifest_ref","manifest_sha256",
+          "previews","renderer_sha256","plan_sha256","printer_id",
+          "printer_capability_sha256","evidence_sha256")
+    for name,snapshot in [("before",earlier),("after",later)]:
+        if not all(k in snapshot for k in keys):
+            issues.append(case_id+": "+name+" PrintEvidenceV1 incomplete")
+            continue
+        if snapshot.get("schema")!="ai0.print_evidence.v1":
+            issues.append(case_id+": "+name+" evidence schema")
+        expected=canonical_sha256({k:v for k,v in snapshot.items() if k!="evidence_sha256"})
+        if snapshot.get("evidence_sha256")!=expected:
+            issues.append(case_id+": "+name+" noncanonical evidence_sha256")
+    if issues:return issues
+    immutable=("shop_id","order_id","revision","request_hash","sources",
+               "source_set_sha256","settings_sha256","manifest_ref","plan_sha256",
+               "printer_id","printer_capability_sha256")
+    for key in immutable:
+        if earlier[key]!=later[key]:
+            issues.append(case_id+": mutated unexpected field "+key)
+    a_preview=earlier.get("previews",[])
+    b_preview=later.get("previews",[])
+    if len(a_preview)!=len(b_preview) or len(a_preview)!=1:
+        issues.append(case_id+": missing single preview proof")
+    elif a_preview[0].get("index")!=b_preview[0].get("index") or a_preview[0].get("bytes")!=b_preview[0].get("bytes"):
+        issues.append(case_id+": preview index/byte length changed")
+    diffs=[]
+    if earlier.get("manifest_sha256")!=later.get("manifest_sha256"):
+        diffs.append("manifest_sha256")
+    if a_preview and b_preview and a_preview[0].get("sha256")!=b_preview[0].get("sha256"):
+        diffs.append("previews[0].sha256")
+    if earlier.get("renderer_sha256")!=later.get("renderer_sha256"):
+        diffs.append("renderer_sha256")
+    if diffs!=[mutation]:
+        issues.append(case_id+": digest mutation not isolated: "+str(diffs))
+    if earlier.get("evidence_sha256")==later.get("evidence_sha256"):
+        issues.append(case_id+": unchanged evidence_sha256")
+    old_paths=details.get("stable_locators_before")
+    new_paths=details.get("stable_locators_after")
+    if (not isinstance(old_paths,dict) or not isinstance(new_paths,dict)
+        or old_paths!=new_paths or not all(
+            isinstance(old_paths.get(k),str) and old_paths[k]
+            for k in ("source_artifact_ref","manifest_ref",
+                      "preview_storage_path","renderer_executable_path")
+        )):
+        issues.append(case_id+": resource path invariant not verified")
+    elif (old_paths["source_artifact_ref"]!=earlier["sources"][0].get("source_artifact_ref")
+          or old_paths["manifest_ref"]!=earlier["manifest_ref"]):
+        issues.append(case_id+": stable path does not bind snapshot")
+    actions=details.get("stale_action_results")
+    if (not isinstance(actions,dict) or not all(
+        actions.get(k) in ("STALE","DENIED","NEEDS_HUMAN")
+        for k in ("confirmation","approval","claim","preflight","mark_sending")
+    )):
+        issues.append(case_id+": missing stale action outcomes")
+    before,after=details.get("guards_before"),details.get("guards_after")
+    if not isinstance(before,dict) or not isinstance(after,dict) or any(
+        before.get(k)!=after.get(k) for k in COUNTS
+    ):
+        issues.append(case_id+": confirmation/approval/print job guard changed")
+    a,b=details.get("driver_send_calls_before"),details.get("driver_send_calls_after")
+    if not isinstance(a,int) or not isinstance(b,int) or a!=b:
+        issues.append(case_id+": unverified extra driver send attempt")
+    return issues
 
 
 def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
@@ -77,8 +161,12 @@ def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
                 issues.append(f'{row["id"]}: missing {key}')
         if not HEX64.fullmatch(str(details.get("source_sha256",""))):
             issues.append(f'{row["id"]}: invalid source sha')
-        if not HEX64.fullmatch(str(details.get("settings_digest",""))):
-            issues.append(f'{row["id"]}: invalid settings digest')
+        if not HEX64.fullmatch(str(details.get("settings_sha256",""))):
+            issues.append(f'{row["id"]}: invalid settings SHA')
+        for digest_field in ("manifest_sha256","renderer_sha256","plan_sha256",
+                             "printer_capability_sha256","evidence_sha256"):
+            if not HEX64.fullmatch(str(details.get(digest_field,""))):
+                issues.append(f'{row["id"]}: invalid {digest_field}')
         if not HEX64.fullmatch(str(details.get("request_hash",""))):
             issues.append(f'{row["id"]}: invalid request hash')
         for phase in ("guards_before","guards_after"):
@@ -90,6 +178,8 @@ def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
             post=details.get("guards_after",{})
             if isinstance(pre,dict) and isinstance(post,dict) and post.get("print_jobs")!=pre.get("print_jobs"):
                 issues.append(f'{row["id"]}: unauthorized print job mutation')
+        if row["id"] in ("V1-025","V1-026","V1-027"):
+            issues.extend(stale_digest_evidence_issues(row["id"],details))
     assert report.get("status")=="PASS" and not issues, "BLOCKED_CASES: "+", ".join(issues[:24])
     assert "ok 1 - V1 Word/PDF exact candidate product acceptance" in tap
     return {"status":"PASS_CANDIDATE_ARTIFACT_CONSISTENCY_ONLY",
