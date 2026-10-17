@@ -91,11 +91,14 @@ async function runStage(
   if(local.status==='generic_rebind_required')return generic();
   // Neither operation is permitted in the absence of AI1's atomic CAS.
   if(!core)return blocked();
-  const method=stage==='before_enqueue' ?
-    core.compare_and_enqueue_suggested : core.compare_reserved_before_provider_io;
-  if(typeof method!=='function')return blocked();
+  if(stage==='before_enqueue'&&
+     typeof core.compare_and_enqueue_suggested!=='function')return blocked();
+  if(stage==='before_delivery'&&
+     typeof core.compare_reserved_before_provider_io!=='function')return blocked();
   try{
-    const result=await method.call(core,{outbound_id,intent});
+    const result=stage==='before_enqueue'
+      ?await core.compare_and_enqueue_suggested({outbound_id,intent})
+      :await core.compare_reserved_before_provider_io({outbound_id,intent});
     if(!validCas(result))return blocked();
     if(stale.has(result.status))return generic();
     if(denied.has(result.status))return blocked();
