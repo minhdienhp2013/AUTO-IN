@@ -40,10 +40,13 @@ a fresh revision/hash/source check before returning a suggested category.
 Missing, stale, tampered or uncertain evidence yields the fixed generic
 question. This preview never queues or sends a message.
 
-Automatic AI2 outbound wiring is still NOT RUN. Before a later enqueue, AI0
-must atomically recheck shop/order/current revision/request hash/sealed source
-SHA and conversation AI generation in the outbox transaction. A preview read
-cannot authorize a later send after a revision or handover race.
+At this 2026-10-16 preview checkpoint, AI2 queue wiring had not yet been run.
+The 2026-10-17 composition bridge below now connects a validated suggestion to
+AI1's advisory Core enqueue CAS. This still does not deliver a customer
+message: automatic customer prompts and provider delivery remain NOT RUN. The
+preview itself cannot authorize a later send; if delivery is enabled in a
+separately approved stage, AI1's reserve/deliverReserved must recheck current
+evidence and generation in its locked transition immediately before I/O.
 
 ## TN005 sealed-source CAS composition follow-up — 2026-10-17
 
