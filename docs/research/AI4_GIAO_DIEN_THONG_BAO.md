@@ -118,3 +118,24 @@ Thực hiện mỗi ca ở **Safari iPhone vật lý**, tối thiểu chiều d�
 - **Lưu theo ca:** `IPH-xx | thiết bị | iOS/Safari | viewport CSS px | UI SHA | backend SHA | kiểu API (synthetic/PG) | PASS/FAIL/BLOCKED/NOT RUN | ảnh/video/log | số mutation trước/sau | lỗi & AI phụ trách`. Nếu thiếu model/iOS/viewport hoặc bằng chứng khóa duyệt/no mutation, **không ghi PASS**.
 
 **Điều kiện kết luận:** chỉ ghi **PASS iPhone Safari thực tế** sau khi có thiết bị, dữ liệu kiểm thử an toàn, thao tác chạy và đủ bằng chứng. Nếu chưa có iPhone/môi trường/tester hoặc chưa xuất được log mutation, giữ **NOT RUN/BLOCKED** đúng mục. Mốc Chromium synthetic PR #84 (28/28) chỉ là tham chiếu hồi quy, **không** thay nghiệm thu Safari hay chứng minh Zalo OA, Ricoh, in giấy thật, TN-037/V1.
+
+
+## TN008-WEBKIT-REGRESSION-01 — WebKit thông báo (17/10/2026)
+
+- Overlay AI4 **trực tiếp từ candidate PR #144 HEAD `0673460af71205986b901a21fc7724dbea23c991`**. Không sửa `web/src/notifications.ts`, SettingsView, service worker, backend, CODE008/CODE501 browser tests hoặc workflow gốc. Hai file bổ sung: `tests/ui/notification_webkit_browser.py` và script `web/package.json`.
+- **Trình duyệt:** Playwright **WebKit thật** chạy UI production React/Vite đã build (`VITE_DEMO_MODE=false`), hai viewport 1440×900 và 390×844. **Synthetic:** `window.Notification`/permission và API đăng nhập/GET shop là fixture vô danh trong context, không cấp quyền hệ điều hành; không có sự kiện OA/khách hay backend Push. Không sử dụng WebKit làm tên thay thế cho Safari trên iPhone vật lý.
+- **10 tình huống × 2 viewport = 20 ca:** thiếu `Notification`, không có phương thức `requestPermission`, insecure context giả lập, `denied`, `default`, `default` còn giữ nguyên sau hỏi quyền, `granted`, Promise reject, reject rồi thử lại thành công, và một yêu cầu pending chặn nhấn lặp.
+- **Assertion chính xác:** `Trình duyệt hoặc kết nối HTTPS chưa hỗ trợ thông báo`; `Đã từ chối quyền — kiểm tra cài đặt trình duyệt`; `Chưa cấp quyền thông báo`; `Đã cấp quyền, chưa nối Web Push`; `Yêu cầu quyền thất bại. Có thể thử lại; Web Push chưa kết nối.` Đồng thời mọi trạng thái phải giữ câu **`Web Push thật chưa được kết nối; thông báo sẽ mở đúng đơn sau khi có backend phát Push được xác thực.`**
+- Không tự hỏi quyền khi tải trang/vào Settings; kiểm số lần gọi prompt; `granted` không chứng minh subscription, không tự gọi `PushManager.subscribe()`, không request endpoint push/backend, không tạo mutation/duyệt/in, không unhandled JS error. Chỉ nhập credential **synthetic** vào API fixture.
+- **Yêu cầu AI0 tích hợp CI (không giao AI4 sửa workflow):** trong web-quality sau checkout đúng SHA, Node/npm install, production build và cài Python 3.12, chạy:
+
+```sh
+python3 -m pip install playwright==1.58.0
+python3 -m playwright install --with-deps webkit
+cd web
+npm ci
+VITE_DEMO_MODE=false npm run build
+npm run test:webkit:notifications
+```
+
+- Bản test **fail** nếu binary WebKit hoặc dist thực sự thiếu; không fallback Chromium. Không ghi PASS WebKit cho đến khi log 20/20 xuất hiện trên đúng SHA. Bằng chứng Safari iPhone 14 Pro Max vật lý **IPH-01–IPH-10 = NOT RUN**, Web Push subscription/VAPID/push provider và Zalo OA/Ricoh thực **NOT RUN**. Không merge/deploy.
