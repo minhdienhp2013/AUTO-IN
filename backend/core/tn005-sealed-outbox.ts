@@ -136,8 +136,8 @@ export function createTn005SealedOutbox(options:{
   }
  }
  async function inspect(db:SqlConnection,outboundId:string):Promise<Row|null>{
-  const peek=(await db.query<{order_id:string}>(
-   'SELECT order_id::text AS order_id FROM core_tn005_suggested_outbox '+
+  const peek=(await db.query<{order_id:string;conversation_id:string}>(
+   'SELECT order_id::text AS order_id,conversation_id FROM core_tn005_suggested_outbox '+
    'WHERE outbound_id=$1 AND shop_id=$2 AND oa_id=$3',[outboundId,shop,oa])).rows[0];
   if(!peek)return null;
   // Lock the order even if its old advisory has disappeared after a revision.
@@ -146,6 +146,11 @@ export function createTn005SealedOutbox(options:{
    'SELECT id::text AS id FROM core_orders WHERE id=$1::uuid AND shop_id=$2 FOR UPDATE',
    [peek.order_id,shop]);
   if(locked.rows.length!==1)return null;
+  // Align every send-boundary with enqueue: order -> AI generation -> outbox.
+  // No network I/O while locks are held; stale generation cancels below.
+  await db.query(
+   'SELECT generation FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2 FOR UPDATE',
+   [shop,peek.conversation_id]);
   const row=(await db.query<Row>(
    'SELECT * FROM core_tn005_suggested_outbox WHERE outbound_id=$1 AND shop_id=$2 AND oa_id=$3 FOR UPDATE',
    [outboundId,shop,oa])).rows[0];
