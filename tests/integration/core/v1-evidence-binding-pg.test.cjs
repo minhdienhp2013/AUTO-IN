@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const path=require('node:path');
 const {randomUUID}=require('node:crypto');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../../.ai1-build/backend');
-const {OrderService}=require(path.join(root,'core/service.js'));
+const {createCoreModule}=require(path.join(root,'core/factory.js'));
 const {createVerifiedConfirmationPort}=require(path.join(root,'core/verified-confirmation-port.js'));
 const {PgStore}=require(path.join(root,'storage/database.js'));
 const {sha,canonical}=require(path.join(root,'core/model.js'));
@@ -31,6 +31,7 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
   const fakePort={async read_verified(_db,scope){
    const state=states.get(scope.order_id);
    if(!state)return null;
+   if(state.failVerifier)throw new Error('synthetic verifier unavailable');
    const sources=[{source_artifact_ref:'fixture/source.pdf',format:'pdf',size_bytes:10,
     source_sha256:sha(state.source)}];
    const body={schema:'ai0.print_evidence.v1',shop_id:scope.shop_id,order_id:scope.order_id,
@@ -42,8 +43,9 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
     printer_id:scope.plan.printer_id,printer_capability_sha256:sha(state.capability)};
    return {...body,evidence_sha256:sha(canonical(body))};
   }};
-  const A=new OrderService(new PgStore(a),()=>new Date(),fakePort);
-  const B=new OrderService(new PgStore(b),()=>new Date(),fakePort);
+  // Exercise the same factory entry that AI0 will use for product V1 wiring.
+  const A=createCoreModule({pool:a,mode:'v1',evidence:fakePort}).service;
+  const B=createCoreModule({pool:b,mode:'v1',evidence:fakePort}).service;
   const make=async(label,conversation_id)=>{
    const data={files:[{file_id:'fixture/source.pdf',copies:1,format:'pdf'}],
     settings:{paper:'A4',duplex:false,copies:1}};
@@ -76,6 +78,31 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
     assert.equal(await jobCount(id),0);
    }
   });
+  await t.test('factory-injected verifier errors fail closed at confirmation, approval and send gates',async()=>{
+   const id=await make('verifier-outage');
+   states.get(id).failVerifier=true;
+   await assert.rejects(confirm(id),error('PRINT_EVIDENCE_UNAVAILABLE'));
+   assert.equal((await a.query('SELECT count(*)::int n FROM core_confirmations WHERE order_id=$1',[id])).rows[0].n,0);
+
+   states.get(id).failVerifier=false;
+   await confirm(id);
+   states.get(id).failVerifier=true;
+   await assert.rejects(approve(id),error('PRINT_EVIDENCE_UNAVAILABLE'));
+   assert.equal((await a.query('SELECT count(*)::int n FROM core_approvals WHERE order_id=$1',[id])).rows[0].n,0);
+   assert.equal(await jobCount(id),0);
+
+   states.get(id).failVerifier=false;
+   const approved=await approve(id);
+   const lease=(await A.claim(agent,{printer_id:'RMP7000',idempotency_key:key('outage-lease')})).job;
+   assert.equal(lease.job_id,approved.job_id);
+   states.get(id).failVerifier=true;
+   await assert.rejects(B.preflight(agent,lease.job_id,{expected_revision:2,lease_token:lease.lease_token}),error('PRINT_EVIDENCE_UNAVAILABLE'));
+   await assert.rejects(B.markSending(agent,lease.job_id,{expected_revision:2,lease_token:lease.lease_token,
+    idempotency_key:key('outage-sending')}),error('PRINT_EVIDENCE_UNAVAILABLE'));
+   assert.equal((await a.query('SELECT state FROM core_print_jobs WHERE id=$1',[lease.job_id])).rows[0].state,'NOT_SENT');
+   await cancel(id);
+  });
+
   await t.test('verified OA challenge binds evidence at issue and click, stale preview cannot confirm',async()=>{
    const conv=key('verified-conversation'),oa=key('oa'),id=await make('verified-oa',conv);
    const port={store:new PgStore(b),trusted:{shop_id:shop,oa_id:oa},evidence:fakePort};
