@@ -10,6 +10,8 @@ import {asSqlPool,assertIsolatedSimulationDatabase} from '../../../backend/compo
 import {buildIntegratedApp} from '../../../backend/composition/runtime.ts';
 import {createCoreModule} from '../../../backend/core/factory.ts';
 import {createSyntheticZaloRuntime} from '../../../backend/composition/zalo-simulation.ts';
+import {createVerifiedSyntheticTn005Outbox} from '../../../backend/composition/tn005-sealed-outbox-port.ts';
+import {createSyntheticTn005SuggestedOutboxTick} from '../../../backend/jobs/tn005-suggested-outbox-dispatch.ts';
 
 const url=process.env.TEST_DATABASE_URL;
 const uuid=/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -71,7 +73,8 @@ test('TN005 Fastify trigger queues only current SUGGESTED scope; replay/skip/tim
     const suggested=await createOrder('suggested','text');
     const unknown=await createOrder('unknown','blank');
     const timeout=await createOrder('timeout','text');
-    const ids=[suggested.order_id,unknown.order_id,timeout.order_id];
+    const uncertain=await createOrder('uncertain','text');
+    const ids=[suggested.order_id,unknown.order_id,timeout.order_id,uncertain.order_id];
     const guards=async()=> (await pool.query(
       'SELECT (SELECT count(*)::int FROM core_revisions WHERE order_id=ANY($1::uuid[]) AND plan IS NOT NULL) ready_revisions,'+
       '(SELECT count(*)::int FROM core_confirmations WHERE order_id=ANY($1::uuid[])) confirmations,'+
@@ -150,6 +153,41 @@ test('TN005 Fastify trigger queues only current SUGGESTED scope; replay/skip/tim
       {revision:2,status:'QUEUED',outbound_id:revisedId}
     ],'new revision is rebound to its own advisory and never reuses stale evidence');
 
+    const ambiguous=await app.inject({method:'POST',url:endpoint(uncertain),
+      headers:uncertain.headers});
+    assert.equal(ambiguous.statusCode,200,ambiguous.body);
+    assert.equal(ambiguous.json().suggested_question_outbox.status,'queued');
+    const uncertainId=ambiguous.json().suggested_question_outbox.outbound_id;
+    assert.equal(queueCalls.length,4);
+
+    // Continue the exact HTTP-triggered rows through Core reserve and delivery.
+    // The revision-1 row must fail at dispatch; only revision 2 may reach the
+    // in-process synthetic sender. No provider or ordinary Zalo worker exists.
+    const outbox=createVerifiedSyntheticTn005Outbox({pool:sql,store:core.store,
+      artifactRoot:root,scope});
+    const delivered=[];
+    const dispatch=createSyntheticTn005SuggestedOutboxTick({pool:sql,
+      trusted:scope,core:outbox,sender:{kind:'synthetic_test',
+        async send_text(conversation,text){
+          delivered.push({conversation,text});
+          if(conversation===uncertain.conversation)throw Error('synthetic lost provider ACK');
+        }}});
+    const firstTick=await dispatch.tick();
+    assert.deepEqual(firstTick,{selected:3,sent:1,blocked:1,unknown:1});
+    assert.equal(delivered.length,2);
+    assert.equal(delivered.find(item=>item.conversation===suggested.conversation)?.text,
+      (await pool.query(
+      'SELECT body_text FROM core_tn005_suggested_outbox WHERE outbound_id=$1',
+      [revisedId])).rows[0].body_text);
+    assert.deepEqual((await pool.query('SELECT revision,status FROM '+
+      'core_tn005_suggested_outbox WHERE order_id=$1 ORDER BY revision',
+      [suggested.order_id])).rows,[
+      {revision:1,status:'CANCELLED'},{revision:2,status:'SENT'}]);
+    assert.equal((await pool.query('SELECT status FROM core_tn005_suggested_outbox '+
+      'WHERE outbound_id=$1',[uncertainId])).rows[0].status,'UNKNOWN');
+    assert.deepEqual(await dispatch.tick(),{selected:0,sent:0,blocked:0,unknown:0});
+    assert.equal(delivered.length,2,'a subsequent tick never resends SENT, UNKNOWN or stale rows');
+
     const fakePython=join(tmp,'timeout-python');
     await writeFile(fakePython,'#!/bin/sh\nsleep 20\n',{mode:0o700});
     await chmod(fakePython,0o700);
@@ -157,7 +195,7 @@ test('TN005 Fastify trigger queues only current SUGGESTED scope; replay/skip/tim
     const timed=await app.inject({method:'POST',url:endpoint(timeout),headers:timeout.headers});
     assert.equal(timed.statusCode,503,timed.body);
     assert.equal(timed.json().error.code,'CLASSIFIER_TIMEOUT');
-    assert.equal(queueCalls.length,3,'classifier timeout never reaches AI2 queue');
+    assert.equal(queueCalls.length,4,'classifier timeout never reaches AI2 queue');
     assert.equal((await pool.query('SELECT count(*)::int n FROM ai0_first_page_suggestions '+
       'WHERE order_id=$1',[timeout.order_id])).rows[0].n,0);
     assert.equal((await pool.query('SELECT count(*)::int n FROM core_tn005_suggested_outbox '+
