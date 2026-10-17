@@ -66,8 +66,10 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
   await t.test('confirmation pins evidence; source/manifest/settings/preview drift blocks approval',async()=>{
    for(const part of ['source','manifest','settings','preview']){
     const id=await make('before-approve-'+part);await confirm(id);
+    const column=(await a.query("SELECT evidence_sha256 FROM core_confirmations WHERE order_id=$1 AND kind='request'",[id])).rows[0];
+    assert.match(column.evidence_sha256,/^[0-9a-f]{64}$/);
     const audit=(await a.query("SELECT details FROM core_audit WHERE action='customer.confirmed' AND order_id=$1",[id])).rows[0];
-    assert.match(audit.details.evidence_sha256,/^[0-9a-f]{64}$/);
+    assert.equal(audit.details.evidence_sha256,column.evidence_sha256);
     states.get(id)[part]+='-changed';
     assert.equal((await A.getOrder(staff,id)).current.request_confirmed,false);
     await assert.rejects(approve(id),error('STALE_PRINT_EVIDENCE'));
@@ -81,6 +83,7 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    const hash=(await a.query('SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=2',[id])).rows[0].request_hash;
    const target={order_id:id,expected_revision:2,request_hash:hash,kind:'request',expected_generation:0};
    const initial=await challengePort.issue_challenge(target);assert.equal(initial.status,'issued');
+   assert.match((await a.query('SELECT evidence_sha256 FROM core_confirmation_challenges WHERE id=$1',[initial.challenge_id])).rows[0].evidence_sha256,/^[0-9a-f]{64}$/);
    states.get(id).preview+='-preview-rerendered';
    const inbound=async ch=>{
     const event=key('postback');
@@ -98,10 +101,13 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    const event=await inbound(newer);
    const accepted=await challengePort.confirm_verified_event({...target,event_id:event});
    assert.equal(accepted.status,'confirmed');
+   const acceptedProof=(await a.query('SELECT evidence_sha256 FROM core_confirmations WHERE id=$1',[accepted.confirmation_id])).rows[0].evidence_sha256;
+   assert.match(acceptedProof,/^[0-9a-f]{64}$/);
    const audit=(await a.query("SELECT details FROM core_audit WHERE order_id=$1 AND action='customer.confirmed_verified_event'",[id])).rows[0];
    assert.match(audit.details.evidence_sha256,/^[0-9a-f]{64}$/);
    const approved=await A.approve(staff,id,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('approve-verified')});
    assert.ok(approved.job_id);
+   assert.equal((await a.query('SELECT evidence_sha256 FROM core_print_jobs WHERE id=$1',[approved.job_id])).rows[0].evidence_sha256,acceptedProof);
    await cancel(id);
   });
   await t.test('two pools compete on same digest, exactly one approval/job',async()=>{
@@ -110,6 +116,9 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    assert.equal(rs.filter(x=>x.status==='fulfilled').length,1);
    assert.equal(rs.filter(x=>x.status==='rejected'&&x.reason.code==='ALREADY_APPROVED').length,1);
    assert.equal(await jobCount(id),1);
+   const binding=(await a.query(
+    'SELECT a.evidence_sha256 AS approved,j.evidence_sha256 AS job FROM core_approvals a JOIN core_print_jobs j ON j.approval_id=a.id WHERE j.order_id=$1',[id])).rows[0];
+   assert.match(binding.approved,/^[0-9a-f]{64}$/);assert.equal(binding.approved,binding.job);
    const audit=(await a.query("SELECT details FROM core_audit WHERE action='print.approved' AND order_id=$1",[id])).rows[0];
    assert.match(audit.details.evidence_sha256,/^[0-9a-f]{64}$/);
    await cancel(id);
