@@ -147,7 +147,7 @@ def _text_pdf(lines, font_path, case):
             decoy.insert_font(fontname="TN021", fontfile=str(font_path))
             for j, text in enumerate(["Đề thi Toán", "Thời gian: 60 phút", "Câu 1: Tính toán"]):
                 decoy.insert_text((42, 65 + j*35), text, fontname="TN021", fontsize=13)
-        return document.tobytes(garbage=4, deflate=True)
+        return document.tobytes(garbage=4, deflate=True, no_new_id=True)
 
 
 def materialize(case, font_path):
@@ -166,5 +166,5 @@ def materialize(case, font_path):
             with fitz.open() as document:
                 page = document.new_page(width=595, height=842)
                 page.insert_image(page.rect, stream=png_bytes)
-                payload = document.tobytes(garbage=4, deflate=True)
+                payload = document.tobytes(garbage=4, deflate=True, no_new_id=True)
     return payload, hashlib.sha256(payload).hexdigest()
