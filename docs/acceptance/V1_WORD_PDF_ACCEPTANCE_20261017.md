@@ -1,6 +1,6 @@
 # AUTO-IN — V1-ACCEPTANCE-01 | Word/PDF-first acceptance gate
 
-**Status: PREPARED / product candidate NOT RUN.** This is a test-first AI5 plan and
+**Status: MATRIX/HARNESS UPDATED (27 cases); all product results NOT RUN.** This is a test-first AI5 plan and
 independent verification harness, **not V1 release authorization**.
 
 ## Immutable source and ownership
@@ -9,8 +9,9 @@ independent verification harness, **not V1 release authorization**.
   \`0673460af71205986b901a21fc7724dbea23c991\`; main at task start
   \`cb2be7a7b84d689dbe6c2c773192f111897c4063\`.
 - Owner's Word/PDF-first criteria are recorded in AI0 **Draft PR150**,
-  \`docs/architecture/V1_WORD_PDF_SCOPE_20261017.md\`, HEAD
-  \`6a5c06126270fdd02155abe0cbd6070c423d2ec7\`.
+  \`docs/architecture/V1_WORD_PDF_SCOPE_20261017.md\` and
+  \`docs/architecture/V1_CORE_AGENT_EVIDENCE_CONTRACT_20261017.md\`, HEAD
+  \`05cf967be45d084a0e288efbdbaa3e2a308afc4f\`.
   **This source document is not present on PR144's original SHA**; read from
   PR150 only. AI5 does not overwrite or amend that contract.
 - PR149 OCR benchmark remains **Draft/Phase 2**. Neither image OCR nor automatic
@@ -24,7 +25,7 @@ independent verification harness, **not V1 release authorization**.
 ## 1. Locked V1 scenario matrix
 
 \`tests/fixtures/public/v1-word-pdf/matrix.json\` is the machine-readable
-24-case manifest. All rows start with \`observed=NOT_RUN\` deliberately.
+27-case manifest. All rows start with \`observed=NOT_RUN\` deliberately.
 
 | Case IDs | Gate | Mandatory observation for final integrated candidate |
 | --- | --- | --- |
@@ -41,12 +42,26 @@ independent verification harness, **not V1 release authorization**.
 | V1-019–021 | Color/Excel/ZIP>5 | No silent black/white conversion or unsupported auto-print; six real ZIP document members trigger manual review |
 | V1-022–023 | Unverified Word/PDF | Missing Word COM/font/layout, untrusted preview/capability, or unverifiable page/sheet plan => NEEDS_HUMAN/manual hold, no optimistic approval/print |
 | V1-024 | Pending inbound/approval race | New inbound/revision/source during approval must produce 409/rebind and 0 jobs for old tuple |
+| V1-025 | Manifest hash changed at **same manifest_ref** | Keep source byte/path, order, revision and settings fixed; change manifest bytes at same path → new manifest_sha256 and evidence_sha256. Reject previous consent/approval/claim/preflight/send; 0 new print/driver calls |
+| V1-026 | Preview hash changed at **same preview path** | Keep native DOCX byte/path and preview index/path/byte length fixed; change preview bytes/hash → new evidence_sha256. Reject old consent/approval/ticket with 0 print |
+| V1-027 | Renderer hash changed at **same executable path** | Same source, manifest/preview paths, settings, revision; trusted renderer identity/version digest changes → new evidence_sha256, force stale/NEEDS_HUMAN and no resend |
+
 
 ### Required evidence tuple and authority
 
+Canonical AI0 contract is **PrintEvidenceV1**, schema \`ai0.print_evidence.v1\`:
+trusted ordered \`sources[{source_artifact_ref,format,size_bytes,source_sha256}]\`,
+\`source_set_sha256\`, \`settings_sha256\`, \`manifest_ref\`, \`manifest_sha256\`,
+\`previews[{index,bytes,sha256}]\`, \`renderer_sha256\`, \`plan_sha256\`,
+\`printer_id\`, \`printer_capability_sha256\` and \`evidence_sha256\`.
+\`evidence_sha256\` hashes canonical UTF-8 JSON of all other snapshot fields.
+Hashes are lower-case 64-character SHA-256 of authoritative bytes/identity,
+not browser/AI-supplied values. **A path staying the same does not authorize
+reusing an old confirmation or print ticket after a digest changes.**
+
 For each order, record and compare
 \`shop_id/order_id/revision/request_hash/source_sha256(or ordered source list)/
-settings_digest/manifest_sha256/preview_sha256/quote_revision/approved_revision/
+settings_sha256/manifest_sha256/preview_sha256/quote_revision/approved_revision/
 printer_id/driver_capability_digest/idempotency_key\` at the appropriate
 boundaries. These names are acceptance **evidence requirements**, **not**
 a unilateral instruction to add product columns; AI0 must settle Core↔AI3↔agent
@@ -64,6 +79,12 @@ gates cannot PASS from an in-memory plan or synthetic principal.
   DOCX OOXML, PNG/JPEG, XLSX sentinel and ZIP of 6 PDF documents, pins expected
   ids/outcomes, checks signatures/distinct SHA, emits \`V1_FIXTURE_JSON\` and TAP.
   **PASS means fixture only; product NOT RUN**. Synthetic JPEG is not a CCCD.
+- \`fixture_gate.py\` additionally builds **3 synthetic before/after
+  PrintEvidenceV1 snapshots**. Each pair changes exactly one of the
+  manifest/preview/renderer digest while holding paths, source bytes,
+  source-set digest, settings digest, request hash and revision fixed.
+  An evidence-digest change here is a **fixture assertion**, NOT proof that
+  Core rejects an old customer's confirmation.
 - \`test_fixture_gate.py\`: pytest negative controls for source mutation,
   settings digest, document structure and manual routing intent, **not** product.
 - \`core_baseline_pg.mjs\`: guarded real-Core PostgreSQL checks for
@@ -74,9 +95,14 @@ gates cannot PASS from an in-memory plan or synthetic principal.
   \`AUTOIN_ALLOW_PG_ACCEPTANCE=YES_ISOLATED_TEST_DB\` and localhost
   \`TEST_DATABASE_URL=.../autoin_test_*\`. Still **not** source-byte verification
   or AI2 routing, verified provider confirmation, native Word or printer agent.
+- \`audit_candidate.py\`: V1-025–027 demand original authoritative
+  before/after PrintEvidenceV1 evidence with canonical SHA and **identical
+  storage locators**; inspect proof that confirmation, approval, claim,
+  preflight and mark-sending were blocked and that SQL guard/driver send
+  counters did not increase. A digest-only synthetic JSON is insufficient.
 - \`audit_candidate.py\`: future fail-closed ZIP SHA256/exact Git checkout/
   exact unified job log/\`product_commit_sha\`/TAP+JSON equality and
-  **24 individually recorded** product observation/guard checks.
+  **27 individually recorded** product observation/guard checks.
   A synthetically fabricated report or generic green CI is **not enough**:
   AI5 independently checks authoritative PG/HTTP/agent traces before declaring
   any candidate PASS. The instrument cannot attest raw device results alone.
@@ -103,7 +129,7 @@ node --import tsx --test tests/acceptance/v1-word-pdf/core_baseline_pg.mjs
 
 Do NOT execute on a production DB, production Zalo OA, Windows queue or Ricoh.
 For final V1 product evidence AI0 must bind a new exact candidate SHA, run all
-24 scenarios against **the actual integrated product** (not just the Core
+27 scenarios against **the actual integrated product** (not just the Core
 baseline), archive artifact \`v1-word-pdf.json\` and \`v1-word-pdf.tap\`
 with original HTTP/SQL logs, job ID, exact checked-out SHA and SHA256 ZIP digest.
 AI5 then runs:
@@ -120,11 +146,17 @@ A **PASS audit consistency** does not alone prove the underlying business
 outcomes; AI5 must inspect the original, scope-bound evidence. Missing tests
 are explicitly **NOT RUN**, not silent PASS/SKIP.
 
+**Change control (18/10/2026):** Matrix now includes V1-025–027;
+their \`observed=NOT_RUN\` and **all 27 product scenarios remain NOT RUN**.
+No exact integrated candidate SHA or product JSON/TAP/ZIP exists yet for these
+new contract scenarios. Prior PR144/PR153 general CI is not acceptance evidence
+for the Core↔AI3↔agent manifest/preview/renderer hash contract.
+
 ## 3. Execution status for THIS handoff
 
 | Layer | Status | Limits |
 | --- | --- | --- |
-| Manifest/harness creation | **DONE** | Test-first, 24 expected cases, all product observed NOT RUN |
+| Manifest/harness creation | **DONE** | Test-first, 27 expected cases, all product observed NOT RUN |
 | Fixture pytest / Python compile | **NOT RUN on exact Git checkout** | Local session lacks complete AUTO-IN repo backing; exact branch CI/test environment required |
 | npm run check | **BLOCKED in local session** | No repository package.json locally; local Node 22, repo requires Node ≥24.19; do not confuse ENOENT with product failure |
 | UI Chromium | **NOT RUN on this candidate** | Chromium binary present locally, but no compiled AUTO-IN web/dist checkout; older PR144 green CI does not test V1 changes |
