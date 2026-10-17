@@ -94,3 +94,41 @@ def test_no_live_or_unsafe_operation_in_synthetic_generator():
     assert "subprocess.run(" not in script
     assert "raw9100" not in script.lower()
     assert "zalo.official" not in script.lower()
+
+
+def test_exact_head_auditor_rejects_fixture_only_evidence(tmp_path):
+    import hashlib
+    import json
+    spec = importlib.util.spec_from_file_location(
+        "v1_candidate_auditor", MODULE.with_name("audit_candidate.py"))
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    candidate = gate.manifest()["source_candidate_sha"]
+    fake_report = gate.fixture_result()  # Intentionally NOT a product run.
+    payload = tmp_path / "fixture-only.zip"
+    with zipfile.ZipFile(payload, "w") as out:
+        out.writestr("v1-word-pdf.json", json.dumps(fake_report))
+        out.writestr("v1-word-pdf.tap", "TAP version 13\nok 1 - fixture only\n1..1\n")
+    log = tmp_path / "job.log"
+    log.write_text(f"EXACT_V1_CANDIDATE_SHA={candidate}\n", encoding="utf-8")
+    digest = hashlib.sha256(payload.read_bytes()).hexdigest()
+    with pytest.raises(AssertionError):
+        verifier.evaluate(payload, candidate, digest, log, candidate)
+
+
+def test_auditor_rejects_wrong_checkout_even_when_zip_digest_matches(tmp_path):
+    import hashlib
+    import json
+    spec = importlib.util.spec_from_file_location(
+        "v1_candidate_auditor", MODULE.with_name("audit_candidate.py"))
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    candidate = gate.manifest()["source_candidate_sha"]
+    artifact = tmp_path / "no-product.zip"
+    with zipfile.ZipFile(artifact, "w") as z:
+        z.writestr("v1-word-pdf.json", json.dumps({}))
+    log = tmp_path / "job.log"
+    log.write_text(f"EXACT_V1_CANDIDATE_SHA={candidate}\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match="CHECKOUT_SHA_MISMATCH"):
+        verifier.evaluate(artifact, candidate,
+            hashlib.sha256(artifact.read_bytes()).hexdigest(), log, "0"*40)
