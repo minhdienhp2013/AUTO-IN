@@ -22,14 +22,14 @@ export class OrderService {
    'SELECT kind,quote_revision,created_at FROM core_confirmations '+
    'WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND customer_id=$4 ORDER BY created_at,id',
    [o.id,rev.revision,rev.request_hash,o.customer_id]);
-  const request=rows.rows.find(c=>c.kind==='request');
-  if(!request)throw new DomainError('STALE_CUSTOMER_CONFIRMATION','Thiếu xác nhận khách đúng đơn/hash',409);
+  const requests=rows.rows.filter(c=>c.kind==='request');
+  if(!requests.length)throw new DomainError('STALE_CUSTOMER_CONFIRMATION','Thiếu xác nhận khách đúng đơn/hash',409);
   // A first quote can follow request confirmation; a repricing invalidates it.
   if(q && q.quote_revision>1) {
    const latest=(await db.query<{created_at:Date}>(
     'SELECT created_at FROM core_quotes WHERE order_id=$1 AND quote_revision=$2',
     [o.id,q.quote_revision])).rows[0];
-   if(!latest||new Date(request.created_at)<new Date(latest.created_at))
+   if(!latest||!requests.some(r=>new Date(r.created_at)>=new Date(latest.created_at)))
     throw new DomainError('STALE_CUSTOMER_CONFIRMATION','Báo giá đã sửa, cần xác nhận lại yêu cầu',409);
   }
   if(rev.plan && (rev.plan.physical_sheets>150||Boolean(q?.significant_cost)) &&
@@ -278,11 +278,18 @@ export class OrderService {
    }
    const rev=await this.revision(db,o);this.assertRevisionBinding(rev);
    // Keep the FIRST valid customer confirmation: retries/duplicate messages must not delay queue position.
-   const confirmation=await db.query<{confirmed_at:Date|null}>("SELECT MIN(created_at) AS confirmed_at FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND kind='request'",[id,rev.revision,rev.request_hash]);
+   const q=await this.quote(db,id);
+   // The first confirmation counts only until a later quote revision changes.
+   const confirmation=await db.query<{confirmed_at:Date|null}>(
+    "SELECT MIN(c.created_at) AS confirmed_at FROM core_confirmations c "+
+    "WHERE c.order_id=$1 AND c.revision=$2 AND c.request_hash=$3 AND c.kind='request' "+
+    "AND c.customer_id=$4 AND ($5::int IS NULL OR c.created_at >= "+
+    "(SELECT created_at FROM core_quotes WHERE order_id=$1 AND quote_revision=$5))",
+    [id,rev.revision,rev.request_hash,o.customer_id,q&&q.quote_revision>1?q.quote_revision:null]);
    const requestConfirmedAt=confirmation.rows[0]?.confirmed_at;
    if(!requestConfirmedAt)throw new DomainError('CUSTOMER_NOT_CONFIRMED','Khách chưa xác nhận phiên bản hiện tại');
    let queueConfirmedAt=new Date(requestConfirmedAt);
-   const q=await this.quote(db,id);const needsPrice=rev.plan.physical_sheets>150||Boolean(q?.significant_cost);
+   const needsPrice=rev.plan.physical_sheets>150||Boolean(q?.significant_cost);
    if(needsPrice){
     if(!q||q.quote_revision!==input.quote_revision)throw new DomainError('QUOTE_REQUIRED','Phải có báo giá nhân viên nhập và đúng phiên bản giá');
     const approvedQuote=await db.query<{confirmed_at:Date|null}>("SELECT MIN(created_at) AS confirmed_at FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND kind='quote' AND quote_revision=$4",[id,rev.revision,rev.request_hash,q.quote_revision]);
