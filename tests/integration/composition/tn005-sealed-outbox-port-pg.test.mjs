@@ -11,6 +11,7 @@ import {createVerifiedSyntheticTn005Outbox} from '../../../backend/composition/t
 import {buildIntegratedApp} from '../../../backend/composition/runtime.ts';
 import {createCoreModule} from '../../../backend/core/factory.ts';
 import {createSyntheticZaloRuntime} from '../../../backend/composition/zalo-simulation.ts';
+import {formatMissingPrintChoicesQuestion,SAFE_FIRST_PAGE_QUESTION} from '../../../backend/conversation/first-page-question.ts';
 
 const url=process.env.TEST_DATABASE_URL;
 const code=(expected)=>error=>error?.code===expected;
@@ -84,10 +85,11 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
       pool:sql,store:core.store,artifactRoot:root,scope
     });
     let providerCalls=0;
+    let expectedCoreBody;
     const fakeSender={async send_text(conversation,text){
       providerCalls++;
       assert.equal(conversation,valid.conversation);
-      assert.equal(text,valid.input.text);
+      assert.equal(text,expectedCoreBody);
     }};
     const valid=await createOrder('valid');
     const handed=await createOrder('handover');
@@ -135,6 +137,14 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
     // deterministic idempotency key and cannot create duplicate TN005 rows.
     assert.deepEqual(await outbox.enqueue(valid.input),
       {status:'queued',outbound_id:valid.input.outbound_id});
+    const missingChoicesQuestion=formatMissingPrintChoicesQuestion(['copies','paper','duplex']);
+    assert.ok(missingChoicesQuestion);
+    expectedCoreBody=valid.input.text.slice(0,-SAFE_FIRST_PAGE_QUESTION.length)+missingChoicesQuestion;
+    assert.notEqual(expectedCoreBody,valid.input.text,
+      'Core derives only the fields still missing from customer evidence');
+    assert.equal((await pool.query('SELECT body_text FROM core_tn005_suggested_outbox '+
+      'WHERE outbound_id=$1',[valid.input.outbound_id])).rows[0]?.body_text,expectedCoreBody,
+      'the durable advisory body is the current Core-derived question');
     const lease=await outbox.reserve(valid.input.outbound_id);
     assert.ok(lease);
     assert.equal(await outbox.deliverReserved(lease,fakeSender),'sent');
