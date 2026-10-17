@@ -51,7 +51,8 @@ def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
     assert report.get("mode") in ("isolated_simulation","staging")
     assert report.get("oa_real") is False and report.get("physical_print") is False
     assert "TAP version 13" in tap and "1..1" in tap
-    sentinels=[line[13:] for line in tap.splitlines() if line.startswith("V1_ACCEPT_JSON ")]
+    sentinels=[line[len("V1_ACCEPT_JSON "):] for line in tap.splitlines()
+               if line.startswith("V1_ACCEPT_JSON ")]
     assert len(sentinels)==1 and json.loads(sentinels[0])==report, "TAP_JSON_MISMATCH"
     matrix=json.loads(MANIFEST.read_text(encoding="utf-8"))
     expected={c["id"]:c for c in matrix["cases"]}
