@@ -46,7 +46,9 @@ export function createTn005SealedOutbox(options:{
  const {store,verify_sealed_source}=options;
  const shop=options.trusted.shop_id,oa=options.trusted.oa_id;
  const checkInput=(i:Tn005EnqueueRequest)=>{
-  if(!i||!uuid(i.order_id)||!uuid(i.outbound_id)||!bounded(i.idempotency_key,128)||
+  if(!i||Object.keys(i).sort().join(',')!==
+    'generation,idempotency_key,order_id,outbound_id,request_hash,revision,source_sha256,text'||
+     !uuid(i.order_id)||!uuid(i.outbound_id)||!bounded(i.idempotency_key,128)||
      !Number.isSafeInteger(i.revision)||i.revision<1||
      !Number.isSafeInteger(i.generation)||i.generation<0||
      !digest(i.request_hash)||!digest(i.source_sha256)||
@@ -101,7 +103,7 @@ export function createTn005SealedOutbox(options:{
  }
  async function enqueue(i:Tn005EnqueueRequest):Promise<{status:'queued';outbound_id:string}> {
   checkInput(i);
-  return store.tx(async db=>{
+  try{return await store.tx(async db=>{
    const checked=await current(db,i.order_id,i.revision,i.generation,i.request_hash,i.source_sha256,i.text);
    const existing=(await db.query<Row>(
     'SELECT * FROM core_tn005_suggested_outbox WHERE outbound_id=$1 FOR UPDATE',[i.outbound_id])).rows[0];
@@ -127,7 +129,11 @@ export function createTn005SealedOutbox(options:{
      i.source_sha256,checked.src.event_id,checked.src.conversation_id,
      checked.src.customer_id,checked.text,i.idempotency_key]);
    return {status:'queued',outbound_id:i.outbound_id};
-  });
+  });}catch(error){
+   // Concurrent key/order conflicts are semantic 409, never raw PostgreSQL 23505.
+   if((error as {code?:unknown})?.code==='23505')return denied('TN005_IDEMPOTENCY_CONFLICT');
+   throw error;
+  }
  }
  async function inspect(db:SqlConnection,outboundId:string):Promise<Row|null>{
   const peek=(await db.query<{order_id:string}>(
