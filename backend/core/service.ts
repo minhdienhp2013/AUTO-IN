@@ -547,16 +547,32 @@ export class OrderService {
    const approvals=await db.query<{id:string;revision:number;request_hash:string;quote_revision:number|null;actor_id:string;created_at:Date;deposit_short_vnd:string|number}>(
     'SELECT id,revision,request_hash,quote_revision,actor_id,created_at,deposit_short_vnd FROM core_approvals WHERE order_id=$1 AND revision=$2 AND request_hash=$3 ORDER BY created_at DESC',[id,current.revision,current.request_hash]);
    let verifiedPlan:PrintPlan|null=null;
-   if(current.plan){try{assertPlan(current.plan,current.request_hash);verifiedPlan=current.plan;}catch{verifiedPlan=null;}}
+   if(current.plan){try{
+    if(sha(canonical(current.request_data))!==current.request_hash)
+     throw new DomainError('STALE_FILE_BINDING','Request/hash mismatch',409);
+    assertPlan(current.plan,current.request_hash);verifiedPlan=current.plan;
+   }catch{verifiedPlan=null;}}
    const needsPrice=Boolean(verifiedPlan && (verifiedPlan.physical_sheets>150 || quote?.significant_cost));
-   const requestConfirmation=confirmations.rows.find(c=>c.kind==='request')??null;
+   const quoteCutoff=quote&&quote.quote_revision>1
+    ? (await db.query<{created_at:Date}>('SELECT created_at FROM core_quotes WHERE order_id=$1 AND quote_revision=$2',
+      [id,quote.quote_revision])).rows[0]?.created_at : null;
+   const requestConfirmation=confirmations.rows.find(c=>c.kind==='request' && c.customer_id===o.customer_id &&
+    (!quote||quote.quote_revision<=1||(quoteCutoff && new Date(c.created_at)>=new Date(quoteCutoff))))??null;
    const priceConfirmation=quote?confirmations.rows.find(c=>c.kind==='quote'&&c.quote_revision===quote.quote_revision)??null:null;
    // Readiness facts are backend-derived for THIS revision, not any earlier request/quote.
    const existingActiveJob=jobs.rows.find(j=>j.revision===current.revision&&j.request_hash===current.request_hash&&!j.cancelled_at);
    const matchedApproval=existingActiveJob?approvals.rows.find(a=>a.id===existingActiveJob.approval_id&&( !needsPrice||a.quote_revision===quote?.quote_revision))??null:null;
    const quoteMatches=(matchedApproval?.quote_revision??null)===(quote?.quote_revision??null);
+   const auditFingerprint=matchedApproval&&existingActiveJob?(
+    await db.query<{details:{plan_sha256?:string;quote_sha256?:string|null}}>(
+     "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 AND action='print.approved' "+
+     "AND details->>'approval_id'=$3 AND details->>'job_id'=$4 ORDER BY created_at DESC LIMIT 1",
+     [o.shop_id,id,matchedApproval.id,existingActiveJob.id])).rows[0]?.details:null;
+   const fingerprintMatches=Boolean(verifiedPlan&&auditFingerprint &&
+    auditFingerprint.plan_sha256===sha(canonical(verifiedPlan)) &&
+    (auditFingerprint.quote_sha256??null)===(quote?this.quoteFingerprint(quote):null));
    const approval=verifiedPlan&&requestConfirmation&&(!needsPrice||priceConfirmation)&&
-    quoteMatches&&existingActiveJob?.printer_id===verifiedPlan.printer_id?matchedApproval:null;
+    quoteMatches&&fingerprintMatches&&existingActiveJob?.printer_id===verifiedPlan.printer_id?matchedApproval:null;
    const jobRows=jobs.rows.map(j=>{
     const rev=revisions.rows.find(x=>x.revision===j.revision);
     const planned=rev?.plan && rev.plan.ready && rev.plan.request_hash===j.request_hash ? rev.plan.physical_sheets : null;
