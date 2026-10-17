@@ -53,7 +53,7 @@ export class OrderService {
    throw new DomainError('STALE_APPROVAL','Duyệt không còn khớp báo giá hiện hành',409);
   const binding=(await db.query<{details:{plan_sha256?:string;quote_sha256?:string|null}}>(
    "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 "+
-   "AND action='print.approved' AND details->>'approval_id'=$3 "+
+   "AND action IN ('print.approved','job.reprint_owner_approved') AND details->>'approval_id'=$3 "+
    "AND details->>'job_id'=$4 ORDER BY created_at DESC LIMIT 1",
    [o.shop_id,o.id,j.approval_id,j.id])).rows[0]?.details;
   if(!binding || binding.plan_sha256!==sha(canonical(rev.plan)) ||
@@ -469,9 +469,14 @@ export class OrderService {
    const original=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 AND order_id=$2 FOR UPDATE',[input.original_job_id,id]);
    if(original.state==='NOT_SENT'||original.state==='SENDING'||original.state==='SIMULATED_DONE')throw new DomainError('NOT_REPRINTABLE','Không được in lại lệnh chưa gửi/mô phỏng',409);
    const rev=await this.revision(db,o);if(original.revision!==o.active_revision||original.request_hash!==rev.request_hash)throw new DomainError('STALE_REVISION','In lại bản cũ cần đối soát thủ công',409);
+    await this.assertJobBinding(db,o,original,rev);
    if(!original.confirmed_at)throw new DomainError('QUEUE_CONFIRMATION_MISSING','Lệnh cũ thiếu xác nhận khách để xếp hàng; phải đối soát',409);
    const job_id=newId();await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,original_job_id,authorized_reprint_by,confirmed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[job_id,id,rev.revision,rev.request_hash,original.approval_id,original.printer_id,original.id,p.id,original.confirmed_at??null]);
-   await this.audit(db,p,'job.reprint_owner_approved',id,{job_id,original_job_id:original.id,reason:input.reason});
+   const currentQuote=await this.quote(db,id);
+   await this.audit(db,p,'job.reprint_owner_approved',id,{job_id,original_job_id:original.id,
+    approval_id:original.approval_id,reason:input.reason,
+    plan_sha256:sha(canonical(rev.plan)),
+    quote_sha256:currentQuote?this.quoteFingerprint(currentQuote):null});
    return {job_id,order_id:id,requires_agent_claim:true};
   }));
  }
