@@ -4,10 +4,13 @@ import {handleZaloWebhook} from './handler.ts';
 import {PostgresInboundEventRepository} from './postgres-events.ts';
 import {CoreConversationGate} from './core-gate.ts';
 import {PostgresConversationQueue,PostgresOutboundRepository,type PgTransactions} from './postgres-durable.ts';
-import {ConversationProcessor,type OrderDraftPort,type ClassifierPort,type DocumentFactsPort} from '../../conversation/processor.ts';
+import {ConversationProcessor,type FirstPageSuggestionIntegration,
+  type OrderDraftPort,type ClassifierPort,type DocumentFactsPort} from '../../conversation/processor.ts';
 import {DurableConversationWorker} from '../../conversation/durable-worker.ts';
 import {OutboundDispatcher,type ReplySchedule,type ZaloSender} from '../../conversation/gate.ts';
 import {PostgresConfirmationCandidates,type VerifiedChallengePort} from './confirmation-candidates.ts';
+import type {FirstPageQuestionReadPort,FirstPageQuestionScope} from '../../conversation/first-page-question.ts';
+import type {FirstPageCoreCasPort} from '../../conversation/first-page-core-cas.ts';
 
 /** Safe simulation entry. AI0 supplies a real PG transaction runner and a trusted
  * OA->shop mapping; neither is derived from unverified webhook payload/header.
@@ -32,6 +35,11 @@ export interface ZaloPipelineOptions {
   classifier?: ClassifierPort;
   /** Trusted server-side challenge resolver; absent means PENDING/NEEDS_HUMAN. */
   confirmation_challenges?: VerifiedChallengePort;
+  /** Optional trusted internal TN005 ports. Neither is derived from webhook
+   * input; absent/incomplete wiring leaves the suggestion path blocked.
+   */
+  first_page_question_reader?: FirstPageQuestionReadPort;
+  first_page_core_cas?: FirstPageCoreCasPort;
   /** Without this, inbound webhook is always 403 and outbound is never sent. */
   synthetic_provider?: SyntheticProvider;
   mode?: 'simulation' | 'controlled_test' | 'production' | 'safe';
@@ -56,13 +64,23 @@ export function createZaloPipeline(options:ZaloPipelineOptions) {
     new PostgresInboundEventRepository(options.db) as InboundEventRepository);
   const confirmations=new PostgresConfirmationCandidates(options.db,
     options.trusted_shop_id,options.trusted_oa_id,options.confirmation_challenges);
+  const firstPage:FirstPageSuggestionIntegration|undefined=
+    options.first_page_question_reader&&options.first_page_core_cas
+      ?{trusted_shop_id:options.trusted_shop_id,trusted_oa_id:options.trusted_oa_id,
+        questions:options.first_page_question_reader,core:options.first_page_core_cas}
+      :undefined;
   const processor=new ConversationProcessor(gate,options.documents,options.orders,outbox,
-    options.classifier,confirmations);
+    options.classifier,confirmations,firstPage);
   const worker=new DurableConversationWorker(queue,processor);
   const dispatcher=provider?.sender ? new OutboundDispatcher(gate,outbox,provider.sender,
     options.clock,options.schedule):undefined;
   return {
     ingress,gate,queue,outbox,confirmations,processor,worker,
+    /** Composition-only, trusted-scope path; no HTTP/OA route is registered. */
+    queue_first_page_suggested_question(input:{outbound_id:string;
+      scope:Readonly<FirstPageQuestionScope>}) {
+      return processor.queueFirstPageSuggestedQuestion(input);
+    },
     receive_webhook(raw:Uint8Array,headers:Readonly<Record<string,string>>) {
       return handleZaloWebhook(ingress,raw,headers);
     },
