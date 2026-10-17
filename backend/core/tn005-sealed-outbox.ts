@@ -1,7 +1,10 @@
 import {randomBytes,createHash} from 'node:crypto';
 import {DomainError,dbSafeInteger,canonical,sha} from './model.js';
 import type {PgStore,SqlConnection} from '../storage/database.js';
-import {formatBoundFirstPageQuestion} from '../conversation/first-page-question.js';
+import {formatBoundFirstPageQuestion,formatMissingPrintChoicesQuestion,
+  SAFE_FIRST_PAGE_QUESTION,type FirstPageMissingPrintChoice} from '../conversation/first-page-question.js';
+import {CUSTOMER_PRINT_CHOICES_SCHEMA} from './customer-print-choice-port.js';
+import {parsePrintSetting,PRINT_SETTING_PARSER_VERSION,type PrintSetting} from './order-supplement-port.js';
 
 /** Only AI0's server-side sealed-file verifier can satisfy this required Port.
  * A boolean in AI2 intent, request JSON, or client metadata is NOT evidence.
@@ -30,6 +33,64 @@ type Source={shop_id:string;oa_id:string;order_id:string;active_revision:number;
  customer_id:string;conversation_id:string|null;event_id:string;
  request_hash:string;request_data:unknown;source_sha256:string;artifact_ref:string;
  advisory_request_hash:string;advisory_sha256:string;metadata:unknown;mode:string};
+type ChoiceField='copies'|'paper_size'|'duplex';
+type ChoiceEvidenceRow={order_id:string;revision:number;shop_id:string;oa_id:string;
+ customer_id:string;conversation_id:string;request_hash:string;source_sha256:string;
+ source_event_id:string;field:string;value:unknown;origin:string;event_id:string;
+ event_revision:number;parser_version:string;review_shop_id:string;review_revision:number;
+ event_customer_id:string;event_conversation_id:string;event_kind:string;event_text:string|null};
+const choiceSchema=CUSTOMER_PRINT_CHOICES_SCHEMA;
+const choiceFieldOrder:readonly ChoiceField[]=['copies','paper_size','duplex'];
+const isRecord=(value:unknown):value is Record<string,unknown>=>
+ value!==null&&typeof value==='object'&&!Array.isArray(value);
+const choiceForPrintSetting=(setting:PrintSetting):{field:ChoiceField;value:unknown}=>{
+ if('copies' in setting)return {field:'copies',value:setting.copies};
+ if('paper_size' in setting)return {field:'paper_size',value:setting.paper_size};
+ return {field:'duplex',value:setting.duplex};
+};
+function currentRevisionChoiceFields(data:unknown,rows:ChoiceEvidenceRow[],scope:{shop:string;oa:string;
+ customer:string;conversation:string;order:string;revision:number;requestHash:string;sourceHash:string;sourceEvent:string}):readonly FirstPageMissingPrintChoice[]{
+ const sourceObject=isRecord(data)?data:null;
+ const section=sourceObject?.customer_print_choices;
+ if(rows.length===0){
+  if(section!==undefined)return denied('TN005_CHOICE_EVIDENCE_UNVERIFIED');
+  return ['copies','paper','duplex'];
+ }
+ if(!isRecord(section)||section.schema_version!==choiceSchema||!isRecord(section.fields)||
+    Object.keys(section).sort().join(',')!=='fields,schema_version')
+  return denied('TN005_CHOICE_EVIDENCE_UNVERIFIED');
+ const fields=section.fields;
+ const seen=new Set<ChoiceField>();
+ for(const row of rows){
+  if(row.order_id!==scope.order||row.revision!==scope.revision||row.shop_id!==scope.shop||
+     row.oa_id!==scope.oa||row.customer_id!==scope.customer||
+     row.conversation_id!==scope.conversation||row.request_hash!==scope.requestHash||
+     row.source_sha256!==scope.sourceHash||row.source_event_id!==scope.sourceEvent||
+     !choiceFieldOrder.includes(row.field as ChoiceField)||row.origin!=='customer'||
+     row.parser_version!==PRINT_SETTING_PARSER_VERSION||row.event_revision!==scope.revision||
+     row.review_shop_id!==scope.shop||row.review_revision!==scope.revision||
+     row.event_customer_id!==scope.customer||row.event_conversation_id!==scope.conversation||
+     row.event_kind!=='text'||!bounded(row.event_id,256)||row.event_id===scope.sourceEvent||
+     seen.has(row.field as ChoiceField)||typeof row.event_text!=='string'||row.event_text.trim().length===0)
+   return denied('TN005_CHOICE_EVIDENCE_UNVERIFIED');
+  const field=row.field as ChoiceField;
+  const parsed=parsePrintSetting(row.event_text);
+  if(parsed.kind!=='recognized')return denied('TN005_CHOICE_EVIDENCE_UNVERIFIED');
+  const normalized=choiceForPrintSetting(parsed.change);
+  const embedded=fields[field];
+  const expected={value:normalized.value,origin:'customer',event_id:row.event_id,
+   parser_version:PRINT_SETTING_PARSER_VERSION};
+  if(normalized.field!==field||canonical(row.value)!==canonical(normalized.value)||
+     !isRecord(embedded)||Object.keys(embedded).sort().join(',')!==
+       'event_id,origin,parser_version,value'||canonical(embedded)!==canonical(expected))
+   return denied('TN005_CHOICE_EVIDENCE_UNVERIFIED');
+  seen.add(field);
+ }
+ if(Object.keys(fields).sort().join(',')!==[...seen].sort().join(','))
+  return denied('TN005_CHOICE_EVIDENCE_UNVERIFIED');
+ return choiceFieldOrder.filter(field=>!seen.has(field)).map(field=>
+  field==='paper_size'?'paper':field);
+}
 const digest=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f]{64}$/.test(v);
 const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(v);
 const bounded=(v:unknown,max:number)=>typeof v==='string'&&v.length>0&&v.length<=max;
@@ -70,13 +131,17 @@ export function createTn005SealedOutbox(options:{
   return result.rows[0];
  }
  async function current(db:SqlConnection,orderId:string,revision:number,
-  generation:number,requestHash:string,sourceSha:string,text?:string):Promise<{src:Source;text:string}> {
+  generation:number,requestHash:string,sourceSha:string,text?:string,
+  textBoundary:'intent'|'persisted'='persisted'):Promise<{
+   src:Source;text:string;missing_print_choices:readonly FirstPageMissingPrintChoice[]
+  }> {
   // Lock order first (same order as Core.revise), then AI1 generation; never invert.
   const src=await source(db,orderId);
   if(src.mode!=='simulation'||!src.conversation_id||
      src.active_revision!==revision||src.request_hash!==requestHash||
      src.source_sha256!==sourceSha||src.advisory_request_hash!==requestHash||
-     src.advisory_sha256!==sourceSha||!digest(requestHash)||!digest(sourceSha))
+     src.advisory_sha256!==sourceSha||!digest(requestHash)||!digest(sourceSha)||
+     sha(canonical(src.request_data))!==requestHash)
    return denied();
   const ctrl=(await db.query<{status:string;generation:string}>(
    'SELECT status,generation::text AS generation FROM core_conversation_controls '+
@@ -90,6 +155,24 @@ export function createTn005SealedOutbox(options:{
    artifact_ref:src.artifact_ref};
   // Never use a provided 'verified' flag: AI0 verifier recomputes sealed source proof.
   if(await verify_sealed_source(Object.freeze(binding))!==true)return denied('TN005_SOURCE_UNVERIFIED');
+  const evidence=await db.query<ChoiceEvidenceRow>(
+   'SELECT e.order_id::text AS order_id,e.revision,e.shop_id,e.oa_id,e.customer_id,e.conversation_id,'+
+   'e.request_hash,e.source_sha256,e.source_event_id,e.field,e.value,e.origin,e.event_id,e.event_revision,'+
+   'e.parser_version,r.shop_id AS review_shop_id,r.revision AS review_revision,'+
+   'z.customer_id AS event_customer_id,z.conversation_id AS event_conversation_id,'+
+   "z.payload_json->>'kind' AS event_kind,"+
+   "COALESCE(z.payload_json->>'text',z.payload_json->>'message_text') AS event_text "+
+   'FROM core_order_customer_print_choice_evidence e '+
+   'JOIN core_order_inbound_reviews r ON r.oa_id=e.oa_id AND r.event_id=e.event_id AND '+
+   'r.order_id=e.order_id AND r.revision=e.event_revision '+
+   'JOIN zalo_inbound_events z ON z.oa_id=e.oa_id AND z.event_id=e.event_id '+
+   'WHERE e.order_id=$1::uuid AND e.revision=$2 FOR SHARE OF e,r,z',
+   [orderId,src.active_revision]);
+  const missing_print_choices=currentRevisionChoiceFields(src.request_data,evidence.rows,{
+   shop,oa,customer:src.customer_id,conversation:src.conversation_id,order:orderId,
+   revision:src.active_revision,requestHash:src.request_hash,sourceHash:src.source_sha256,
+   sourceEvent:src.event_id});
+  if(missing_print_choices.length===0)return denied('TN005_NO_MISSING_PRINT_CHOICES');
   const formatted=formatBoundFirstPageQuestion(
    {shop_id:shop,order_id:orderId,revision,oa_id:oa,customer_id:src.customer_id,
     conversation_id:src.conversation_id},
@@ -98,13 +181,23 @@ export function createTn005SealedOutbox(options:{
      request_hash:requestHash,source_sha256:sourceSha,sealed_source_verified:true},
     advisory:{shop_id:shop,order_id:orderId,revision,request_hash:requestHash,
      artifact_sha256:sourceSha,metadata:src.metadata}});
-  if(!formatted.used_suggestion||(text!==undefined&&formatted.text!==text))return denied('TN005_TEXT_UNVERIFIED');
-  return {src,text:formatted.text};
+  if(!formatted.used_suggestion||!formatted.text.endsWith(SAFE_FIRST_PAGE_QUESTION))
+   return denied('TN005_TEXT_UNVERIFIED');
+  const missingQuestion=formatMissingPrintChoicesQuestion(missing_print_choices);
+  if(!missingQuestion)return denied('TN005_CHOICE_EVIDENCE_UNVERIFIED');
+  const expectedText=formatted.text.slice(0,-SAFE_FIRST_PAGE_QUESTION.length)+missingQuestion;
+  // Enqueue receives AI2's exact all-choice safe intent; Core derives and
+  // stores the smaller question. Every later boundary receives persisted
+  // outbox text and requires an exact match to a fresh derivation.
+  if(text!==undefined&&((textBoundary==='intent'&&text!==formatted.text)||
+     (textBoundary==='persisted'&&text!==expectedText)))
+   return denied('TN005_TEXT_UNVERIFIED');
+  return {src,text:expectedText,missing_print_choices};
  }
  async function enqueue(i:Tn005EnqueueRequest):Promise<{status:'queued';outbound_id:string}> {
   checkInput(i);
   try{return await store.tx(async db=>{
-   const checked=await current(db,i.order_id,i.revision,i.generation,i.request_hash,i.source_sha256,i.text);
+   const checked=await current(db,i.order_id,i.revision,i.generation,i.request_hash,i.source_sha256,i.text,'intent');
    const existing=(await db.query<Row>(
     'SELECT * FROM core_tn005_suggested_outbox WHERE outbound_id=$1 FOR UPDATE',[i.outbound_id])).rows[0];
    if(existing) {
