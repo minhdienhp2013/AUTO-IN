@@ -56,3 +56,7 @@ PrintEvidenceV1 {
 ## 5. Giới hạn
 
 Đây là hợp đồng cho ứng viên mã mô phỏng. Các PR AI1/AI3/AI4 hiện có CI của riêng nhánh, chưa phải nghiệm thu exact integrated candidate. OA thật, Windows/Word/Ricoh thật, giấy thật, Safari iPhone và TN-037 vẫn là các cổng riêng chưa chạy. Không merge, deploy, nhắn khách thật hoặc in thật theo tài liệu này.
+
+## 6. Quyết định schema AI0 — 18/10/2026
+
+Để lưu digest xuyên suốt challenge/xác nhận khách/duyệt/job, ứng viên dùng migration tiếp theo sau 010: `backend/storage/migrations/011_print_evidence_binding.sql`. Thêm `evidence_sha256 CHAR(64)` nullable vào `core_confirmation_challenges`, `core_confirmations`, `core_approvals` và `core_print_jobs`; CHECK mọi giá trị khác NULL là SHA-256 hex thường 64 ký tự. Không đặt default, không backfill từ client hoặc từ audit lịch sử. Các hàng lịch sử NULL không được dùng cho luồng gửi V1; cần tạo lại evidence hiện hành, khách xác nhận và nhân viên duyệt. Không tạo bảng evidence riêng trong ứng viên này: TrustedPrintEvidencePort của AI0/AI3 xác minh lại byte gốc, manifest, preview, settings, renderer, plan và capability máy từ nguồn phía server khi Core đã khóa đúng order/revision. Audit vẫn lưu lịch sử thao tác, không thay thế các cột ràng buộc. Không mở API công khai cho digest và không cho phép retry SENDING/UNKNOWN.
