@@ -17,6 +17,7 @@ import { notificationCapability, orderFromNavigation, requestLocalNotifications 
 import { canEditShopSchedule, draftFromSchedule, saveShopScheduleAndRead, scheduleErrorText, type ShopSchedule, type ScheduleDraft } from './shop-schedule.ts';
 import { canApproveAfterInboundReview, canEditPrintRequest, groupOpenOrdersByChat, hasClearPendingInbound,
   requiresCustomerReconfirmation } from './code008.ts';
+import { manualRouteLabel, pendingStaffQueue, routeVerifiedDocument } from './v1-routing.ts';
 
 type View = 'orders' | 'overview' | 'settings';
 type DetailTab = 'document' | 'activity';
@@ -289,6 +290,7 @@ function App() {
                   <div className="order-customer">{order.customer_name} {order.urgent && <span className="urgent-label">ƯU TIÊN</span>}</div>
                   <div className="order-description">{order.documents.length ? `${order.documents.length} tài liệu · ${order.total_sheets ?? '?'} tờ` : 'Tài liệu chưa được API liệt kê'}</div>
                   {order.conversation_id && <small>Chat: {order.conversation_id} · phiên bản {order.revision}</small>}
+                  {apiHealthy && order.detail_loaded===true && order.v1_manual_queue && <small className="v1-queue-list-label" data-testid="v1-queue-list-label">Đã nhận — chờ nhân viên · {order.v1_manual_queue.items.length} yêu cầu đối soát</small>}
                   <div className="order-row footer"><span className={`state-chip ${statusTone(order)}`}>{order.print_state === 'UNKNOWN' ? printLabels.UNKNOWN : orderLabels[order.order_state]}</span><ChevronRight size={16}/></div>
                 </button>)}</div>
                 <div className="panel-foot"><span className="dot-legend"/> Dữ liệu {useDemo?'mô phỏng, không có khách thật':'trả về từ server'}</div>
@@ -324,6 +326,25 @@ function App() {
                     {item.received_at && <small>{time(item.received_at)}</small>}
                   </div>)}
                   {(!apiHealthy || selectedOrder.pending_updates?.state==='unknown' || !selectedOrder.pending_updates) && <small>Không thể dùng dữ liệu pending trước đó để duyệt; tải lại chi tiết đơn từ server sau khi API hoạt động.</small>}
+                </section>}
+                {!useDemo && <section className="v1-routing-panel" data-testid="v1-routing-panel" aria-label="Luồng Word PDF và hàng chờ nhân viên">
+                  <strong>V1 · Word/PDF ưu tiên — hàng chờ nhân viên</strong>
+                  <p>Word/PDF chỉ hiện thông số từng file khi có preview đúng revision/hash được máy chủ xác minh. Preview không phải xác nhận khách, duyệt in hoặc bằng chứng đã in.</p>
+                  <p data-testid="v1-manual-categories">Nhóm chuyển nhân viên khi có phân loại server: Ảnh · CCCD · TEMhoa · Yêu cầu in màu · Định dạng chưa hỗ trợ.</p>
+                  {!apiHealthy || selectedOrder.detail_loaded!==true
+                    ? <p className="inbound-warning" data-testid="v1-queue-unknown">CHƯA XÁC MINH — không báo đã nhận, đã xử lý hoặc đã in khi thiếu dữ liệu hiện hành.</p>
+                    : selectedOrder.v1_manual_queue
+                      ? <div data-testid="v1-server-manual-queue">
+                          <p>Máy chủ xác minh hàng chờ theo revision {selectedOrder.v1_manual_queue.revision} và hash hiện hành.</p>
+                          {selectedOrder.v1_manual_queue.items.map((item,index)=><p data-testid="v1-manual-queued-item" key={index}><b>{manualRouteLabel(item.category)}</b> · đã nhận — chờ nhân viên; chưa xác nhận xử lý hay in.</p>)}
+                        </div>
+                      : pendingStaffQueue(selectedOrder)
+                        ? <div data-testid="v1-generic-manual-queue">
+                            <p><b>Đã nhận — chờ nhân viên đối soát:</b> {pendingStaffQueue(selectedOrder)?.count} sự kiện chưa xử lý; máy chủ mới liệt kê {pendingStaffQueue(selectedOrder)?.listed} metadata.</p>
+                            <p>Chưa có phân loại ảnh, CCCD, TEMhoa, in màu hay định dạng khác; không suy đoán từ tên file/tin.</p>
+                          </div>
+                        : <p data-testid="v1-queue-not-confirmed">Chưa có hàng chờ thủ công được máy chủ xác minh. Chỉ xử lý Word/PDF khi có preview và xác nhận đúng phiên bản; không tự kết luận hoàn tất.</p>}
+                  <small>Chỉ đọc trạng thái server; nhân viên duyệt, khách xác nhận và điều kiện an toàn hiện hành không thay đổi.</small>
                 </section>}
                 <div className="axis-grid" aria-label="Năm trạng thái độc lập"><Axis title="Hội thoại" label={conversationLabels[selectedOrder.conversation_state]}/><Axis title="Đơn hàng" label={orderLabels[selectedOrder.order_state]}/><Axis title="In giấy" label={selectedOrder.print_state==='VERIFIED_DONE' && selectedOrder.total_sheets!==null && (selectedOrder.verified_sheets===null || selectedOrder.verified_sheets < selectedOrder.total_sheets) ? 'Giấy thật chưa xác minh đủ' : printLabels[selectedOrder.print_state]} warn={printAttention || selectedOrder.print_state==='SIMULATED_DONE'}/><Axis title="Giao giấy" label={deliveryLabels[selectedOrder.delivery_state]}/><Axis title="Thanh toán" label={paymentLabels[selectedOrder.payment_state]}/></div>
                 {!useDemo && confirmation && <section className="confirmation-evidence" data-testid="confirmation-evidence" aria-label="Bằng chứng xác nhận khách và duyệt in">
@@ -419,6 +440,10 @@ function VerifiedPreviewGallery({port,order}:{port:PrintPort;order:OrderView}) {
       <h4>Thông số từng file do AI3 xác minh</h4>
       {facts.map(f=><div className="verified-document-row" data-testid="verified-document-row" key={f.index}>
         <div className="verified-document-title"><FileText size={16}/> <b>{f.label}</b> <small>{f.format}</small></div>
+        <p className="v1-word-pdf-status" data-testid="v1-word-pdf-status">
+          {routeVerifiedDocument(f)==='word'?'Word/DOCX':routeVerifiedDocument(f)==='pdf'?'PDF':'Ngoài luồng Word/PDF V1 — chờ nhân viên'}
+          {' · Preview đã xác minh theo revision '+order.revision+' và hash hiện hành; chưa xác nhận khách, chưa duyệt và không xác nhận đã in.'}
+        </p>
         <div className="verified-document-metrics">
           <span>Trang gốc <b>{f.document_pages}</b></span>
           <span>Mặt in <b>{f.printed_faces}</b></span>

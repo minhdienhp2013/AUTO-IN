@@ -37,6 +37,8 @@ export interface OrderView {
   customer_id?: string | null;
   detail_loaded?: boolean;
   pending_updates?: import('./code008.ts').PendingInboundUpdates;
+  /** Read-only server-scoped manual queue; absent on PR144 backend. */
+  v1_manual_queue?: import('./v1-routing.ts').V1ManualQueue;
   job_id?: string | null; // AI1 job eligible for physical-paper verification; never inferred from a list
   customer_name: string;
   conversation_id: string | null;
