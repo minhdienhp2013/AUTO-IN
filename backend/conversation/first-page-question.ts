@@ -5,6 +5,63 @@
 export const SAFE_FIRST_PAGE_QUESTION =
   "Bạn muốn in bao nhiêu bản, khổ giấy nào và một mặt hay hai mặt? Cửa hàng sẽ kiểm tra bản xem trước để bạn xác nhận.";
 
+export type FirstPageMissingPrintChoice = "copies" | "paper" | "duplex";
+
+const missingPrintChoiceOrder:readonly FirstPageMissingPrintChoice[] =
+  ["copies","paper","duplex"];
+const missingPrintChoiceQuestions:Readonly<Record<FirstPageMissingPrintChoice,string>> = {
+  copies:"Bạn muốn in bao nhiêu bản?",
+  paper:"Bạn muốn chọn khổ giấy nào?",
+  duplex:"Bạn muốn in một mặt hay hai mặt?",
+};
+const missingPrintChoiceSuffix = "Cửa hàng sẽ kiểm tra bản xem trước để bạn xác nhận.";
+
+/**
+ * Accept only a plain, dense array of distinct allowed field names. Read own
+ * data descriptors so an accessor cannot run while validating untrusted input.
+ * The returned order is canonical and never depends on caller order.
+ */
+function validatedMissingPrintChoices(input:unknown):FirstPageMissingPrintChoice[]|null {
+  try {
+    if(!Array.isArray(input)||Object.getPrototypeOf(input)!==Array.prototype)return null;
+    const lengthDescriptor=Object.getOwnPropertyDescriptor(input,"length");
+    if(!lengthDescriptor||!("value" in lengthDescriptor))return null;
+    const length=lengthDescriptor.value;
+    if(!Number.isSafeInteger(length)||length<1||length>missingPrintChoiceOrder.length)
+      return null;
+    const keys=Reflect.ownKeys(input);
+    if(keys.length!==length+1||!keys.includes("length"))return null;
+
+    const selected=new Set<FirstPageMissingPrintChoice>();
+    for(let index=0;index<length;index++) {
+      if(!keys.includes(String(index)))return null;
+      const descriptor=Object.getOwnPropertyDescriptor(input,String(index));
+      if(!descriptor||!("value" in descriptor)||!descriptor.enumerable)return null;
+      const choice=descriptor.value;
+      if(typeof choice!=="string"||!Object.hasOwn(missingPrintChoiceQuestions,choice))
+        return null;
+      const typedChoice=choice as FirstPageMissingPrintChoice;
+      if(selected.has(typedChoice))return null;
+      selected.add(typedChoice);
+    }
+    return missingPrintChoiceOrder.filter(choice=>selected.has(choice));
+  } catch {
+    return null;
+  }
+}
+
+/** Pure formatter for a trusted caller's missing field names. It interpolates
+ * no customer, OCR, model, or caller text and has no Port or write boundary.
+ * Invalid, empty, duplicate, sparse, or otherwise untrusted input yields no
+ * question; callers must not fall back to the all-fields generic question.
+ */
+export function formatMissingPrintChoicesQuestion(input:unknown):string|null {
+  const missing=validatedMissingPrintChoices(input);
+  if(!missing)return null;
+  const questions=missing.map(choice=>missingPrintChoiceQuestions[choice]);
+  return `${questions.join(" ")} ${missingPrintChoiceSuffix}`;
+}
+
 const categories = {
   WORKSHEET:"phiếu học tập",
   EXAM:"đề kiểm tra hoặc đề thi",
