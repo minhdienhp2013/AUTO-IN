@@ -122,6 +122,16 @@ test('V1-CORE-01 real PG two-pool: confirmed source/quote/plan, concurrent appro
    assert.equal((await B.claim(agent,{printer_id:'RMP7000',idempotency_key:k('no-reclaim')})).job,null);
    assert.equal((await a.query('SELECT state FROM core_print_jobs WHERE id=$1',[approved.job_id])).rows[0].state,'UNKNOWN');
    assert.equal(await jobs(d.id),1);
+   // Only an explicit owner action may create a distinct reprint after UNKNOWN.
+   await assert.rejects(A.approveReprint(staff,d.id,{expected_revision:2,
+    original_job_id:approved.job_id,reason:'synthetic only',idempotency_key:k('staff-reprint')}),err('OWNER_REQUIRED'));
+   const reprint=await A.approveReprint(owner,d.id,{expected_revision:2,original_job_id:approved.job_id,
+    reason:'staff to inspect and decide; synthetic test',idempotency_key:k('owner-reprint')});
+   assert.equal(await jobs(d.id),2);
+   const ownerJob=await B.claim(agent,{printer_id:'RMP7000',idempotency_key:k('owner-reprint-claim')});
+   assert.equal(ownerJob.job?.job_id,reprint.job_id);
+   assert.equal((await B.preflight(agent,reprint.job_id,{expected_revision:2,
+    lease_token:ownerJob.job.lease_token})).allowed,true);
   });
   const snapshot=await guards();
   assert.ok(snapshot.confirms>=5);
