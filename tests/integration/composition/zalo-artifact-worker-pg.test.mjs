@@ -23,7 +23,7 @@ const databaseUrl = process.env.TEST_DATABASE_URL;
  * AI3 Python inspect + AI1 generation-locked proposal.
  * Exercises explicit simulated customer confirmation; NEVER live Zalo or a physical printer.
  */
-test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview -> challenge/quote -> staff DryRun UNKNOWN; tamper -> HUMAN', {
+test('AI0 REAL PG: ONE Zalo PDF -> AI2 suggestion -> staff-scoped AI3 preview -> challenge/quote -> staff DryRun UNKNOWN; tamper -> HUMAN', {
   skip: !databaseUrl ? 'TEST_DATABASE_URL missing: verified Zalo document worker NOT RUN' : false,
   timeout: 120_000
 }, async () => {
@@ -31,7 +31,7 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
   const scratch = await mkdtemp(join(tmpdir(), 'autoin-zalo-artifact-worker-'));
   const root = join(scratch, 'documents');
   const renderedRoot=join(scratch,'rendered');
-  const pngFile = join(scratch, 'fixture.png');
+  const pdfFile = join(scratch, 'fixture.pdf');
   const python = process.env.AUTOIN_PYTHON ?? 'python3';
   const pool = new pg.Pool({connectionString:databaseUrl, max:5, connectionTimeoutMillis:5000});
   const id = randomUUID(), shop = 'autoin-test-zalo-file-' + id, oa = 'oa-' + id;
@@ -45,10 +45,10 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     await mkdir(root,{mode:0o700});
     await mkdir(renderedRoot,{mode:0o700});
     const generated=spawnSync(python,['-c',
-      'from PIL import Image;import sys;Image.new("RGB",(95,137),"white").save(sys.argv[1])',
-      pngFile],{cwd:process.cwd(),timeout:10000});
+      'import fitz,sys;d=fitz.open();p=d.new_page();p.draw_rect(fitz.Rect(10,10,70,70));d.save(sys.argv[1]);d.close()',
+      pdfFile],{cwd:process.cwd(),timeout:10000});
     assert.equal(generated.status,0,'AI3 Pillow fixture generation unavailable');
-    const png=await readFile(pngFile);
+    const pdf=await readFile(pdfFile);
     const core=createCoreModule({pool:asSqlPool(pool)});
     await core.auth.bootstrapOwner({shop_id:shop,username:'owner',
       password:ownerPassword,bootstrap_enabled:true});
@@ -75,7 +75,7 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     const fixture=(eventId,customer,conversation)=>({
       synthetic_fixture:true,event_id:eventId,oa_id:oa,customer_id:customer,
       conversation_id:conversation,occurred_at:'2026-10-12T00:00:00Z',
-      kind:'image',filename:'fixture.png',file_ref:'untrusted-zalo-customer-path'
+      kind:'file',filename:'fixture.pdf',mime_type:'application/pdf',file_ref:'untrusted-zalo-customer-path'
     });
     const send=(event)=>app.inject({method:'POST',url:'/webhooks/zalo',
       headers:{'content-type':'application/json','x-test-fixture-key':key},
@@ -83,7 +83,7 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     const register=(eventId,bytes)=>app.inject({
       method:'POST',url:'/internal/simulation/inbound-artifacts',
       headers:headers(session.token),
-      payload:{event_id:eventId,filename:'fixture.png',content_base64:bytes.toString('base64')}
+      payload:{event_id:eventId,filename:'fixture.pdf',content_base64:bytes.toString('base64')}
     });
     const goodId='verified-'+randomUUID(), customer='customer-'+id, conversation='conv-'+id;
     const good=fixture(goodId,customer,conversation);
@@ -91,19 +91,19 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     assert.equal((await send(good)).json().status,'duplicate');
     assert.equal((await app.inject({method:'POST',
       url:'/internal/simulation/inbound-artifacts',
-      payload:{event_id:goodId,filename:'fixture.png',content_base64:png.toString('base64')}})).statusCode,401);
-    const imported=await register(goodId,png);
+      payload:{event_id:goodId,filename:'fixture.pdf',content_base64:pdf.toString('base64')}})).statusCode,401);
+    const imported=await register(goodId,pdf);
     assert.equal(imported.statusCode,201,JSON.stringify(imported.json()));
     assert.equal(imported.json().status,'registered');
     assert.equal(imported.json().preview_trusted,false,'Registration alone cannot claim verified preview');
-    assert.equal((await register(goodId,png)).json().status,'existing');
+    assert.equal((await register(goodId,pdf)).json().status,'existing');
 
     const documentPort=createTrustedDocumentFactsPort(pool,scope,{artifactRoot:root,python});
     const fact=await documentPort.inspect({
       key:'synthetic-image',first_at:0,deadline_at:0,events:[good]
     });
-    assert.deepEqual(fact,[{kind:'image',preview_trusted:true}],
-      'Trust requires AI3 actually decoding the DB-bound, hash-frozen file');
+    assert.deepEqual(fact,[{kind:'pdf',preview_trusted:true}],
+      'PDF intake requires AI3 to decode the DB-bound, hash-frozen original');
     assert.equal((await runtime.tick_inbound()).ingested,1);
     await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' WHERE oa_id=$1 AND status='OPEN'",[oa]);
     const result=await runtime.tick_inbound();
@@ -249,7 +249,7 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     // occurred_at is old, so it is HELD instead of becoming a new order.
     const delayedId='late-before-approval-'+randomUUID();
     assert.equal((await send(fixture(delayedId,customer,conversation))).json().status,'accepted');
-    assert.equal((await register(delayedId,png)).statusCode,201);
+    assert.equal((await register(delayedId,pdf)).statusCode,201);
     assert.equal((await runtime.tick_inbound()).ingested,1);
     await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' "+
       "WHERE oa_id=$1 AND status='OPEN'",[oa]);
@@ -264,7 +264,7 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     const newRequest={...fixture(newEventId,customer,conversation),
       occurred_at:new Date(Date.now()+2000).toISOString()};
     assert.equal((await send(newRequest)).json().status,'accepted');
-    assert.equal((await register(newEventId,png)).statusCode,201);
+    assert.equal((await register(newEventId,pdf)).statusCode,201);
     assert.equal((await runtime.tick_inbound()).ingested,1);
     await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' "+
       "WHERE oa_id=$1 AND status='OPEN'",[oa]);
@@ -288,7 +288,7 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     const followup=fixture(nextEventId,customer,conversation);
     followup.occurred_at=new Date(Date.now()+90_000).toISOString();
     assert.equal((await send(followup)).json().status,'accepted');
-    assert.equal((await register(nextEventId,png)).statusCode,201);
+    assert.equal((await register(nextEventId,pdf)).statusCode,201);
     assert.equal((await runtime.tick_inbound()).ingested,1);
     await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' "+
       "WHERE oa_id=$1 AND status='OPEN'",[oa]);
@@ -319,7 +319,7 @@ test('AI0 REAL PG: ONE Zalo image -> AI2 suggestion -> staff-scoped AI3 preview 
     const badId='tampered-'+randomUUID();
     const bad=fixture(badId,'bad-customer-'+id,'bad-conversation-'+id);
     assert.equal((await send(bad)).json().status,'accepted');
-    const badImport=await register(badId,png);
+    const badImport=await register(badId,pdf);
     assert.equal(badImport.statusCode,201,JSON.stringify(badImport.json()));
     const stored=(await query(
       'SELECT artifact_ref FROM ai0_inbound_document_artifacts WHERE shop_id=$1 AND oa_id=$2 AND event_id=$3',
