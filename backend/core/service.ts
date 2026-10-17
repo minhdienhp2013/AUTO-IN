@@ -571,7 +571,7 @@ export class OrderService {
    const quoteMatches=(matchedApproval?.quote_revision??null)===(quote?.quote_revision??null);
    const auditFingerprint=matchedApproval&&existingActiveJob?(
     await db.query<{details:{plan_sha256?:string;quote_sha256?:string|null}}>(
-     "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 AND action='print.approved' "+
+     "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 AND action IN ('print.approved','job.reprint_owner_approved') "+
      "AND details->>'approval_id'=$3 AND details->>'job_id'=$4 ORDER BY created_at DESC LIMIT 1",
      [o.shop_id,id,matchedApproval.id,existingActiveJob.id])).rows[0]?.details:null;
    const fingerprintMatches=Boolean(verifiedPlan&&auditFingerprint &&
