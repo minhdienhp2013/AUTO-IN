@@ -29,9 +29,9 @@ def manifest():
     data=json.loads(MANIFEST.read_text(encoding="utf-8"))
     assert data["schema"]==VERSION
     cases=data["cases"]
-    assert len(cases)==24 and len({c["id"] for c in cases})==24
+    assert len(cases)==27 and len({c["id"] for c in cases})==27
     assert len({c["key"] for c in cases})==24
-    assert [c["id"] for c in cases]==[f"V1-{i:03d}" for i in range(1,25)]
+    assert [c["id"] for c in cases]==[f"V1-{i:03d}" for i in range(1,28)]
     assert {c["expected"] for c in cases}==STATUS
     for case in cases:
         assert case["format"] in FORMATS
@@ -116,6 +116,98 @@ def source(kind,label):
     raise ValueError("unsupported synthetic kind")
 
 
+
+def canonical_sha256(value):
+    """UTF-8 canonical JSON hash for fixture controls, never a Core authority."""
+    return hashlib.sha256(json.dumps(
+        value,ensure_ascii=False,sort_keys=True,separators=(",",":")
+    ).encode("utf-8")).hexdigest()
+
+
+def same_path_evidence_pairs():
+    """Synthetic paired snapshots for V1-025..027; does not exercise Core.
+
+    Preserve all resource paths, source bytes/settings/revision and replace exactly
+    ONE attested digest component. Proves expected evidence hash MUST change,
+    not that the integrated product blocks stale confirmations.
+    """
+    sample=source("pdf","PUBLIC-V1-ORIGINAL")
+    source_digest=hashlib.sha256(sample).hexdigest()
+    manifest_a=b'{"source":"public","page_count":1}'
+    manifest_b=b'{"source":"public","page_count":2}'
+    preview_a=b"PREVIEW-IMAGE-AA"
+    preview_b=b"PREVIEW-IMAGE-BB"
+    renderer_a=b"local-renderer-version-1"
+    renderer_b=b"local-renderer-version-2"
+    assert len(manifest_a)==len(manifest_b)
+    assert len(preview_a)==len(preview_b)
+    sources=[{"source_artifact_ref":"synthetic/shop/order/original.pdf",
+        "format":"pdf","size_bytes":len(sample),"source_sha256":source_digest}]
+    settings={"copies":1,"paper_size":"A4","duplex":False,"flip":"long_edge",
+        "orientation":"portrait","range":"all","scale":"100","printer_id":"synthetic-no-print"}
+    base={
+        "schema":"ai0.print_evidence.v1",
+        "shop_id":"autoin_test_v1", "order_id":"synthetic-order", "revision":2,
+        "request_hash":hashlib.sha256(b"request-fixed").hexdigest(),
+        "sources":sources,
+        "source_set_sha256":canonical_sha256(sources),
+        "settings_sha256":canonical_sha256(settings),
+        "manifest_ref":"synthetic/shop/order/manifest.json",
+        "manifest_sha256":hashlib.sha256(manifest_a).hexdigest(),
+        "previews":[{"index":0,"bytes":len(preview_a),
+                     "sha256":hashlib.sha256(preview_a).hexdigest()}],
+        "renderer_sha256":hashlib.sha256(renderer_a).hexdigest(),
+        "plan_sha256":canonical_sha256({"pages":1,"sheets":1}),
+        "printer_id":"synthetic-no-print",
+        "printer_capability_sha256":canonical_sha256({"ready":False,"format":"A4"}),
+    }
+    stable_locations={
+        "source_artifact_ref":sources[0]["source_artifact_ref"],
+        "manifest_ref":base["manifest_ref"],
+        "preview_storage_path":"synthetic/shop/order/preview-0.png",
+        "renderer_executable_path":"synthetic/bin/renderer",
+        "preview_index":0,
+    }
+    import copy
+    out=[]
+    for case_id,key in (
+        ("V1-025","manifest_sha256"),
+        ("V1-026","previews[0].sha256"),
+        ("V1-027","renderer_sha256"),
+    ):
+        before=copy.deepcopy(base)
+        after=copy.deepcopy(base)
+        if key=="manifest_sha256":
+            after["manifest_sha256"]=hashlib.sha256(manifest_b).hexdigest()
+        elif key=="previews[0].sha256":
+            after["previews"][0]["sha256"]=hashlib.sha256(preview_b).hexdigest()
+        elif key=="renderer_sha256":
+            after["renderer_sha256"]=hashlib.sha256(renderer_b).hexdigest()
+        else:
+            raise AssertionError(key)
+        before["evidence_sha256"]=canonical_sha256(before)
+        after["evidence_sha256"]=canonical_sha256(after)
+        assert before["evidence_sha256"]!=after["evidence_sha256"]
+        assert before["sources"]==after["sources"]
+        assert before["source_set_sha256"]==after["source_set_sha256"]
+        assert before["settings_sha256"]==after["settings_sha256"]
+        assert before["request_hash"]==after["request_hash"]
+        assert before["revision"]==after["revision"]
+        assert before["manifest_ref"]==after["manifest_ref"]
+        assert before["previews"][0]["index"]==after["previews"][0]["index"]
+        assert before["previews"][0]["bytes"]==after["previews"][0]["bytes"]
+        changed=[
+            k for k in before
+            if k!="evidence_sha256" and before[k]!=after[k]
+        ]
+        assert changed==["previews" if key=="previews[0].sha256" else key]
+        out.append({"id":case_id,"mutated_digest":key,
+            "before":before,"after":after,
+            "stable_locators_before":stable_locations.copy(),
+            "stable_locators_after":stable_locations.copy(),
+            "product_status":"NOT_RUN"})
+    return out
+
 def fixture_result():
     data=manifest()
     rows=[]
@@ -135,10 +227,13 @@ def fixture_result():
             assert raw.startswith(b"\x89PNG\r\n\x1a\n")
         rows.append({"id":c["id"],"format":c["format"],"source_sha256":digest,
                      "expected":c["expected"],"product_status":"NOT_RUN"})
-    assert len(rows)==24 and len({r["source_sha256"] for r in rows})==24
+    assert len(rows)==27 and len({r["source_sha256"] for r in rows})==27
+    pairs=same_path_evidence_pairs()
+    assert len(pairs)==3 and all(x["product_status"]=="NOT_RUN" for x in pairs)
     return {"schema":"autoin.v1.word_pdf.fixture.v1","mode":"fixture_only",
-            "status":"FIXTURE_PASS_PRODUCT_NOT_RUN","count":24,"distinct_sha256":24,
-            "source_candidate_sha":data["source_candidate_sha"],"cases":rows}
+            "status":"FIXTURE_PASS_PRODUCT_NOT_RUN","count":27,"distinct_sha256":27,
+            "source_candidate_sha":data["source_candidate_sha"],"cases":rows,
+            "same_path_digest_controls":pairs}
 
 
 def main():
