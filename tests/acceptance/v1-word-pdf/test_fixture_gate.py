@@ -173,3 +173,41 @@ def test_new_digest_mutation_on_same_path_changes_evidence_sha_not_source(
         assert before["renderer_sha256"] != after["renderer_sha256"]
         assert before["manifest_sha256"] == after["manifest_sha256"]
         assert before["previews"] == after["previews"]
+
+
+@pytest.mark.parametrize("case_id", ["V1-025", "V1-026", "V1-027"])
+def test_auditor_requires_product_stale_actions_for_same_path_digest_drift(case_id):
+    """Pure verifier negative control: never counts as a product-tested case."""
+    spec = importlib.util.spec_from_file_location(
+        "v1_candidate_auditor", MODULE.with_name("audit_candidate.py"))
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    pair = next(x for x in gate.same_path_evidence_pairs() if x["id"] == case_id)
+    fixture_only = {
+        "evidence_before": pair["before"],
+        "evidence_after": pair["after"],
+        "stable_locators_before": pair["stable_locators_before"],
+        "stable_locators_after": pair["stable_locators_after"],
+    }
+    issues = verifier.stale_digest_evidence_issues(case_id, fixture_only)
+    assert any("stale action outcomes" in msg for msg in issues)
+    assert any("driver send" in msg for msg in issues)
+    assert any("guard changed" in msg for msg in issues)
+    # Positive control exercises only the consistency checker with explicitly
+    # fabricated values. Real candidate acceptance still requires PG/agent logs.
+    synthetic = {
+        **fixture_only,
+        "stale_action_results": {
+            name: "STALE" for name in
+            ("confirmation", "approval", "claim", "preflight", "mark_sending")},
+        "guards_before": {"confirmations": 0, "approvals": 0, "print_jobs": 0},
+        "guards_after": {"confirmations": 0, "approvals": 0, "print_jobs": 0},
+        "driver_send_calls_before": 0,
+        "driver_send_calls_after": 0,
+    }
+    assert verifier.stale_digest_evidence_issues(case_id, synthetic) == []
+    tampered = {**synthetic, "stable_locators_after": {
+        **synthetic["stable_locators_after"],
+        "manifest_ref": "different/path/manifest.json"}}
+    assert any("resource path invariant" in msg for msg in
+               verifier.stale_digest_evidence_issues(case_id, tampered))
