@@ -198,7 +198,11 @@ def test_synthetic_native_word_preview_bundle_still_requires_staff(tmp_path):
     fake = preview_word_native(source, expected_sha256=sha(source),
                                allow_word_launch=True, session_factory=FakeWordSession)
     fake = {**fake, "evidence_kind": "windows_word_com_preview_only",
-            "native_word_verified": True}
+            "native_word_verified": True,
+            # Explicit TEST-ONLY spoof of a native observation: not genuine
+            # Windows/COM attestation and never usable as print authority.
+            "renderer_identity": {"engine": "microsoft_word_com",
+                                  "version": "synthetic-unverified"}}
     data = {"documents": [{"artifact_name": "source.docx", "copies": 2,
                            "paper": "A4", "duplex": True}]}
     result = make_word_review_artifacts(
