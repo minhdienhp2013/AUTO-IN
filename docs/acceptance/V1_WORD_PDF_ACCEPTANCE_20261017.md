@@ -118,7 +118,7 @@ python -m pytest -q tests/unit/documents tests/unit/printing tests/acceptance/v1
 (cd web && npm ci && npm test && npm run typecheck && VITE_DEMO_MODE=false npm run build && npm run test:chromium:code008)
 python tests/acceptance/v1-word-pdf/fixture_gate.py --check-fixture --json-out /tmp/v1-fixture.json
 
-# Core baseline, NOT all 24 V1 product acceptance cases:
+# Core baseline, NOT all 27 V1 product acceptance cases:
 export AUTOIN_OPERATION_MODE=simulation
 export AUTOIN_ALLOW_PG_ACCEPTANCE=YES_ISOLATED_TEST_DB
 export TEST_DATABASE_URL='postgresql://auto_in:CI_ONLY@127.0.0.1:5432/autoin_test_v1wp'
@@ -161,7 +161,7 @@ for the Core↔AI3↔agent manifest/preview/renderer hash contract.
 | npm run check | **BLOCKED in local session** | No repository package.json locally; local Node 22, repo requires Node ≥24.19; do not confuse ENOENT with product failure |
 | UI Chromium | **NOT RUN on this candidate** | Chromium binary present locally, but no compiled AUTO-IN web/dist checkout; older PR144 green CI does not test V1 changes |
 | Core PostgreSQL isolated | **NOT RUN** | No local PostgreSQL 18.3 test instance/fully installed repo; tester fails closed without TEST_DATABASE_URL |
-| 24-case integrated V1 acceptance | **NOT RUN / BLOCKED on AI0 integration** | Source/settings/plan/agent contract pending; existing synthetic PR144 PASS is not this result |
+| 27-case integrated V1 acceptance | **NOT RUN / BLOCKED on AI0 integration** | Source/settings/plan/agent contract pending; existing synthetic PR144 PASS is not this result |
 | Word COM, Windows Ricoh, OA/DeepSeek, Safari/iPhone | **NOT RUN** | Physical account/host/device tests need explicit owner approval |
 | TN037 ≥210 real accepted jobs over ≥7 clean days | **NOT RUN** | Not replaced by synthetic batch or benchmark |
 
