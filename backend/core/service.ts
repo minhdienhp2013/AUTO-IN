@@ -70,7 +70,7 @@ export class OrderService {
      j.printer_id!==rev.plan!.printer_id||j.cancelled_at)
    throw new DomainError('STALE_APPROVAL','Job không còn khớp file/thông số in',409);
   const a=(await db.query<{quote_revision:number|null;request_hash:string;evidence_sha256:string|null}>(
-   'SELECT quote_revision,request_hash FROM core_approvals WHERE id=$1 AND order_id=$2 AND revision=$3 AND request_hash=$4',
+   'SELECT quote_revision,request_hash,evidence_sha256 FROM core_approvals WHERE id=$1 AND order_id=$2 AND revision=$3 AND request_hash=$4',
    [j.approval_id,o.id,o.active_revision,rev.request_hash])).rows[0];
   const q=await this.quote(db,o.id);
   if(!a||a.request_hash!==rev.request_hash||(a.quote_revision??null)!==(q?.quote_revision??null))
