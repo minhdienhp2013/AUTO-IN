@@ -2,6 +2,7 @@
 from dataclasses import replace
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +27,47 @@ CAPS = {
 }
 
 
+def _core_plan(context, counts):
+    """Synthetic copy of the Core PrintPlan row for this isolated test."""
+    return {
+        "request_hash": context["request_hash"],
+        "physical_sheets": counts["physical_sheets"],
+        "document_pages": counts["document_pages"],
+        "printed_faces": counts["printed_faces"],
+        "ready": True,
+        "printer_id": context["printer_id"],
+        "artifact_ref": context["manifest_ref"],
+        "verified_by": "ai3.processor.v1",
+    }
+
+
+def test_shared_vector_matches_core_canonical_digests():
+    fixture = Path(__file__).parent / "fixtures" / "print_evidence_v1_core_vector.json"
+    vector = json.loads(fixture.read_text(encoding="utf-8"))
+    scope = vector["scope"]
+    proof = vector["proof"]
+    expected = vector["expected_sha256"]
+
+    def core_sha(value):
+        return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+    assert vector["synthetic_only"] is True
+    assert vector["processor_counts"] == {
+        key: scope["plan"][key]
+        for key in ("document_pages", "printed_faces", "physical_sheets")
+    }
+    assert proof["plan_sha256"] == expected["plan_sha256"] == core_sha(scope["plan"])
+    assert proof["source_set_sha256"] == expected["source_set_sha256"] == core_sha(proof["sources"])
+    body = {key: value for key, value in proof.items() if key != "evidence_sha256"}
+    assert proof["evidence_sha256"] == expected["evidence_sha256"] == core_sha(body)
+    assert set(proof) == {
+        "schema", "shop_id", "order_id", "revision", "request_hash", "sources",
+        "source_set_sha256", "settings_sha256", "manifest_ref", "manifest_sha256",
+        "previews", "renderer_sha256", "plan_sha256", "printer_id",
+        "printer_capability_sha256", "evidence_sha256",
+    }
+
+
 def _pdf_inputs(tmp_path):
     trusted, job, manifest_bytes, source, previews, settings = _ready_pdf(tmp_path)
     manifest = json.loads(manifest_bytes)
@@ -34,8 +76,10 @@ def _pdf_inputs(tmp_path):
         "revision": trusted.revision, "request_hash": trusted.request_hash,
         "manifest_ref": trusted.manifest_ref, "printer_id": trusted.printer_id,
     }
+    core_plan = _core_plan(context, manifest["counts"])
     args = dict(context=context, manifest_bytes=manifest_bytes,
                 originals=(source,), previews=previews, settings=(settings,),
+                trusted_core_plan=core_plan,
                 renderer_identity=manifest["renderer_versions"],
                 printer_capabilities=CAPS)
     return args, trusted, job
@@ -81,6 +125,7 @@ def test_pdf_exact_tuple_core_anchor_and_staff_review_allows_simulation_only(tmp
     assert snapshot["sources"][0]["format"] == "PDF"
     assert snapshot["sources"][0]["source_sha256"] == sha(args["originals"][0])
     assert snapshot["manifest_sha256"] == sha(args["manifest_bytes"])
+    assert snapshot["plan_sha256"] == sha(_canonical(args["trusted_core_plan"]).encode())
     assert snapshot["settings_sha256"] == sha(_canonical(list(args["settings"])).encode())
     assert snapshot["source_set_sha256"] == sha(_canonical(snapshot["sources"]).encode())
     assert snapshot["printer_capability_sha256"] == sha(_canonical(CAPS).encode())
@@ -93,6 +138,39 @@ def test_pdf_exact_tuple_core_anchor_and_staff_review_allows_simulation_only(tmp
     assert ok["allowed_to_print"] is False
     assert ok["queue_submission_enabled"] is False
     assert ok["physical_print_verified"] is False
+
+
+def test_processor_counts_must_match_the_active_core_plan(tmp_path):
+    args, trusted, _ = _pdf_inputs(tmp_path)
+    changed_plan = {**args["trusted_core_plan"], "physical_sheets": 99}
+    result = create_print_evidence_v1(**{**args, "trusted_core_plan": changed_plan})
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "CORE_PLAN_COUNT_MISMATCH"
+    assert result["allowed_to_print"] is False
+
+
+def test_missing_active_core_plan_fails_closed(tmp_path):
+    args, _, _ = _pdf_inputs(tmp_path)
+    result = create_print_evidence_v1(**{**args, "trusted_core_plan": None})
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "CORE_PLAN_UNVERIFIED"
+    assert result["allowed_to_print"] is False
+
+
+@pytest.mark.parametrize("field,value", [
+    ("request_hash", "0" * 64),
+    ("printer_id", "Canon"),
+    ("artifact_ref", "doc-other/manifest.json"),
+    ("ready", False),
+    ("verified_by", ""),
+])
+def test_core_plan_scope_and_readiness_must_match_manifest(tmp_path, field, value):
+    args, _, _ = _pdf_inputs(tmp_path)
+    changed_plan = {**args["trusted_core_plan"], field: value}
+    result = create_print_evidence_v1(**{**args, "trusted_core_plan": changed_plan})
+    assert result["status"] == "NEEDS_HUMAN", (field, result)
+    assert result["reason_code"] == "CORE_PLAN_SCOPE_UNVERIFIED"
+    assert result["allowed_to_print"] is False
 
 
 @pytest.mark.parametrize("mutation", [
@@ -211,6 +289,7 @@ def test_word_original_docx_and_renderer_version_bind_and_review_only(tmp_path):
         manifest_bytes=manifest_bytes, originals=(source,), previews=previews,
         settings=({"copies": 2, "paper": "A4", "duplex": True},),
         renderer_identity=manifest["renderer_identity"], printer_capabilities=CAPS)
+    args["trusted_core_plan"] = _core_plan(args["context"], manifest["counts"])
     evidence = create_print_evidence_v1(**args)
     assert evidence["status"] == "SNAPSHOT_DERIVED", evidence
     snap = evidence["snapshot"]
