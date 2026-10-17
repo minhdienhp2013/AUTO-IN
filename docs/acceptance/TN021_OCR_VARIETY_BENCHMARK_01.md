@@ -9,7 +9,7 @@ This is deliberately difficult synthetic diagnostic data, NOT TN037 evidence and
 - Created from candidate PR144 exactly at 0673460af71205986b901a21fc7724dbea23c991. Source workers/documents/first_page_classifier.py unchanged, Git blob 3334feb61a85b8663043fae076d922be05ddc3e5. No product, CI, OA, worker, schema or print changes.
 - Manifest tests/fixtures/public/tn021_ocr_variety/manifest.json pins 100 synthetic examples: 8 supported classes (WORKSHEET, EXAM, APPLICATION_FORM, CONTRACT_MINUTES, LESSON_PLAN, CV_PROFILE, ADMINISTRATIVE, GENERAL_DOCUMENT) with 10 each and UNKNOWN with 20. Modes: 56 extractable-text PDFs, 22 PNG scans, 22 raster-PDF scans. Source bytes are generated on demand and each of the 100 gets a distinct SHA-256 within the run. No real customer content.
 - Diversity: accented Vietnamese, varying structure/wording, prefixes/punctuation, quoted examples, cover pages, dual-class ambiguous headings, minor rotation/blur and 10 second-page decoys. Some title variants are semantically recognizable to humans but not to rigid regular expressions; these are intentionally included to expose false negatives. UNKNOWN is a valid ground-truth class. All category labels were fixed before predictions.
-- Uses locally installed Unicode TTF font (set TN021_FONT), embeds it in generated PDFs but does not commit/distribute font binaries. Different fonts, renderers and OCR language packs can change bytes/results: source hashes are verified within-run rather than pinned cross-machine.
+- Uses locally installed Unicode TTF font (set TN021_FONT), embeds it in generated PDFs but does not commit/distribute font binaries. PDFs use no_new_id=True to avoid randomly changing source identifiers, and all 100 output hashes are rechecked for distinctness. Different fonts, renderers and OCR language packs can change bytes/results: source hashes are verified within-run rather than pinned cross-machine.
 - The test-only runner tests classifier output schema (no raw text), SHA of actual source bytes and first-page-only reading. Exports full confusion matrix with classes UNKNOWN, NEEDS_HUMAN and ERROR; errors, methods, per-case result (id/hash/no raw OCR), latency p50/p95/max and per-mode scores. Wrong predictions are recorded, not treated as a benchmark execution failure.
 
 ## Exact-source commands for an AI0 audit run (NOT RUN in remote CI)
@@ -56,7 +56,7 @@ Rows are human-intended ground truth and columns are classifier predictions.
 | Raster PDF requiring local OCR | 14/22 | Tesseract vie+eng |
 | TOTAL | **64/100** | Not a release/operational accuracy score |
 
-Approximate per-case classifier latency in the final local exploratory run: p50 **7.67 ms**, p95 **537.70 ms**, max **577.12 ms**; approximately **29.27 seconds** total including fixture generation. Host-specific and not an API/worker or printer SLA.
+Approximate per-case classifier latency in the final local exploratory run: p50 **8.52 ms**, p95 **503.11 ms**, max **641.34 ms**; approximately **29.72 seconds** total including fixture generation. Host-specific and not an API/worker or printer SLA.
 
 ## PASS/FAIL/SKIP/NOT RUN and follow-up
 
