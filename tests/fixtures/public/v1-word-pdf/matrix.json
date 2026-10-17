@@ -253,6 +253,88 @@
       "tier": "product",
       "expected": "STALE",
       "observed": "NOT_RUN"
+    },
+    {
+      "key": "manifest_same_path_hash_change",
+      "id": "V1-025",
+      "format": "pdf",
+      "kind": "stale_evidence_digest",
+      "goal": "Keep manifest_ref, source paths/bytes, order, revision, request and settings fixed; replace manifest bytes at the same manifest_ref so manifest_sha256 and evidence_sha256 change. Old confirmation/approval/ticket must be stale at approve, preflight and mark-sending; 0 unauthorized print jobs / driver calls.",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN",
+      "mutated_digest": "manifest_sha256",
+      "unchanged_locators": [
+        "sources[0].source_artifact_ref",
+        "manifest_ref",
+        "previews[0].index"
+      ],
+      "required_gates": [
+        "confirmation",
+        "approval",
+        "claim",
+        "preflight",
+        "mark_sending"
+      ]
+    },
+    {
+      "key": "preview_same_path_hash_change",
+      "id": "V1-026",
+      "format": "docx",
+      "kind": "stale_evidence_digest",
+      "goal": "Hold original DOCX source_artifact_ref, same preview storage location and manifest_ref; replace preview bytes under same preview index/path. previews[0].sha256 and evidence_sha256 change even when file path/revision/settings do not. Reject old consent/approval/ticket; no print.",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN",
+      "mutated_digest": "previews[0].sha256",
+      "unchanged_locators": [
+        "sources[0].source_artifact_ref",
+        "manifest_ref",
+        "previews[0].index",
+        "preview_storage_path"
+      ],
+      "required_gates": [
+        "confirmation",
+        "approval",
+        "claim",
+        "preflight",
+        "mark_sending"
+      ]
+    },
+    {
+      "key": "renderer_same_path_hash_change",
+      "id": "V1-027",
+      "format": "pdf",
+      "kind": "stale_evidence_digest",
+      "goal": "Reuse same source/manifest/preview paths and print settings, but change trusted renderer identity/version under same executable path; renderer_sha256 and evidence_sha256 change. Previous confirmation/approval/ticket must be stale, needs human review, with zero automatic resend.",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN",
+      "mutated_digest": "renderer_sha256",
+      "unchanged_locators": [
+        "sources[0].source_artifact_ref",
+        "manifest_ref",
+        "previews[0].index",
+        "renderer_executable_path"
+      ],
+      "required_gates": [
+        "confirmation",
+        "approval",
+        "claim",
+        "preflight",
+        "mark_sending"
+      ]
     }
-  ]
+  ],
+  "contract": {
+    "source": "AI0 Draft PR150 docs/architecture/V1_CORE_AGENT_EVIDENCE_CONTRACT_20261017.md",
+    "schema": "ai0.print_evidence.v1",
+    "new_cases": [
+      "V1-025",
+      "V1-026",
+      "V1-027"
+    ],
+    "required_status": "NOT_RUN_until_exact_integrated_candidate",
+    "note": "same-path changes are synthetic fixture invariants; client supplied digests cannot authorize printing"
+  }
 }
