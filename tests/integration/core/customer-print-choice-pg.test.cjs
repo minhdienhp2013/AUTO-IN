@@ -84,6 +84,8 @@ test('REAL PostgreSQL customer print-choice evidence is scope/hash/source bound 
     '(SELECT count(*)::int FROM core_order_inbound_reviews WHERE order_id=$1) reviews,'+
     '(SELECT count(*)::int FROM core_order_customer_print_choice_batches WHERE order_id=$1) batches,'+
     '(SELECT count(*)::int FROM core_order_customer_print_choice_evidence WHERE order_id=$1) evidence,'+
+    '(SELECT plan IS NOT NULL FROM core_revisions WHERE order_id=$1 AND revision=(SELECT active_revision FROM core_orders WHERE id=$1)) ready,'+
+    '(SELECT plan FROM core_revisions WHERE order_id=$1 AND revision=(SELECT active_revision FROM core_orders WHERE id=$1)) active_plan,'+
     '(SELECT count(*)::int FROM core_confirmations WHERE order_id=$1) confirmations,'+
     '(SELECT count(*)::int FROM core_approvals WHERE order_id=$1) approvals,'+
     '(SELECT count(*)::int FROM core_print_jobs WHERE order_id=$1) print_jobs,'+
@@ -131,7 +133,8 @@ test('REAL PostgreSQL customer print-choice evidence is scope/hash/source bound 
    }
    assert.equal((await a.query('SELECT active_revision FROM core_orders WHERE id=$1',[f.orderId])).rows[0].active_revision,3);
    assert.deepEqual(await snapshot(a,f.orderId),{
-    active_revision:3,revisions:3,reviews:3,batches:1,evidence:3,confirmations:0,approvals:0,print_jobs:0,zalo_replies:0
+    active_revision:3,revisions:3,reviews:3,batches:1,evidence:3,ready:false,active_plan:null,
+    confirmations:0,approvals:0,print_jobs:0,zalo_replies:0
    });
    const wrongPayload={...choiceInput,duplex:false};
    await assert.rejects(f.portA.apply(wrongPayload),e=>e.code==='CUSTOMER_PRINT_CHOICE_INVALID_INPUT');
@@ -163,7 +166,8 @@ test('REAL PostgreSQL customer print-choice evidence is scope/hash/source bound 
    assert.equal(evidence[0].request_hash,first.request_hash);
    assert.equal(evidence[1].request_hash,second.request_hash);
    assert.deepEqual(await snapshot(a,f.orderId),{
-    active_revision:4,revisions:4,reviews:2,batches:2,evidence:2,confirmations:0,approvals:0,print_jobs:0,zalo_replies:0
+    active_revision:4,revisions:4,reviews:2,batches:2,evidence:2,ready:false,active_plan:null,
+    confirmations:0,approvals:0,print_jobs:0,zalo_replies:0
    });
   });
 
@@ -230,6 +234,23 @@ test('REAL PostgreSQL customer print-choice evidence is scope/hash/source bound 
     expected_request_hash:tamperedRequestHash,expected_source_sha256:tamperedSourceSha,event_ids:[event]}),
     e=>e.code==='CUSTOMER_PRINT_CHOICE_ADOPTION_TAMPERED');
    assert.deepEqual(await snapshot(a,f.orderId),before);
+  });
+
+  await t.test('sealed-source verifier false and throw fail closed without READY or outbound mutations',async t2=>{
+   for(const [name,verify_sealed_source] of [
+    ['returns false',async()=>false],
+    ['throws',async()=>{throw new Error('synthetic verifier failure');}]
+   ]) await t2.test(name,async()=>{
+    const f=await fixture(),event=await f.addEvent('in 2 bản');
+    const guarded=createCustomerPrintChoicePort({store:storeA,
+     trusted:{shop_id:f.shop,oa_id:f.oa},processor:f.processor,verify_sealed_source});
+    const before=await snapshot(a,f.orderId);
+    assert.equal(before.ready,false);assert.equal(before.active_plan,null);
+    await assert.rejects(guarded.apply({...f.base,event_ids:[event]}),
+     error=>error.code==='CUSTOMER_PRINT_CHOICE_SOURCE_UNVERIFIED');
+    assert.deepEqual(await snapshot(a,f.orderId),before,
+     `verifier ${name} must preserve revisions, evidence, reviews, READY, approvals, print jobs and outbound`);
+   });
   });
 
   await t.test('ambiguous text, repeated field contradiction and existing evidence tamper need review',async()=>{
