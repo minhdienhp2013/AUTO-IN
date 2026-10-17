@@ -128,6 +128,9 @@ test('TN005 cross-shop/OA/customer or tampered intent blocks before Core CAS',as
  const f=fakeCore(),proof=intent();
  assert.deepEqual(await gateFirstPageEnqueue(id,{...proof,text:'OCR PRIVATE FILE'},
   scope,snapshot(),gate,f.core),blocked);
+ assert.deepEqual(await gateFirstPageEnqueue(id,{...proof,
+  text:'Trang đầu có vẻ là đề kiểm tra hoặc đề thi. '+SAFE_FIRST_PAGE_QUESTION},
+  scope,snapshot(),gate,f.core),blocked);
  assert.equal(f.stats().checks,0);
 });
 test('TN005 queued suggestion cancelled by revision/hash/source changes before delivery',async()=>{
