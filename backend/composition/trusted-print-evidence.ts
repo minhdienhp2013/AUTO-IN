@@ -7,7 +7,7 @@ import type { PrintEvidenceScope, PrintEvidenceV1, TrustedPrintEvidencePort } fr
 import type { SqlConnection } from '../storage/database.js';
 
 const MANIFEST_REF = /^doc-[A-Za-z0-9_-]{6,64}\/manifest\.json$/;
-const SOURCE_REF = /^doc-[A-Za-z0-9_-]{6,64}\/source-\d{3}-([a-f0-9]{64})\.pdf$/;
+const SOURCE_REF = /^doc-[A-Za-z0-9_-]{6,64}\/source-\d{3}-([a-f0-9]{64})\.(pdf|docx)$/;
 const PREVIEW_REF = /^doc-[A-Za-z0-9_-]{6,64}\/([a-f0-9]{16})-(\d+)-p([1-9]\d*)\.png$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const MAX_MANIFEST = 256 * 1024;
@@ -168,9 +168,8 @@ function expectedPaperPlan(file: ManifestFile, setting: Record<string, unknown>)
 
 /**
  * Builds the Core evidence tuple from DB-pinned revision rows and actual bytes
- * under the private artifact root. It currently accepts only AI3's verified
- * PDF bridge manifest. Native Word remains held until AI3 publishes a reviewed
- * native Word gate that the Core transaction can authenticate.
+ * under the private artifact root. Word manifests remain review-required; the
+ * separate Core receipt gate must run before customer confirmation or a job.
  */
 export function createTrustedPrintEvidencePort(options: TrustedPrintEvidenceOptions): TrustedPrintEvidencePort {
   if (!options || typeof options.artifactRoot !== 'string' || !options.artifactRoot ||
@@ -211,20 +210,28 @@ export function createTrustedPrintEvidencePort(options: TrustedPrintEvidenceOpti
         const manifest = record(manifestValue);
         // AI3 writes canonical compact JSON. Requiring byte-canonical input also
         // rejects duplicate-key JSON that JSON.parse would otherwise collapse.
+        const nativeWord = manifest?.schema === 'ai3.native_word_preview.v1';
         if (!manifest || Buffer.from(canonical(manifest), 'utf8').compare(manifestBytes) !== 0 ||
-            manifest.schema !== 'ai3.document_bridge.v1' || manifest.request_hash !== scope.request_hash ||
+            !(manifest.schema === 'ai3.document_bridge.v1' || nativeWord) ||
+            manifest.request_hash !== scope.request_hash ||
             !Array.isArray(manifest.files) || !Array.isArray(manifest.previews) ||
             manifest.files.length < 1 || manifest.files.length > 5 ||
             manifest.previews.length < 1 || manifest.previews.length > 15) return null;
+        if (nativeWord && (manifest.revision !== scope.revision || manifest.ready !== false ||
+            manifest.requires_staff_review !== true || manifest.evidence_kind !== 'windows_word_com_preview_only' ||
+            manifest.physical_print_verified !== false || manifest.files.length !== 1)) return null;
+        if (!nativeWord && manifest.schema !== 'ai3.document_bridge.v1') return null;
 
         const settings = settingsFor(row.request_data);
         if (!settings || settings.length !== manifest.files.length) return null;
         const counts = record(manifest.counts);
-        const renderer = record(manifest.renderer_versions);
+        const renderer = record(nativeWord ? manifest.renderer_identity : manifest.renderer_versions);
         const paperPlan = manifest.paper_plan;
         if (!counts || !renderer || !Object.keys(renderer).length ||
             !Array.isArray(paperPlan) || paperPlan.length !== manifest.files.length ||
             !validCorePlan(row.plan, scope, row.manifest_ref, counts)) return null;
+        if (nativeWord && (renderer.engine !== 'microsoft_word_com' ||
+            typeof renderer.version !== 'string' || !renderer.version.trim())) return null;
 
         const sources: PrintEvidenceV1['sources'] = [];
         const expectedPlans: Record<string, unknown>[] = [];
@@ -232,10 +239,13 @@ export function createTrustedPrintEvidencePort(options: TrustedPrintEvidenceOpti
           const file = record(manifest.files[index]) as ManifestFile | null;
           const ref = file?.source_artifact_ref;
           const match = typeof ref === 'string' ? SOURCE_REF.exec(ref) : null;
+          const extension = match?.[2];
+          if (!extension) return null;
           const pagePlan = record(paperPlan[index]);
           const expectedPlan = file && settings[index] ? expectedPaperPlan(file, settings[index]!) : null;
           if (!file || typeof ref !== 'string' || !match || typeof file.file_sha256 !== 'string' ||
               !SHA256.test(file.file_sha256) || match[1] !== file.file_sha256 ||
+              (nativeWord ? extension !== 'docx' : extension !== 'pdf') ||
               !positiveInt(file.size_bytes) || !positiveInt(file.document_pages) ||
               !positiveInt(file.printed_faces) || !positiveInt(file.physical_sheets) ||
               !pagePlan || pagePlan.file_sha256 !== file.file_sha256 ||
@@ -247,8 +257,11 @@ export function createTrustedPrintEvidencePort(options: TrustedPrintEvidenceOpti
               file.settings_sha256 !== hashJson(settings[index])) return null;
           const raw = await readArtifact(root, ref, MAX_SOURCE);
           if (!raw || raw.length !== file.size_bytes || hashBytes(raw) !== file.file_sha256 ||
-              !raw.subarray(0, 5).equals(Buffer.from('%PDF-'))) return null;
-          sources.push({ source_artifact_ref: ref, format: 'PDF',
+              (extension === 'pdf' && !raw.subarray(0, 5).equals(Buffer.from('%PDF-'))) ||
+              (extension === 'docx' && !raw.subarray(0, 2).equals(Buffer.from('PK')))) return null;
+          if (nativeWord ? file.render_method !== 'word_com_native_preview_only' :
+              (typeof file.render_method !== 'string' || !file.render_method.startsWith('pymupdf-'))) return null;
+          sources.push({ source_artifact_ref: ref, format: extension.toUpperCase(),
             size_bytes: raw.length, source_sha256: hashBytes(raw) });
           expectedPlans.push(expectedPlan);
         }
@@ -289,22 +302,24 @@ export function createTrustedPrintEvidencePort(options: TrustedPrintEvidenceOpti
         }
         if (previewsBySource.some(count => count < 1 || count > 3)) return null;
 
-        const filesWithoutRefs = manifest.files.map(value => {
-          const file = record(value);
-          if (!file) return null;
-          const { source_artifact_ref: _source, ...rest } = file;
-          return rest;
-        });
-        const stableManifestProof = {
-          request_hash: scope.request_hash,
-          renderer_versions: renderer,
-          files: filesWithoutRefs,
-          preview_sha256: previewHashes,
-          counts,
-          paper_plan: paperPlan,
-        };
-        if (typeof manifest.content_settings_sha256 !== 'string' ||
-            manifest.content_settings_sha256 !== hashJson(stableManifestProof)) return null;
+        if (!nativeWord) {
+          const filesWithoutRefs = manifest.files.map(value => {
+            const file = record(value);
+            if (!file) return null;
+            const { source_artifact_ref: _source, ...rest } = file;
+            return rest;
+          });
+          const stableManifestProof = {
+            request_hash: scope.request_hash,
+            renderer_versions: renderer,
+            files: filesWithoutRefs,
+            preview_sha256: previewHashes,
+            counts,
+            paper_plan: paperPlan,
+          };
+          if (typeof manifest.content_settings_sha256 !== 'string' ||
+              manifest.content_settings_sha256 !== hashJson(stableManifestProof)) return null;
+        }
 
         const body = {
           schema: 'ai0.print_evidence.v1' as const,

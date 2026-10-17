@@ -119,3 +119,71 @@ test('trusted print evidence is reconstructed from DB-bound PDF, manifest and pr
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('trusted print evidence binds native DOCX and preview while retaining the staff-review hold', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'autoin-trusted-word-evidence-'));
+  try {
+    const folder = 'doc-wordevidence01';
+    await mkdir(join(root, folder), { mode: 0o700 });
+    // Tiny valid OOXML zip with [Content_Types].xml and word/document.xml.
+    const source = Buffer.from('504b03041400000008005b73515df74b8075c200000076010000130000005b436f6e74656e745f54797065735d2e786d6c7d90b90ec2300c865fa5ca8aa8110303a22cc00a0cbc8095ba6d442ec52ec7db93720d0818edfff82c2f0ed7485c5c9cf55ca94e24ce015877e490cb10c967a509c9a1e431b510511fb125984e2633d0c10b7919cbd0a1968b3535d85b293697bc66137ca5125956c5ea611c5895c218add128598793af3f28e327a1ccc9bb873b1379940d0abe1206e537e099db9d28255353b1c7245b74d905e7906aa883ee5d4e96ff6bbedc199ac6687ae787b698822666e35b67cbb7e2d0f8d7fd707ff7f206504b03041400000008005b73515d9e3a674881000000ae00000011000000776f72642f646f63756d656e742e786d6c458e4b0e83300c05af8238408dbae8224a73865e81268644221fd94681db43d2453763799e653d5d95cb768f986438e29658d5f7e8458a0260eb31cefcc805d39d2d99e22cf74a2bd44cae50b6c81cd21a37784ed30be21cd2687455dfecce364b033588e1338947097658c2213ba186a61ba9b31f335af91074f1fb02ff86e602504b010214031400000008005b73515df74b8075c2000000760100001300000000000000000000008001000000005b436f6e74656e745f54797065735d2e786d6c504b010214031400000008005b73515d9e3a674881000000ae0000001100000000000000000000008001f3000000776f72642f646f63756d656e742e786d6c504b0506000000000200020080000000a30100000000', 'hex');
+    const sourceSha = digest(source);
+    const manifestRef = `${folder}/manifest.json`;
+    const sourceRef = `${folder}/source-000-${sourceSha}.docx`;
+    const preview = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 1, 2, 3]);
+    const previewSha = digest(preview);
+    const previewRef = `${folder}/${sourceSha.slice(0, 16)}-0-p1.png`;
+    const requestData = { documents: [{ artifact_name: 'incoming/minimal.docx', copies: 1,
+      duplex: false, paper: 'A4', orientation: 'portrait' }] };
+    const requestHash = jsonDigest(requestData);
+    const settings = { copies: 1, duplex: false, paper: 'A4', orientation: 'portrait' };
+    const paperPlan = { file_sha256: sourceSha, document_pages: 1, selected_pages: [1],
+      copies: 1, duplex: false, paper: 'A4', orientation: 'portrait', binding: 'long_edge',
+      scale_mode: 'shrink_to_printable_area_only', printed_faces: 1, physical_sheets: 1,
+      separate_each_file_and_copy: true };
+    const counts = { document_pages: 1, printed_faces: 1, physical_sheets: 1,
+      requires_price_confirmation: false };
+    const renderer = { engine: 'microsoft_word_com', version: '16.0' };
+    const file = { source_artifact_ref: sourceRef, file_sha256: sourceSha, size_bytes: source.length,
+      settings_sha256: jsonDigest(settings), render_method: 'word_com_native_preview_only',
+      document_pages: 1, printed_faces: 1, physical_sheets: 1 };
+    const manifest = { schema: 'ai3.native_word_preview.v1', revision: 1, request_hash: requestHash,
+      files: [file], previews: [{ ref: previewRef, sha256: previewSha, bytes: preview.length }],
+      paper_plan: [paperPlan], counts, evidence_kind: 'windows_word_com_preview_only',
+      renderer_identity: renderer, ready: false, requires_staff_review: true,
+      physical_print_verified: false };
+    const manifestBytes = Buffer.from(canonical(manifest), 'utf8');
+    const manifestSha = digest(manifestBytes);
+    await writeFile(join(root, sourceRef), source, { mode: 0o400 });
+    await writeFile(join(root, previewRef), preview, { mode: 0o400 });
+    await writeFile(join(root, manifestRef), manifestBytes, { mode: 0o400 });
+    const plan: PrintPlan = { request_hash: requestHash, physical_sheets: 1,
+      document_pages: 1, printed_faces: 1, ready: true, printer_id: 'RMP7000',
+      artifact_ref: manifestRef, verified_by: 'ai3.native_word_preview.v1' };
+    const scope: PrintEvidenceScope = { shop_id: 'synthetic-shop',
+      order_id: '00000000-0000-4000-8000-000000000002', revision: 1, request_hash: requestHash, plan };
+    const row = { active_revision: 1, mode: 'simulation', request_hash: requestHash,
+      request_data: requestData, plan, manifest_ref: manifestRef, manifest_sha256: manifestSha };
+    const db = { query: async <T>() => ({ rows: [row as T], rowCount: 1 }), release() {} } as SqlConnection;
+    const port = createTrustedPrintEvidencePort({ artifactRoot: root,
+      printerCapabilities: { simulation_only: true, printer_id: 'RMP7000', queue_name: 'RMP7000' } });
+
+    const proof = await port.read_verified(db, scope);
+    assert.ok(proof);
+    assert.equal(proof.sources[0]?.format, 'DOCX');
+    assert.equal(proof.sources[0]?.source_sha256, sourceSha);
+    assert.equal(proof.renderer_sha256, jsonDigest(renderer));
+    assert.equal(checkedEvidence(scope, proof), proof.evidence_sha256);
+
+    const wrongReadyManifest = Buffer.from(canonical({ ...manifest, ready: true }), 'utf8');
+    const manifestPath = join(root, manifestRef);
+    await chmod(manifestPath, 0o600);
+    await writeFile(manifestPath, wrongReadyManifest);
+    await chmod(manifestPath, 0o400);
+    row.manifest_sha256 = digest(wrongReadyManifest);
+    assert.equal(await port.read_verified(db, scope), null,
+      'a native Word manifest may provide evidence for review only while ready=false and staff review is required');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

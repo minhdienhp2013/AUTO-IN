@@ -13,6 +13,8 @@ interface PlanProof {
 }
 interface PreviewEntry { ref?: unknown; sha256?: unknown; bytes?: unknown }
 const digest = (value: Buffer) => createHash('sha256').update(value).digest('hex');
+const record = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const denied = (code: string, status = 409): never => {
   throw new DomainError(code, 'Verified preview is unavailable', status);
 };
@@ -69,7 +71,7 @@ function validPreviewEntry(root: string, entry: PreviewEntry | undefined, prefix
       !entry.ref.endsWith('.png') || typeof entry.sha256 !== 'string' ||
       !/^[a-f0-9]{64}$/.test(entry.sha256) ||
       typeof entry.bytes !== 'number' || !Number.isSafeInteger(entry.bytes) ||
-      entry.bytes < 8 || entry.bytes > 8*1024*1024) return false;
+      entry.bytes < 8 || entry.bytes > 10*1024*1024) return false;
   checkedRef(root, entry.ref, prefix);
   return true;
 }
@@ -103,11 +105,21 @@ async function readVerifiedManifest(
   catch {return denied('PREVIEW_MANIFEST_INVALID');}
   if (!parsed || typeof parsed!=='object' || Array.isArray(parsed))
     return denied('PREVIEW_MANIFEST_INVALID');
-  const manifest=parsed as {schema?:unknown;request_hash?:unknown;previews?:unknown;files?:unknown;paper_plan?:unknown;counts?:unknown};
-  if (manifest.schema!=='ai3.document_bridge.v1' ||
+  const manifest=parsed as {schema?:unknown;revision?:unknown;ready?:unknown;requires_staff_review?:unknown;
+    evidence_kind?:unknown;physical_print_verified?:unknown;renderer_identity?:unknown;request_hash?:unknown;
+    previews?:unknown;files?:unknown;paper_plan?:unknown;counts?:unknown};
+  const nativeWord=manifest.schema==='ai3.native_word_preview.v1';
+  const wordRenderer=record(manifest.renderer_identity);
+  if (!(manifest.schema==='ai3.document_bridge.v1'||nativeWord) ||
       manifest.request_hash!==proof.request_hash || !Array.isArray(manifest.previews) ||
       manifest.previews.length < 1 || manifest.previews.length > 15)
     return denied('PREVIEW_MANIFEST_INVALID');
+  if(nativeWord && (manifest.revision!==revision || manifest.ready!==false ||
+      manifest.requires_staff_review!==true || manifest.evidence_kind!=='windows_word_com_preview_only' ||
+      manifest.physical_print_verified!==false || !wordRenderer ||
+      wordRenderer.engine!=='microsoft_word_com' || typeof wordRenderer.version!=='string' ||
+      !wordRenderer.version.trim()))
+    return denied('WORD_REVIEW_REQUIRED');
   const prefix=proof.artifact_ref.split('/')[0]!;
   const entries=manifest.previews as PreviewEntry[];
   if (entries.some(entry=>!validPreviewEntry(artifactRoot,entry,prefix)))
@@ -119,7 +131,7 @@ async function readVerifiedManifest(
   if(manifest.files !== undefined || manifest.paper_plan !== undefined) {
     if(!Array.isArray(manifest.files) || !Array.isArray(manifest.paper_plan) ||
        manifest.files.length<1 || manifest.files.length>5 ||
-       manifest.paper_plan.length!==manifest.files.length)
+       manifest.paper_plan.length!==manifest.files.length || (nativeWord&&manifest.files.length!==1))
       return denied('UNTRUSTED_DOCUMENT_FACTS');
     const positive=(value:unknown,max:number)=>typeof value==='number' &&
       Number.isSafeInteger(value) && value>0 && value<=max;
@@ -133,6 +145,9 @@ async function readVerifiedManifest(
       const sourceRef=src.source_artifact_ref;
       if(typeof sourceRef!=='string' ||
          !/^doc-[A-Za-z0-9_-]{6,64}\/source-\d{3}-[a-f0-9]{64}\.(pdf|png|jpg|jpeg|tif|tiff|webp|bmp|docx|zip)$/.test(sourceRef) ||
+         (nativeWord&&!sourceRef.endsWith('.docx')) ||
+         (nativeWord&&src.render_method!=='word_com_native_preview_only') ||
+         (nativeWord&&(typeof src.settings_sha256!=='string'||! /^[a-f0-9]{64}$/.test(src.settings_sha256))) ||
          sourceRef.split('/')[0]!==prefix ||
          !/^[a-f0-9]{64}$/.test(String(src.file_sha256)) ||
          !sourceRef.includes('-'+src.file_sha256+'.') ||
@@ -152,7 +167,8 @@ async function readVerifiedManifest(
         return denied('UNTRUSTED_DOCUMENT_FACTS');
       // Reject a swapped source snapshot, even if the raster itself is unchanged.
       const source=await secureRead(artifactRoot,sourceRef,25*1024*1024);
-      if(source.length!==src.size_bytes || digest(source)!==src.file_sha256)
+      if(source.length!==src.size_bytes || digest(source)!==src.file_sha256 ||
+         (nativeWord&&!source.subarray(0,2).equals(Buffer.from('PK'))))
         return denied('DOCUMENT_SOURCE_CHANGED');
       const warnings=src.warnings;
       if(warnings!==undefined &&
@@ -184,7 +200,7 @@ async function readVerifiedManifest(
   return {proof,entries,prefix,files};
 }
 async function verifiedImage(root:string, entry:PreviewEntry & {ref:string;sha256:string;bytes:number}):Promise<Buffer> {
-  const bytes=await secureRead(root,entry.ref,8*1024*1024);
+  const bytes=await secureRead(root,entry.ref,10*1024*1024);
   if (bytes.length!==entry.bytes || digest(bytes)!==entry.sha256 ||
       !bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))
     return denied('PREVIEW_BYTES_CHANGED');
