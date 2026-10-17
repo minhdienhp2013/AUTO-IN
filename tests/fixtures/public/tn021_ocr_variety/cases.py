@@ -104,7 +104,8 @@ def text_for_case(case):
     if variant in (4, 5, 6, 7):
         return ["Báo cáo kiểm thử bộ phân loại", "Ví dụ trích dẫn từ giấy học tập",
                 "Bài tập Toán", "Họ tên: Người giả lập", "Câu 1: Điền kết quả",
-                "Các dòng trên chỉ là ví dụ, không phải tên tài liệu chính"]
+                "Các dòng trên chỉ là ví dụ, không phải tên tài liệu chính",
+                "Mã ví dụ tổng hợp: " + case["id"]]
     if variant in (8, 9, 10, 11):
         return ["Bài tập Toán", "Nội dung giới thiệu", "Không có câu hỏi hoặc ô họ tên", "Trang bìa"]
     if variant in (12, 13, 14, 15):
