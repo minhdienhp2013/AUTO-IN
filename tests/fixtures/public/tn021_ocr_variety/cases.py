@@ -143,7 +143,7 @@ def _text_pdf(lines, font_path, case):
                              fontname="TN021", color=(0.1, 0.1, 0.1))
         # 10 documents intentionally have a conflicting class on page 2;
         # classifier must never inspect the second page.
-        if int(case["id"][-3:]) % 10 == 0:
+        if case["variant"] == 2 or (case["expected"] == "UNKNOWN" and case["variant"] == 3):
             decoy = document.new_page()
             decoy.insert_font(fontname="TN021", fontfile=str(font_path))
             for j, text in enumerate(["Đề thi Toán", "Thời gian: 60 phút", "Câu 1: Tính toán"]):
