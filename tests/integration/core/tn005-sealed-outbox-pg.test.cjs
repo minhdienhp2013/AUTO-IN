@@ -167,6 +167,21 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
    assert.equal(await state(f.input.outbound_id),'QUEUED','foreign row remains untouched');
    assert.equal(sends,0);
   });
+  await t.test('same shop but different OA is outside tick scope and never reaches sender',async()=>{
+   const foreignOa='oa-'+uuid(),foreignCustomer='customer-'+uuid();
+   const foreign=createTn005SealedOutbox({store:new PgStore(b),trusted:{shop_id:shop,oa_id:foreignOa},
+    verify_sealed_source:async binding=>binding.shop_id===shop&&binding.oa_id===foreignOa&&
+     binding.request_hash===requestHash&&binding.source_sha256===sourceSha&&binding.artifact_ref===file});
+   const f=await fixture({shopId:shop,oaId:foreignOa,customerId:foreignCustomer});
+   await foreign.enqueue(f.input);
+   assert.equal(await p1.reserve(f.input.outbound_id),null,'Core fixed to original OA cannot reserve same-shop foreign-OA row');
+   let sends=0;
+   const tick=createSyntheticTn005SuggestedOutboxTick({pool:a,trusted,core:p1,
+    sender:{kind:'synthetic_test',async send_text(){sends++;}}});
+   assert.deepEqual(await tick.tick(),{selected:0,sent:0,blocked:0,unknown:0});
+   assert.equal(await state(f.input.outbound_id),'QUEUED','foreign-OA row remains unchanged');
+   assert.equal(sends,0);
+  });
   await t.test('tick records sender timeout as UNKNOWN and a later tick does not retry',async()=>{
    const f=await fixture();await p1.enqueue(f.input);let sends=0;
    const tick=createSyntheticTn005SuggestedOutboxTick({pool:a,trusted,core:p1,
