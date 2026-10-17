@@ -30,7 +30,7 @@ def manifest():
     assert data["schema"]==VERSION
     cases=data["cases"]
     assert len(cases)==27 and len({c["id"] for c in cases})==27
-    assert len({c["key"] for c in cases})==24
+    assert len({c["key"] for c in cases})==27
     assert [c["id"] for c in cases]==[f"V1-{i:03d}" for i in range(1,28)]
     assert {c["expected"] for c in cases}==STATUS
     for case in cases:
