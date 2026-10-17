@@ -152,11 +152,7 @@ test('TN005 malformed, failed, or replayed Core response cannot authorize sendin
   {status:'queued',outbound_id:'unrelated'},{status:'queued',outbound_id:id,extra:'x'}]){
   const f={async compare_and_enqueue_suggested(){return response}};
   const result=await gateFirstPageEnqueue(id,proof,scope,snapshot(),gate,f);
-  // 'queued' with extra is only allowed if Core contract is independently
-  // trusted. This fixture does not treat those extra fields as evidence.
-  if(response?.status==='queued'&&response.outbound_id===id)
-    assert.equal(result.status,'queued');
-  else assert.deepEqual(result,blocked);
+  assert.deepEqual(result,blocked); // malformed/extra fields never authorize
  }
  const failing={async compare_and_enqueue_suggested(){throw Error('PRIVATE DOCUMENT')},
   async compare_reserved_before_provider_io(){throw Error('PRIVATE DOCUMENT')}};
