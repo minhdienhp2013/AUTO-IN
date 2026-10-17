@@ -19,6 +19,15 @@ test('factory requires PostgreSQL port and trusted resolvers; no test principal 
  assert.equal(typeof module.auth.login,'function');
  assert.throws(()=>module.registerRoutes(capture().registrar,null),e=>e.code==='VERIFIED_IDENTITY_PORTS_REQUIRED');
 });
+test('V1 factory requires and forwards the server-owned evidence verifier; legacy mode remains available',()=>{
+ const evidence={read_verified:async()=>null};
+ const v1=createCoreModule({pool:noopPool,mode:'v1',evidence});
+ assert.equal(v1.service.evidence,evidence,'Core must receive the exact factory-injected verifier');
+ assert.throws(()=>createCoreModule({pool:noopPool,mode:'v1'}),e=>e.code==='PRINT_EVIDENCE_NOT_CONFIGURED');
+ assert.throws(()=>createCoreModule({pool:noopPool,mode:'v1',evidence:{}}),e=>e.code==='PRINT_EVIDENCE_NOT_CONFIGURED');
+ assert.throws(()=>createCoreModule({pool:noopPool,evidence}),e=>e.code==='V1_MODE_REQUIRED');
+ assert.equal(typeof createCoreModule({pool:noopPool}).service.claim,'function');
+});
 test('factory registers one complete AI1 route set with fail-closed customer and print agent ports',async()=>{
  const mod=createCoreModule({pool:noopPool});
  const {routes,registrar}=capture();
