@@ -6,7 +6,11 @@ import { canApproveAfterInboundReview, canEditPrintRequest, enrichOrderWithCode0
 
 const order=(id:string,customer_id='cust1',conversation_id='conv1')=>({ ...structuredClone(demoOrders[0]), order_id:id,
   customer_id,conversation_id,detail_loaded:true,manual_lock:false,order_state:'confirmed' as const,
-  print_state:'NOT_SENT' as const});
+  print_state:'NOT_SENT' as const,
+  print_evidence:{schema:'ai0.print_evidence.v1' as const,order_id:id,revision:demoOrders[0].revision,
+    request_hash:demoOrders[0].request_hash,evidence_sha256:'a'.repeat(64)},
+  preview_review:{status:'matching' as const,order_id:id,revision:demoOrders[0].revision,
+    request_hash:demoOrders[0].request_hash,evidence_sha256:'a'.repeat(64)}});
 const pending=(o:ReturnType<typeof order>,status:'clear'|'processing'|'needs_human',count:number,items:unknown[]=[])=>({
   order:{id:o.order_id,active_revision:o.revision,customer_id:o.customer_id},
   current:{revision:o.revision,request_hash:o.request_hash,pending_updates:{order_id:o.order_id,revision:o.revision,

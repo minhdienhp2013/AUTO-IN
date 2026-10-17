@@ -90,8 +90,19 @@ export function hasClearPendingInbound(order: Code008OrderView): boolean {
   return order.detail_loaded === true && order.pending_updates?.state === 'clear' &&
     order.pending_updates.unresolved_count === 0 && order.pending_updates.items.length === 0;
 }
+export function hasCurrentPreviewReceipt(order: Code008OrderView): boolean {
+  const evidence = order.print_evidence;
+  const review = order.preview_review;
+  return evidence?.schema === 'ai0.print_evidence.v1' &&
+    evidence.order_id === order.order_id && evidence.revision === order.revision &&
+    evidence.request_hash === order.request_hash && /^[0-9a-f]{64}$/.test(evidence.evidence_sha256) &&
+    review?.status === 'matching' && review.order_id === order.order_id &&
+    review.revision === order.revision && review.request_hash === order.request_hash &&
+    review.evidence_sha256 === evidence.evidence_sha256;
+}
 export function canApproveAfterInboundReview(order: Code008OrderView): boolean {
-  return hasClearPendingInbound(order) && hasValidApprovalInputs(order);
+  return hasClearPendingInbound(order) && hasCurrentPreviewReceipt(order) &&
+    hasValidApprovalInputs(order);
 }
 export function canEditPrintRequest(order: Code008OrderView): boolean {
   return !order.manual_lock && order.print_state === 'NOT_SENT' &&

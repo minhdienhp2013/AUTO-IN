@@ -18,6 +18,8 @@ import { canEditShopSchedule, draftFromSchedule, saveShopScheduleAndRead, schedu
 import { canApproveAfterInboundReview, canEditPrintRequest, groupOpenOrdersByChat, hasClearPendingInbound,
   requiresCustomerReconfirmation } from './code008.ts';
 import { manualRouteLabel, pendingStaffQueue, routeVerifiedDocument } from './v1-routing.ts';
+import { previewReviewBlock, previewReviewBlockMessage, previewReviewErrorMessage,
+  previewReviewSequence } from './preview-review.ts';
 
 type View = 'orders' | 'overview' | 'settings';
 type DetailTab = 'document' | 'activity';
@@ -351,7 +353,7 @@ function App() {
                   <div><strong>Yêu cầu khách</strong><span data-testid="confirmation-request">{confirmation.request==='confirmed'?'Khách đã xác nhận đúng phiên bản/hash':'Chưa có xác nhận khách đúng phiên bản/hash'}</span></div>
                   <div><strong>Xác nhận giá</strong><span data-testid="confirmation-price">{confirmation.price==='not_required'?'Không cần xác nhận giá riêng':confirmation.price==='confirmed'?'Đã xác nhận đúng phiên bản báo giá':'Chưa xác nhận giá cho đơn trên 150 tờ hoặc chi phí đáng kể'}</span></div>
                   <div><strong>Duyệt của nhân viên</strong><span data-testid="confirmation-staff">{({
-                    waiting_customer:'Chờ xác nhận từ khách',waiting_price:'Chờ khách xác nhận giá',waiting_preview:'Cần bản xem trước/file đã kiểm chứng trước khi duyệt',
+                    waiting_customer:'Chờ xác nhận từ khách',waiting_price:'Chờ khách xác nhận giá',waiting_preview:'Cần nhân viên kiểm preview đúng snapshot trước khi duyệt',
                     waiting_staff:apiHealthy&&hasClearPendingInbound(selectedOrder)?'Sẵn sàng để NHÂN VIÊN duyệt':'Chờ đối soát tin/file trước khi NHÂN VIÊN duyệt',already_approved:'Nhân viên đã duyệt trên máy chủ',
                     blocked:'Chưa thể duyệt: lệnh đã gửi/chưa rõ hoặc đơn bị khóa'
                   } as const)[confirmation.staff]}</span></div>
@@ -360,7 +362,7 @@ function App() {
                 <div className="detail-tabs" role="tablist"><button role="tab" aria-selected={detailTab==='document'} className={detailTab==='document'?'on':''} onClick={()=>setDetailTab('document')}><FileText size={17}/> Tài liệu & duyệt</button><button role="tab" aria-selected={detailTab==='activity'} className={detailTab==='activity'?'on':''} onClick={()=>setDetailTab('activity')}><History size={17}/> Lịch sử ({selectedOrder.audit.length})</button></div>
                 {detailTab==='activity' ? <div className="activity-content">{selectedOrder.audit.length === 0 ? <div className="empty-panel">Chưa có dữ liệu lịch sử từ API (không tự suy đoán).</div> : selectedOrder.audit.map((row,i)=><div className="activity" key={`${row.at}-${i}`}><span className="activity-dot"/><div><strong>{row.action}</strong><p>{row.summary}</p><small>{row.actor} · {time(row.at)}</small></div></div>)}</div> : <div className="detail-scroll">
                   <div className="section-head"><h3><FileText size={18}/> Tài liệu đính kèm</h3><span>{selectedOrder.documents.length} file</span></div>
-                  {!useDemo && <VerifiedPreviewGallery key={`${selectedOrder.order_id}:${selectedOrder.revision}:${selectedOrder.request_hash}`} port={port} order={selectedOrder}/>}
+                  {!useDemo && <VerifiedPreviewGallery key={`${selectedOrder.order_id}:${selectedOrder.revision}:${selectedOrder.request_hash}`} port={port} order={selectedOrder} session={session} apiHealthy={apiHealthy} busy={busy} onFreshOrder={fresh=>setOrders(prev=>prev.map(o=>o.order_id===fresh.order_id?fresh:o))}/>}
                   {selectedOrder.documents.map(d=><div className="doc-box" key={d.document_id}><div className="doc-primary"><div className="file-icon"><FileText size={23}/></div><div className="doc-name"><strong>{d.filename}</strong><small>{d.format} · {d.paper} · {d.orientation==='portrait'?'Dọc':'Ngang'} · {d.duplex?'Hai mặt':'Một mặt'} · {d.copies} bản</small></div>{d.preview_trusted ? <span className="verified-label"><ShieldCheck size={15}/> Đã kiểm</span> : <span className="invalid-label"><AlertCircle size={15}/> Chưa tin cậy</span>}</div>
                     <div className="doc-stats"><div><span>Trang gốc</span><b>{d.pages ?? '—'}</b></div><div><span>Mặt in</span><b>{d.printed_faces ?? '—'}</b></div><div><span>Tờ giấy</span><b>{d.physical_sheets ?? '—'}</b></div></div>
                     <Preview url={d.preview_url} trusted={d.preview_trusted}/>{d.warnings.map((w,i)=><p className="inline-warning" key={i}><AlertCircle size={15}/> {w}</p>)}
@@ -388,7 +390,7 @@ function App() {
                   <div className="manual-line"><label>Lý do khóa tự động (bắt buộc)<input className="sheets-input" style={{width:'100%',marginTop:8}} value={manualReason} onChange={e=>setManualReason(e.target.value)} placeholder="Ví dụ: chuyển nhân viên xử lý ngoài app" disabled={busy}/></label><label><input type="checkbox" checked={confirmManual} onChange={e=>setConfirmManual(e.target.checked)} /> Tôi đã kiểm tra lệnh chưa gửi, xác nhận khóa tự động trước khi in ngoài ứng dụng.</label><button className="outline-btn danger-outline" disabled={!confirmManual||!manualReason.trim()||busy||!canWork||selectedOrder.print_state!=='NOT_SENT'||selectedOrder.manual_lock} onClick={()=>void act('manual',{reason:manualReason.trim()},'Đã đặt khóa xử lý thủ công')}><LockKeyhole size={16}/> Xử lý thủ công</button></div>
                   <div className="owner-note"><ShieldCheck size={17}/> In lại/in bổ sung và đóng ngoại lệ đã in/có cọc chỉ dành cho chủ; chờ API riêng và đối soát, không có lối tắt trên giao diện.</div>
                 </div>}
-                {detailTab==='document' && <div className="approve-footer"><div className="approval-copy"><strong>Phê duyệt phiên bản {selectedOrder.revision}</strong><small>{selectedOrder.confirmed_revision===selectedOrder.revision?'Khách đã xác nhận đúng phiên bản':useDemo?'Khách chưa xác nhận phiên bản hiện tại':'Khách cần xác nhận phiên bản hiện hành'} · cần preview tin cậy và hàng đợi bổ sung đã đối soát</small>
+                {detailTab==='document' && <div className="approve-footer"><div className="approval-copy"><strong>Phê duyệt phiên bản {selectedOrder.revision}</strong><small>{selectedOrder.confirmed_revision===selectedOrder.revision?'Khách đã xác nhận đúng phiên bản':useDemo?'Khách chưa xác nhận phiên bản hiện tại':'Khách cần xác nhận phiên bản hiện hành'} · cần receipt kiểm preview đúng evidence và hàng đợi bổ sung đã đối soát</small>
                   {depositShortfall(selectedOrder)>0 && <label className="acknowledge"><input type="checkbox" checked={depositAck} onChange={e=>setDepositAck(e.target.checked)}/> Đã đọc cảnh báo thiếu cọc {money(depositShortfall(selectedOrder))}</label>}</div>
                   <button data-testid="approve-action" className="primary approve" disabled={!canApprove || busy || (depositShortfall(selectedOrder)>0&&!depositAck)} onClick={()=>void act('approve',{acknowledge_deposit_shortage:depositAck,...(selectedOrder.quote_revision!==null?{quote_revision:selectedOrder.quote_revision}:{})},'Đã duyệt đúng phiên bản')}><ShieldCheck size={19}/> {busy?'Đang xử lý…':'Duyệt lệnh in'}</button>
                 </div>}
@@ -406,16 +408,26 @@ function Axis({title,label,warn=false}:{title:string;label:string;warn?:boolean}
 /** Preview is *only* a read-only staff aid. This never sets DocumentView.preview_trusted
  * and never changes hasValidApprovalInputs/confirmed_revision/order approval.
  * Object URLs are ephemeral, never persisted or placed in a request URL. */
-function VerifiedPreviewGallery({port,order}:{port:PrintPort;order:OrderView}) {
+function VerifiedPreviewGallery({port,order,session,apiHealthy,busy,onFreshOrder}:{port:PrintPort;order:OrderView;session:StaffSession|null;apiHealthy:boolean;busy:boolean;onFreshOrder:(fresh:OrderView)=>void}) {
   const [urls,setUrls]=useState<string[]>([]);
   const [facts,setFacts]=useState<VerifiedFileFact[]>([]);
   const [status,setStatus]=useState<'loading'|'verified'|'unavailable'>('loading');
+  const [checked,setChecked]=useState(false);
+  const [reviewBusy,setReviewBusy]=useState(false);
+  const [reviewError,setReviewError]=useState<string|null>(null);
+  const [reviewNotice,setReviewNotice]=useState<string|null>(null);
+  const reviewLock=useRef(false);
+  const reviewKey=useRef<{fingerprint:string;key:string}|null>(null);
   useEffect(()=>{
     let cancelled=false;
     const owned:string[]=[];
     setUrls([]);
     setFacts([]);
     setStatus('loading');
+    setChecked(false);
+    setReviewError(null);
+    setReviewNotice(null);
+    reviewKey.current=null;
     void port.loadVerifiedPreviewPages(order).then(({pages,files})=>{
       if(cancelled) return;
       if(!pages.length){setStatus('unavailable');return;}
@@ -432,6 +444,43 @@ function VerifiedPreviewGallery({port,order}:{port:PrintPort;order:OrderView}) {
       owned.forEach(url=>URL.revokeObjectURL(url));
     };
   },[port,order.order_id,order.revision,order.request_hash]);
+  const evidenceSha=order.print_evidence?.evidence_sha256??'';
+  const block=previewReviewBlock({order,staff:session,apiHealthy,simulation:useDemo,
+    previewVerified:status==='verified',previewPages:urls.length,previewFiles:facts,
+    checked,busy:busy||reviewBusy});
+  const sequence=previewReviewSequence(order);
+  const canRenderReviewAction=Boolean(session&&session.can_approve&&['staff','owner'].includes(session.role));
+  const submitReview=async()=>{
+    if(reviewLock.current||block!=='allowed'||!evidenceSha)return;
+    reviewLock.current=true;
+    setReviewBusy(true);setReviewError(null);setReviewNotice(null);
+    const fingerprint=[order.order_id,order.revision,order.request_hash,evidenceSha].join('|');
+    if(reviewKey.current?.fingerprint!==fingerprint)
+      reviewKey.current={fingerprint,key:newMutationKey()};
+    const key=reviewKey.current.key;
+    try{
+      const fresh=await port.reviewPreview(order,evidenceSha,key);
+      reviewKey.current=null;
+      onFreshOrder(fresh);
+      setChecked(false);
+      setReviewNotice('Máy chủ đã xác nhận receipt nhân viên khớp revision, request hash và evidence SHA hiện hành.');
+    }catch(error){
+      const fault=error as ApiFault;
+      setReviewError(previewReviewErrorMessage(fault.code??'UNKNOWN',fault.message??'Không ghi được receipt kiểm preview.'));
+      if(fault.status===401){reviewKey.current=null;}
+      if(fault.status===0||fault.status===409||fault.status===503){
+        try{
+          const fresh=await port.getOrder(order.order_id);
+          onFreshOrder(fresh);
+          if(fresh.preview_review?.status==='matching'&&fresh.print_evidence?.evidence_sha256===evidenceSha){
+            reviewKey.current=null;
+            setReviewNotice('Đã tải lại và xác minh receipt đã được lưu trên máy chủ.');
+            setReviewError(null);
+          }
+        }catch{/* Preserve the original error; do not retry the write automatically. */}
+      }
+    }finally{reviewLock.current=false;setReviewBusy(false);}
+  };
   return <section className="verified-previews" data-testid="verified-preview-gallery" aria-label="Ảnh xem trước đã xác minh">
     <strong><ShieldCheck size={15}/> Xem trước bản raster theo phiên bản {order.revision}</strong>
     {status==='loading' && <p role="status">Đang kiểm tra manifest, SHA-256 và quyền đọc ảnh…</p>}
@@ -462,6 +511,44 @@ function VerifiedPreviewGallery({port,order}:{port:PrintPort;order:OrderView}) {
         <figcaption>Trang {index+1}/{urls.length} · đã kiểm tra SHA-256</figcaption>
       </figure>)}
     </div>}
+    <section className="preview-review-workflow" data-testid="preview-review-workflow" aria-label="Kiểm preview, xác nhận khách và duyệt riêng">
+      <h4>Trình tự Word/PDF V1</h4>
+      <div className="preview-review-snapshot" data-testid="preview-review-snapshot">
+        <b>Snapshot hiện hành</b><span>Revision {order.revision}</span>
+        <span>Request hash: <code>{order.request_hash||'chưa có'}</code></span>
+        <span>Evidence SHA-256: <code>{evidenceSha||'chưa được máy chủ cấp'}</code></span>
+      </div>
+      <ol className="preview-review-steps">
+        <li data-testid="preview-review-step-staff"><b>1. Nhân viên kiểm tra preview</b><span>{sequence.staff_preview==='complete'
+          ? `Đã có receipt khớp snapshot${order.preview_review?.reviewer_id?` · nhân viên ${order.preview_review.reviewer_id}`:''}.`
+          : sequence.staff_preview==='blocked'?'Chưa có evidence máy chủ; chưa thể kiểm tra/ghi receipt.':'Cần nhân viên xác thực xem các trang và thông số trước khi tiếp tục.'}</span>
+          {order.preview_review?.status==='missing'&&<small data-testid="preview-review-missing">Chưa có receipt cho snapshot hiện hành.</small>}
+          {order.preview_review?.status==='stale'&&<small className="preview-review-stale" data-testid="preview-review-stale">Receipt cũ: revision {order.preview_review.revision??'không rõ'} / hash không khớp snapshot hiện hành. Cần kiểm tra lại preview.</small>}
+          {order.preview_review?.status==='unavailable'&&<small data-testid="preview-review-unavailable">Không đọc được trạng thái evidence/receipt từ API hiện hành.</small>}
+          {status==='verified'&&facts.some(f=>f.warnings.length>0)&&<small className="preview-review-stale" data-testid="preview-review-renderer-warnings">AI3 có cảnh báo: {facts.flatMap(f=>f.warnings).join(', ')}. Nếu font, bố cục hoặc thông số còn chưa chắc chắn, giữ đơn để xử lý thủ công.</small>}
+          {canRenderReviewAction&&sequence.staff_preview!=='complete'&&<>
+            {status==='verified'&&urls.length>0&&facts.length>0&&facts.every(f=>routeVerifiedDocument(f)!=='staff_only')&&<label className="preview-review-ack"><input data-testid="preview-review-ack" type="checkbox" checked={checked} onChange={e=>setChecked(e.target.checked)} disabled={busy||reviewBusy}/><span>Tôi đã xem toàn bộ preview và thông số; tôi sẽ giữ đơn chuyển xử lý thủ công nếu phát hiện lỗi hoặc còn điểm chưa chắc chắn.</span></label>}
+            <button data-testid="preview-review-action" className="outline-btn" disabled={block!=='allowed'} onClick={()=>void submitReview()}>
+              <ClipboardCheck size={16}/>{reviewBusy?'Đang ghi nhận…':order.preview_review?.status==='stale'?'Kiểm tra lại preview hiện hành':'Ghi nhận đã kiểm tra preview'}
+            </button>
+            {block!=='allowed'&&<small data-testid="preview-review-disabled-reason">{previewReviewBlockMessage(block)}</small>}
+          </>}
+          {!canRenderReviewAction&&<small data-testid="preview-review-permission">Thao tác chỉ dành cho nhân viên/chủ đã đăng nhập và được cấp quyền.</small>}
+        </li>
+        <li data-testid="preview-review-step-customer"><b>2. Khách xác nhận đúng phiên bản</b><span>{sequence.customer_confirmation==='complete'
+          ?'Máy chủ đã ghi nhận khách xác nhận đúng revision/hash hiện hành.'
+          :sequence.customer_confirmation==='next'
+            ?'Bước tiếp theo: yêu cầu khách xác nhận qua luồng hiện có. Màn hình này không tự gửi tin Zalo/OA.'
+            :'Chỉ yêu cầu khách xác nhận sau khi nhân viên đã kiểm tra đúng preview hiện hành.'}</span></li>
+        <li data-testid="preview-review-step-approval"><b>3. Nhân viên duyệt lệnh in — thao tác riêng</b><span>{sequence.staff_approval==='complete'
+          ?'Máy chủ ghi nhận duyệt riêng; trạng thái này không xác nhận đã in.'
+          :sequence.staff_approval==='ready'
+            ?'Đủ dữ liệu để nhân viên dùng nút “Duyệt lệnh in” riêng bên dưới.'
+            :'Chưa thể duyệt; cần receipt hiện hành, xác nhận khách và các cổng an toàn khác.'}</span></li>
+      </ol>
+      {reviewError&&<p className="preview-review-error" role="alert" data-testid="preview-review-error">{reviewError}</p>}
+      {reviewNotice&&<p className="preview-review-notice" role="status" data-testid="preview-review-notice">{reviewNotice}</p>}
+    </section>
     <p className="preview-disclaimer">Ảnh xem trước không phải xác nhận của khách và không chứng minh đã in hoặc giao giấy thật.</p>
   </section>;
 }

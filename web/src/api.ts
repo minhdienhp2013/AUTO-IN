@@ -2,6 +2,7 @@ import { actionPath, depositShortfall, hasValidApprovalInputs, validMoney, type 
 import { demoOrders, demoSession } from './fixtures.ts';
 import { canEditPrintRequest, enrichOrderWithCode008 } from './code008.ts';
 import { parseServerManualQueue } from './v1-routing.ts';
+import { parsePreviewReviewReadModel } from './preview-review.ts';
 import { parseShopSchedule, type ShopSchedule, type SchedulePatch, type SchedulePort } from './shop-schedule.ts';
 
 export class ApiFault extends Error {
@@ -16,6 +17,8 @@ export interface PrintPort extends SchedulePort {
   getOrder(id: string): Promise<OrderView>;
   /** Verified *raster* bytes only; NOT customer confirmation or approval. */
   loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{pages:Blob[];files:VerifiedFileFact[]}>;
+  /** Authenticated staff receipt; the evidence digest is only an expected-version precondition. */
+  reviewPreview(order: OrderView, expectedEvidenceSha256: string, key: string): Promise<OrderView>;
   mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView>;
   mode(): Promise<OperationMode>;
 }
@@ -202,6 +205,9 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
   const enriched = enrichOrderWithCode008(raw, normalized);
   const manualQueue = parseServerManualQueue(raw, enriched);
   if(manualQueue && enriched.detail_loaded===true)enriched.v1_manual_queue=manualQueue;
+  const previewReview = parsePreviewReviewReadModel(data.current, enriched);
+  if(previewReview.print_evidence)enriched.print_evidence=previewReview.print_evidence;
+  enriched.preview_review=previewReview.preview_review;
   if(enriched.pending_updates?.state !== 'clear')
     enriched.warnings.push('Tin/file bổ sung chưa được backend xác nhận xử lý hết; cần AI/nhân viên đối soát trước khi chốt in.');
   return enriched;
@@ -357,6 +363,31 @@ export class HttpPrintPort implements PrintPort {
       throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
     return {pages,files};
   }
+  async reviewPreview(order: OrderView, expectedEvidenceSha256: string, key: string): Promise<OrderView> {
+    if (!this.token) throw new ApiFault(401,'UNAUTHENTICATED','Vui lòng đăng nhập bằng tài khoản nhân viên để kiểm tra preview.');
+    const evidence=order.print_evidence;
+    if (!evidence || evidence.schema!=='ai0.print_evidence.v1' ||
+        evidence.order_id!==order.order_id || evidence.revision!==order.revision ||
+        evidence.request_hash!==order.request_hash || evidence.evidence_sha256!==expectedEvidenceSha256 ||
+        !/^[0-9a-f]{64}$/.test(expectedEvidenceSha256) || !key)
+      throw new ApiFault(409,'PREVIEW_REVIEW_STALE','Bằng chứng in không khớp revision/hash hiện hành.');
+    const path=`/api/v1/orders/${encodeURIComponent(order.order_id)}/preview-reviews`;
+    // The browser sends an expected digest for stale-version detection only.
+    // Core must recompute trusted evidence and authorize the actor in its transaction.
+    await this.call(path,{method:'POST',body:JSON.stringify({
+      expected_revision:order.revision,expected_request_hash:order.request_hash,
+      expected_evidence_sha256:expectedEvidenceSha256,decision:'checked',idempotency_key:key,
+    }),headers:{'Idempotency-Key':key}});
+    const fresh=await this.getOrder(order.order_id);
+    if (fresh.order_id!==order.order_id || fresh.revision!==order.revision || fresh.request_hash!==order.request_hash ||
+        fresh.print_evidence?.evidence_sha256!==expectedEvidenceSha256 ||
+        fresh.preview_review?.status!=='matching' ||
+        fresh.preview_review.order_id!==order.order_id || fresh.preview_review.revision!==order.revision ||
+        fresh.preview_review.request_hash!==order.request_hash ||
+        fresh.preview_review.evidence_sha256!==expectedEvidenceSha256)
+      throw new ApiFault(409,'PREVIEW_REVIEW_STALE','Máy chủ chưa trả biên nhận khớp snapshot hiện hành; tải lại để đối soát.');
+    return fresh;
+  }
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView> {
     // AI1 CODE-201 routes now exist, but they require current generation from a
     // verified read model. No value supplied => fail closed, no request sent.
@@ -436,6 +467,9 @@ export class DemoPrintPort implements PrintPort {
   async loadVerifiedPreviewPages(): Promise<{pages:Blob[];files:VerifiedFileFact[]}> {
     // Demo images cannot be used as verified processor proof.
     return {pages:[],files:[]};
+  }
+  async reviewPreview(): Promise<OrderView> {
+    throw new ApiFault(503,'SIMULATION_ONLY','Demo chỉ mô phỏng; không tạo biên nhận nhân viên hoặc bằng chứng in thật.');
   }
   async mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string) {
     this.checkNetwork();

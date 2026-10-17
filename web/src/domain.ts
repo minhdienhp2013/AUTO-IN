@@ -39,6 +39,9 @@ export interface OrderView {
   pending_updates?: import('./code008.ts').PendingInboundUpdates;
   /** Read-only server-scoped manual queue; absent on PR144 backend. */
   v1_manual_queue?: import('./v1-routing.ts').V1ManualQueue;
+  /** Server authenticated V1 evidence/review read model; never populated from browser input. */
+  print_evidence?: import('./preview-review.ts').CurrentPrintEvidence;
+  preview_review?: import('./preview-review.ts').CurrentPreviewReview;
   job_id?: string | null; // AI1 job eligible for physical-paper verification; never inferred from a list
   customer_name: string;
   conversation_id: string | null;
@@ -137,6 +140,8 @@ export const confirmationReadiness = (order: OrderView): ConfirmationReadiness =
   const staff: StaffReviewStep = order.order_state === 'approved' ? 'already_approved' :
     order.manual_lock || order.print_state !== 'NOT_SENT' ? 'blocked' :
     request === 'missing' ? 'waiting_customer' : price === 'missing' ? 'waiting_price' :
-    !hasValidApprovalInputs(order) ? 'waiting_preview' : 'waiting_staff';
+    order.preview_review?.status !== 'matching' ||
+      order.print_evidence?.evidence_sha256 !== order.preview_review.evidence_sha256 ||
+      !hasValidApprovalInputs(order) ? 'waiting_preview' : 'waiting_staff';
   return {request,price,staff};
 };

@@ -43,7 +43,13 @@ test('CODE-404: staff review readiness is not a customer-confirm button or an ap
  const order={...base,revision:8,request_hash:'trusted-hash',confirmed_revision:8,
   total_sheets:2,large_cost_flag:false,manual_lock:false,print_state:'NOT_SENT' as const,
   order_state:'confirmed' as const,documents:[{...base.documents[0],preview_trusted:true,pages:1,physical_sheets:2}]};
- assert.equal(confirmationReadiness(order).staff,'waiting_staff');
+ assert.equal(confirmationReadiness(order).staff,'waiting_preview');
+ const reviewed={...order,
+  print_evidence:{schema:'ai0.print_evidence.v1' as const,order_id:order.order_id,
+    revision:8,request_hash:order.request_hash,evidence_sha256:'a'.repeat(64)},
+  preview_review:{status:'matching' as const,order_id:order.order_id,revision:8,
+    request_hash:order.request_hash,evidence_sha256:'a'.repeat(64)}};
+ assert.equal(confirmationReadiness(reviewed).staff,'waiting_staff');
  assert.equal(order.order_state,'confirmed');
  assert.equal(order.print_state,'NOT_SENT');
  assert.equal(confirmationReadiness({...order,manual_lock:true}).staff,'blocked');

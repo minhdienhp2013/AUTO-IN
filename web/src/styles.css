@@ -38,6 +38,27 @@
 .confirmation-evidence p {grid-column:1/-1;font-size:.78rem;margin:0;color:#596574;line-height:1.5}
 @media(max-width:760px){.confirmation-evidence{grid-template-columns:1fr}}
 
+/* V1: staff review, customer confirmation and final approval are separate steps. */
+.preview-review-workflow{margin-top:14px;padding:12px;border:1px solid #d8e5dd;border-radius:9px;background:#fff}
+.preview-review-workflow h4{font-size:12px;color:#315142;margin:0 0 10px}
+.preview-review-snapshot{display:grid;gap:5px;padding:10px;background:#f5f8f5;border-radius:8px;font-size:10px;color:#5d7565;overflow-wrap:anywhere}
+.preview-review-snapshot b{color:#355442}
+.preview-review-snapshot code{font-size:10px;word-break:break-all;color:#305f4c}
+.preview-review-steps{display:grid;gap:9px;padding-left:20px;margin:12px 0;color:#536b5b}
+.preview-review-steps li{padding-left:3px;font-size:11px;line-height:1.55}
+.preview-review-steps li>b,.preview-review-steps li>span{display:block}
+.preview-review-steps li>b{font-size:11px;color:#315142;margin-bottom:3px}
+.preview-review-steps li>small{display:block;margin-top:5px;color:#9a622c;line-height:1.5}
+.preview-review-ack{display:flex;gap:8px;align-items:flex-start;margin:8px 0;color:#516956;font-size:10px;line-height:1.5}
+.preview-review-ack input{accent-color:#287d5d;margin-top:2px}
+.preview-review-workflow .outline-btn{margin-top:7px;white-space:normal;text-align:left}
+.preview-review-disabled-reason{display:block;margin-top:7px;color:#8c6f43;line-height:1.5}
+.preview-review-stale,.preview-review-error{color:#a44632!important}
+.preview-review-error,.preview-review-notice{padding:9px;border-radius:7px;font-size:10px;line-height:1.5;margin-top:9px}
+.preview-review-error{background:#fff0ec;border:1px solid #f1d0c7;color:#9e3f2c}
+.preview-review-notice{background:#eaf6ee;border:1px solid #cfe6d4;color:#296648}
+@media(max-width:520px){.preview-review-workflow{padding:10px}.preview-review-workflow .outline-btn{width:100%}}
+
 /* CODE-008: verified chat grouping and pre-approval inbound guard */
 .chat-group-panel,.inbound-workflow{border:1px solid #d9e0e8;border-radius:12px;padding:12px;margin:10px 0;background:#f8fafc}
 .chat-group-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
