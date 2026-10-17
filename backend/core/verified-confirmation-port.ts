@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { DomainError, dbSafeInteger, newId, sha } from './model.js';
+import { DomainError, dbSafeInteger, newId, sha, canonical } from './model.js';
+import {currentEvidence,type TrustedPrintEvidencePort} from './print-evidence.js';
 import type { PgStore, SqlConnection } from '../storage/database.js';
 
 /** Created only by AI0 from a VERIFIED provider OA -> shop mapping; never from HTTP body. */
@@ -45,13 +46,23 @@ function targetOf(x: ConfirmationTarget) {
  * AI0 must verify webhook signature, event type and persist normalized inbound events;
  * plain "OK", user supplied event IDs or text cannot be promoted to postback evidence.
  */
-export function createVerifiedConfirmationPort(options: { store: PgStore; trusted: TrustedConfirmationScope }) {
+export function createVerifiedConfirmationPort(options: { store: PgStore; trusted: TrustedConfirmationScope; evidence?:TrustedPrintEvidencePort }) {
   const {store, trusted} = options;
   if (!store?.tx || !trusted || typeof trusted.shop_id !== 'string' ||
       typeof trusted.oa_id !== 'string' || !trusted.shop_id.trim() || !trusted.oa_id.trim() ||
       trusted.shop_id.length > 128 || trusted.oa_id.length > 256)
     throw new DomainError('CONFIRMATION_PORT_NOT_CONFIGURED','Trusted OA/shop configuration required',503);
   const shopId = trusted.shop_id, oaId = trusted.oa_id;
+  async function evidenceHash(db:SqlConnection,o:Order):Promise<string|null>{
+   if(!options.evidence)return null;
+   const rev=(await db.query<{request_hash:string;request_data:unknown;plan:import('./model.js').PrintPlan|null}>(
+    'SELECT request_hash,request_data,plan FROM core_revisions WHERE order_id=$1 AND revision=$2',
+    [o.id,o.active_revision])).rows[0];
+   if(!rev?.plan||rev.request_hash!==sha(canonical(rev.request_data)))
+    throw new DomainError('STALE_PRINT_EVIDENCE','Chưa có file/hash/plan hiện hành',409);
+   return currentEvidence(db,options.evidence,{shop_id:o.shop_id,order_id:o.id,
+    revision:o.active_revision,request_hash:rev.request_hash,plan:rev.plan});
+  }
 
   async function lockedTarget(db: SqlConnection, input: ConfirmationTarget) {
     const orders = await db.query<Order>('SELECT id,shop_id,customer_id,conversation_id,active_revision,manual_lock,print_closed FROM core_orders WHERE id=$1 FOR UPDATE',[input.order_id]);
@@ -89,6 +100,7 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
     return store.tx(async db=>{
       const bound=await lockedTarget(db,input);
       if (!bound || bound.approved) return {status:'stale'};
+      const evidence=await evidenceHash(db,bound.order);
       const id=newId(), token=randomBytes(32).toString('base64url');
       const result=await db.query<{expires_at:Date}>(
         `INSERT INTO core_confirmation_challenges
@@ -98,6 +110,11 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
           bound.order.conversation_id,input.kind,bound.quote,input.expected_generation,sha(token)]);
       const expiry=result.rows[0]?.expires_at;
       if (!expiry) throw new DomainError('CHALLENGE_NOT_STORED','Challenge persistence failed',500);
+      if(evidence)await db.query(
+       "INSERT INTO core_audit(id,shop_id,actor_id,action,order_id,details) "+
+       "VALUES($1,$2,$3,'customer.challenge_evidence',$4,$5::jsonb)",
+       [newId(),shopId,'verified-oa:'+oaId,bound.order.id,
+        JSON.stringify({challenge_id:id,evidence_sha256:evidence})]);
       return {status:'issued',challenge_id:id,challenge_token:token,expires_at:expiry};
     });
   }
@@ -147,6 +164,14 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
         return {status:'existing',confirmation_id:challenge.confirmation_id,
           order_id:bound.order.id,revision:input.expected_revision,kind:input.kind,quote_revision:bound.quote};
       }
+      const evidence=await evidenceHash(db,bound.order);
+      if(evidence){
+       const challengeProof=(await db.query<{details:{evidence_sha256?:string}}>(
+        "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 "+
+        "AND action='customer.challenge_evidence' AND details->>'challenge_id'=$3",
+        [shopId,bound.order.id,challenge.id])).rows[0];
+       if(challengeProof?.details?.evidence_sha256!==evidence)return {status:'stale'};
+      }
       // Staff approval may have won the locked-order race while the
       // customer clicked an earlier unconsumed challenge. HOLD, never insert.
       if (bound.approved) return {status:'stale'};
@@ -172,7 +197,8 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
         VALUES($1,$2,$3,'customer.confirmed_verified_event',$4,$5::jsonb)`,
         [newId(),shopId,'verified-oa:'+oaId,bound.order.id,
          JSON.stringify({event_id:input.event_id,confirmation_id:confirmationId,revision:input.expected_revision,
-           request_hash:input.request_hash,kind:input.kind,quote_revision:bound.quote})]);
+           request_hash:input.request_hash,kind:input.kind,quote_revision:bound.quote,
+           ...(evidence?{evidence_sha256:evidence}:{})})]);
       return {status:'confirmed',confirmation_id:confirmationId,order_id:bound.order.id,
         revision:input.expected_revision,kind:input.kind,quote_revision:bound.quote};
     });
