@@ -1,6 +1,7 @@
 import { actionPath, depositShortfall, hasValidApprovalInputs, validMoney, type ActionKind, type Mutation, type OrderView, type Snapshot, type StaffSession, type OperationMode, type ConversationState, type VerifiedFileFact } from './domain.ts';
 import { demoOrders, demoSession } from './fixtures.ts';
 import { canEditPrintRequest, enrichOrderWithCode008 } from './code008.ts';
+import { parseServerManualQueue } from './v1-routing.ts';
 import { parseShopSchedule, type ShopSchedule, type SchedulePatch, type SchedulePort } from './shop-schedule.ts';
 
 export class ApiFault extends Error {
@@ -199,6 +200,8 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
     created_at: row.created_at, warnings, documents: [],
   });
   const enriched = enrichOrderWithCode008(raw, normalized);
+  const manualQueue = parseServerManualQueue(raw, enriched);
+  if(manualQueue && enriched.detail_loaded===true)enriched.v1_manual_queue=manualQueue;
   if(enriched.pending_updates?.state !== 'clear')
     enriched.warnings.push('Tin/file bổ sung chưa được backend xác nhận xử lý hết; cần AI/nhân viên đối soát trước khi chốt in.');
   return enriched;
