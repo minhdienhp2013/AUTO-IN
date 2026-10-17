@@ -24,7 +24,7 @@ export interface FakeOrApprovedSender {
 }
 type Row={shop_id:string;oa_id:string;order_id:string;revision:number;generation:string;
  request_hash:string;source_sha256:string;outbound_id:string;status:string;
- conversation_id:string;customer_id:string;event_id:string;body_text:string;
+ conversation_id:string;customer_id:string;event_id:string;body_text:string;idempotency_key:string;
  token_sha256:string|null};
 type Source={shop_id:string;oa_id:string;order_id:string;active_revision:number;
  customer_id:string;conversation_id:string|null;event_id:string;
@@ -114,6 +114,11 @@ export function createTn005SealedOutbox(options:{
     // Only same current evidence can replay. Never transition RESERVED/SENT/UNKNOWN back to QUEUED.
     return {status:'queued',outbound_id:i.outbound_id};
    }
+   const prior=(await db.query<{outbound_id:string}>(
+    'SELECT outbound_id::text AS outbound_id FROM core_tn005_suggested_outbox '+
+    'WHERE shop_id=$1 AND order_id=$2::uuid AND revision=$3 FOR UPDATE',
+    [shop,i.order_id,i.revision])).rows[0];
+   if(prior)return denied('TN005_IDEMPOTENCY_CONFLICT');
    await db.query(
     'INSERT INTO core_tn005_suggested_outbox(outbound_id,shop_id,oa_id,order_id,revision,'+
     'generation,request_hash,source_sha256,event_id,conversation_id,customer_id,body_text,idempotency_key) '+
@@ -129,12 +134,16 @@ export function createTn005SealedOutbox(options:{
    'SELECT order_id::text AS order_id FROM core_tn005_suggested_outbox '+
    'WHERE outbound_id=$1 AND shop_id=$2 AND oa_id=$3',[outboundId,shop,oa])).rows[0];
   if(!peek)return null;
-  // source() locks Core order before we lock control and outbox.
-  const src=await source(db,peek.order_id);
+  // Lock the order even if its old advisory has disappeared after a revision.
+  // A stale reservation can then be CANCELLED, not stranded as QUEUED.
+  const locked=await db.query<{id:string}>(
+   'SELECT id::text AS id FROM core_orders WHERE id=$1::uuid AND shop_id=$2 FOR UPDATE',
+   [peek.order_id,shop]);
+  if(locked.rows.length!==1)return null;
   const row=(await db.query<Row>(
    'SELECT * FROM core_tn005_suggested_outbox WHERE outbound_id=$1 AND shop_id=$2 AND oa_id=$3 FOR UPDATE',
    [outboundId,shop,oa])).rows[0];
-  if(!row||row.order_id!==src.order_id)return null;
+  if(!row||row.order_id!==peek.order_id)return null;
   return row;
  }
  async function verifyRow(db:SqlConnection,row:Row):Promise<boolean>{
