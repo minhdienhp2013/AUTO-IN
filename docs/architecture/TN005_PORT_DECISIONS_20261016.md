@@ -44,3 +44,19 @@ Automatic AI2 outbound wiring is still NOT RUN. Before a later enqueue, AI0
 must atomically recheck shop/order/current revision/request hash/sealed source
 SHA and conversation AI generation in the outbox transaction. A preview read
 cannot authorize a later send after a revision or handover race.
+
+## TN005 sealed-source CAS composition follow-up — 2026-10-17
+
+- Candidate imports the AI1 CAS outbox and the AI2 fail-closed CAS contract
+  unchanged from their Draft PRs. AI0 composition adds
+  `createVerifiedSyntheticTn005Outbox`; it fixes shop/OA from trusted server
+  configuration and calls `verifiedSyntheticSource` for the registered
+  manifest, sealed bytes and SHA at each Core enqueue/reserve/delivery check.
+- The composition adapter does not register an HTTP route, connect an AI2
+  customer-question pipeline, or create a live sender. The integration test
+  creates the order through Fastify and exercises only an in-process fake
+  sender against isolated PostgreSQL. Exact-SHA PostgreSQL acceptance is
+  required before this Port is considered passed or AI2 wiring is assigned.
+- The outbox remains advisory only. No READY, customer-confirmation, approval,
+  or print authority changes. Provider I/O, OA, real printing and TN037 remain
+  NOT RUN.
