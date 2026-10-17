@@ -3,10 +3,11 @@ import type { Principal } from './model.js';
 import type { PgStore, SqlConnection } from '../storage/database.js';
 
 
-type PrintSetting = {copies:number}|{paper_size:'A3'|'A4'|'A5'}|{duplex:boolean};
-type ParameterReading = {kind:'none'}|{kind:'needs_review'}|{kind:'recognized';change:PrintSetting};
+export type PrintSetting = {copies:number}|{paper_size:'A3'|'A4'|'A5'}|{duplex:boolean};
+export type ParameterReading = {kind:'none'}|{kind:'needs_review'}|{kind:'recognized';change:PrintSetting};
+export const PRINT_SETTING_PARSER_VERSION='vn-print-setting.literal.v1';
 /** Accept a single, unambiguous Vietnamese print-parameter instruction only. */
-function parsePrintSetting(text:string):ParameterReading {
+export function parsePrintSetting(text:string):ParameterReading {
  const literal=text.trim().toLocaleLowerCase('vi-VN').replace(/[.!?]+$/u,'').trim();
  const copies=/^(?:(?:in|đổi|sửa|lấy|cho)\s+)?(\d{1,3})\s+bản(?:\s+in)?(?:\s+(?:nhé|ạ|thôi))?$/u.exec(literal);
  if(copies){
