@@ -1,0 +1,96 @@
+"""Pure fixture contract tests; do not claim any API/DB/agent or OA exercised."""
+import importlib.util
+import io
+import pathlib
+import struct
+import sys
+import zipfile
+import zlib
+
+import pytest
+
+MODULE = pathlib.Path(__file__).with_name("fixture_gate.py")
+SPEC = importlib.util.spec_from_file_location("v1_fixture_gate", MODULE)
+gate = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(gate)
+
+
+def test_manifest_is_24_unique_labeled_not_run_cases():
+    data = gate.manifest()
+    assert data["phase"] == "pre-integration"
+    assert data["source_candidate_sha"] == (
+        "0673460af71205986b901a21fc7724dbea23c991")
+    assert len(data["cases"]) == 24
+    assert all(row["observed"] == "NOT_RUN" for row in data["cases"])
+
+
+def test_24_synthetic_bytes_have_distinct_sha_and_correct_formats():
+    result = gate.fixture_result()
+    assert (result["count"], result["distinct_sha256"]) == (24, 24)
+    assert result["status"] == "FIXTURE_PASS_PRODUCT_NOT_RUN"
+    assert all(row["product_status"] == "NOT_RUN" for row in result["cases"])
+
+
+@pytest.mark.parametrize("kind", ["pdf", "docx", "png", "xlsx", "zip"])
+def test_synthetic_file_signatures_or_openable_archive(kind):
+    raw = gate.source(kind, "V1-ACCEPTANCE-SYNTHETIC")
+    assert len(raw) > 15
+    if kind == "pdf":
+        assert raw.startswith(b"%PDF-") and b"startxref" in raw
+        marker = raw.rfind(b"startxref\n")
+        pos = int(raw[marker + len(b"startxref\n"):].split(b"\n", 1)[0])
+        assert raw[pos:pos+4] == b"xref"
+    elif kind == "png":
+        assert raw[:8] == b"\x89PNG\r\n\x1a\n"
+        pos = 8
+        while pos < len(raw):
+            length = struct.unpack(">I", raw[pos:pos+4])[0]
+            tag = raw[pos+4:pos+8]
+            payload = raw[pos+8:pos+8+length]
+            crc = struct.unpack(">I", raw[pos+8+length:pos+12+length])[0]
+            assert (zlib.crc32(tag+payload)&0xffffffff) == crc
+            pos += 12+length
+        assert pos == len(raw)
+    else:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            names = archive.namelist()
+            if kind == "docx": assert "word/document.xml" in names
+            if kind == "xlsx": assert "xl/workbook.xml" in names
+            if kind == "zip": assert len(names) == 6
+
+
+def test_source_mutation_changes_sha_and_cannot_replay_old_source_digest():
+    a = gate.source("pdf", "V1-SOURCE-A")
+    b = gate.source("pdf", "V1-SOURCE-B")
+    from hashlib import sha256
+    assert sha256(a).hexdigest() != sha256(b).hexdigest()
+
+
+def test_settings_are_separate_from_source_hash_and_need_new_confirmation():
+    # Invariant at acceptance fixture level; the Core/staging agent must still
+    # bind these settings in product evidence. We do NOT claim it does today.
+    from hashlib import sha256
+    import json
+    file_sha = sha256(gate.source("docx", "V1-COPIES-CHANGE")).hexdigest()
+    first = {"source_sha256": file_sha, "copies": 1, "duplex": False}
+    second = {**first, "copies": 2}
+    digest = lambda obj: sha256(json.dumps(obj,sort_keys=True).encode()).hexdigest()
+    assert first["source_sha256"] == second["source_sha256"]
+    assert digest(first) != digest(second)
+
+
+def test_matrix_requires_manual_handoff_for_image_and_color():
+    table = {row["key"]: row for row in gate.manifest()["cases"]}
+    for key in ("image_manual", "cccd_manual", "color_manual",
+                "excel_manual", "zip_over_five"):
+        assert table[key]["expected"] == "MANUAL"
+        assert table[key]["observed"] == "NOT_RUN"
+    assert table["unknown_no_retry"]["expected"] == "HOLD"
+
+
+def test_no_live_or_unsafe_operation_in_synthetic_generator():
+    script = MODULE.read_text(encoding="utf-8")
+    assert "requests.post(" not in script
+    assert "subprocess.run(" not in script
+    assert "raw9100" not in script.lower()
+    assert "zalo.official" not in script.lower()
