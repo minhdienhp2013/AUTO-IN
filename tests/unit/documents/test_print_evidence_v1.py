@@ -1,8 +1,8 @@
 """AI0 evidence tuple, source bytes and staff-review simulation: SYNTHETIC ONLY."""
-from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,7 +10,7 @@ from workers.documents.print_evidence_v1 import (
     create_print_evidence_v1, verify_print_evidence_v1,
 )
 from agents.windows.native_simulation_review import (
-    TrustedStaffReview, review_simulation_only,
+    review_simulation_only,
 )
 from tests.unit.documents.test_native_word_pdf_v1 import (
     _ready_pdf, _docx, FakeWordSession, sha,
@@ -98,25 +98,21 @@ def _approved_snapshot(tmp_path):
     return args, trusted, job, snapshot, verified
 
 
-def _review(trusted, snapshot):
-    return TrustedStaffReview(
-        shop_id=trusted.shop_id, order_id=trusted.order_id,
-        revision=trusted.revision, request_hash=trusted.request_hash,
-        evidence_sha256=snapshot["evidence_sha256"],
-        settings_sha256=snapshot["settings_sha256"],
-        renderer_sha256=snapshot["renderer_sha256"],
-        printer_capability_sha256=snapshot["printer_capability_sha256"],
-        preview_sha256=tuple(p["sha256"] for p in snapshot["previews"]),
-        approval_id=trusted.approval_id, job_id=trusted.job_id,
-        reviewer_id="synthetic-staff-reviewer", reviewer_role="staff",
-        reviewed_at="2026-10-17T10:00:00Z",
-        decision="STAFF_PREVIEW_CONFIRMED",
-    )
+def _review_receipt(trusted, snapshot):
+    """Synthetic projection of the exact AI1 DB receipt tuple."""
+    return {
+        "receipt_id": "synthetic-review-receipt",
+        "shop_id": trusted.shop_id, "order_id": trusted.order_id,
+        "revision": trusted.revision, "request_hash": trusted.request_hash,
+        "evidence_sha256": snapshot["evidence_sha256"],
+        "reviewer_id": "synthetic-staff-reviewer",
+        "reviewed_at": "2026-10-17T10:00:00Z", "decision": "checked",
+    }
 
 
 def _job(job, snapshot):
     return {**job, "evidence_sha256": snapshot["evidence_sha256"],
-            "state": "NOT_SENT"}
+            "mode": "simulation", "state": "NOT_SENT"}
 
 
 def test_pdf_exact_tuple_core_anchor_and_staff_review_allows_simulation_only(tmp_path):
@@ -132,8 +128,11 @@ def test_pdf_exact_tuple_core_anchor_and_staff_review_allows_simulation_only(tmp
     assert verified["allowed_to_simulate"] is False
     ok = review_simulation_only(
         verified_evidence=verified, snapshot=snapshot,
-        review=_review(trusted, snapshot), trusted_job=_job(job, snapshot))
-    assert ok["status"] == "SIMULATION_ONLY_REVIEW_CONFIRMED", ok
+        review_receipt=_review_receipt(trusted, snapshot), trusted_job=_job(job, snapshot))
+    assert ok["status"] == "PREPARED_NOT_SENT", ok
+    assert ok["review_status"] == "EVIDENCE_REVIEWED"
+    assert ok["mode"] == "simulation"
+    assert ok["receipt_id"] == "synthetic-review-receipt"
     assert ok["allowed_to_simulate"] is True
     assert ok["allowed_to_print"] is False
     assert ok["queue_submission_enabled"] is False
@@ -209,40 +208,52 @@ def test_each_changed_byte_or_tuple_member_invalidates_core_anchor(tmp_path, mut
 
 
 @pytest.mark.parametrize("mutation", [
-    "missing_review", "old_digest", "wrong_approval", "wrong_preview",
-    "changed_driver", "unverified_staff", "unknown", "sending",
-    "mode_production", "changed_job",
+    "missing_receipt", "old_digest", "wrong_order", "missing_actor",
+    "browser_actor_object",
+    "bad_decision", "client_approval_fields", "changed_preview",
+    "verifier_print_claim", "unknown", "sending", "mode_production",
+    "changed_job_scope",
 ])
 def test_simulation_admission_requires_same_staff_review_and_unsent_job(tmp_path, mutation):
     args, trusted, job, snapshot, verified = _approved_snapshot(tmp_path)
-    review = _review(trusted, snapshot)
+    receipt = _review_receipt(trusted, snapshot)
     current_job = _job(job, snapshot)
-    if mutation == "missing_review":
-        review = None
+    if mutation == "missing_receipt":
+        receipt = None
     elif mutation == "old_digest":
-        review = replace(review, evidence_sha256="0" * 64)
-    elif mutation == "wrong_approval":
-        review = replace(review, approval_id="different")
-    elif mutation == "wrong_preview":
-        review = replace(review, preview_sha256=("0" * 64,))
-    elif mutation == "changed_driver":
-        review = replace(review, printer_capability_sha256="0" * 64)
-    elif mutation == "unverified_staff":
-        review = replace(review, decision="PENDING")
+        receipt["evidence_sha256"] = "0" * 64
+    elif mutation == "wrong_order":
+        receipt["order_id"] = "other-order"
+    elif mutation == "missing_actor":
+        receipt["reviewer_id"] = ""
+    elif mutation == "browser_actor_object":
+        receipt = SimpleNamespace(**{**receipt, "reviewer_id": "browser-attacker"})
+    elif mutation == "bad_decision":
+        receipt["decision"] = "approved"
+    elif mutation == "client_approval_fields":
+        # Browser flags/approval identifiers are not part of the Core tuple.
+        receipt["approval_id"] = "client-controlled"
+        receipt["reviewer_role"] = "owner"
+    elif mutation == "changed_preview":
+        snapshot["previews"][0]["sha256"] = "0" * 64
+    elif mutation == "verifier_print_claim":
+        verified["allowed_to_print"] = True
     elif mutation == "unknown":
         current_job["state"] = "UNKNOWN"
     elif mutation == "sending":
         current_job["state"] = "SENDING"
     elif mutation == "mode_production":
         current_job["mode"] = "production"
-    elif mutation == "changed_job":
-        current_job["job_id"] = "different"
+    elif mutation == "changed_job_scope":
+        current_job["shop_id"] = "other-shop"
     result = review_simulation_only(
         verified_evidence=verified, snapshot=snapshot,
-        review=review, trusted_job=current_job)
+        review_receipt=receipt, trusted_job=current_job)
     assert result["status"] == "NEEDS_HUMAN", (mutation, result)
     assert result["allowed_to_simulate"] is False
     assert result["queue_submission_enabled"] is False
+    assert result["allowed_to_print"] is False
+    assert result["physical_print_verified"] is False
 
 
 def test_untrusted_self_consistent_snapshot_cannot_replace_core_digest(tmp_path):
@@ -300,33 +311,36 @@ def test_word_original_docx_and_renderer_version_bind_and_review_only(tmp_path):
         active_revision=3, **args)
     assert verify["status"] == "EVIDENCE_VERIFIED", verify
     # Even with a synthetic staff review, the only result is a no-print simulator.
-    trusted = replace(_review_obj_for_word(snap), job_id="fake-word-job")
-    job = {
+    receipt = {
+        "receipt_id": "synthetic-word-review-receipt",
         "shop_id": snap["shop_id"], "order_id": snap["order_id"],
         "revision": 3, "request_hash": snap["request_hash"],
-        "evidence_sha256": snap["evidence_sha256"], "printer_id": "RMP7000",
-        "approval_id": trusted.approval_id, "job_id": trusted.job_id,
-        "mode": "simulation", "state": "NOT_SENT",
+        "evidence_sha256": snap["evidence_sha256"],
+        "reviewer_id": "synthetic-staff-reviewer",
+        "reviewed_at": "2026-10-17T10:00:00Z", "decision": "checked",
     }
+    job = {"shop_id": snap["shop_id"], "order_id": snap["order_id"],
+           "revision": 3, "request_hash": snap["request_hash"],
+           "evidence_sha256": snap["evidence_sha256"], "printer_id": "RMP7000",
+           "mode": "simulation", "state": "NOT_SENT"}
+    missing_receipt = review_simulation_only(
+        verified_evidence=verify, snapshot=snap, review_receipt=None, trusted_job=job)
+    assert missing_receipt["status"] == "NEEDS_HUMAN"
+    stale_word_snapshot = {
+        **snap,
+        "previews": [{**snap["previews"][0], "sha256": "0" * 64},
+                     *snap["previews"][1:]],
+    }
+    stale_preview = review_simulation_only(
+        verified_evidence=verify, snapshot=stale_word_snapshot,
+        review_receipt=receipt, trusted_job=job)
+    assert stale_preview["status"] == "NEEDS_HUMAN"
     simulation = review_simulation_only(
-        verified_evidence=verify, snapshot=snap, review=trusted, trusted_job=job)
-    assert simulation["status"] == "SIMULATION_ONLY_REVIEW_CONFIRMED", simulation
+        verified_evidence=verify, snapshot=snap, review_receipt=receipt, trusted_job=job)
+    assert simulation["status"] == "PREPARED_NOT_SENT", simulation
+    assert simulation["review_status"] == "EVIDENCE_REVIEWED"
     assert simulation["source_formats"] == ("DOCX",)
     assert simulation["allowed_to_print"] is False
-
-
-def _review_obj_for_word(s):
-    return TrustedStaffReview(
-        shop_id=s["shop_id"], order_id=s["order_id"],
-        revision=s["revision"], request_hash=s["request_hash"],
-        evidence_sha256=s["evidence_sha256"],
-        settings_sha256=s["settings_sha256"],
-        renderer_sha256=s["renderer_sha256"],
-        printer_capability_sha256=s["printer_capability_sha256"],
-        preview_sha256=tuple(p["sha256"] for p in s["previews"]),
-        approval_id="fake-word-approval", job_id="fake-word-job",
-        reviewer_id="fake-staff", reviewer_role="staff",
-        reviewed_at="2026-10-17T10:00:00Z", decision="STAFF_PREVIEW_CONFIRMED")
 
 
 def test_missing_core_context_returns_hold_not_exception(tmp_path):

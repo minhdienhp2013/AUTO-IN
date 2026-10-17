@@ -51,11 +51,11 @@ Source: AI0 Draft PR #150, docs/architecture/V1_CORE_AGENT_EVIDENCE_CONTRACT_202
 - verify_print_evidence_v1 recreates and compares every field against the independent Core-trusted evidence_sha256, including active revision; changed content, manifest, settings, preview, renderer, printer capability, source order or revision is fail-closed. Every result has allowed_to_print=false and allowed_to_simulate=false.
 - AI0 MUST provide the Core scope/anchor from authenticated DB plus independently read no-follow source/preview bytes, native Word renderer version and real queue inventory. Pure Python data and hashes cannot authenticate their own provenance. Any new migration/wire is AI0/AI1-owned.
 
-### Staff review is required even for simulation
+### Core receipt required even for simulation
 
-- agents.windows.native_simulation_review.TrustedStaffReview is a proposed internal AI0/AI1-sourced receipt with reviewer/role/time, shop/order/revision, evidence_sha256, source request hash, settings/renderer/capability digests, preview digest list, job_id and approval_id.
-- review_simulation_only requires separately verified Core evidence, the exact matching staff review receipt and a trusted job in NOT_SENT / simulation mode. Missing review, stale digest, changed preview, wrong approval, nonstaff, SENDING/UNKNOWN, production mode or different job blocks.
-- The success output is SIMULATION_ONLY_REVIEW_CONFIRMED: allowed_to_simulate=true BUT allowed_to_print=false, queue_submission_enabled=false and physical_print_verified=false. It does not call or authorize any printer or journal transition; only AI0 can connect a labeled fake driver to this state.
+- `agents.windows.native_simulation_review.review_simulation_only` consumes only the exact DB tuple projected by AI0/AI1's authenticated internal ticket: `receipt_id`, shop/order/revision/request/evidence hashes, `reviewer_id`, `reviewed_at`, and `decision="checked"`. AI1 performs staff-role authorization and persistence when issuing the receipt. Do not pass browser-supplied dataclasses, approval IDs, role flags, or booleans; those fields are not accepted as receipt data.
+- The gate checks that the receipt and trusted job match the current evidence snapshot and scope, recomputes the snapshot digest (including ordered preview hashes), and requires `NOT_SENT` plus simulation mode. Missing receipt, wrong scope/actor data, stale evidence/preview, malformed decision, production mode, SENDING or UNKNOWN blocks. It does not authenticate a receipt supplied outside the server-side Core ticket.
+- Success advances only to `PREPARED_NOT_SENT` with `review_status="EVIDENCE_REVIEWED"` for simulation. `allowed_to_simulate=true` is limited to a simulation path; `allowed_to_print=false`, `queue_submission_enabled=false`, and `physical_print_verified=false` remain fixed. No printer or journal transition occurs.
 
 ### Original DOCX remains original
 
@@ -66,3 +66,11 @@ Source: AI0 Draft PR #150, docs/architecture/V1_CORE_AGENT_EVIDENCE_CONTRACT_202
 ### AI0/AI1 integration still required
 
 AI0 and AI1 own transactionally trusted evidence_sha256 on customer confirmation, staff approval and job, CAS at claim/preflight/mark-sending, staff review receipt authority, time-bounded isolated Windows COM, real Ricoh inventory, and reconciliation of ambiguous driver ACK. Cached SENDING/UNKNOWN never permits a second driver call. AI5 independently accepts the same integrated SHA. No real OA, Ricoh, Windows Word, merge or deployment in this PR.
+
+## V1-NATIVE-03 — Core receipt review gate (18/10/2026)
+
+- Work branch `ai3/v1-native-word-review-gate-20261018`, based on integrated candidate `bbf54749511f88efdf43ca9197eba1de5e0fe69f`.
+- The simulation gate accepts the exact nine-field receipt tuple projected from an AI0/AI1 DB-built ticket; AI1 remains responsible for persistence and reviewer authorization. It checks receipt/job scope and recomputes the evidence digest, which binds ordered preview hashes.
+- A matching Word receipt advances only to `PREPARED_NOT_SENT` / `EVIDENCE_REVIEWED` in simulation. DOCX remains the source; print, queue submission and physical verification flags stay false. Missing/stale receipt/evidence, preview drift, malformed actor tuple, browser object, SENDING and UNKNOWN fail closed.
+- `python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing`: PASS; `git diff --check`: PASS. Focused test functions were invoked directly: Word receipt + PDF receipt + 13 negative cases PASS. The requested pytest command could not run because `pytest` is not installed in either available Python environment.
+- Actual Windows Word COM, Vietnamese fonts, Ricoh queue/driver, physical paper, Zalo OA and live operation remain NOT RUN. This AI3 branch is local/unpushed and must be integrated and accepted on the resulting exact candidate SHA.
