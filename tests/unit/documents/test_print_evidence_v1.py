@@ -248,3 +248,14 @@ def _review_obj_for_word(s):
         approval_id="fake-word-approval", job_id="fake-word-job",
         reviewer_id="fake-staff", reviewer_role="staff",
         reviewed_at="2026-10-17T10:00:00Z", decision="STAFF_PREVIEW_CONFIRMED")
+
+
+def test_missing_core_context_returns_hold_not_exception(tmp_path):
+    args, trusted, _, snapshot, _ = _approved_snapshot(tmp_path)
+    invalid = {**args, "context": None}
+    result = verify_print_evidence_v1(
+        expected=snapshot, trusted_evidence_sha256=snapshot["evidence_sha256"],
+        active_revision=trusted.active_revision, **invalid)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "CORE_EVIDENCE_OR_REVISION_UNVERIFIED"
+    assert result["allowed_to_print"] is False
