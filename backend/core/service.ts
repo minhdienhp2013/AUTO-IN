@@ -556,8 +556,9 @@ export class OrderService {
    const quoteCutoff=quote&&quote.quote_revision>1
     ? (await db.query<{created_at:Date}>('SELECT created_at FROM core_quotes WHERE order_id=$1 AND quote_revision=$2',
       [id,quote.quote_revision])).rows[0]?.created_at : null;
-   const requestConfirmation=confirmations.rows.find(c=>c.kind==='request' && c.customer_id===o.customer_id &&
-    (!quote||quote.quote_revision<=1||(quoteCutoff && new Date(c.created_at)>=new Date(quoteCutoff))))??null;
+   const requestConfirmation=(sha(canonical(current.request_data))===current.request_hash?
+    confirmations.rows.find(c=>c.kind==='request' && c.customer_id===o.customer_id &&
+    (!quote||quote.quote_revision<=1||(quoteCutoff && new Date(c.created_at)>=new Date(quoteCutoff)))):null)??null;
    const priceConfirmation=quote?confirmations.rows.find(c=>c.kind==='quote'&&c.quote_revision===quote.quote_revision)??null:null;
    // Readiness facts are backend-derived for THIS revision, not any earlier request/quote.
    const existingActiveJob=jobs.rows.find(j=>j.revision===current.revision&&j.request_hash===current.request_hash&&!j.cancelled_at);
