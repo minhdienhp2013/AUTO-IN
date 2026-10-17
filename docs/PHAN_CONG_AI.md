@@ -92,3 +92,8 @@ AI0 sở hữu thêm backend/composition/**, scripts/** và tests/integration/co
 | AI5 | CODE-405 | Chạy acceptance đúng integration SHA; PG/HTTP/Chromium/DryRun và ghi rõ LIVE NOT RUN | #18 |
 
 Phạm vi file giữ nguyên bảng CODE-101–105 và bổ sung AI0 `backend/composition/**`, `scripts/**`, `tests/integration/composition/**`; không có file hai chủ. Mỗi AI tự viết và chạy test trong phạm vi, bàn giao commit/PR 6 dòng. Comment PR là kênh lưu giao việc, **không tự khởi động phiên AI khác**. Chưa được merge, deploy, Zalo OA thật hoặc Ricoh thật; chỉ chủ cho phép thử thật.
+
+
+## Ưu tiên V1 Word/PDF — cập nhật 17/10/2026
+
+Hướng triển khai, danh sách Phase 2, tình trạng repo/TN, phụ thuộc và prompt riêng AI1–AI5 được ghi tại [phạm vi V1 Word/PDF](architecture/V1_WORD_PDF_SCOPE_20261017.md). Bảng CODE-101–105 giữ nguyên quyền sở hữu module; các việc mới trong tài liệu phạm vi ưu tiên triển khai Word/PDF và chuyển ảnh sang nhân viên. Đây là ưu tiên của chủ dự án, chưa sửa đặc tả TN; các cổng vận hành thật/TN-037 vẫn phải báo riêng.
