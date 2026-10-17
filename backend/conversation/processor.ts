@@ -154,6 +154,9 @@ export class ConversationProcessor {
     // Never interpret a mixed OA/customer/chat or contradictory batch as a
     // single order, even when the provider gives it the same 60s batch key.
     if(incoming.reason==="CONFLICTING_INTENTS")return "held";
+    // Duplicate webhook IDs should already be removed by durable ingress.
+    // Reject an inconsistent synthetic/DB batch instead of adding one file twice.
+    if(new Set(batch.events.map(e=>e.event_id)).size!==batch.events.length)return "held";
     const {event_ids,key}=batchIdentity(batch);
     // Processing payload is canonical even if a retry reconstructs a batch in a
     // different insertion order. AI1 once() rejects same key with different text.
@@ -178,11 +181,39 @@ export class ConversationProcessor {
       });
       return routeOutcome(result);
     };
+    // V1 Word/PDF intake only. Image attachments must NEVER reach OCR,
+    // a DeepSeek classifier, draft/append or any print authorization.
+    const attachments=ordered.filter(e=>e.kind==="file"||e.kind==="image");
+    const fileRefs=new Set<string>();
+    for(const e of attachments){
+      if(!e.file_ref||fileRefs.has(e.file_ref))
+        return routeHuman(e.file_ref?"DUPLICATE_FILE":"UNREADABLE");
+      fileRefs.add(e.file_ref);
+    }
+    if(attachments.length>5)return routeHuman("TOO_MANY_DOCUMENTS");
+    if(attachments.some(e=>e.kind==="image"||
+      e.mime_type?.toLowerCase().startsWith("image/")))
+      return routeHuman("IMAGE_V1");
+    // Hints from a filename/MIME can ONLY cause escalation, never acceptance.
+    // Actual Word/PDF evidence must come from the trusted AI3 DocumentFactsPort.
+    if(attachments.some(e=>e.filename?.toLowerCase().endsWith(".zip")||
+      e.mime_type?.toLowerCase()==="application/zip"||
+      e.mime_type?.toLowerCase()==="application/x-zip-compressed"))
+      return routeHuman("ZIP_V1");
+    if(attachments.some(e=>/\\.(?:xlsx?|xlsm|xlsb|ods)$/i.test(e.filename??"")||
+      /spreadsheet|excel/i.test(e.mime_type??"")))
+      return routeHuman("EXCEL");
     let decision;
     try {
-      decision=interpretByRules(batch.events,await this.documents.inspect(batch));
+      const facts=await this.documents.inspect(batch);
+      if(!Array.isArray(facts) || facts.length!==attachments.length||
+         facts.some(f=>!f||typeof f!=="object"))
+        return routeHuman("UNREADABLE");
+      decision=interpretByRules(batch.events,facts);
     } catch {
-      return routeHuman("DOCUMENT_INSPECTION_FAILED");
+      // Download/preflight failures require human review; never retry document
+      // recognition as an implicit approval or fabricate a trusted preview.
+      return routeHuman("DOWNLOAD_FAILED");
     }
     // A deterministic order update or explicitly separate request must not
     // depend on a language model being online; Core still adjudicates it.
