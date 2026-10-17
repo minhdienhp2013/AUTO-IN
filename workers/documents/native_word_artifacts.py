@@ -67,7 +67,11 @@ def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str,
                 observation.get("evidence_kind") != "windows_word_com_preview_only" or
                 observation.get("native_word_verified") is not True or
                 observation.get("print_source_format") != "DOCX" or
-                observation.get("allowed_to_print") is not False):
+                observation.get("allowed_to_print") is not False or
+                type(observation.get("renderer_identity")) is not dict or
+                observation["renderer_identity"].get("engine") != "microsoft_word_com" or
+                type(observation["renderer_identity"].get("version")) is not str or
+                not observation["renderer_identity"]["version"]):
             return hold("WORD_NATIVE_EVIDENCE_UNVERIFIED")
         pages = observation.get("document_pages")
         if type(pages) is not int or not 1 <= pages <= processor.MAX_PAGES:
@@ -128,6 +132,7 @@ def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str,
             "counts": {k: counted[k] for k in ("document_pages", "printed_faces",
                                                "physical_sheets", "requires_price_confirmation")},
             "evidence_kind": "windows_word_com_preview_only",
+            "renderer_identity": observation["renderer_identity"],
             "ready": False, "requires_staff_review": True,
             "physical_print_verified": False,
         }
