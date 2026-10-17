@@ -36,6 +36,10 @@ export class OrderService {
      (!q||!rows.rows.some(c=>c.kind==='quote'&&c.quote_revision===q.quote_revision)))
    throw new DomainError('STALE_PRICE_CONFIRMATION','Giá chưa được xác nhận đúng phiên bản',409);
  }
+ private quoteFingerprint(q:QuoteRow):string {
+  return sha(canonical({quote_revision:q.quote_revision,amount_vnd:q.amount_vnd,
+   deposit_required_vnd:q.deposit_required_vnd,significant_cost:q.significant_cost}));
+ }
  private async assertJobBinding(db:SqlConnection,o:OrderRow,j:JobRow,rev:RevisionRow):Promise<void>{
   this.assertRevisionBinding(rev);
   if(j.order_id!==o.id||j.revision!==o.active_revision||j.request_hash!==rev.request_hash||
@@ -47,6 +51,14 @@ export class OrderService {
   const q=await this.quote(db,o.id);
   if(!a||a.request_hash!==rev.request_hash||(a.quote_revision??null)!==(q?.quote_revision??null))
    throw new DomainError('STALE_APPROVAL','Duyệt không còn khớp báo giá hiện hành',409);
+  const binding=(await db.query<{details:{plan_sha256?:string;quote_sha256?:string|null}}>(
+   "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 "+
+   "AND action='print.approved' AND details->>'approval_id'=$3 "+
+   "AND details->>'job_id'=$4 ORDER BY created_at DESC LIMIT 1",
+   [o.shop_id,o.id,j.approval_id,j.id])).rows[0]?.details;
+  if(!binding || binding.plan_sha256!==sha(canonical(rev.plan)) ||
+     (binding.quote_sha256??null)!==(q?this.quoteFingerprint(q):null))
+   throw new DomainError('STALE_PRINT_BINDING','File, báo giá hoặc thông số in đã thay đổi',409);
   await this.assertCustomerBinding(db,o,rev,q);
  }
  private async received(db:SqlConnection,id:string):Promise<number>{const x=await this.store.one<{amount:string}>(db,"SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_vnd WHEN direction='refunded' THEN -amount_vnd ELSE 0 END),0)::text AS amount FROM core_payments WHERE order_id=$1",[id]);return dbSafeInteger(x.amount,'payment.received_vnd');}
@@ -285,7 +297,9 @@ export class OrderService {
    const approval_id=newId(),job_id=newId();
    await db.query('INSERT INTO core_approvals(id,order_id,revision,request_hash,quote_revision,actor_id,deposit_short_vnd) VALUES($1,$2,$3,$4,$5,$6,$7)',[approval_id,id,rev.revision,rev.request_hash,q?.quote_revision??null,p.id,missing]);
    await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,confirmed_at) VALUES($1,$2,$3,$4,$5,$6,$7)',[job_id,id,rev.revision,rev.request_hash,approval_id,rev.plan.printer_id,queueConfirmedAt]);
-   await this.audit(db,p,'print.approved',id,{revision:rev.revision,approval_id,job_id,deposit_short_vnd:missing});
+   await this.audit(db,p,'print.approved',id,{revision:rev.revision,approval_id,job_id,
+    deposit_short_vnd:missing,plan_sha256:sha(canonical(rev.plan)),
+    quote_sha256:q?this.quoteFingerprint(q):null});
    return {order_id:id,revision:rev.revision,approval_id,job_id,deposit_short_vnd:missing};
   }));
  }
