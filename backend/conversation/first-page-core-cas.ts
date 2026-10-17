@@ -63,9 +63,12 @@ const outboundId=(value:unknown):value is string=>
   typeof value==='string'&&/^[A-Za-z0-9:_-]{1,128}$/.test(value);
 const validCas=(value:unknown):value is {status:string;outbound_id?:unknown}=>{
   if(!value||typeof value!=='object'||Array.isArray(value))return false;
-  const status=(value as {status?:unknown}).status;
-  return typeof status==='string'&&
-    (stale.has(status)||denied.has(status)||status==='queued'||status==='current');
+  const entry=value as Record<string,unknown>,status=entry.status;
+  if(typeof status!=='string')return false;
+  const keys=Object.keys(entry).sort().join(',');
+  if(stale.has(status)||denied.has(status))return keys==='status';
+  return (status==='queued'||status==='current')&&
+    keys==='outbound_id,status'&&outboundId(entry.outbound_id);
 };
 
 /** AI2 boundary checks are a PRECONDITION, never the CAS itself. 'current'
