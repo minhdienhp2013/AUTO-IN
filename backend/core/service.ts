@@ -2,14 +2,93 @@ import { randomBytes } from 'node:crypto';
 import { assertAgent, assertOwner, assertPlan, assertProcessor, assertStaff, canAccessShop, canonical, checkRevision, dbSafeInteger, DomainError, newId, nonNegativeVnd, printingAllowed, sha, shortage, type JobRow, type OrderRow, type Principal, type PrintPlan, type QuoteRow, type RevisionRow, type SettingsRow } from './model.js';
 import { PgStore, type SqlConnection } from '../storage/database.js';
 import { readPendingUpdates } from './pending-updates.js';
+import {currentEvidence,type TrustedPrintEvidencePort} from './print-evidence.js';
 
 export class OrderService {
- constructor(private readonly store:PgStore, private readonly now:()=>Date=()=>new Date()){}
+ constructor(private readonly store:PgStore, private readonly now:()=>Date=()=>new Date(),private readonly evidence?:TrustedPrintEvidencePort){}
  private async order(db:SqlConnection,id:string,p:Principal):Promise<OrderRow>{
   const o=await this.store.one<Omit<OrderRow,'delivered_sheets'> & {delivered_sheets:string}>(db,'SELECT * FROM core_orders WHERE id=$1 FOR UPDATE',[id]);canAccessShop(p,o.shop_id);return {...o,delivered_sheets:dbSafeInteger(o.delivered_sheets,'delivered_sheets')};
  }
  private async revision(db:SqlConnection,o:OrderRow):Promise<RevisionRow>{return this.store.one(db,'SELECT * FROM core_revisions WHERE order_id=$1 AND revision=$2',[o.id,o.active_revision]);}
  private async quote(db:SqlConnection,id:string):Promise<QuoteRow|null>{const q=(await db.query<Omit<QuoteRow,'amount_vnd'|'deposit_required_vnd'> & {amount_vnd:string;deposit_required_vnd:string}>('SELECT * FROM core_quotes WHERE order_id=$1 ORDER BY quote_revision DESC LIMIT 1',[id])).rows[0];return q?{...q,amount_vnd:dbSafeInteger(q.amount_vnd,'quote.amount_vnd'),deposit_required_vnd:dbSafeInteger(q.deposit_required_vnd,'quote.deposit_required_vnd')}:null;}
+ // Existing Core wire only. AI0/AI3 supply independent immutable byte/manifest evidence.
+ private assertRevisionBinding(rev:RevisionRow):asserts rev is RevisionRow & {plan:PrintPlan} {
+  if(sha(canonical(rev.request_data))!==rev.request_hash)
+   throw new DomainError('STALE_FILE_BINDING','Nội dung file/thông số không còn đúng hash phiên bản',409);
+  if(!rev.plan)throw new DomainError('PRINT_NOT_READY','Chưa có kế hoạch in tin cậy');
+  assertPlan(rev.plan,rev.request_hash);
+ }
+ private async evidenceHash(db:SqlConnection,o:OrderRow,rev:RevisionRow):Promise<string|null>{
+  if(!this.evidence)return null;
+  this.assertRevisionBinding(rev);
+  return currentEvidence(db,this.evidence,{shop_id:o.shop_id,order_id:o.id,revision:rev.revision,
+   request_hash:rev.request_hash,plan:rev.plan});
+ }
+ private async assertCustomerBinding(db:SqlConnection,o:OrderRow,rev:RevisionRow,q:QuoteRow|null,
+  evidenceHash:string|null=null):Promise<void>{
+  const rows=await db.query<{id:string;kind:'request'|'quote';quote_revision:number|null;created_at:Date;evidence_sha256:string|null}>(
+   'SELECT id,kind,quote_revision,created_at,evidence_sha256 FROM core_confirmations '+
+   'WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND customer_id=$4 ORDER BY created_at,id',
+   [o.id,rev.revision,rev.request_hash,o.customer_id]);
+  const requests=rows.rows.filter(c=>c.kind==='request');
+  if(!requests.length)throw new DomainError('STALE_CUSTOMER_CONFIRMATION','Thiếu xác nhận khách đúng đơn/hash',409);
+  // A first quote can follow request confirmation; a repricing invalidates it.
+  if(q && q.quote_revision>1) {
+   const latest=(await db.query<{created_at:Date}>(
+    'SELECT created_at FROM core_quotes WHERE order_id=$1 AND quote_revision=$2',
+    [o.id,q.quote_revision])).rows[0];
+   if(!latest||!requests.some(r=>new Date(r.created_at)>=new Date(latest.created_at)))
+    throw new DomainError('STALE_CUSTOMER_CONFIRMATION','Báo giá đã sửa, cần xác nhận lại yêu cầu',409);
+  }
+  if(rev.plan && (rev.plan.physical_sheets>150||Boolean(q?.significant_cost)) &&
+     (!q||!rows.rows.some(c=>c.kind==='quote'&&c.quote_revision===q.quote_revision)))
+   throw new DomainError('STALE_PRICE_CONFIRMATION','Giá chưa được xác nhận đúng phiên bản',409);
+  if(evidenceHash){
+   const effective=[requests[requests.length-1],...(rev.plan&&
+    (rev.plan.physical_sheets>150||Boolean(q?.significant_cost))?
+    rows.rows.filter(c=>c.kind==='quote'&&c.quote_revision===q?.quote_revision).slice(-1):[])];
+   for(const confirmation of effective){
+    if(!confirmation||confirmation.evidence_sha256!==evidenceHash)
+     throw new DomainError('STALE_PRINT_EVIDENCE','Cột evidence SHA ở xác nhận khách đã cũ/NULL',409);
+    const audit=(await db.query<{details:{evidence_sha256?:string}}>(
+     "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 "+
+     "AND action IN ('customer.confirmed','customer.confirmed_verified_event') "+
+     "AND details->>'confirmation_id'=$3 ORDER BY created_at DESC LIMIT 1",
+     [o.shop_id,o.id,confirmation.id])).rows[0];
+    if(audit?.details?.evidence_sha256!==evidenceHash)
+     throw new DomainError('STALE_PRINT_EVIDENCE','Bằng chứng khách xác nhận đã cũ',409);
+   }
+  }
+ }
+ private quoteFingerprint(q:QuoteRow):string {
+  return sha(canonical({quote_revision:q.quote_revision,amount_vnd:q.amount_vnd,
+   deposit_required_vnd:q.deposit_required_vnd,significant_cost:q.significant_cost}));
+ }
+ private async assertJobBinding(db:SqlConnection,o:OrderRow,j:JobRow,rev:RevisionRow):Promise<void>{
+  this.assertRevisionBinding(rev);
+  if(j.order_id!==o.id||j.revision!==o.active_revision||j.request_hash!==rev.request_hash||
+     j.printer_id!==rev.plan!.printer_id||j.cancelled_at)
+   throw new DomainError('STALE_APPROVAL','Job không còn khớp file/thông số in',409);
+  const a=(await db.query<{quote_revision:number|null;request_hash:string;evidence_sha256:string|null}>(
+   'SELECT quote_revision,request_hash,evidence_sha256 FROM core_approvals WHERE id=$1 AND order_id=$2 AND revision=$3 AND request_hash=$4',
+   [j.approval_id,o.id,o.active_revision,rev.request_hash])).rows[0];
+  const q=await this.quote(db,o.id);
+  if(!a||a.request_hash!==rev.request_hash||(a.quote_revision??null)!==(q?.quote_revision??null))
+   throw new DomainError('STALE_APPROVAL','Duyệt không còn khớp báo giá hiện hành',409);
+  const evidenceHash=await this.evidenceHash(db,o,rev);
+  const binding=(await db.query<{details:{plan_sha256?:string;quote_sha256?:string|null;evidence_sha256?:string}}>(
+   "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 "+
+   "AND action IN ('print.approved','job.reprint_owner_approved') AND details->>'approval_id'=$3 "+
+   "AND details->>'job_id'=$4 ORDER BY created_at DESC LIMIT 1",
+   [o.shop_id,o.id,j.approval_id,j.id])).rows[0]?.details;
+  if(!binding || binding.plan_sha256!==sha(canonical(rev.plan)) ||
+     (binding.quote_sha256??null)!==(q?this.quoteFingerprint(q):null))
+   throw new DomainError('STALE_PRINT_BINDING','File, báo giá hoặc thông số in đã thay đổi',409);
+  if(evidenceHash!==null&&(binding.evidence_sha256!==evidenceHash||
+     a.evidence_sha256!==evidenceHash||j.evidence_sha256!==evidenceHash))
+   throw new DomainError('STALE_PRINT_EVIDENCE','SHA nguồn/manifest/preview/settings đã đổi',409);
+  await this.assertCustomerBinding(db,o,rev,q,evidenceHash);
+ }
  private async received(db:SqlConnection,id:string):Promise<number>{const x=await this.store.one<{amount:string}>(db,"SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_vnd WHEN direction='refunded' THEN -amount_vnd ELSE 0 END),0)::text AS amount FROM core_payments WHERE order_id=$1",[id]);return dbSafeInteger(x.amount,'payment.received_vnd');}
  private async requireUnsent(db:SqlConnection,o:OrderRow):Promise<void>{
   const jobs=await db.query<JobRow>('SELECT * FROM core_print_jobs WHERE order_id=$1 AND cancelled_at IS NULL FOR UPDATE',[o.id]);
@@ -83,8 +162,10 @@ export class OrderService {
     if(!q||q.quote_revision!==input.quote_revision)throw new DomainError('STALE_QUOTE','Giá đã thay đổi',409);
     quote_revision=q.quote_revision;
    }
-   await db.query('INSERT INTO core_confirmations(id,order_id,revision,request_hash,kind,quote_revision,customer_id,channel) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[newId(),id,rev.revision,rev.request_hash,input.kind,quote_revision,p.customer_id,'verified_credential']);
-   await this.audit(db,p,'customer.confirmed',id,{revision:rev.revision,kind:input.kind,quote_revision});
+   const evidenceHash=await this.evidenceHash(db,o,rev),confirmation_id=newId();
+   await db.query('INSERT INTO core_confirmations(id,order_id,revision,request_hash,kind,quote_revision,customer_id,channel,evidence_sha256) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[confirmation_id,id,rev.revision,rev.request_hash,input.kind,quote_revision,p.customer_id,'verified_credential',evidenceHash]);
+   await this.audit(db,p,'customer.confirmed',id,{confirmation_id,revision:rev.revision,kind:input.kind,quote_revision,
+    ...(evidenceHash?{evidence_sha256:evidenceHash}:{})});
    return {order_id:id,revision:rev.revision,kind:input.kind,quote_revision};
   }));
  }
@@ -225,27 +306,38 @@ export class OrderService {
       throw new DomainError('PENDING_INBOUND_REVIEW','Còn tin/file khách gửi chưa đối soát vào phiên bản hiện tại',409);
     }
    }
-   const rev=await this.revision(db,o);if(!rev.plan)throw new DomainError('PRINT_NOT_READY','Chưa có kế hoạch in tin cậy');assertPlan(rev.plan,rev.request_hash);
+   const rev=await this.revision(db,o);this.assertRevisionBinding(rev);
    // Keep the FIRST valid customer confirmation: retries/duplicate messages must not delay queue position.
-   const confirmation=await db.query<{confirmed_at:Date|null}>("SELECT MIN(created_at) AS confirmed_at FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND kind='request'",[id,rev.revision,rev.request_hash]);
+   const q=await this.quote(db,id);
+   // The first confirmation counts only until a later quote revision changes.
+   const confirmation=await db.query<{confirmed_at:Date|null}>(
+    "SELECT MIN(c.created_at) AS confirmed_at FROM core_confirmations c "+
+    "WHERE c.order_id=$1 AND c.revision=$2 AND c.request_hash=$3 AND c.kind='request' "+
+    "AND c.customer_id=$4 AND ($5::int IS NULL OR c.created_at >= "+
+    "(SELECT created_at FROM core_quotes WHERE order_id=$1 AND quote_revision=$5))",
+    [id,rev.revision,rev.request_hash,o.customer_id,q&&q.quote_revision>1?q.quote_revision:null]);
    const requestConfirmedAt=confirmation.rows[0]?.confirmed_at;
    if(!requestConfirmedAt)throw new DomainError('CUSTOMER_NOT_CONFIRMED','Khách chưa xác nhận phiên bản hiện tại');
    let queueConfirmedAt=new Date(requestConfirmedAt);
-   const q=await this.quote(db,id);const needsPrice=rev.plan.physical_sheets>150||Boolean(q?.significant_cost);
+   const needsPrice=rev.plan.physical_sheets>150||Boolean(q?.significant_cost);
    if(needsPrice){
     if(!q||q.quote_revision!==input.quote_revision)throw new DomainError('QUOTE_REQUIRED','Phải có báo giá nhân viên nhập và đúng phiên bản giá');
     const approvedQuote=await db.query<{confirmed_at:Date|null}>("SELECT MIN(created_at) AS confirmed_at FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND kind='quote' AND quote_revision=$4",[id,rev.revision,rev.request_hash,q.quote_revision]);
     if(!approvedQuote.rows[0]?.confirmed_at)throw new DomainError('PRICE_CONFIRMATION_REQUIRED','Khách chưa xác nhận mức giá');
     queueConfirmedAt=new Date(Math.max(queueConfirmedAt.getTime(),new Date(approvedQuote.rows[0].confirmed_at).getTime()));
    }
+   const evidenceHash=await this.evidenceHash(db,o,rev);
+   await this.assertCustomerBinding(db,o,rev,q,evidenceHash);
    const missing=shortage(q?.deposit_required_vnd??0,await this.received(db,id));
    if(missing>0&&!input.acknowledge_deposit_shortage)throw new DomainError('DEPOSIT_WARNING_REQUIRED','Cần xác nhận đã xem cảnh báo thiếu cọc');
    const existing=await db.query('SELECT id FROM core_print_jobs WHERE order_id=$1 AND revision=$2 AND cancelled_at IS NULL LIMIT 1',[id,rev.revision]);
    if(existing.rows.length)throw new DomainError('ALREADY_APPROVED','Phiên bản đã có lệnh, không được duyệt kép',409);
    const approval_id=newId(),job_id=newId();
-   await db.query('INSERT INTO core_approvals(id,order_id,revision,request_hash,quote_revision,actor_id,deposit_short_vnd) VALUES($1,$2,$3,$4,$5,$6,$7)',[approval_id,id,rev.revision,rev.request_hash,q?.quote_revision??null,p.id,missing]);
-   await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,confirmed_at) VALUES($1,$2,$3,$4,$5,$6,$7)',[job_id,id,rev.revision,rev.request_hash,approval_id,rev.plan.printer_id,queueConfirmedAt]);
-   await this.audit(db,p,'print.approved',id,{revision:rev.revision,approval_id,job_id,deposit_short_vnd:missing});
+   await db.query('INSERT INTO core_approvals(id,order_id,revision,request_hash,quote_revision,actor_id,deposit_short_vnd,evidence_sha256) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[approval_id,id,rev.revision,rev.request_hash,q?.quote_revision??null,p.id,missing,evidenceHash]);
+   await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,confirmed_at,evidence_sha256) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[job_id,id,rev.revision,rev.request_hash,approval_id,rev.plan.printer_id,queueConfirmedAt,evidenceHash]);
+   await this.audit(db,p,'print.approved',id,{revision:rev.revision,approval_id,job_id,
+    deposit_short_vnd:missing,plan_sha256:sha(canonical(rev.plan)),
+    quote_sha256:q?this.quoteFingerprint(q):null,...(evidenceHash?{evidence_sha256:evidenceHash}:{})});
    return {order_id:id,revision:rev.revision,approval_id,job_id,deposit_short_vnd:missing};
   }));
  }
@@ -253,16 +345,14 @@ export class OrderService {
   const row=await this.store.one<{order_id:string}>(db,'SELECT order_id FROM core_print_jobs WHERE id=$1',[job_id]);
   const o=await this.order(db,row.order_id,p);const j=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 FOR UPDATE',[job_id]);
   checkRevision(expected_revision,o.active_revision);
-  const rev=await this.revision(db,o);const approved=await db.query('SELECT id FROM core_approvals WHERE id=$1 AND revision=$2 AND request_hash=$3 AND order_id=$4',[j.approval_id,o.active_revision,rev.request_hash,o.id]);
-  if(!approved.rows.length||j.revision!==o.active_revision||j.request_hash!==rev.request_hash||j.cancelled_at)throw new DomainError('STALE_APPROVAL','Duyệt không còn hiệu lực',409);
+  const rev=await this.revision(db,o);await this.assertJobBinding(db,o,j,rev);
   if(!p.printer_ids?.includes(j.printer_id))throw new DomainError('PRINTER_SCOPE_DENIED','Agent không có quyền máy in này',403);
   if(!lease_token||sha(lease_token)!==j.lease_secret_hash||j.claimed_by!==p.id)throw new DomainError('BAD_LEASE','Lease không hợp lệ',403);
   return {o,j,rev};
  }
  private async checkGates(db:SqlConnection,o:OrderRow,j:JobRow,rev:RevisionRow):Promise<SettingsRow>{
   if(o.manual_lock||o.print_closed)throw new DomainError('MANUAL_LOCK','Đơn bị khóa xử lý in',409);
-  if(!rev.plan)throw new DomainError('PRINT_NOT_READY','Kế hoạch in chưa xác minh');assertPlan(rev.plan,rev.request_hash);
-  if(rev.plan.printer_id!==j.printer_id)throw new DomainError('PRINTER_CHANGED','Máy in đã khác',409);
+  await this.assertJobBinding(db,o,j,rev);
   const s=await this.store.one<SettingsRow>(db,'SELECT * FROM core_shop_settings WHERE shop_id=$1 FOR UPDATE',[o.shop_id]);
   if(!printingAllowed(s,this.now()))throw new DomainError('PRINT_CLOSED','Đang ngoài lịch/ngày nghỉ/khóa vận hành',409,true);
   return s;
@@ -410,9 +500,16 @@ export class OrderService {
    const original=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 AND order_id=$2 FOR UPDATE',[input.original_job_id,id]);
    if(original.state==='NOT_SENT'||original.state==='SENDING'||original.state==='SIMULATED_DONE')throw new DomainError('NOT_REPRINTABLE','Không được in lại lệnh chưa gửi/mô phỏng',409);
    const rev=await this.revision(db,o);if(original.revision!==o.active_revision||original.request_hash!==rev.request_hash)throw new DomainError('STALE_REVISION','In lại bản cũ cần đối soát thủ công',409);
+    await this.assertJobBinding(db,o,original,rev);
    if(!original.confirmed_at)throw new DomainError('QUEUE_CONFIRMATION_MISSING','Lệnh cũ thiếu xác nhận khách để xếp hàng; phải đối soát',409);
-   const job_id=newId();await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,original_job_id,authorized_reprint_by,confirmed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[job_id,id,rev.revision,rev.request_hash,original.approval_id,original.printer_id,original.id,p.id,original.confirmed_at??null]);
-   await this.audit(db,p,'job.reprint_owner_approved',id,{job_id,original_job_id:original.id,reason:input.reason});
+   const replayEvidence=await this.evidenceHash(db,o,rev);
+   const job_id=newId();await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,original_job_id,authorized_reprint_by,confirmed_at,evidence_sha256) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[job_id,id,rev.revision,rev.request_hash,original.approval_id,original.printer_id,original.id,p.id,original.confirmed_at??null,replayEvidence]);
+   const currentQuote=await this.quote(db,id);
+   await this.audit(db,p,'job.reprint_owner_approved',id,{job_id,original_job_id:original.id,
+    approval_id:original.approval_id,reason:input.reason,
+    plan_sha256:sha(canonical(rev.plan)),
+    quote_sha256:currentQuote?this.quoteFingerprint(currentQuote):null,
+    ...(this.evidence?{evidence_sha256:await this.evidenceHash(db,o,rev)}:{})});
    return {job_id,order_id:id,requires_agent_claim:true};
   }));
  }
@@ -481,21 +578,63 @@ export class OrderService {
    const current=revisions.rows.find(r=>r.revision===o.active_revision);
    if(!current)throw new DomainError('REVISION_NOT_FOUND','Không có phiên bản hiện hành',500);
    const jobs=await db.query<JobRow & {created_at:Date;evidence_kind:string|null;verified_sheets:number|string;cancelled_at:Date|null}>(
-    'SELECT id,order_id,revision,request_hash,approval_id,state,printer_id,confirmed_at,created_at,mode_at_send,evidence_kind,verified_sheets,cancelled_at FROM core_print_jobs WHERE order_id=$1 ORDER BY created_at',[id]);
+    'SELECT id,order_id,revision,request_hash,approval_id,state,printer_id,confirmed_at,created_at,mode_at_send,evidence_kind,verified_sheets,cancelled_at,evidence_sha256 FROM core_print_jobs WHERE order_id=$1 ORDER BY created_at',[id]);
    const quote=await this.quote(db,id),received=await this.received(db,id);
-   const confirmations=await db.query<{id:string;revision:number;request_hash:string;quote_revision:number|null;kind:'request'|'quote';created_at:Date;customer_id:string}>(
-    'SELECT id,revision,request_hash,quote_revision,kind,created_at,customer_id FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 ORDER BY created_at,id',[id,current.revision,current.request_hash]);
-   const approvals=await db.query<{id:string;revision:number;request_hash:string;quote_revision:number|null;actor_id:string;created_at:Date;deposit_short_vnd:string|number}>(
-    'SELECT id,revision,request_hash,quote_revision,actor_id,created_at,deposit_short_vnd FROM core_approvals WHERE order_id=$1 AND revision=$2 AND request_hash=$3 ORDER BY created_at DESC',[id,current.revision,current.request_hash]);
+   const confirmations=await db.query<{id:string;revision:number;request_hash:string;quote_revision:number|null;kind:'request'|'quote';created_at:Date;customer_id:string;evidence_sha256:string|null}>(
+    'SELECT id,revision,request_hash,quote_revision,kind,created_at,customer_id,evidence_sha256 FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 ORDER BY created_at,id',[id,current.revision,current.request_hash]);
+   const approvals=await db.query<{id:string;revision:number;request_hash:string;quote_revision:number|null;actor_id:string;created_at:Date;deposit_short_vnd:string|number;evidence_sha256:string|null}>(
+    'SELECT id,revision,request_hash,quote_revision,actor_id,created_at,deposit_short_vnd,evidence_sha256 FROM core_approvals WHERE order_id=$1 AND revision=$2 AND request_hash=$3 ORDER BY created_at DESC',[id,current.revision,current.request_hash]);
    let verifiedPlan:PrintPlan|null=null;
-   if(current.plan){try{assertPlan(current.plan,current.request_hash);verifiedPlan=current.plan;}catch{verifiedPlan=null;}}
+   if(current.plan){try{
+    if(sha(canonical(current.request_data))!==current.request_hash)
+     throw new DomainError('STALE_FILE_BINDING','Request/hash mismatch',409);
+    assertPlan(current.plan,current.request_hash);verifiedPlan=current.plan;
+   }catch{verifiedPlan=null;}}
    const needsPrice=Boolean(verifiedPlan && (verifiedPlan.physical_sheets>150 || quote?.significant_cost));
-   const requestConfirmation=confirmations.rows.find(c=>c.kind==='request')??null;
-   const priceConfirmation=quote?confirmations.rows.find(c=>c.kind==='quote'&&c.quote_revision===quote.quote_revision)??null:null;
+   // V1 evidence-gated read model: an old approval/confirmation must not look
+   // current to staff after source bytes, manifest, settings or preview change.
+   let visibleEvidence:string|null=null;
+   let currentEvidenceConfirmIds:Set<string>|null=null;
+   if(this.evidence){
+    try{
+     visibleEvidence=await this.evidenceHash(db,o,current);
+     const bound=await db.query<{confirmation_id:string}>(
+      "SELECT details->>'confirmation_id' AS confirmation_id FROM core_audit "+
+      "WHERE shop_id=$1 AND order_id=$2 AND details->>'evidence_sha256'=$3 "+
+      "AND action IN ('customer.confirmed','customer.confirmed_verified_event')",
+      [o.shop_id,id,visibleEvidence]);
+     currentEvidenceConfirmIds=new Set(bound.rows.map(c=>c.confirmation_id));
+    }catch{
+     visibleEvidence=null;
+     currentEvidenceConfirmIds=new Set();
+    }
+   }
+   const quoteCutoff=quote&&quote.quote_revision>1
+    ? (await db.query<{created_at:Date}>('SELECT created_at FROM core_quotes WHERE order_id=$1 AND quote_revision=$2',
+      [id,quote.quote_revision])).rows[0]?.created_at : null;
+   const requestConfirmation=(sha(canonical(current.request_data))===current.request_hash?
+    confirmations.rows.find(c=>c.kind==='request' && c.customer_id===o.customer_id &&
+     (!currentEvidenceConfirmIds||(currentEvidenceConfirmIds.has(c.id)&&c.evidence_sha256===visibleEvidence)) &&
+    (!quote||quote.quote_revision<=1||(quoteCutoff && new Date(c.created_at)>=new Date(quoteCutoff)))):null)??null;
+   const priceConfirmation=quote?confirmations.rows.find(c=>c.kind==='quote'&&
+    c.customer_id===o.customer_id&&c.quote_revision===quote.quote_revision&&
+    (!currentEvidenceConfirmIds||(currentEvidenceConfirmIds.has(c.id)&&c.evidence_sha256===visibleEvidence)))??null:null;
    // Readiness facts are backend-derived for THIS revision, not any earlier request/quote.
    const existingActiveJob=jobs.rows.find(j=>j.revision===current.revision&&j.request_hash===current.request_hash&&!j.cancelled_at);
-   const matchedApproval=existingActiveJob?approvals.rows.find(a=>a.id===existingActiveJob.approval_id&&( !needsPrice||a.quote_revision===quote?.quote_revision))??null:null;
-   const approval=verifiedPlan&&requestConfirmation&&(!needsPrice||priceConfirmation)?matchedApproval:null;
+   const matchedApproval=existingActiveJob?approvals.rows.find(a=>a.id===existingActiveJob.approval_id&&( !needsPrice||a.quote_revision===quote?.quote_revision)&&
+    (!this.evidence||(visibleEvidence!==null&&a.evidence_sha256===visibleEvidence&&existingActiveJob.evidence_sha256===visibleEvidence)))??null:null;
+   const quoteMatches=(matchedApproval?.quote_revision??null)===(quote?.quote_revision??null);
+   const auditFingerprint=matchedApproval&&existingActiveJob?(
+    await db.query<{details:{plan_sha256?:string;quote_sha256?:string|null;evidence_sha256?:string}}>(
+     "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 AND action IN ('print.approved','job.reprint_owner_approved') "+
+     "AND details->>'approval_id'=$3 AND details->>'job_id'=$4 ORDER BY created_at DESC LIMIT 1",
+     [o.shop_id,id,matchedApproval.id,existingActiveJob.id])).rows[0]?.details:null;
+   const fingerprintMatches=Boolean(verifiedPlan&&auditFingerprint &&
+    auditFingerprint.plan_sha256===sha(canonical(verifiedPlan)) &&
+    (auditFingerprint.quote_sha256??null)===(quote?this.quoteFingerprint(quote):null) &&
+    (!this.evidence||(visibleEvidence!==null&&auditFingerprint.evidence_sha256===visibleEvidence)));
+   const approval=verifiedPlan&&requestConfirmation&&(!needsPrice||priceConfirmation)&&
+    quoteMatches&&fingerprintMatches&&existingActiveJob?.printer_id===verifiedPlan.printer_id?matchedApproval:null;
    const jobRows=jobs.rows.map(j=>{
     const rev=revisions.rows.find(x=>x.revision===j.revision);
     const planned=rev?.plan && rev.plan.ready && rev.plan.request_hash===j.request_hash ? rev.plan.physical_sheets : null;

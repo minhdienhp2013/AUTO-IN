@@ -3,11 +3,12 @@ const assert=require('node:assert/strict');
 const path=require('node:path');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../../.ai1-build/backend');
 const {OrderService}=require(path.join(root,'core/service.js'));
+const {sha,canonical}=require(path.join(root,'core/model.js'));
 const {registerCoreRoutes}=require(path.join(root,'api/routes.js'));
 
 const staff={id:'staff1',role:'staff',shop_id:'shop-test',verified:true};
 function mockReadModel(mode, previewVerified, artifactPreview, manualEvidence=false){
- const requestHash='a'.repeat(64);
+ const requestHash=sha(canonical({}));
  const plan={ready:true,request_hash:requestHash,physical_sheets:5,
   document_pages:5,printed_faces:5,printer_id:'RMP7000',
   artifact_ref:'artifact/authorized',verified_by:'processor',
@@ -35,6 +36,7 @@ function mockReadModel(mode, previewVerified, artifactPreview, manualEvidence=fa
   if(sql.startsWith('SELECT * FROM core_revisions'))return {rows:[{revision:2,request_hash:requestHash,request_data:{},plan}]};
   if(sql.startsWith('SELECT id,order_id,revision,request_hash,approval_id,state'))return {rows:[job]};
   if(sql.startsWith('SELECT * FROM core_quotes'))return {rows:[]};
+  if(sql.includes('FROM core_audit WHERE'))return {rows:[{details:{plan_sha256:sha(canonical(plan)),quote_sha256:null}}]};
   if(sql.startsWith('SELECT id,revision,request_hash,quote_revision,kind'))return {rows:[{id:'confirmation1',revision:2,
    request_hash:requestHash,kind:'request',customer_id:'customer1',created_at:new Date()}]};
   if(sql.startsWith('SELECT id,revision,request_hash,quote_revision,actor_id'))return {rows:[{id:'approval1',revision:2,
@@ -100,7 +102,7 @@ test('API route rejects non-object bodies before invoking core mutations',async(
 test('verified staff non-Zalo order reports lower-case clear in existing order detail API',async()=>{
  const view=await mockReadModel('controlled_test',true,'preview/manual',true).getOrder(staff,'order1');
  assert.deepEqual(view.current.pending_updates,{
-  order_id:'order1',revision:2,request_hash:'a'.repeat(64),
+  order_id:'order1',revision:2,request_hash:sha(canonical({})),
   status:'clear',unresolved_count:0,items:[]
  });
 });
