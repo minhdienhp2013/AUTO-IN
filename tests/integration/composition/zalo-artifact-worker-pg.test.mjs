@@ -45,7 +45,7 @@ test('AI0 REAL PG: ONE Zalo PDF -> AI2 suggestion -> staff-scoped AI3 preview ->
     await mkdir(root,{mode:0o700});
     await mkdir(renderedRoot,{mode:0o700});
     const generated=spawnSync(python,['-c',
-      'import fitz,sys;d=fitz.open();p=d.new_page(width=595,height=842);p.insert_text((72,72),"AUTO-IN public PDF fixture");d.save(sys.argv[1]);d.close()',
+      'import fitz,sys;d=fitz.open();p=d.new_page();p.draw_rect(fitz.Rect(10,10,70,70));d.save(sys.argv[1]);d.close()',
       pdfFile],{cwd:process.cwd(),timeout:10000});
     assert.equal(generated.status,0,'AI3 Pillow fixture generation unavailable');
     const pdf=await readFile(pdfFile);
