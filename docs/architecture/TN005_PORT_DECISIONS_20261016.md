@@ -60,3 +60,20 @@ cannot authorize a later send after a revision or handover race.
 - The outbox remains advisory only. No READY, customer-confirmation, approval,
   or print authority changes. Provider I/O, OA, real printing and TN037 remain
   NOT RUN.
+
+## AI2 CAS composition bridge — 2026-10-17
+
+This is the follow-up to the preview-only state above. When the simulation
+runtime has a configured sealed-artifact root, AI0 supplies AI2's trusted
+question reader and maps its enqueue CAS to AI1's `enqueue` with a stable
+`tn005:<outbound UUID>` idempotency key. The bridge validates exact evidence
+fields and fixed shop/OA scope; Core rechecks order, revision, hashes, AI
+generation and sealed bytes in its locked PostgreSQL transaction.
+
+This remains an internal queue operation: no HTTP route, automatic customer
+prompt, sender, or provider call is added. AI1 `reserve`/`deliverReserved`
+remains the only supported delivery boundary. The AI2 compare-only delivery
+method returns unavailable in this adapter to avoid creating a check/use gap.
+The PostgreSQL/Fastify integration test checks cross-shop and stale-revision
+blocking, handover, no ordinary Zalo outbox row, and zero confirmation,
+approval, or print mutations. Live OA and physical printing remain NOT RUN.

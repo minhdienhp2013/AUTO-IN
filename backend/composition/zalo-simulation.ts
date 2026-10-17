@@ -8,6 +8,12 @@ import type { OrderDraftPort, DocumentFactsPort } from '../conversation/processo
 import { createTrustedDocumentFactsPort } from './document-facts.js';
 import { createZaloRawWebhook } from './zalo-http.js';
 import {guardedSyntheticConversationOrders} from './conversation-order-guard.js';
+import {asSqlPool} from './postgres.js';
+import {firstPageQuestionReadPort} from './first-page-question-port.js';
+import {createVerifiedSyntheticTn005Outbox} from './tn005-sealed-outbox-port.js';
+import {createFirstPageCoreCasAdapter} from './first-page-core-cas-adapter.js';
+import type {FirstPageQuestionReadPort} from '../conversation/first-page-question.js';
+import type {FirstPageCoreCasPort} from '../conversation/first-page-core-cas.js';
 
 /** Local test registry. Never populate these values from webhook bytes or headers. */
 export interface SyntheticZaloRegistry {
@@ -33,7 +39,8 @@ function parseRegistry(input: unknown): SyntheticZaloRegistry {
 }
 
 function compose(pool: pg.Pool, registry: SyntheticZaloRegistry,
-  orders: OrderDraftPort, documents: DocumentFactsPort) {
+  orders: OrderDraftPort, documents: DocumentFactsPort,
+  firstPage?:{questions:FirstPageQuestionReadPort;core:FirstPageCoreCasPort}) {
   const pipeline = createZaloComposition({
     pool,
     trusted_shop_id: registry.shop_id,
@@ -46,7 +53,11 @@ function compose(pool: pg.Pool, registry: SyntheticZaloRegistry,
       kind: 'synthetic_fixture',
       verifier: new SyntheticTestVerifier(registry.fixture_key),
       normalizer: new SyntheticFixtureNormalizer()
-    }
+    },
+    ...(firstPage?{
+      first_page_question_reader:firstPage.questions,
+      first_page_core_cas:firstPage.core
+    }:{})
   });
   return pipeline;
 }
@@ -116,8 +127,21 @@ export function createSyntheticZaloRuntime(pool: pg.Pool, input: unknown, option
   };
   const guardedOrders = guardedSyntheticConversationOrders(pool,
     {shop_id:registry.shop_id,oa_id:registry.oa_id},safeOrders);
-  const pipeline = compose(pool, registry,guardedOrders,documents);
+  const trusted={shop_id:registry.shop_id,oa_id:registry.oa_id};
+  const firstPage=options.artifactRoot?{
+    questions:firstPageQuestionReadPort(asSqlPool(pool),options.artifactRoot,trusted),
+    core:createFirstPageCoreCasAdapter({
+      trusted,
+      outbox:createVerifiedSyntheticTn005Outbox({
+        pool:asSqlPool(pool),store:options.store,
+        artifactRoot:options.artifactRoot,scope:trusted
+      })
+    })
+  }:undefined;
+  const pipeline = compose(pool, registry,guardedOrders,documents,firstPage);
   return { trustedScope: { shop_id: registry.shop_id, oa_id: registry.oa_id },
     webhook: createZaloRawWebhook(pipeline), tick_inbound: pipeline.tick_inbound,
-    tick_outbound: pipeline.tick_outbound };
+    tick_outbound: pipeline.tick_outbound,
+    /** Internal synthetic only; caller must resolve scope from a verified order. */
+    queue_first_page_suggested_question:pipeline.queue_first_page_suggested_question };
 }
