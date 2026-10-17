@@ -11,7 +11,7 @@ export class OrderService {
  private async revision(db:SqlConnection,o:OrderRow):Promise<RevisionRow>{return this.store.one(db,'SELECT * FROM core_revisions WHERE order_id=$1 AND revision=$2',[o.id,o.active_revision]);}
  private async quote(db:SqlConnection,id:string):Promise<QuoteRow|null>{const q=(await db.query<Omit<QuoteRow,'amount_vnd'|'deposit_required_vnd'> & {amount_vnd:string;deposit_required_vnd:string}>('SELECT * FROM core_quotes WHERE order_id=$1 ORDER BY quote_revision DESC LIMIT 1',[id])).rows[0];return q?{...q,amount_vnd:dbSafeInteger(q.amount_vnd,'quote.amount_vnd'),deposit_required_vnd:dbSafeInteger(q.deposit_required_vnd,'quote.deposit_required_vnd')}:null;}
  // Existing Core wire only. AI0/AI3 supply independent immutable byte/manifest evidence.
- private assertRevisionBinding(rev:RevisionRow):void {
+ private assertRevisionBinding(rev:RevisionRow):asserts rev is RevisionRow & {plan:PrintPlan} {
   if(sha(canonical(rev.request_data))!==rev.request_hash)
    throw new DomainError('STALE_FILE_BINDING','Nội dung file/thông số không còn đúng hash phiên bản',409);
   if(!rev.plan)throw new DomainError('PRINT_NOT_READY','Chưa có kế hoạch in tin cậy');
