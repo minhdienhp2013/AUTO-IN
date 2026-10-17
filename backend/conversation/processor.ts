@@ -200,7 +200,7 @@ export class ConversationProcessor {
       e.mime_type?.toLowerCase()==="application/zip"||
       e.mime_type?.toLowerCase()==="application/x-zip-compressed"))
       return routeHuman("ZIP_V1");
-    if(attachments.some(e=>/\\.(?:xlsx?|xlsm|xlsb|ods)$/i.test(e.filename??"")||
+    if(attachments.some(e=>/\.(?:xlsx?|xlsm|xlsb|ods)$/i.test(e.filename??"")||
       /spreadsheet|excel/i.test(e.mime_type??"")))
       return routeHuman("EXCEL");
     let decision;
