@@ -3,7 +3,8 @@ import {
   type FirstPageSuggestedDeliveryIntent
 } from './first-page-delivery-intent.ts';
 import {
-  SAFE_FIRST_PAGE_QUESTION,
+  SAFE_FIRST_PAGE_QUESTION,formatBoundFirstPageQuestion,
+  isWhitelistedFirstPageSuggestionText,
   type FirstPageQuestionScope,
   type FirstPageQuestionSnapshot
 } from './first-page-question.ts';
@@ -85,10 +86,20 @@ async function runStage(
   gate:GateSnapshot|null|undefined,
   core:FirstPageCoreCasPort|undefined,
 ):Promise<FirstPageCasDecision> {
-  if(!outboundId(outbound_id))return blocked();
+  if(!outboundId(outbound_id)||
+     !isWhitelistedFirstPageSuggestionText(intent?.text))return blocked();
   const local=checkFirstPageSuggestedIntent(intent,scope,fresh,gate,stage);
   if(local.status==='blocked')return blocked();
-  if(local.status==='generic_rebind_required')return generic();
+  if(local.status==='generic_rebind_required'){
+    const latestQuestion=formatBoundFirstPageQuestion(scope,fresh);
+    // A changed source/revision is a rebind; replacing the text while Core
+    // evidence is unchanged is tampering and MUST block, not downgrade.
+    if(latestQuestion.used_suggestion&&latestQuestion.text!==intent.text&&
+       fresh?.current?.request_hash===intent.evidence?.request_hash&&
+       fresh?.current?.source_sha256===intent.evidence?.source_sha256&&
+       scope.revision===intent.evidence?.revision)return blocked();
+    return generic();
+  }
   // Neither operation is permitted in the absence of AI1's atomic CAS.
   if(!core)return blocked();
   if(stage==='before_enqueue'&&
