@@ -588,25 +588,47 @@ export class OrderService {
     assertPlan(current.plan,current.request_hash);verifiedPlan=current.plan;
    }catch{verifiedPlan=null;}}
    const needsPrice=Boolean(verifiedPlan && (verifiedPlan.physical_sheets>150 || quote?.significant_cost));
+   // V1 evidence-gated read model: an old approval/confirmation must not look
+   // current to staff after source bytes, manifest, settings or preview change.
+   let visibleEvidence:string|null=null;
+   let currentEvidenceConfirmIds:Set<string>|null=null;
+   if(this.evidence){
+    try{
+     visibleEvidence=await this.evidenceHash(db,o,current);
+     const bound=await db.query<{confirmation_id:string}>(
+      "SELECT details->>'confirmation_id' AS confirmation_id FROM core_audit "+
+      "WHERE shop_id=$1 AND order_id=$2 AND details->>'evidence_sha256'=$3 "+
+      "AND action IN ('customer.confirmed','customer.confirmed_verified_event')",
+      [o.shop_id,id,visibleEvidence]);
+     currentEvidenceConfirmIds=new Set(bound.rows.map(c=>c.confirmation_id));
+    }catch{
+     visibleEvidence=null;
+     currentEvidenceConfirmIds=new Set();
+    }
+   }
    const quoteCutoff=quote&&quote.quote_revision>1
     ? (await db.query<{created_at:Date}>('SELECT created_at FROM core_quotes WHERE order_id=$1 AND quote_revision=$2',
       [id,quote.quote_revision])).rows[0]?.created_at : null;
    const requestConfirmation=(sha(canonical(current.request_data))===current.request_hash?
     confirmations.rows.find(c=>c.kind==='request' && c.customer_id===o.customer_id &&
+     (!currentEvidenceConfirmIds||currentEvidenceConfirmIds.has(c.id)) &&
     (!quote||quote.quote_revision<=1||(quoteCutoff && new Date(c.created_at)>=new Date(quoteCutoff)))):null)??null;
-   const priceConfirmation=quote?confirmations.rows.find(c=>c.kind==='quote'&&c.quote_revision===quote.quote_revision)??null:null;
+   const priceConfirmation=quote?confirmations.rows.find(c=>c.kind==='quote'&&
+    c.customer_id===o.customer_id&&c.quote_revision===quote.quote_revision&&
+    (!currentEvidenceConfirmIds||currentEvidenceConfirmIds.has(c.id)))??null:null;
    // Readiness facts are backend-derived for THIS revision, not any earlier request/quote.
    const existingActiveJob=jobs.rows.find(j=>j.revision===current.revision&&j.request_hash===current.request_hash&&!j.cancelled_at);
    const matchedApproval=existingActiveJob?approvals.rows.find(a=>a.id===existingActiveJob.approval_id&&( !needsPrice||a.quote_revision===quote?.quote_revision))??null:null;
    const quoteMatches=(matchedApproval?.quote_revision??null)===(quote?.quote_revision??null);
    const auditFingerprint=matchedApproval&&existingActiveJob?(
-    await db.query<{details:{plan_sha256?:string;quote_sha256?:string|null}}>(
+    await db.query<{details:{plan_sha256?:string;quote_sha256?:string|null;evidence_sha256?:string}}>(
      "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 AND action IN ('print.approved','job.reprint_owner_approved') "+
      "AND details->>'approval_id'=$3 AND details->>'job_id'=$4 ORDER BY created_at DESC LIMIT 1",
      [o.shop_id,id,matchedApproval.id,existingActiveJob.id])).rows[0]?.details:null;
    const fingerprintMatches=Boolean(verifiedPlan&&auditFingerprint &&
     auditFingerprint.plan_sha256===sha(canonical(verifiedPlan)) &&
-    (auditFingerprint.quote_sha256??null)===(quote?this.quoteFingerprint(quote):null));
+    (auditFingerprint.quote_sha256??null)===(quote?this.quoteFingerprint(quote):null) &&
+    (!this.evidence||(visibleEvidence!==null&&auditFingerprint.evidence_sha256===visibleEvidence)));
    const approval=verifiedPlan&&requestConfirmation&&(!needsPrice||priceConfirmation)&&
     quoteMatches&&fingerprintMatches&&existingActiveJob?.printer_id===verifiedPlan.printer_id?matchedApproval:null;
    const jobRows=jobs.rows.map(j=>{
