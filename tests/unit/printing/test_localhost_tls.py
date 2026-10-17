@@ -33,6 +33,39 @@ def _job():
     }
 
 
+def _preflight_ticket(job, *, allowed=True, evidence_verified=True):
+    evidence_sha = "e" * 64
+    return {
+        "allowed": allowed, "job_id": job["job_id"],
+        "revision": job["revision"], "mode": job["mode"],
+        "approval_id": job["approval_id"],
+        "document_evidence_verified": evidence_verified,
+        "review_receipt": {
+            "receipt_id": "tls-receipt", "shop_id": "tls-shop",
+            "order_id": job["order_id"], "revision": job["revision"],
+            "request_hash": job["request_hash"], "evidence_sha256": evidence_sha,
+            "reviewer_id": "tls-staff", "reviewed_at": "2026-10-18T10:00:00Z",
+            "decision": "checked",
+        },
+        "trusted_evidence": {
+            "schema": "ai0.print_evidence.v1", "shop_id": "tls-shop",
+            "order_id": job["order_id"], "revision": job["revision"],
+            "request_hash": job["request_hash"], "evidence_sha256": evidence_sha,
+            "settings_sha256": "1" * 64, "renderer_sha256": "2" * 64,
+            "printer_capability_sha256": "3" * 64,
+            "preview_sha256": ["4" * 64], "printer_id": job["printer_id"],
+        },
+        "trusted_job": {
+            "job_id": job["job_id"], "shop_id": "tls-shop",
+            "order_id": job["order_id"], "revision": job["revision"],
+            "request_hash": job["request_hash"],
+            "approval_id": job["approval_id"], "printer_id": job["printer_id"],
+            "evidence_sha256": evidence_sha, "mode": job["mode"],
+            "state": "NOT_SENT",
+        },
+    }
+
+
 class _SimulatedApi(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -80,12 +113,9 @@ class _Handler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(raw)
                     return
-                answer = {
-                    "allowed": server.state == "NOT_SENT",
-                    "job_id": _job()["job_id"], "revision": 2,
-                    "approval_id": _job()["approval_id"], "mode": "simulation",
-                    "document_evidence_verified": server.preflight_evidence,
-                }
+                answer = _preflight_ticket(
+                    _job(), allowed=server.state == "NOT_SENT",
+                    evidence_verified=server.preflight_evidence)
             elif action == "mark-sending":
                 assert server.state == "NOT_SENT"
                 assert payload["idempotency_key"]
@@ -164,8 +194,9 @@ def tls_backend(tmp_path, monkeypatch):
 
 
 def _agent(url, journal, driver):
-    return PrintAgent(HttpBackendClient(url, "S"*24, timeout=3),
-                      Journal(journal), driver)
+    client = HttpBackendClient(url, "S"*24, timeout=3)
+    return PrintAgent(client, Journal(journal), driver,
+                      evidence_gate=client.evidence_verified)
 
 
 def test_real_tls_transport_dryrun_and_repeat_never_reprints(tmp_path, monkeypatch):

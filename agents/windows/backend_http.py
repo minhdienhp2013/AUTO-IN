@@ -8,10 +8,16 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from copy import deepcopy
 from typing import Any
 from urllib.parse import quote, urlsplit
 from urllib.error import HTTPError
 from urllib.request import Request, build_opener, HTTPRedirectHandler
+
+from .native_simulation_review import (
+    is_safe_preflight_review_result,
+    review_preflight_ticket_simulation_only,
+)
 
 
 class _RejectRedirects(HTTPRedirectHandler):
@@ -46,9 +52,14 @@ class HttpBackendClient:
         self.token = token
         self.printer_id = printer_id
         self.timeout = timeout
-        # In-memory only: never serialize a preflight proof or trust any client
-        # supplied document_evidence_verified field on a claimed job.
-        self._verified_identity: tuple[Any, ...] | None = None
+        # Authenticated preflight ticket is private, in-memory only. It is never
+        # copied into the claimed job, journal, report, or log.
+        self._preflight_ticket: dict[str, Any] | None = None
+        self._preflight_identity: tuple[Any, ...] | None = None
+
+    def _clear_preflight_ticket(self) -> None:
+        self._preflight_ticket = None
+        self._preflight_identity = None
 
     def _post(self, suffix: str, body: dict[str, Any]) -> dict[str, Any]:
         request = Request(self.base_url + suffix,
@@ -87,16 +98,28 @@ class HttpBackendClient:
         # an old lease, order, hash or approval is NEVER sufficient for sending.
         return tuple(job.get(name) for name in (
             'job_id', 'order_id', 'revision', 'request_hash',
-            'approval_id', 'lease_token'
+            'approval_id', 'printer_id', 'lease_token'
         ))
 
     def evidence_verified(self, job: dict[str, Any]) -> bool:
-        return (self._verified_identity is not None and
-                self._verified_identity == self._identity(job))
+        ticket = self._preflight_ticket
+        if (ticket is None or self._preflight_identity is None or
+                self._preflight_identity != self._identity(job)):
+            return False
+        try:
+            result = review_preflight_ticket_simulation_only(
+                preflight_ticket=ticket, claimed_job=job)
+            if is_safe_preflight_review_result(result, preflight_ticket=ticket):
+                return True
+        except Exception:
+            # Any local ticket validation error is a fail-closed denial.
+            pass
+        self._clear_preflight_ticket()
+        return False
 
     def claim(self) -> dict[str, Any] | None:
         # Any new claim invalidates preflight proof, even if HTTP fails.
-        self._verified_identity = None
+        self._clear_preflight_ticket()
         # New idempotency key on each independent poll. Never retry an ambiguous
         # POST without reconciling it with server and local journal first.
         data = self._post('/internal/v1/print-jobs/claim',
@@ -108,7 +131,7 @@ class HttpBackendClient:
 
     def preflight(self, job: dict[str, Any]) -> dict[str, Any]:
         # Never carry preflight evidence across independent attempts.
-        self._verified_identity = None
+        self._clear_preflight_ticket()
         try:
             value = self._post(self._job_path(job, 'preflight'),
                                self._lease_payload(job))
@@ -135,7 +158,10 @@ class HttpBackendClient:
                 value['revision'] == job.get('revision') and
                 value.get('approval_id') == job.get('approval_id') and
                 value.get('mode') == job.get('mode') == 'simulation'):
-            self._verified_identity = self._identity(job)
+            # Keep an isolated copy so callers cannot mutate the server ticket
+            # returned by preflight after it has been bound to this lease.
+            self._preflight_ticket = deepcopy(value)
+            self._preflight_identity = self._identity(job)
         return value
 
     def mark_sending(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -143,7 +169,7 @@ class HttpBackendClient:
         # Clear proof even if HTTP fails/ACK is lost (UNKNOWN path).
         if not self.evidence_verified(job):
             raise RuntimeError('Preflight document proof stale or missing')
-        self._verified_identity = None
+        self._clear_preflight_ticket()
         return self._post(self._job_path(job, 'mark-sending'),
                           {**self._lease_payload(job),
                            'idempotency_key': self._idempotency(job, 'mark-sending')})

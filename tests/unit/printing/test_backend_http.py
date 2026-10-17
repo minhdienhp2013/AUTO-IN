@@ -28,6 +28,41 @@ def job():
             'lease_seconds': 90, 'mode': 'simulation'}
 
 
+def preflight_ticket(record, *, composition_evidence=True):
+    evidence_sha = 'e' * 64
+    value = {
+        'allowed': True, 'job_id': record['job_id'],
+        'revision': record['revision'], 'mode': record['mode'],
+        'approval_id': record['approval_id'],
+        'review_receipt': {
+            'receipt_id': 'receipt-1', 'shop_id': 'shop-1',
+            'order_id': record['order_id'], 'revision': record['revision'],
+            'request_hash': record['request_hash'], 'evidence_sha256': evidence_sha,
+            'reviewer_id': 'staff-1', 'reviewed_at': '2026-10-18T10:00:00Z',
+            'decision': 'checked',
+        },
+        'trusted_evidence': {
+            'schema': 'ai0.print_evidence.v1', 'shop_id': 'shop-1',
+            'order_id': record['order_id'], 'revision': record['revision'],
+            'request_hash': record['request_hash'], 'evidence_sha256': evidence_sha,
+            'settings_sha256': '1' * 64, 'renderer_sha256': '2' * 64,
+            'printer_capability_sha256': '3' * 64,
+            'preview_sha256': ['4' * 64], 'printer_id': record['printer_id'],
+        },
+        'trusted_job': {
+            'job_id': record['job_id'], 'shop_id': 'shop-1',
+            'order_id': record['order_id'], 'revision': record['revision'],
+            'request_hash': record['request_hash'],
+            'approval_id': record['approval_id'], 'printer_id': record['printer_id'],
+            'evidence_sha256': evidence_sha, 'mode': record['mode'],
+            'state': 'NOT_SENT',
+        },
+    }
+    if composition_evidence:
+        value['document_evidence_verified'] = True
+    return value
+
+
 def test_wire_exact_body_and_routes(monkeypatch):
     captured = []
 
@@ -37,9 +72,7 @@ def test_wire_exact_body_and_routes(monkeypatch):
         if request.full_url.endswith('/claim'):
             return Response({'job': job()})
         if request.full_url.endswith('/preflight'):
-            return Response({'allowed': True, 'job_id': job()['job_id'],
-                             'revision': 2, 'mode': 'simulation', 'approval_id': 'approval1',
-                             'document_evidence_verified': True})
+            return Response(preflight_ticket(job()))
         if request.full_url.endswith('/mark-sending'):
             return Response({'job_id': job()['job_id'], 'state': 'SENDING',
                              'mode': 'simulation'})
@@ -121,9 +154,7 @@ def test_end_to_end_agent_with_ai1_wire_mock(monkeypatch, tmp_path):
             return Response({'job': job()})
         if url.endswith('/preflight'):
             assert body == {'expected_revision': 2, 'lease_token': 'SECRET-LEASE'}
-            return Response({'allowed': True, 'job_id': 'job/1', 'revision': 2,
-                             'mode': 'simulation', 'approval_id': 'approval1',
-                             'document_evidence_verified': True})
+            return Response(preflight_ticket(job()))
         if url.endswith('/mark-sending'):
             assert server['state'] == 'NOT_SENT'
             assert body['expected_revision'] == 2 and body['lease_token'] == 'SECRET-LEASE'
@@ -138,7 +169,8 @@ def test_end_to_end_agent_with_ai1_wire_mock(monkeypatch, tmp_path):
     monkeypatch.setattr(backend_http, 'urlopen', route)
     backend = backend_http.HttpBackendClient('https://backend.example', 'T' * 24)
     dry = DryRunDriver()
-    agent = PrintAgent(backend, Journal(tmp_path / 'wire.sqlite'), dry)
+    agent = PrintAgent(backend, Journal(tmp_path / 'wire.sqlite'), dry,
+                       evidence_gate=backend.evidence_verified)
     assert agent.run_once()['status'] == 'SIMULATED_DONE'
     assert server['state'] == 'SIMULATED_DONE'
     assert dry.calls == 1

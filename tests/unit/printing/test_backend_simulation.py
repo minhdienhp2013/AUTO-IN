@@ -15,6 +15,38 @@ def _job():
     }
 
 
+def _preflight_ticket(job, *, allowed=True):
+    evidence_sha = "e" * 64
+    return {
+        "allowed": allowed, "job_id": job["job_id"],
+        "revision": job["revision"], "mode": job["mode"],
+        "approval_id": job["approval_id"], "document_evidence_verified": True,
+        "review_receipt": {
+            "receipt_id": "receipt-203", "shop_id": "shop-203",
+            "order_id": job["order_id"], "revision": job["revision"],
+            "request_hash": job["request_hash"], "evidence_sha256": evidence_sha,
+            "reviewer_id": "staff-203", "reviewed_at": "2026-10-18T10:00:00Z",
+            "decision": "checked",
+        },
+        "trusted_evidence": {
+            "schema": "ai0.print_evidence.v1", "shop_id": "shop-203",
+            "order_id": job["order_id"], "revision": job["revision"],
+            "request_hash": job["request_hash"], "evidence_sha256": evidence_sha,
+            "settings_sha256": "1" * 64, "renderer_sha256": "2" * 64,
+            "printer_capability_sha256": "3" * 64,
+            "preview_sha256": ["4" * 64], "printer_id": job["printer_id"],
+        },
+        "trusted_job": {
+            "job_id": job["job_id"], "shop_id": "shop-203",
+            "order_id": job["order_id"], "revision": job["revision"],
+            "request_hash": job["request_hash"],
+            "approval_id": job["approval_id"], "printer_id": job["printer_id"],
+            "evidence_sha256": evidence_sha, "mode": job["mode"],
+            "state": "NOT_SENT",
+        },
+    }
+
+
 class _Response:
     status = 200
 
@@ -51,12 +83,8 @@ class _SimulatedBackend:
         assert data["expected_revision"] == 2
         assert data["lease_token"] == "synthetic-lease-token"
         if action == "preflight":
-            return _Response({
-                "job_id": _job()["job_id"], "revision": 2,
-                "allowed": self.state == "NOT_SENT",
-                "mode": "simulation", "approval_id": _job()["approval_id"],
-                "document_evidence_verified": True,
-            })
+            return _Response(_preflight_ticket(
+                _job(), allowed=self.state == "NOT_SENT"))
         if action == "mark-sending":
             assert data["idempotency_key"]
             if self.state != "NOT_SENT":
@@ -86,7 +114,8 @@ class _SimulatedBackend:
 def _make_agent(tmp_path, driver):
     from agents.windows.backend_http import HttpBackendClient
     client = HttpBackendClient("https://backend.example", "S" * 24)
-    return PrintAgent(client, Journal(tmp_path / "persist.sqlite"), driver)
+    return PrintAgent(client, Journal(tmp_path / "persist.sqlite"), driver,
+                      evidence_gate=client.evidence_verified)
 
 
 def test_lost_mark_ack_never_drives_again_after_restart(monkeypatch, tmp_path):
