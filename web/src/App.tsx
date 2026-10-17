@@ -290,7 +290,7 @@ function App() {
                   <div className="order-customer">{order.customer_name} {order.urgent && <span className="urgent-label">ƯU TIÊN</span>}</div>
                   <div className="order-description">{order.documents.length ? `${order.documents.length} tài liệu · ${order.total_sheets ?? '?'} tờ` : 'Tài liệu chưa được API liệt kê'}</div>
                   {order.conversation_id && <small>Chat: {order.conversation_id} · phiên bản {order.revision}</small>}
-                  {order.detail_loaded===true && order.v1_manual_queue && <small className="v1-queue-list-label" data-testid="v1-queue-list-label">Đã nhận — chờ nhân viên · {order.v1_manual_queue.items.length} yêu cầu đối soát</small>}
+                  {apiHealthy && order.detail_loaded===true && order.v1_manual_queue && <small className="v1-queue-list-label" data-testid="v1-queue-list-label">Đã nhận — chờ nhân viên · {order.v1_manual_queue.items.length} yêu cầu đối soát</small>}
                   <div className="order-row footer"><span className={`state-chip ${statusTone(order)}`}>{order.print_state === 'UNKNOWN' ? printLabels.UNKNOWN : orderLabels[order.order_state]}</span><ChevronRight size={16}/></div>
                 </button>)}</div>
                 <div className="panel-foot"><span className="dot-legend"/> Dữ liệu {useDemo?'mô phỏng, không có khách thật':'trả về từ server'}</div>
