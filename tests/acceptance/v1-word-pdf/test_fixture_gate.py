@@ -15,18 +15,18 @@ gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 
 
-def test_manifest_is_24_unique_labeled_not_run_cases():
+def test_manifest_is_27_unique_labeled_not_run_cases():
     data = gate.manifest()
     assert data["phase"] == "pre-integration"
     assert data["source_candidate_sha"] == (
         "0673460af71205986b901a21fc7724dbea23c991")
-    assert len(data["cases"]) == 24
+    assert len(data["cases"]) == 27
     assert all(row["observed"] == "NOT_RUN" for row in data["cases"])
 
 
-def test_24_synthetic_bytes_have_distinct_sha_and_correct_formats():
+def test_27_synthetic_bytes_have_distinct_sha_and_correct_formats():
     result = gate.fixture_result()
-    assert (result["count"], result["distinct_sha256"]) == (24, 24)
+    assert (result["count"], result["distinct_sha256"]) == (27, 27)
     assert result["status"] == "FIXTURE_PASS_PRODUCT_NOT_RUN"
     assert all(row["product_status"] == "NOT_RUN" for row in result["cases"])
 
@@ -132,3 +132,44 @@ def test_auditor_rejects_wrong_checkout_even_when_zip_digest_matches(tmp_path):
     with pytest.raises(AssertionError, match="CHECKOUT_SHA_MISMATCH"):
         verifier.evaluate(artifact, candidate,
             hashlib.sha256(artifact.read_bytes()).hexdigest(), log, "0"*40)
+
+
+@pytest.mark.parametrize("case_id,changed", [
+    ("V1-025", "manifest_sha256"),
+    ("V1-026", "previews[0].sha256"),
+    ("V1-027", "renderer_sha256"),
+])
+def test_new_digest_mutation_on_same_path_changes_evidence_sha_not_source(
+        case_id, changed):
+    """Only hashes change in the fixture; product stale handling is NOT RUN."""
+    cases = {item["id"]: item for item in gate.same_path_evidence_pairs()}
+    item = cases[case_id]
+    before, after = item["before"], item["after"]
+    assert item["product_status"] == "NOT_RUN"
+    assert item["mutated_digest"] == changed
+    assert item["stable_locators_before"] == item["stable_locators_after"]
+    assert before["sources"] == after["sources"]
+    assert before["source_set_sha256"] == after["source_set_sha256"]
+    assert before["settings_sha256"] == after["settings_sha256"]
+    assert before["request_hash"] == after["request_hash"]
+    assert before["revision"] == after["revision"]
+    assert before["manifest_ref"] == after["manifest_ref"]
+    assert before["printer_capability_sha256"] == after["printer_capability_sha256"]
+    assert before["evidence_sha256"] != after["evidence_sha256"]
+    assert before["evidence_sha256"] == gate.canonical_sha256({
+        key: value for key, value in before.items() if key != "evidence_sha256"})
+    assert after["evidence_sha256"] == gate.canonical_sha256({
+        key: value for key, value in after.items() if key != "evidence_sha256"})
+    if changed == "manifest_sha256":
+        assert before["manifest_sha256"] != after["manifest_sha256"]
+        assert before["previews"] == after["previews"]
+        assert before["renderer_sha256"] == after["renderer_sha256"]
+    elif changed == "previews[0].sha256":
+        assert before["previews"][0]["sha256"] != after["previews"][0]["sha256"]
+        assert before["previews"][0]["bytes"] == after["previews"][0]["bytes"]
+        assert before["manifest_sha256"] == after["manifest_sha256"]
+        assert before["renderer_sha256"] == after["renderer_sha256"]
+    else:
+        assert before["renderer_sha256"] != after["renderer_sha256"]
+        assert before["manifest_sha256"] == after["manifest_sha256"]
+        assert before["previews"] == after["previews"]
