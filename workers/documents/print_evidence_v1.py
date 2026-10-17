@@ -201,7 +201,7 @@ def verify_print_evidence_v1(*, expected: dict[str, Any],
                              renderer_identity: dict[str, Any],
                              printer_capabilities: dict[str, Any]) -> dict[str, Any]:
     """Compare all raw bytes to the independently persisted Core SHA anchor."""
-    if (type(expected) is not dict or
+    if (type(expected) is not dict or type(context) is not dict or
             type(trusted_evidence_sha256) is not str or
             HEX.fullmatch(trusted_evidence_sha256) is None or
             type(active_revision) is not int or
