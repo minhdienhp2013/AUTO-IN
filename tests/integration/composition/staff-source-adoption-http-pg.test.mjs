@@ -23,7 +23,7 @@ const databaseUrl = process.env.TEST_DATABASE_URL;
  * AI3 Python inspect + AI1 generation-locked proposal.
  * Exercises explicit simulated customer confirmation; NEVER live Zalo or a physical printer.
  */
-test('AI0 staff adoption HTTP: existing AI2 order, lost-response replay, scope and pending fail closed', {
+test('AI0 image route PG: durable file handover, no AI draft or print', {
   skip: !databaseUrl ? 'TEST_DATABASE_URL missing: verified Zalo document worker NOT RUN' : false,
   timeout: 120_000
 }, async () => {
@@ -102,102 +102,30 @@ test('AI0 staff adoption HTTP: existing AI2 order, lost-response replay, scope a
     assert.equal(imported.json().preview_trusted,false,'Registration alone cannot claim verified preview');
     assert.equal((await register(goodId,png)).json().status,'existing');
 
-    const documentPort=createTrustedDocumentFactsPort(pool,scope,{artifactRoot:root,python});
-    const fact=await documentPort.inspect({
-      key:'synthetic-image',first_at:0,deadline_at:0,events:[good]
-    });
-    assert.deepEqual(fact,[{kind:'image',preview_trusted:true}],
-      'Trust requires AI3 actually decoding the DB-bound, hash-frozen file');
+        // V1 routes images directly to staff. The durable event and frozen source
+    //     // remain available; image bytes never enter document preflight/OCR.
     assert.equal((await runtime.tick_inbound()).ingested,1);
     await query("UPDATE zalo_batches SET deadline_at=now()-interval '1 second' WHERE oa_id=$1 AND status='OPEN'",[oa]);
-    const result=await runtime.tick_inbound();
-    assert.equal(result.processed,1,JSON.stringify(result));
-    const proposal=(await query(
-      'SELECT order_id,conversation_id,customer_id FROM core_ai_draft_proposals WHERE shop_id=$1',
-      [shop])).rows;
-    assert.equal(proposal.length,1);
-    assert.equal(proposal[0].conversation_id,conversation);
-    assert.equal(proposal[0].customer_id,customer);
-    const orderId=proposal[0].order_id;
-    const order=(await query(
-      'SELECT active_revision,customer_id FROM core_orders WHERE id=$1 AND shop_id=$2',
-      [orderId,shop])).rows[0];
-    assert.equal(order.active_revision,1);
-    assert.equal(order.customer_id,customer);
-    const revision=(await query(
-      'SELECT request_data FROM core_revisions WHERE order_id=$1 AND revision=1',
-      [orderId])).rows[0].request_data;
-    assert.equal(revision.source,'zalo_ai_suggestion');
-    assert.deepEqual(revision.event_ids,[goodId]);
-    assert.equal(revision.text,'[AUTO-IN SYSTEM: ATTACHMENT_ONLY; NO_CUSTOMER_TEXT]',
-      'The system marker must never be presented as actual customer text');
-    assert.ok(!JSON.stringify(revision).includes(good.file_ref),
-      'Client-controlled Zalo file_ref must never become a trusted order path');
-    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_confirmations WHERE order_id=$1',[orderId])).rows[0].n,0);
-    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_approvals WHERE order_id=$1',[orderId])).rows[0].n,0);
-    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[orderId])).rows[0].n,0);
-    assert.equal((await query('SELECT COUNT(*)::int AS n FROM zalo_outbound WHERE shop_id=$1 AND oa_id=$2',[shop,oa])).rows[0].n,1);
-    assert.equal((await runtime.tick_outbound()).disabled,true,'No real Zalo sender in simulation');
-    assert.equal((await runtime.tick_inbound()).processed,0,'Restart/re-tick cannot duplicate AI1 proposal');
-    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_ai_draft_proposals WHERE shop_id=$1',[shop])).rows[0].n,1);
-
-
-    const path='/internal/simulation/inbound-artifacts/'+goodId+'/adopt';
-    const body={order_id:orderId,paper:'A4',copies:2,duplex:false,
-      idempotency_key:'adopt-http-'+id};
-    const invoke=(payload=body,token=session.token)=>app.inject({
-      method:'POST',url:path,headers:headers(token),payload});
-    assert.equal((await app.inject({method:'POST',url:path,payload:body})).statusCode,401);
-    assert.equal((await invoke({...body,source_ref:'caller-path'})).statusCode,422);
-    assert.equal((await invoke({...body,copies:0})).statusCode,422);
-    const otherShop='autoin-test-other-'+id;
-    await core.auth.bootstrapOwner({shop_id:otherShop,username:'owner',password:ownerPassword,bootstrap_enabled:true});
-    const other=await core.auth.login(otherShop,'owner',ownerPassword);
-    assert.equal((await invoke(body,other.token)).statusCode,403);
-    assert.equal((await invoke({...body,order_id:randomUUID()})).statusCode,409);
-    assert.equal((await query('SELECT count(*)::int n FROM ai0_source_adoption_receipts WHERE shop_id=$1',[shop])).rows[0].n,0,
-      'invalid target must not reserve or poison the event');
-    // Server succeeds, the hypothetical client discards response and retries.
-    const simultaneous=await Promise.all([invoke(),secondApp.inject({
-      method:'POST',url:path,headers:headers(session.token),payload:body})]);
-    assert.ok(simultaneous.every(r=>[200,409].includes(r.statusCode)),
-      simultaneous.map(r=>r.body).join('\n'));
-    const first=simultaneous.find(r=>r.statusCode===200);
-    assert.ok(first,'one concurrent adoption must commit successfully');
-    assert.equal(first.statusCode,200,first.body);
-    assert.equal(first.headers['cache-control'],'no-store');
-    assert.equal(first.json().status,'adopted');
-    assert.equal(first.json().revision,2);
-    assert.equal(first.json().order_id,orderId);
-    const replay=await invoke();
-    assert.equal(replay.statusCode,200,replay.body);
-    assert.deepEqual(replay.json(),first.json());
-    const conflicts=await invoke({...body,copies:3});
-    assert.equal(conflicts.statusCode,409);
-    assert.equal(conflicts.json().error.code,'IDEMPOTENCY_CONFLICT');
-    assert.equal((await invoke({...body,idempotency_key:'another-key'})).statusCode,409);
-    const current=await query('SELECT active_revision FROM core_orders WHERE id=$1',[orderId]);
-    assert.equal(current.rows[0].active_revision,2);
-    assert.equal((await query('SELECT count(*)::int n FROM core_orders WHERE shop_id=$1',[shop])).rows[0].n,1);
-    // A later legitimate staff revision does not cause adoption replay to revise again.
-    const revision2=(await query('SELECT request_data FROM core_revisions WHERE order_id=$1 AND revision=2',[orderId])).rows[0].request_data;
-    await core.service.revise(session.principal,orderId,{expected_revision:2,
-      request_data:revision2,idempotency_key:'later-revision-'+id});
-    assert.equal((await invoke()).json().revision,2,'receipt is the committed operation snapshot');
-    assert.equal((await query('SELECT active_revision FROM core_orders WHERE id=$1',[orderId])).rows[0].active_revision,3);
-    await query("UPDATE core_shop_settings SET mode='safe' WHERE shop_id=$1",[shop]);
-    assert.equal((await invoke()).statusCode,409,'replay does not bypass current simulation mode');
-    await query("UPDATE core_shop_settings SET mode='simulation' WHERE shop_id=$1",[shop]);
-    // Explicit crash fixture: a reserved operation without a durable final response
-    // must never re-run Core or infer success from the already changed order.
-    await query('UPDATE ai0_source_adoption_receipts SET response=NULL,completed_at=NULL WHERE shop_id=$1',[shop]);
-    const pending=await invoke();
-    assert.equal(pending.statusCode,409);
-    assert.equal(pending.json().error.code,'SOURCE_ADOPTION_PENDING_RECONCILIATION');
-    assert.equal((await query('SELECT active_revision FROM core_orders WHERE id=$1',[orderId])).rows[0].active_revision,3);
+    const routed=await runtime.tick_inbound();
+    assert.equal(routed.processed,1,JSON.stringify(routed));
+    assert.equal(routed.held,0);
+    const control=(await query(
+      'SELECT status,generation,ai_route_reason FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2',
+      [shop,conversation])).rows[0];
+    assert.equal(control.status,'HUMAN');
+    assert.equal(Number(control.generation),1);
+    assert.equal(control.ai_route_reason,'IMAGE_V1');
+    assert.equal((await query('SELECT count(*)::int n FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2',[oa,goodId])).rows[0].n,1);
+    assert.equal((await query('SELECT count(*)::int n FROM ai0_inbound_document_artifacts WHERE shop_id=$1 AND oa_id=$2 AND event_id=$3',[shop,oa,goodId])).rows[0].n,1,
+      'The original file remains durably registered for staff');
+    assert.equal((await query('SELECT count(*)::int n FROM core_ai_draft_proposals WHERE shop_id=$1',[shop])).rows[0].n,0,
+      'Image intake must not create an automatic proposal');
+    assert.equal((await query('SELECT count(*)::int n FROM core_orders WHERE shop_id=$1',[shop])).rows[0].n,0);
     for(const table of ['core_confirmations','core_approvals','core_print_jobs'])
-      assert.equal((await query('SELECT count(*)::int n FROM '+table+' WHERE order_id=$1',[orderId])).rows[0].n,0);
-    console.log('PASS STAFF ADOPT HTTP one_order=true replay_same_receipt=true conflict=409 pending=409 guards=0');
+      assert.equal((await query('SELECT count(*)::int n FROM '+table+' WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',[shop])).rows[0].n,0);
+    assert.equal((await runtime.tick_outbound()).disabled,true,'No real Zalo sender in simulation');
+    assert.equal((await runtime.tick_inbound()).processed,0,'Re-tick cannot create an order from the routed image');
+    console.log('PASS V1 IMAGE route=HUMAN durable_event=true durable_source=true proposals=0 confirmations=0 approvals=0 print_jobs=0');
   }finally{
     if(app)await app.close();
     if(secondApp)await secondApp.close();
