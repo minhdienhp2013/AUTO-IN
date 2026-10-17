@@ -90,11 +90,15 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
       assert.equal(text,valid.input.text);
     }};
     const valid=await createOrder('valid');
+    const handed=await createOrder('handover');
+    const orderIds=[valid.orderId,handed.orderId];
     const guardsBefore=(await pool.query(
       'SELECT (SELECT count(*)::int FROM core_confirmations WHERE order_id=ANY($1::uuid[])) confirmations,'+
       '(SELECT count(*)::int FROM core_approvals WHERE order_id=ANY($1::uuid[])) approvals,'+
       '(SELECT count(*)::int FROM core_print_jobs WHERE order_id=ANY($1::uuid[])) print_jobs',
-      [[valid.orderId]])).rows[0];
+      [orderIds])).rows[0];
+    assert.deepEqual(guardsBefore,{confirmations:0,approvals:0,print_jobs:0},
+      'TN005 starts without confirmation, approval, or print mutations');
 
     // The composition callback must hash both the registered manifest and the
     // actual bytes; altered bytes cannot create an outbox row.
@@ -112,6 +116,11 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
       outbound_id:valid.input.outbound_id,scope:validScope});
     assert.deepEqual(composed,{status:'queued',outbound_id:valid.input.outbound_id,
       text:valid.input.text});
+    assert.deepEqual(await zaloRuntime.queue_first_page_suggested_question({
+      outbound_id:valid.input.outbound_id,scope:validScope}),composed,
+      'replaying the same adapter call must remain idempotent');
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM core_tn005_suggested_outbox '+
+      'WHERE order_id=$1',[valid.orderId])).rows[0].n,1);
     assert.equal((await pool.query('SELECT count(*)::int AS n FROM zalo_outbound WHERE shop_id=$1 AND oa_id=$2',
       [shop,oa])).rows[0].n,0,'TN005 must not use the ordinary Zalo outbox');
     const beforeForeign=(await pool.query('SELECT count(*)::int AS n FROM core_tn005_suggested_outbox '+
@@ -158,7 +167,6 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
       'WHERE order_id=$1',[foreign.order_id])).rows[0].n,0);
 
     // Handover after reservation cancels the advisory before the fake provider.
-    const handed=await createOrder('handover');
     const handedScope={shop_id:shop,order_id:handed.orderId,revision:1,oa_id:oa,
       customer_id:handed.customer,conversation_id:handed.conversation};
     assert.deepEqual(await zaloRuntime.queue_first_page_suggested_question({
@@ -179,13 +187,14 @@ test('TN005 composition binds AI1 CAS to verified sealed bytes; fake sender only
       'a human handover blocks a new AI2 TN005 enqueue');
     assert.equal(providerCalls,1,'handover never reached the fake provider');
 
-    const orderIds=[valid.orderId,handed.orderId];
     const guardsAfter=(await pool.query(
       'SELECT (SELECT count(*)::int FROM core_confirmations WHERE order_id=ANY($1::uuid[])) confirmations,'+
       '(SELECT count(*)::int FROM core_approvals WHERE order_id=ANY($1::uuid[])) approvals,'+
       '(SELECT count(*)::int FROM core_print_jobs WHERE order_id=ANY($1::uuid[])) print_jobs',
       [orderIds])).rows[0];
     assert.deepEqual(guardsAfter,guardsBefore);
+    assert.deepEqual(guardsAfter,{confirmations:0,approvals:0,print_jobs:0},
+      'TN005 leaves confirmations, approvals, and print jobs at exactly zero');
     console.log('PASS TN005 composition PG/Fastify: real sealed bytes+manifest, cross-shop, stale revision, handover, fake provider only, 0 print mutations');
   }finally{
     if(app)await app.close();
