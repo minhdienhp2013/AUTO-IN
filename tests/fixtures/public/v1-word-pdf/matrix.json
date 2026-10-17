@@ -1,0 +1,340 @@
+{
+  "schema": "autoin.v1.word_pdf.acceptance.matrix.v1",
+  "source_candidate_sha": "0673460af71205986b901a21fc7724dbea23c991",
+  "phase": "pre-integration",
+  "source": "synthetic_only",
+  "labels": {
+    "PASS": "valid workflow",
+    "STALE": "409/revalidation; zero new unauthorized job",
+    "ALLOW": "permitted actor",
+    "DENY": "401/403 with no mutation",
+    "ONE": "single row on replay",
+    "CONFLICT": "idempotency conflict with no new row",
+    "HOLD": "retained order/UNKNOWN/manual reconciliation",
+    "MANUAL": "manual routed, zero auto print jobs"
+  },
+  "cases": [
+    {
+      "id": "V1-001",
+      "key": "pdf_normal",
+      "format": "pdf",
+      "kind": "happy_path",
+      "goal": "PDF preflight/preview, customer confirmation, staff approval and one bounded agent send",
+      "tier": "product",
+      "expected": "PASS",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-002",
+      "key": "word_native",
+      "format": "docx",
+      "kind": "happy_path",
+      "goal": "Native Word page count/preview and original DOCX print path, no PDF substitution",
+      "tier": "windows",
+      "expected": "PASS",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-003",
+      "key": "pdf_source_change",
+      "format": "pdf",
+      "kind": "stale_source",
+      "goal": "Old customer confirmation and staff approval invalidated by source SHA change",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-004",
+      "key": "word_source_change",
+      "format": "docx",
+      "kind": "stale_source",
+      "goal": "Old confirmation and approval invalidated by DOCX replacement",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-005",
+      "key": "copies_change",
+      "format": "pdf",
+      "kind": "stale_settings",
+      "goal": "Changing copies requires fresh source/settings-bound confirmation",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-006",
+      "key": "duplex_flip_change",
+      "format": "pdf",
+      "kind": "stale_settings",
+      "goal": "Duplex short/long edge change invalidates old approvals",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-007",
+      "key": "paper_orientation_change",
+      "format": "docx",
+      "kind": "stale_settings",
+      "goal": "A4/A3, orientation, tray, margin or paper setting change invalidates confirmation",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-008",
+      "key": "quote_change",
+      "format": "pdf",
+      "kind": "stale_quote",
+      "goal": "Latest quote revision must be confirmed again before approval",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-009",
+      "key": "staff_authorized",
+      "format": "pdf",
+      "kind": "role_allow",
+      "goal": "Authenticated staff/owner with matching shop may approve correct revision",
+      "tier": "product",
+      "expected": "ALLOW",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-010",
+      "key": "staff_cross_shop",
+      "format": "pdf",
+      "kind": "role_deny",
+      "goal": "A staff user from another shop may neither read nor approve",
+      "tier": "product",
+      "expected": "DENY",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-011",
+      "key": "customer_cannot_approve",
+      "format": "pdf",
+      "kind": "role_deny",
+      "goal": "Customer or unverified principal cannot approve",
+      "tier": "product",
+      "expected": "DENY",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-012",
+      "key": "duplicate_submit",
+      "format": "pdf",
+      "kind": "idempotent",
+      "goal": "Same idempotency key/payload yields same single order/job",
+      "tier": "product",
+      "expected": "ONE",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-013",
+      "key": "conflicting_submit",
+      "format": "pdf",
+      "kind": "idempotent_conflict",
+      "goal": "Same key with different source/settings fails without second order/job",
+      "tier": "product",
+      "expected": "CONFLICT",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-014",
+      "key": "unknown_no_retry",
+      "format": "pdf",
+      "kind": "unknown",
+      "goal": "Ambiguous send ACK becomes UNKNOWN; worker cannot send again, only owner-authorized reprint",
+      "tier": "agent",
+      "expected": "HOLD",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-015",
+      "key": "ai_failure_hold",
+      "format": "docx",
+      "kind": "dependency_failure",
+      "goal": "AI outage must retain accepted file/order and allow manual review",
+      "tier": "product",
+      "expected": "HOLD",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-016",
+      "key": "network_failure_hold",
+      "format": "pdf",
+      "kind": "dependency_failure",
+      "goal": "Loss of network after receipt must retain order and never duplicate print attempt",
+      "tier": "product",
+      "expected": "HOLD",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-017",
+      "key": "image_manual",
+      "format": "png",
+      "kind": "manual_route",
+      "goal": "Image accepted/stored and queued for staff, zero automatic print jobs",
+      "tier": "product",
+      "expected": "MANUAL",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-018",
+      "key": "cccd_manual",
+      "format": "jpg",
+      "kind": "manual_route",
+      "goal": "ID card photo routed to staff only without OCR or print automation",
+      "tier": "product",
+      "expected": "MANUAL",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-019",
+      "key": "color_manual",
+      "format": "pdf",
+      "kind": "manual_route",
+      "goal": "Color request must not silently print black and white",
+      "tier": "product",
+      "expected": "MANUAL",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-020",
+      "key": "excel_manual",
+      "format": "xlsx",
+      "kind": "manual_route",
+      "goal": "Spreadsheet handed to staff without automatic print",
+      "tier": "product",
+      "expected": "MANUAL",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-021",
+      "key": "zip_over_five",
+      "format": "zip",
+      "kind": "manual_route",
+      "goal": "ZIP of six document members triggers manual review",
+      "tier": "product",
+      "expected": "MANUAL",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-022",
+      "key": "word_layout_unverified",
+      "format": "docx",
+      "kind": "native_unverified",
+      "goal": "Missing Word COM/fonts/preview/queue capability blocks printing and retains source",
+      "tier": "windows",
+      "expected": "HOLD",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-023",
+      "key": "pdf_page_count_unverified",
+      "format": "pdf",
+      "kind": "preflight_unverified",
+      "goal": "Untrusted PDF page/sheet count or manifest blocks customer-approved job",
+      "tier": "product",
+      "expected": "HOLD",
+      "observed": "NOT_RUN"
+    },
+    {
+      "id": "V1-024",
+      "key": "pending_update_race",
+      "format": "pdf",
+      "kind": "revision_race",
+      "goal": "New inbound file arriving during approval must force 409 and 0 print job",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN"
+    },
+    {
+      "key": "manifest_same_path_hash_change",
+      "id": "V1-025",
+      "format": "pdf",
+      "kind": "stale_evidence_digest",
+      "goal": "Keep manifest_ref, source paths/bytes, order, revision, request and settings fixed; replace manifest bytes at the same manifest_ref so manifest_sha256 and evidence_sha256 change. Old confirmation/approval/ticket must be stale at approve, preflight and mark-sending; 0 unauthorized print jobs / driver calls.",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN",
+      "mutated_digest": "manifest_sha256",
+      "unchanged_locators": [
+        "sources[0].source_artifact_ref",
+        "manifest_ref",
+        "previews[0].index"
+      ],
+      "required_gates": [
+        "confirmation",
+        "approval",
+        "claim",
+        "preflight",
+        "mark_sending"
+      ]
+    },
+    {
+      "key": "preview_same_path_hash_change",
+      "id": "V1-026",
+      "format": "docx",
+      "kind": "stale_evidence_digest",
+      "goal": "Hold original DOCX source_artifact_ref, same preview storage location and manifest_ref; replace preview bytes under same preview index/path. previews[0].sha256 and evidence_sha256 change even when file path/revision/settings do not. Reject old consent/approval/ticket; no print.",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN",
+      "mutated_digest": "previews[0].sha256",
+      "unchanged_locators": [
+        "sources[0].source_artifact_ref",
+        "manifest_ref",
+        "previews[0].index",
+        "preview_storage_path"
+      ],
+      "required_gates": [
+        "confirmation",
+        "approval",
+        "claim",
+        "preflight",
+        "mark_sending"
+      ]
+    },
+    {
+      "key": "renderer_same_path_hash_change",
+      "id": "V1-027",
+      "format": "pdf",
+      "kind": "stale_evidence_digest",
+      "goal": "Reuse same source/manifest/preview paths and print settings, but change trusted renderer identity/version under same executable path; renderer_sha256 and evidence_sha256 change. Previous confirmation/approval/ticket must be stale, needs human review, with zero automatic resend.",
+      "tier": "product",
+      "expected": "STALE",
+      "observed": "NOT_RUN",
+      "mutated_digest": "renderer_sha256",
+      "unchanged_locators": [
+        "sources[0].source_artifact_ref",
+        "manifest_ref",
+        "previews[0].index",
+        "renderer_executable_path"
+      ],
+      "required_gates": [
+        "confirmation",
+        "approval",
+        "claim",
+        "preflight",
+        "mark_sending"
+      ]
+    }
+  ],
+  "contract": {
+    "source": "AI0 Draft PR150 docs/architecture/V1_CORE_AGENT_EVIDENCE_CONTRACT_20261017.md",
+    "schema": "ai0.print_evidence.v1",
+    "new_cases": [
+      "V1-025",
+      "V1-026",
+      "V1-027"
+    ],
+    "required_status": "NOT_RUN_until_exact_integrated_candidate",
+    "note": "same-path changes are synthetic fixture invariants; client supplied digests cannot authorize printing"
+  }
+}
