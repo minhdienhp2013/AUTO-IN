@@ -59,6 +59,8 @@ test('V1-CORE-01 real PG two-pool: confirmed source/quote/plan, concurrent appro
    const approved=(await a.query("SELECT details FROM core_audit WHERE order_id=$1 AND action='print.approved'",[d.id])).rows;
    assert.equal(approved.length,1);
    assert.match(approved[0].details.plan_sha256,/^[a-f0-9]{64}$/);
+   // This race fixture must not steal claims belonging to later test cases.
+   await a.query('UPDATE core_print_jobs SET cancelled_at=now() WHERE order_id=$1 AND state=\'NOT_SENT\'',[d.id]);
   });
   await t.test('tampered customer file/settings hash cannot claim an old approved job',async()=>{
    const d=await maker('file-mutation');await confirm(d.id);await approve(d.id);
@@ -119,6 +121,6 @@ test('V1-CORE-01 real PG two-pool: confirmed source/quote/plan, concurrent appro
   const snapshot=await guards();
   assert.ok(snapshot.confirms>=5);
   assert.ok(snapshot.approvals>=5);
-  console.log('PASS V1 CORE REAL PG two pools: stale file/plan/quote, customer/shop, approval CAS, ACK UNKNOWN (fake only)');
+  console.log('V1 CORE test fixture checks completed; use runner pass/fail counts as evidence');
  }finally{await Promise.all([a.end(),b.end()]);}
 });
