@@ -73,7 +73,7 @@ test('V1 unknown/Excel/ZIP unsupported or ambiguous always route staff',async()=
   [{kind:'word',preview_trusted:false},'UNREADABLE'],
   [{kind:'pdf'},'UNREADABLE'],
  ]){
-  const h=harness(async()=>fact);
+  const h=harness(async()=>[fact]);
   assert.equal(await h.processor.consume(batch(ev('f'))),'human');
   assert.equal(h.routes[0].reason,reason);
   assert.equal(h.writes.length,0);
@@ -129,7 +129,6 @@ test('V1 repeated file_ref different event IDs must not double-append or silentl
 test('V1 deterministic idempotency for same persisted Word file event on replays',async()=>{
  const seen=new Set();let revisions=0;
  const h=harness(async()=>[{kind:'word',preview_trusted:true}]);
- h.processor.orders?.x; // no mutation: journal below is independent of private port
  // Same source event identity persists; idempotency keys must match every replay.
  const first=ev('word-one','file',{file_ref:'sealed:word-one'});
  await h.processor.consume(batch(first));
