@@ -10,6 +10,45 @@ export class OrderService {
  }
  private async revision(db:SqlConnection,o:OrderRow):Promise<RevisionRow>{return this.store.one(db,'SELECT * FROM core_revisions WHERE order_id=$1 AND revision=$2',[o.id,o.active_revision]);}
  private async quote(db:SqlConnection,id:string):Promise<QuoteRow|null>{const q=(await db.query<Omit<QuoteRow,'amount_vnd'|'deposit_required_vnd'> & {amount_vnd:string;deposit_required_vnd:string}>('SELECT * FROM core_quotes WHERE order_id=$1 ORDER BY quote_revision DESC LIMIT 1',[id])).rows[0];return q?{...q,amount_vnd:dbSafeInteger(q.amount_vnd,'quote.amount_vnd'),deposit_required_vnd:dbSafeInteger(q.deposit_required_vnd,'quote.deposit_required_vnd')}:null;}
+ // Existing Core wire only. AI0/AI3 supply independent immutable byte/manifest evidence.
+ private assertRevisionBinding(rev:RevisionRow):void {
+  if(sha(canonical(rev.request_data))!==rev.request_hash)
+   throw new DomainError('STALE_FILE_BINDING','Nội dung file/thông số không còn đúng hash phiên bản',409);
+  if(!rev.plan)throw new DomainError('PRINT_NOT_READY','Chưa có kế hoạch in tin cậy');
+  assertPlan(rev.plan,rev.request_hash);
+ }
+ private async assertCustomerBinding(db:SqlConnection,o:OrderRow,rev:RevisionRow,q:QuoteRow|null):Promise<void>{
+  const rows=await db.query<{kind:'request'|'quote';quote_revision:number|null;created_at:Date}>(
+   'SELECT kind,quote_revision,created_at FROM core_confirmations '+
+   'WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND customer_id=$4 ORDER BY created_at,id',
+   [o.id,rev.revision,rev.request_hash,o.customer_id]);
+  const request=rows.rows.find(c=>c.kind==='request');
+  if(!request)throw new DomainError('STALE_CUSTOMER_CONFIRMATION','Thiếu xác nhận khách đúng đơn/hash',409);
+  // A first quote can follow request confirmation; a repricing invalidates it.
+  if(q && q.quote_revision>1) {
+   const latest=(await db.query<{created_at:Date}>(
+    'SELECT created_at FROM core_quotes WHERE order_id=$1 AND quote_revision=$2',
+    [o.id,q.quote_revision])).rows[0];
+   if(!latest||new Date(request.created_at)<new Date(latest.created_at))
+    throw new DomainError('STALE_CUSTOMER_CONFIRMATION','Báo giá đã sửa, cần xác nhận lại yêu cầu',409);
+  }
+  if(rev.plan && (rev.plan.physical_sheets>150||Boolean(q?.significant_cost)) &&
+     (!q||!rows.rows.some(c=>c.kind==='quote'&&c.quote_revision===q.quote_revision)))
+   throw new DomainError('STALE_PRICE_CONFIRMATION','Giá chưa được xác nhận đúng phiên bản',409);
+ }
+ private async assertJobBinding(db:SqlConnection,o:OrderRow,j:JobRow,rev:RevisionRow):Promise<void>{
+  this.assertRevisionBinding(rev);
+  if(j.order_id!==o.id||j.revision!==o.active_revision||j.request_hash!==rev.request_hash||
+     j.printer_id!==rev.plan!.printer_id||j.cancelled_at)
+   throw new DomainError('STALE_APPROVAL','Job không còn khớp file/thông số in',409);
+  const a=(await db.query<{quote_revision:number|null;request_hash:string}>(
+   'SELECT quote_revision,request_hash FROM core_approvals WHERE id=$1 AND order_id=$2 AND revision=$3 AND request_hash=$4',
+   [j.approval_id,o.id,o.active_revision,rev.request_hash])).rows[0];
+  const q=await this.quote(db,o.id);
+  if(!a||a.request_hash!==rev.request_hash||(a.quote_revision??null)!==(q?.quote_revision??null))
+   throw new DomainError('STALE_APPROVAL','Duyệt không còn khớp báo giá hiện hành',409);
+  await this.assertCustomerBinding(db,o,rev,q);
+ }
  private async received(db:SqlConnection,id:string):Promise<number>{const x=await this.store.one<{amount:string}>(db,"SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_vnd WHEN direction='refunded' THEN -amount_vnd ELSE 0 END),0)::text AS amount FROM core_payments WHERE order_id=$1",[id]);return dbSafeInteger(x.amount,'payment.received_vnd');}
  private async requireUnsent(db:SqlConnection,o:OrderRow):Promise<void>{
   const jobs=await db.query<JobRow>('SELECT * FROM core_print_jobs WHERE order_id=$1 AND cancelled_at IS NULL FOR UPDATE',[o.id]);
@@ -225,7 +264,7 @@ export class OrderService {
       throw new DomainError('PENDING_INBOUND_REVIEW','Còn tin/file khách gửi chưa đối soát vào phiên bản hiện tại',409);
     }
    }
-   const rev=await this.revision(db,o);if(!rev.plan)throw new DomainError('PRINT_NOT_READY','Chưa có kế hoạch in tin cậy');assertPlan(rev.plan,rev.request_hash);
+   const rev=await this.revision(db,o);this.assertRevisionBinding(rev);
    // Keep the FIRST valid customer confirmation: retries/duplicate messages must not delay queue position.
    const confirmation=await db.query<{confirmed_at:Date|null}>("SELECT MIN(created_at) AS confirmed_at FROM core_confirmations WHERE order_id=$1 AND revision=$2 AND request_hash=$3 AND kind='request'",[id,rev.revision,rev.request_hash]);
    const requestConfirmedAt=confirmation.rows[0]?.confirmed_at;
@@ -238,6 +277,7 @@ export class OrderService {
     if(!approvedQuote.rows[0]?.confirmed_at)throw new DomainError('PRICE_CONFIRMATION_REQUIRED','Khách chưa xác nhận mức giá');
     queueConfirmedAt=new Date(Math.max(queueConfirmedAt.getTime(),new Date(approvedQuote.rows[0].confirmed_at).getTime()));
    }
+   await this.assertCustomerBinding(db,o,rev,q);
    const missing=shortage(q?.deposit_required_vnd??0,await this.received(db,id));
    if(missing>0&&!input.acknowledge_deposit_shortage)throw new DomainError('DEPOSIT_WARNING_REQUIRED','Cần xác nhận đã xem cảnh báo thiếu cọc');
    const existing=await db.query('SELECT id FROM core_print_jobs WHERE order_id=$1 AND revision=$2 AND cancelled_at IS NULL LIMIT 1',[id,rev.revision]);
@@ -253,16 +293,14 @@ export class OrderService {
   const row=await this.store.one<{order_id:string}>(db,'SELECT order_id FROM core_print_jobs WHERE id=$1',[job_id]);
   const o=await this.order(db,row.order_id,p);const j=await this.store.one<JobRow>(db,'SELECT * FROM core_print_jobs WHERE id=$1 FOR UPDATE',[job_id]);
   checkRevision(expected_revision,o.active_revision);
-  const rev=await this.revision(db,o);const approved=await db.query('SELECT id FROM core_approvals WHERE id=$1 AND revision=$2 AND request_hash=$3 AND order_id=$4',[j.approval_id,o.active_revision,rev.request_hash,o.id]);
-  if(!approved.rows.length||j.revision!==o.active_revision||j.request_hash!==rev.request_hash||j.cancelled_at)throw new DomainError('STALE_APPROVAL','Duyệt không còn hiệu lực',409);
+  const rev=await this.revision(db,o);await this.assertJobBinding(db,o,j,rev);
   if(!p.printer_ids?.includes(j.printer_id))throw new DomainError('PRINTER_SCOPE_DENIED','Agent không có quyền máy in này',403);
   if(!lease_token||sha(lease_token)!==j.lease_secret_hash||j.claimed_by!==p.id)throw new DomainError('BAD_LEASE','Lease không hợp lệ',403);
   return {o,j,rev};
  }
  private async checkGates(db:SqlConnection,o:OrderRow,j:JobRow,rev:RevisionRow):Promise<SettingsRow>{
   if(o.manual_lock||o.print_closed)throw new DomainError('MANUAL_LOCK','Đơn bị khóa xử lý in',409);
-  if(!rev.plan)throw new DomainError('PRINT_NOT_READY','Kế hoạch in chưa xác minh');assertPlan(rev.plan,rev.request_hash);
-  if(rev.plan.printer_id!==j.printer_id)throw new DomainError('PRINTER_CHANGED','Máy in đã khác',409);
+  await this.assertJobBinding(db,o,j,rev);
   const s=await this.store.one<SettingsRow>(db,'SELECT * FROM core_shop_settings WHERE shop_id=$1 FOR UPDATE',[o.shop_id]);
   if(!printingAllowed(s,this.now()))throw new DomainError('PRINT_CLOSED','Đang ngoài lịch/ngày nghỉ/khóa vận hành',409,true);
   return s;
@@ -495,7 +533,9 @@ export class OrderService {
    // Readiness facts are backend-derived for THIS revision, not any earlier request/quote.
    const existingActiveJob=jobs.rows.find(j=>j.revision===current.revision&&j.request_hash===current.request_hash&&!j.cancelled_at);
    const matchedApproval=existingActiveJob?approvals.rows.find(a=>a.id===existingActiveJob.approval_id&&( !needsPrice||a.quote_revision===quote?.quote_revision))??null:null;
-   const approval=verifiedPlan&&requestConfirmation&&(!needsPrice||priceConfirmation)?matchedApproval:null;
+   const quoteMatches=(matchedApproval?.quote_revision??null)===(quote?.quote_revision??null);
+   const approval=verifiedPlan&&requestConfirmation&&(!needsPrice||priceConfirmation)&&
+    quoteMatches&&existingActiveJob?.printer_id===verifiedPlan.printer_id?matchedApproval:null;
    const jobRows=jobs.rows.map(j=>{
     const rev=revisions.rows.find(x=>x.revision===j.revision);
     const planned=rev?.plan && rev.plan.ready && rev.plan.request_hash===j.request_hash ? rev.plan.physical_sheets : null;
