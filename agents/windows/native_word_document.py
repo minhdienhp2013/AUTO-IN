@@ -136,6 +136,13 @@ def preview_word_native(source_bytes: bytes, *, expected_sha256: str,
             pdf = folder / "word-preview-only.pdf"
             with (session_factory() if fake else _WordCOM()) as session:
                 native_pages = session.render(docx, pdf)
+                # Version is observed from the actual Word session, never from
+                # registry presence. A fake session cannot claim live identity.
+                identity = ({"engine": "injected_fake",
+                             "version": "not_run"}
+                            if fake else
+                            {"engine": "microsoft_word_com",
+                             "version": str(session.app.Version)})
             if type(native_pages) is not int or not 1 <= native_pages <= min(MAX_WORD_PAGES, MAX_PAGES):
                 return _error("WORD_PAGE_COUNT_UNVERIFIED")
             if hashlib.sha256(docx.read_bytes()).hexdigest() != expected_sha256:
@@ -158,6 +165,7 @@ def preview_word_native(source_bytes: bytes, *, expected_sha256: str,
                 "source_format": "DOCX",
                 "print_source_format": "DOCX",
                 "source_sha256": expected_sha256,
+                "renderer_identity": identity,
                 "document_pages": native_pages,
                 "preview_png": previews,
                 "preview_sha256": tuple(hashlib.sha256(x).hexdigest() for x in previews),
