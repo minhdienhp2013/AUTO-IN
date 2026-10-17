@@ -4,6 +4,7 @@ const path=require('node:path');
 const {randomUUID}=require('node:crypto');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../../.ai1-build/backend');
 const {OrderService}=require(path.join(root,'core/service.js'));
+const {createVerifiedConfirmationPort}=require(path.join(root,'core/verified-confirmation-port.js'));
 const {PgStore}=require(path.join(root,'storage/database.js'));
 const {sha,canonical}=require(path.join(root,'core/model.js'));
 let pg;try{pg=require('pg')}catch{}
@@ -43,10 +44,10 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
   }};
   const A=new OrderService(new PgStore(a),()=>new Date(),fakePort);
   const B=new OrderService(new PgStore(b),()=>new Date(),fakePort);
-  const make=async label=>{
+  const make=async(label,conversation_id)=>{
    const data={files:[{file_id:'fixture/source.pdf',copies:1,format:'pdf'}],
     settings:{paper:'A4',duplex:false,copies:1}};
-   const draft=await A.createDraft(staff,{customer_id:customerId,request_data:data,
+   const draft=await A.createDraft(staff,{customer_id:customerId,...(conversation_id?{conversation_id}:{}),request_data:data,
     idempotency_key:key('create')});
    const plan={request_hash:draft.request_hash,physical_sheets:1,document_pages:1,printed_faces:1,
     ready:true,printer_id:'RMP7000',artifact_ref:'fixture/source.pdf',verified_by:processor.id};
@@ -72,6 +73,36 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
     await assert.rejects(approve(id),error('STALE_PRINT_EVIDENCE'));
     assert.equal(await jobCount(id),0);
    }
+  });
+  await t.test('verified OA challenge binds evidence at issue and click, stale preview cannot confirm',async()=>{
+   const conv=key('verified-conversation'),oa=key('oa'),id=await make('verified-oa',conv);
+   const port={store:new PgStore(b),trusted:{shop_id:shop,oa_id:oa},evidence:fakePort};
+   const challengePort=createVerifiedConfirmationPort(port);
+   const hash=(await a.query('SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=2',[id])).rows[0].request_hash;
+   const target={order_id:id,expected_revision:2,request_hash:hash,kind:'request',expected_generation:0};
+   const initial=await challengePort.issue_challenge(target);assert.equal(initial.status,'issued');
+   states.get(id).preview+='-preview-rerendered';
+   const inbound=async ch=>{
+    const event=key('postback');
+    await a.query(
+     'INSERT INTO zalo_inbound_events(oa_id,event_id,conversation_id,customer_id,occurred_at,payload_json) VALUES($1,$2,$3,$4,now(),$5::jsonb)',
+     [oa,event,conv,customerId,JSON.stringify({confirmation_postback:{
+      kind:'verified_confirmation_accept',challenge_id:ch.challenge_id,challenge_token:ch.challenge_token}})]);
+    return event;
+   };
+   const oldEvent=await inbound(initial);
+   assert.deepEqual(await challengePort.confirm_verified_event({...target,event_id:oldEvent}),{status:'stale'});
+   assert.equal((await a.query('SELECT count(*)::int n FROM core_confirmations WHERE order_id=$1',[id])).rows[0].n,0);
+   const newer=await challengePort.issue_challenge(target);
+   assert.equal(newer.status,'issued');
+   const event=await inbound(newer);
+   const accepted=await challengePort.confirm_verified_event({...target,event_id:event});
+   assert.equal(accepted.status,'confirmed');
+   const audit=(await a.query("SELECT details FROM core_audit WHERE order_id=$1 AND action='customer.confirmed_verified_event'",[id])).rows[0];
+   assert.match(audit.details.evidence_sha256,/^[0-9a-f]{64}$/);
+   const approved=await A.approve(staff,id,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('approve-verified')});
+   assert.ok(approved.job_id);
+   await cancel(id);
   });
   await t.test('two pools compete on same digest, exactly one approval/job',async()=>{
    const id=await make('race');await confirm(id);
