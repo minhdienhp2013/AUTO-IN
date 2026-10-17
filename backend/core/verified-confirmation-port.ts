@@ -24,7 +24,7 @@ type Order = { id: string; shop_id: string; customer_id: string; conversation_id
 type Challenge = { id: string; order_id: string; revision: number; request_hash: string;
   customer_id: string; conversation_id: string; kind: ConfirmationKind; quote_revision: number | null;
   generation: string | number; secret_hash: string; expires_at: Date;
-  consumed_event_id: string | null; confirmation_id: string | null };
+  consumed_event_id: string | null; confirmation_id: string | null; evidence_sha256:string|null };
 function bounded(value: string, name: string, max = 256) {
   if (typeof value !== 'string' || !value.trim() || value.length > max)
     throw new DomainError('INVALID_CONFIRMATION_INPUT', `Invalid ${name}`, 422);
@@ -104,10 +104,10 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
       const id=newId(), token=randomBytes(32).toString('base64url');
       const result=await db.query<{expires_at:Date}>(
         `INSERT INTO core_confirmation_challenges
-         (id,shop_id,oa_id,order_id,revision,request_hash,customer_id,conversation_id,kind,quote_revision,generation,secret_hash,expires_at)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now()+interval '10 minutes') RETURNING expires_at`,
+         (id,shop_id,oa_id,order_id,revision,request_hash,customer_id,conversation_id,kind,quote_revision,generation,secret_hash,expires_at,evidence_sha256)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now()+interval '10 minutes',$13) RETURNING expires_at`,
          [id,shopId,oaId,bound.order.id,input.expected_revision,input.request_hash,bound.order.customer_id,
-          bound.order.conversation_id,input.kind,bound.quote,input.expected_generation,sha(token)]);
+          bound.order.conversation_id,input.kind,bound.quote,input.expected_generation,sha(token),evidence]);
       const expiry=result.rows[0]?.expires_at;
       if (!expiry) throw new DomainError('CHALLENGE_NOT_STORED','Challenge persistence failed',500);
       if(evidence)await db.query(
@@ -147,7 +147,7 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
         throw new DomainError('CONFIRMATION_CHALLENGE_REQUIRED','Verified confirmation challenge missing',403);
       const challenges=await db.query<Challenge>(
         `SELECT id,order_id,revision,request_hash,customer_id,conversation_id,kind,quote_revision,
-                generation,secret_hash,expires_at,consumed_event_id,confirmation_id
+                generation,secret_hash,expires_at,consumed_event_id,confirmation_id,evidence_sha256
          FROM core_confirmation_challenges WHERE id=$1 AND shop_id=$2 AND oa_id=$3 FOR UPDATE`,
         [data.challenge_id,shopId,oaId]);
       const challenge=challenges.rows[0];
@@ -165,6 +165,7 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
           order_id:bound.order.id,revision:input.expected_revision,kind:input.kind,quote_revision:bound.quote};
       }
       const printEvidence=await evidenceHash(db,bound.order);
+      if(printEvidence && challenge.evidence_sha256!==printEvidence)return {status:'stale'};
       if(printEvidence){
        const challengeProof=(await db.query<{details:{evidence_sha256?:string}}>(
         "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 "+
@@ -184,9 +185,9 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
         throw new DomainError('CONFIRMATION_EVENT_REPLAY','An event cannot confirm multiple challenges',409);
       const confirmationId=newId();
       await db.query(`INSERT INTO core_confirmations
-        (id,order_id,revision,request_hash,kind,quote_revision,customer_id,channel)
-        VALUES($1,$2,$3,$4,$5,$6,$7,'verified_oa_challenge')`,
-        [confirmationId,bound.order.id,input.expected_revision,input.request_hash,input.kind,bound.quote,bound.order.customer_id]);
+        (id,order_id,revision,request_hash,kind,quote_revision,customer_id,channel,evidence_sha256)
+        VALUES($1,$2,$3,$4,$5,$6,$7,'verified_oa_challenge',$8)`,
+        [confirmationId,bound.order.id,input.expected_revision,input.request_hash,input.kind,bound.quote,bound.order.customer_id,printEvidence]);
       await db.query('UPDATE core_confirmation_challenges SET consumed_event_id=$2,confirmation_id=$3 WHERE id=$1',
         [challenge.id,input.event_id,confirmationId]);
       await db.query(`INSERT INTO core_verified_confirmation_events
