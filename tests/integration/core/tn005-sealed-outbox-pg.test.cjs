@@ -109,9 +109,12 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
       JSON.stringify(spec.value),spec.event_id,revision,'vn-print-setting.literal.v1']);
    }
   }
-  return {orderId,conv,event,input:{outbound_id:uuid(),idempotency_key:uuid(),order_id:orderId,
+  const input={outbound_id:uuid(),idempotency_key:uuid(),order_id:orderId,
    revision:activeRevision,generation:0,request_hash:current.requestHash,source_sha256:sourceSha,
-   text:text??'No missing print choices'}};
+   text:text??'No missing print choices'};
+  // `input.text` records the independently expected derived body for assertions.
+  // AI2's caller intent at enqueue remains the unchanged exact generic whitelist.
+  return {orderId,conv,event,input,intent:{...input,text:genericSuggestion}};
  };
  const state=async outbound=>(await a.query('SELECT status FROM core_tn005_suggested_outbox WHERE outbound_id=$1',[outbound])).rows[0]?.status;
  const count=async()=>Number((await a.query('SELECT count(*)::int n FROM core_tn005_suggested_outbox WHERE shop_id=$1',[shop])).rows[0].n);
@@ -134,7 +137,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
   const before=await guards();
   assert.deepEqual(before,{ready_revisions:0,confirmations:0,approvals:0,jobs:0,zalo_outbound:0});
   await t.test('two independent pools: idempotent replay, same revision conflict and exactly-once fake send',async()=>{
-   const f=await fixture(),i=f.input;
+   const f=await fixture(),i=f.intent;
    const both=await Promise.all([p1.enqueue(i),p2.enqueue(i)]);
    assert.deepEqual(both,[{status:'queued',outbound_id:i.outbound_id},{status:'queued',outbound_id:i.outbound_id}]);
    assert.equal(await count(),1);
@@ -150,29 +153,29 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
    assert.equal(await state(i.outbound_id),'SENT');
   });
   await t.test('handover between enqueue/reservation and pre-provider check blocks; no reactivation on AI return',async()=>{
-   const f=await fixture();await p1.enqueue(f.input);
+   const f=await fixture();await p1.enqueue(f.intent);
    const lease=await p2.reserve(f.input.outbound_id);assert.ok(lease);
    await a.query("UPDATE core_conversation_controls SET status='HUMAN',claimed_by=$3,generation=1 WHERE shop_id=$1 AND conversation_id=$2",[shop,f.conv,actor]);
    assert.equal(await p1.deliverReserved(lease,fake),'blocked');
    assert.equal(await state(f.input.outbound_id),'CANCELLED');assert.equal(providerCalls,1);
    await a.query("UPDATE core_conversation_controls SET status='AI',claimed_by=NULL,generation=2 WHERE shop_id=$1 AND conversation_id=$2",[shop,f.conv]);
-   await assert.rejects(p1.enqueue(f.input),err('TN005_HANDOVER'));
+   await assert.rejects(p1.enqueue(f.intent),err('TN005_HANDOVER'));
    assert.equal(await p2.reserve(f.input.outbound_id),null);
   });
   await t.test('old request hash/revision and source mutation cannot pass fresh CAS',async()=>{
-   const f=await fixture();await p1.enqueue(f.input);
+   const f=await fixture();await p1.enqueue(f.intent);
    await a.query('INSERT INTO core_revisions(order_id,revision,request_hash,request_data) VALUES($1,2,$2,$3::jsonb)',
     [f.orderId,sha('changed'),JSON.stringify({documents:[{artifact_name:'changed'}]})]);
    await a.query('UPDATE core_orders SET active_revision=2 WHERE id=$1',[f.orderId]);
    assert.equal(await p1.reserve(f.input.outbound_id),null);
    assert.equal(await state(f.input.outbound_id),'CANCELLED');
-   await assert.rejects(p2.enqueue(f.input),err('TN005_STALE'));
-   const g=await fixture();await p2.enqueue(g.input);
+   await assert.rejects(p2.enqueue(f.intent),err('TN005_STALE'));
+   const g=await fixture();await p2.enqueue(g.intent);
    await a.query('UPDATE core_revisions SET request_hash=$2 WHERE order_id=$1 AND revision=1',
     [g.orderId,sha('changed-request')]);
    assert.equal(await p1.reserve(g.input.outbound_id),null);
    assert.equal(await state(g.input.outbound_id),'CANCELLED');
-   const h=await fixture();await p2.enqueue(h.input);
+   const h=await fixture();await p2.enqueue(h.intent);
    const lease=await p1.reserve(h.input.outbound_id);assert.ok(lease);
    await a.query('UPDATE ai0_inbound_document_artifacts SET sha256=$2 WHERE event_id=$1 AND shop_id=$3',[h.event,'d'.repeat(64),shop]);
    assert.equal(await p2.deliverReserved(lease,fake),'blocked');
@@ -184,7 +187,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
    try{
     await hold.query('BEGIN');tx=true;
     await hold.query('SELECT * FROM core_conversation_controls WHERE shop_id=$1 AND conversation_id=$2 FOR UPDATE',[shop,f.conv]);
-    const pending=p2.enqueue(f.input);await new Promise(resolve=>setTimeout(resolve,30));
+    const pending=p2.enqueue(f.intent);await new Promise(resolve=>setTimeout(resolve,30));
     await hold.query("UPDATE core_conversation_controls SET status='HUMAN',claimed_by=$3,generation=1 WHERE shop_id=$1 AND conversation_id=$2",[shop,f.conv,actor]);
     await hold.query('COMMIT');tx=false;
     await assert.rejects(pending,err('TN005_HANDOVER'));
@@ -192,14 +195,14 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
    }finally{if(tx)await hold.query('ROLLBACK');hold.release();}
   });
   await t.test('ambiguous provider failure -> UNKNOWN, never retried; test fake only',async()=>{
-   const f=await fixture();await p1.enqueue(f.input);const lease=await p1.reserve(f.input.outbound_id);assert.ok(lease);
+   const f=await fixture();await p1.enqueue(f.intent);const lease=await p1.reserve(f.input.outbound_id);assert.ok(lease);
    assert.equal(await p2.deliverReserved(lease,{async send_text(){providerCalls++;throw Error('fake timeout');}}),'unknown');
    assert.equal(await state(f.input.outbound_id),'UNKNOWN');
    assert.equal(await p2.deliverReserved(lease,fake),'blocked');
    assert.equal(await p1.reserve(f.input.outbound_id),null);
   });
   await t.test('two independent PG-pool ticks race one QUEUED row; exactly one sender call',async()=>{
-   const f=await fixture();await p1.enqueue(f.input);
+   const f=await fixture();await p1.enqueue(f.intent);
    let readers=0,releaseReaders;
    const bothRead=new Promise(resolve=>{releaseReaders=resolve;});
    const barrierPool=pool=>({async query(sql,args){
@@ -230,7 +233,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
    const foreign=createTn005SealedOutbox({store:new PgStore(b),trusted:{shop_id:foreignShop,oa_id:foreignOa},
     verify_sealed_source:verify});
    const f=await fixture({shopId:foreignShop,oaId:foreignOa,customerId:foreignCustomer});
-   await foreign.enqueue(f.input);
+   await foreign.enqueue(f.intent);
    assert.equal(await p1.reserve(f.input.outbound_id),null,'fixed current-shop Core cannot reserve foreign row');
    let sends=0;
    const tick=createSyntheticTn005SuggestedOutboxTick({pool:a,trusted,core:p1,
@@ -244,7 +247,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
    const foreign=createTn005SealedOutbox({store:new PgStore(b),trusted:{shop_id:shop,oa_id:foreignOa},
     verify_sealed_source:verify});
    const f=await fixture({shopId:shop,oaId:foreignOa,customerId:foreignCustomer});
-   await foreign.enqueue(f.input);
+   await foreign.enqueue(f.intent);
    assert.equal(await p1.reserve(f.input.outbound_id),null,'Core fixed to original OA cannot reserve same-shop foreign-OA row');
    let sends=0;
    const tick=createSyntheticTn005SuggestedOutboxTick({pool:a,trusted,core:p1,
@@ -254,7 +257,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
    assert.equal(sends,0);
   });
   await t.test('tick records sender timeout as UNKNOWN and a later tick does not retry',async()=>{
-   const f=await fixture();await p1.enqueue(f.input);let sends=0;
+   const f=await fixture();await p1.enqueue(f.intent);let sends=0;
    const tick=createSyntheticTn005SuggestedOutboxTick({pool:a,trusted,core:p1,
     sender:{kind:'synthetic_test',async send_text(){sends++;throw Error('synthetic timeout');}}});
    assert.deepEqual(await tick.tick(),{selected:1,sent:0,blocked:0,unknown:1});
@@ -268,7 +271,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
    assert.equal(f.input.text,expected);
    // The existing AI2 caller sends its unchanged safe generic intent. Core
    // must derive the body from verified current-revision evidence itself.
-   await p1.enqueue({...f.input,text:genericSuggestion});
+   await p1.enqueue(f.intent);
    const row=(await a.query('SELECT body_text FROM core_tn005_suggested_outbox WHERE outbound_id=$1',[f.input.outbound_id])).rows[0];
    assert.equal(row.body_text,expected);
    assert.ok(row.body_text.includes('bao nhiêu bản?'));
@@ -281,16 +284,16 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
    assert.equal(f.input.text,expected);
    assert.doesNotMatch(expected,/bao nhiêu bản|khổ giấy nào/);
    assert.match(expected,/một mặt hay hai mặt/);
-   await assert.rejects(p1.enqueue({...f.input,missing_print_choices:['duplex']}),err('TN005_INVALID_INPUT'));
+   await assert.rejects(p1.enqueue({...f.intent,missing_print_choices:['duplex']}),err('TN005_INVALID_INPUT'));
    assert.equal(await countFor(f.orderId),0,'caller cannot supply its own missing-choice list');
-   await p1.enqueue({...f.input,text:genericSuggestion});
+   await p1.enqueue(f.intent);
    const row=(await a.query('SELECT body_text FROM core_tn005_suggested_outbox WHERE outbound_id=$1',[f.input.outbound_id])).rows[0];
    assert.equal(row.body_text,expected);
   });
   await t.test('complete current-revision customer evidence creates no question or outbox row',async()=>{
    const f=await fixture({activeRevision:2,choices:['copies','paper_size','duplex']});
    assert.equal(questionFor([]),null);
-   await assert.rejects(p1.enqueue(f.input),err('TN005_NO_MISSING_PRINT_CHOICES'));
+   await assert.rejects(p1.enqueue(f.intent),err('TN005_NO_MISSING_PRINT_CHOICES'));
    assert.equal(await countFor(f.orderId),0);
   });
   await t.test('evidence from a previous revision is ignored for the active revision',async()=>{
@@ -300,7 +303,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
    assert.equal((await a.query('SELECT count(*)::int n FROM core_order_customer_print_choice_evidence WHERE order_id=$1 AND revision=3',
     [f.orderId])).rows[0].n,0);
    assert.equal(f.input.text,questionFor(['copies','paper_size','duplex']));
-   await p1.enqueue(f.input);
+   await p1.enqueue(f.intent);
    const row=(await a.query('SELECT body_text FROM core_tn005_suggested_outbox WHERE outbound_id=$1',[f.input.outbound_id])).rows[0];
    assert.equal(row.body_text,questionFor(['copies','paper_size','duplex']));
   });
@@ -310,7 +313,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
     await a.query('UPDATE core_order_customer_print_choice_evidence SET source_sha256=$2 WHERE order_id=$1 AND revision=2',
      [f.orderId,'d'.repeat(64)]);
     const before=await guards();
-    await assert.rejects(p1.enqueue(f.input),err('TN005_CHOICE_EVIDENCE_UNVERIFIED'));
+    await assert.rejects(p1.enqueue(f.intent),err('TN005_CHOICE_EVIDENCE_UNVERIFIED'));
     assert.equal(await countFor(f.orderId),0);
     assert.deepEqual(await guards(),before);
    });
@@ -323,7 +326,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
     await a.query('UPDATE core_order_inbound_reviews SET shop_id=$2 WHERE oa_id=$1 AND event_id=$3',
      [oa,foreignShop,eventId]);
     const before=await guards();
-    await assert.rejects(p1.enqueue(f.input),err('TN005_CHOICE_EVIDENCE_UNVERIFIED'));
+    await assert.rejects(p1.enqueue(f.intent),err('TN005_CHOICE_EVIDENCE_UNVERIFIED'));
     assert.equal(await countFor(f.orderId),0);
     assert.deepEqual(await guards(),before);
    });
@@ -331,7 +334,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
   await t.test('customer event tamper is rechecked before reservation and delivery',async t2=>{
    await t2.test('reservation cancels after choice text changes',async()=>{
     const f=await fixture({activeRevision:2,choices:['copies']});
-    await p1.enqueue(f.input);
+    await p1.enqueue(f.intent);
     const choiceEvent=(await a.query('SELECT event_id FROM core_order_customer_print_choice_evidence WHERE order_id=$1 AND revision=2',
      [f.orderId])).rows[0].event_id;
     await a.query("UPDATE zalo_inbound_events SET payload_json=jsonb_set(payload_json,'{text}',$3::jsonb) WHERE oa_id=$1 AND event_id=$2",
@@ -343,7 +346,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
    });
    await t2.test('delivery blocks if choice evidence changes after reservation',async()=>{
     const f=await fixture({activeRevision:2,choices:['copies']});
-    await p1.enqueue(f.input);
+    await p1.enqueue(f.intent);
     const lease=await p1.reserve(f.input.outbound_id);assert.ok(lease);
     const choiceEvent=(await a.query('SELECT event_id FROM core_order_customer_print_choice_evidence WHERE order_id=$1 AND revision=2',
      [f.orderId])).rows[0].event_id;
@@ -358,7 +361,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
   await t.test('stored question text must equal the fresh derived body at reservation and delivery',async t2=>{
    await t2.test('generic body tamper blocks reservation',async()=>{
     const f=await fixture({activeRevision:2,choices:['copies','paper_size']});
-    await p1.enqueue({...f.input,text:genericSuggestion});
+    await p1.enqueue(f.intent);
     await a.query('UPDATE core_tn005_suggested_outbox SET body_text=$2 WHERE outbound_id=$1',
      [f.input.outbound_id,genericSuggestion]);
     const beforeProviderCalls=providerCalls;
@@ -368,7 +371,7 @@ test('TN005 real PostgreSQL two-pool CAS, replay, source/revision/handover races
    });
    await t2.test('generic body tamper after reservation blocks delivery',async()=>{
     const f=await fixture({activeRevision:2,choices:['copies','paper_size']});
-    await p1.enqueue({...f.input,text:genericSuggestion});
+    await p1.enqueue(f.intent);
     const lease=await p1.reserve(f.input.outbound_id);assert.ok(lease);
     await a.query('UPDATE core_tn005_suggested_outbox SET body_text=$2 WHERE outbound_id=$1',
      [f.input.outbound_id,genericSuggestion]);
