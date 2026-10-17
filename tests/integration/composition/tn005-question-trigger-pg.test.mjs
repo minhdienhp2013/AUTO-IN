@@ -81,7 +81,8 @@ test('TN005 Fastify trigger queues only current SUGGESTED scope; replay/skip/tim
     const before=await guards();
     assert.deepEqual(before,{ready_revisions:0,confirmations:0,approvals:0,print_jobs:0});
 
-    const endpoint=order=>'/internal/simulation/orders/'+order.order_id+'/revisions/1/first-page-suggestion';
+    const endpoint=(order,revision=1)=>'/internal/simulation/orders/'+order.order_id+
+      '/revisions/'+revision+'/first-page-suggestion';
     const first=await app.inject({method:'POST',url:endpoint(suggested),headers:suggested.headers,
       payload:{shop_id:'attacker-shop',oa_id:'attacker-oa',customer_id:'attacker',
         conversation_id:'attacker-chat',request_hash:'f'.repeat(64),source_sha256:'e'.repeat(64)}});
@@ -133,6 +134,21 @@ test('TN005 Fastify trigger queues only current SUGGESTED scope; replay/skip/tim
     const stale=await app.inject({method:'POST',url:endpoint(suggested),headers:suggested.headers});
     assert.equal(stale.statusCode,409);
     assert.equal(queueCalls.length,2,'old revision is rejected before the hook');
+    const revised=await app.inject({method:'POST',url:endpoint(suggested,2),headers:suggested.headers});
+    assert.equal(revised.statusCode,200,revised.body);
+    assert.equal(revised.json().metadata.status,'SUGGESTED');
+    assert.equal(revised.json().suggested_question_outbox.status,'queued');
+    const revisedId=revised.json().suggested_question_outbox.outbound_id;
+    assert.match(revisedId,uuid);
+    assert.notEqual(revisedId,stableId,'new revision receives a distinct stable outbound id');
+    assert.equal(queueCalls.length,3);
+    assert.equal(queueCalls[2].scope.revision,2);
+    const revisions=(await pool.query('SELECT revision,status,outbound_id::text FROM '+
+      'core_tn005_suggested_outbox WHERE order_id=$1 ORDER BY revision',[suggested.order_id])).rows;
+    assert.deepEqual(revisions,[
+      {revision:1,status:'QUEUED',outbound_id:stableId},
+      {revision:2,status:'QUEUED',outbound_id:revisedId}
+    ],'new revision is rebound to its own advisory and never reuses stale evidence');
 
     const fakePython=join(tmp,'timeout-python');
     await writeFile(fakePython,'#!/bin/sh\nsleep 20\n',{mode:0o700});
@@ -141,7 +157,7 @@ test('TN005 Fastify trigger queues only current SUGGESTED scope; replay/skip/tim
     const timed=await app.inject({method:'POST',url:endpoint(timeout),headers:timeout.headers});
     assert.equal(timed.statusCode,503,timed.body);
     assert.equal(timed.json().error.code,'CLASSIFIER_TIMEOUT');
-    assert.equal(queueCalls.length,2,'classifier timeout never reaches AI2 queue');
+    assert.equal(queueCalls.length,3,'classifier timeout never reaches AI2 queue');
     assert.equal((await pool.query('SELECT count(*)::int n FROM ai0_first_page_suggestions '+
       'WHERE order_id=$1',[timeout.order_id])).rows[0].n,0);
     assert.equal((await pool.query('SELECT count(*)::int n FROM core_tn005_suggested_outbox '+
