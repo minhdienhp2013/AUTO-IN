@@ -27,7 +27,7 @@ test('separate batches >60 seconds append to one order and advance revision',asy
    }
  };
  const p=processor(orders,replies);
- const file=evt('file-1',undefined,{kind:'image',text:undefined,file_ref:'synthetic:image'});
+ const file=evt('file-1',undefined,{kind:'file',text:undefined,file_ref:'synthetic:pdf'});
  const later=evt('copies-2','Đổi A3, in 3 bản hai mặt',{occurred_at:'2026-10-12T01:05:00Z'});
  assert.equal(await p.consume(batch(file)),'processed');
  assert.equal(await p.consume(batch(later)),'processed');
