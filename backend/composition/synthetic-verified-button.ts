@@ -4,6 +4,7 @@ import type {SqlPool} from '../storage/database.js';
 import {PgStore} from '../storage/database.js';
 import {createVerifiedConfirmationPort} from '../core/verified-confirmation-port.js';
 import {DomainError} from '../core/model.js';
+import type {TrustedPrintEvidencePort} from '../core/print-evidence.js';
 
 /** Simulation ONLY. Never install this route in a real OA runtime. The fixture
  * secret is installed by the server, never read from a webhook body. Production
@@ -45,13 +46,15 @@ function parseButton(raw:Buffer,scope:SyntheticButtonScope):Button{
  * fixture itself. Challenge is fetched from PostgreSQL, never the client order body.
  * The event is committed before AI1 performs its own row-locked confirmation.
  */
-export function createSyntheticVerifiedButtonPlugin(pool:SqlPool,scope:SyntheticButtonScope):FastifyPluginAsync{
+export function createSyntheticVerifiedButtonPlugin(
+  pool:SqlPool,scope:SyntheticButtonScope,evidence?:TrustedPrintEvidencePort
+):FastifyPluginAsync{
   if(scope?.kind!=='synthetic_fixture'||!safe(scope.shop_id,128)||
      !safe(scope.oa_id,128)||!safe(scope.fixture_secret,256)||
      scope.fixture_secret.length<32)
     throw Error('SYNTHETIC_BUTTON_CONFIG_REQUIRED');
   const port=createVerifiedConfirmationPort({store:new PgStore(pool),
-    trusted:{shop_id:scope.shop_id,oa_id:scope.oa_id}});
+    trusted:{shop_id:scope.shop_id,oa_id:scope.oa_id},...(evidence?{evidence}:{})});
   return async app=>{
     app.addContentTypeParser('application/vnd.autoin.synthetic-button+json',
       {parseAs:'buffer'},(_req,buffer,done)=>done(null,buffer));

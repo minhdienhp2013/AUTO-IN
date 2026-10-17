@@ -21,6 +21,25 @@ test('Fastify registers AI1 routes once and rejects anonymous operations', async
     assert.equal((await app.inject({method:'POST',url:'/webhooks/zalo',payload:{}})).statusCode,503);
   } finally { await app.close(); }
 });
+test('V1 Core evidence is opt-in and synthetic-only in the simulation runtime', async () => {
+  const invalid = {
+    artifactRoot: '/tmp/autoin-evidence-fixture',
+    printerCapabilities: { simulation_only: false, printer_id: 'RMP7000', queue_name: 'RMP7000' }
+  };
+  assert.throws(() => buildIntegratedApp({ pool: unavailable,
+    trustedPrintEvidence: invalid as never }), /SIMULATION_PRINT_EVIDENCE_CONFIG_REQUIRED/);
+
+  const app = buildIntegratedApp({ pool: unavailable, trustedPrintEvidence: {
+    artifactRoot: '/tmp/autoin-evidence-fixture',
+    printerCapabilities: { simulation_only: true, printer_id: 'RMP7000', queue_name: 'RMP7000' }
+  } });
+  try {
+    await app.ready();
+    const health = (await app.inject('/health')).json();
+    assert.equal(health.trusted_print_evidence_v1_configured, true);
+    assert.equal(health.live_enabled, false);
+  } finally { await app.close(); }
+});
 test('configured agent cannot send against production shop settings', async () => {
   const pool: SqlPool = { ...unavailable, query: async <T>() => ({ rows: [{ mode: 'production' }] as T[], rowCount: 1 }) };
   const app=buildIntegratedApp({pool,identities:[{token:'x'.repeat(32),principal:{id:'agent',shop_id:'test',role:'print_agent',printer_ids:['RMP7000'],verified:true}}]});

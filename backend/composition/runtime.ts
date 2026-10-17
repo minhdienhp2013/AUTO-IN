@@ -17,6 +17,7 @@ import type {FirstPageQuestionScope} from '../conversation/first-page-question.j
 import { createSyntheticVerifiedButtonPlugin, type SyntheticButtonScope } from './synthetic-verified-button.js';
 import { pendingReviewSqlPool } from './pending-review-errors.js';
 import { assertApprovedPrintJobEvidence, type ApprovedDocumentEvidenceOptions } from './approved-document-evidence.js';
+import { createTrustedPrintEvidencePort, type TrustedPrintEvidenceOptions } from './trusted-print-evidence.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
 export interface RuntimeOptions {
@@ -40,6 +41,10 @@ export interface RuntimeOptions {
   syntheticVerifiedButton?: SyntheticButtonScope;
   /** Required before an approved job can enter SENDING; reads only server-bound artifacts. */
   approvedDocumentEvidence?: ApprovedDocumentEvidenceOptions;
+  /** Opt-in V1 Core gate. This simulation runtime accepts synthetic capability
+   * snapshots only; it cannot authorize a real Windows/Ricoh print operation.
+   */
+  trustedPrintEvidence?: TrustedPrintEvidenceOptions;
 }
 export function identityResolver(identities: readonly ServiceIdentity[]) {
   for (const identity of identities) {
@@ -82,7 +87,12 @@ function queuedQuestionId(value:unknown,outboundId:string):boolean {
 export function buildIntegratedApp(options: RuntimeOptions) {
   if (options.zaloWebhook && options.officialZaloSimulation)
     throw new Error('CONFLICTING_ZALO_WEBHOOK_CONFIGURATION');
-  const core = createCoreModule({ pool: pendingReviewSqlPool(options.pool) });
+  const corePool = pendingReviewSqlPool(options.pool);
+  const trustedPrintEvidence = options.trustedPrintEvidence
+    ? createTrustedPrintEvidencePort(options.trustedPrintEvidence) : undefined;
+  const core = trustedPrintEvidence
+    ? createCoreModule({ pool: corePool, mode: 'v1', evidence: trustedPrintEvidence })
+    : createCoreModule({ pool: corePool });
   const resolve = identityResolver(options.identities ?? []);
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024,
     ...(options.tls ? { https: options.tls } : {}) });
@@ -163,6 +173,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
     zalo_worker_configured: options.zaloWorkerConfigured === true,
     processor_configured: false, preview_configured: !!options.previewArtifactRoot,
     synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
+    trusted_print_evidence_v1_configured: !!trustedPrintEvidence,
     integration_stage: 'core-http' }));
   // Authenticated server-owned operation truth for the AI4 product adapter.
   // Never infer this from the browser environment or anonymous /health.
@@ -185,7 +196,8 @@ export function buildIntegratedApp(options: RuntimeOptions) {
         physical_print_enabled: false,
         manual_lock: settings.rows[0].manual_lock,
         preview_configured: !!options.previewArtifactRoot,
-        synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest
+        synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
+        trusted_print_evidence_v1_configured: !!trustedPrintEvidence
       });
   });
   app.post('/internal/simulation/inbound-artifacts', async (request, reply) => {
@@ -311,7 +323,8 @@ export function buildIntegratedApp(options: RuntimeOptions) {
       .send(preview);
   });
   if (options.syntheticVerifiedButton)
-    app.register(createSyntheticVerifiedButtonPlugin(options.pool,options.syntheticVerifiedButton));
+    app.register(createSyntheticVerifiedButtonPlugin(
+      options.pool,options.syntheticVerifiedButton,trustedPrintEvidence));
   if (options.officialZaloSimulation)
     app.register(createOfficialZaloSimulationWebhook(options.pool, options.officialZaloSimulation));
   else if (options.zaloWebhook) app.register(options.zaloWebhook);

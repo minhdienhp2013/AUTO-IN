@@ -15,6 +15,7 @@ import { createTrustedDocumentFactsPort } from '../../../backend/composition/doc
 import { prepareSyntheticInboundDraft } from '../../../backend/composition/inbound-draft.ts';
 import { adoptSyntheticSuggestedSource } from '../../../backend/composition/synthetic-suggestion-adopt.ts';
 import { createVerifiedConfirmationPort } from '../../../backend/core/verified-confirmation-port.ts';
+import { createTrustedPrintEvidencePort } from '../../../backend/composition/trusted-print-evidence.ts';
 import { loadVerifiedOrderPreviewCatalog } from '../../../backend/composition/preview.ts';
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -49,7 +50,10 @@ test('AI0 REAL PG: ONE Zalo PDF -> AI2 suggestion -> staff-scoped AI3 preview ->
       pdfFile],{cwd:process.cwd(),timeout:10000});
     assert.equal(generated.status,0,'AI3 Pillow fixture generation unavailable');
     const pdf=await readFile(pdfFile);
-    const core=createCoreModule({pool:asSqlPool(pool)});
+    const trustedEvidenceOptions={artifactRoot:renderedRoot,
+      printerCapabilities:{simulation_only:true,printer_id:'RMP7000',queue_name:'RMP7000'}};
+    const evidence=createTrustedPrintEvidencePort(trustedEvidenceOptions);
+    const core=createCoreModule({pool:asSqlPool(pool),mode:'v1',evidence});
     await core.auth.bootstrapOwner({shop_id:shop,username:'owner',
       password:ownerPassword,bootstrap_enabled:true});
     created=true;
@@ -70,7 +74,7 @@ test('AI0 REAL PG: ONE Zalo PDF -> AI2 suggestion -> staff-scoped AI3 preview ->
       zaloWorkerConfigured:true,
       syntheticArtifactIngest:{artifactRoot:root,scope},
       syntheticVerifiedButton:{kind:'synthetic_fixture',shop_id:shop,oa_id:oa,fixture_secret:buttonKey},
-      previewArtifactRoot:renderedRoot});
+      previewArtifactRoot:renderedRoot,trustedPrintEvidence:trustedEvidenceOptions});
     await app.ready();
     const fixture=(eventId,customer,conversation)=>({
       synthetic_fixture:true,event_id:eventId,oa_id:oa,customer_id:customer,
@@ -181,7 +185,7 @@ test('AI0 REAL PG: ONE Zalo PDF -> AI2 suggestion -> staff-scoped AI3 preview ->
     });
     assert.equal(quote.quote_revision,1);
     const confirm=createVerifiedConfirmationPort({
-      store:new PgStore(asSqlPool(pool)),trusted:scope});
+      store:new PgStore(asSqlPool(pool)),trusted:scope,evidence});
     const target={order_id:orderId,expected_revision:3,request_hash:(await query('SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=3',[orderId])).rows[0].request_hash,
       kind:'request',expected_generation:0};
     const requestChallenge=await confirm.issue_challenge(target);
@@ -217,6 +221,25 @@ test('AI0 REAL PG: ONE Zalo PDF -> AI2 suggestion -> staff-scoped AI3 preview ->
       expected_revision:3,quote_revision:1,acknowledge_deposit_shortage:false,
       idempotency_key:'deposit-warning-'+id
     }),e=>e.code==='DEPOSIT_WARNING_REQUIRED');
+
+    const evidenceRow=(await query(
+      'SELECT artifact_ref FROM ai0_verified_plan_manifests WHERE shop_id=$1 AND order_id=$2 AND revision=3',
+      [shop,orderId])).rows[0];
+    const manifest=JSON.parse(await readFile(join(renderedRoot,evidenceRow.artifact_ref),'utf8'));
+    const frozenSource=join(renderedRoot,manifest.files[0].source_artifact_ref);
+    const originalSource=await readFile(frozenSource);
+    await chmod(frozenSource,0o600);
+    await writeFile(frozenSource,Buffer.from('%PDF-mutated after customer confirmation'));
+    await assert.rejects(core.service.approve(staff,orderId,{
+      expected_revision:3,quote_revision:1,acknowledge_deposit_shortage:true,
+      idempotency_key:'stale-evidence-'+id
+    }),e=>e.code==='STALE_PRINT_EVIDENCE',
+    'Changed source bytes invalidate an already stored customer confirmation');
+    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_approvals WHERE order_id=$1',[orderId])).rows[0].n,0);
+    assert.equal((await query('SELECT COUNT(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[orderId])).rows[0].n,0);
+    await writeFile(frozenSource,originalSource);
+    await chmod(frozenSource,0o400);
+
     const approved=await core.service.approve(staff,orderId,{
       expected_revision:3,quote_revision:1,acknowledge_deposit_shortage:true,
       idempotency_key:'staff-approve-'+id
