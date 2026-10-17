@@ -80,3 +80,22 @@ method returns unavailable in this adapter to avoid creating a check/use gap.
 The PostgreSQL/Fastify integration test checks cross-shop and stale-revision
 blocking, handover, no ordinary Zalo outbox row, and zero confirmation,
 approval, or print mutations. Live OA and physical printing remain NOT RUN.
+
+## AI0 simulation trigger follow-up — 2026-10-17
+
+After the staff-authenticated first-page Port commits `SUGGESTED`, the
+simulation composition resolves shop/order/revision/OA/customer/conversation
+from current PostgreSQL rows and calls the existing AI2 queue hook. The
+outbound UUID is deterministic over the trusted order revision, request hash,
+and sealed source SHA, so an HTTP retry reaches the same AI1 idempotency CAS.
+UNKNOWN/NEEDS_HUMAN, stale or missing scope, and classifier failures do not
+call the queue hook. The AI2 read Port and AI1 transaction recheck the bound
+advisory, sealed source, revision/hash, and AI conversation generation again.
+
+This operation only inserts the advisory row. It does not invoke a provider,
+ordinary Zalo outbox, or outbound tick; a missing queue hook fails closed and
+is reported as not configured. The product PostgreSQL/Fastify test checks
+deterministic replay, server-derived scope despite forged request fields,
+UNKNOWN, cross-shop, stale revision, a hard classifier timeout, and zero
+READY/confirmation/approval/print mutations. Provider delivery, live OA,
+customer messaging, and physical printing remain NOT RUN.

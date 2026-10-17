@@ -15,21 +15,29 @@ const generic=()=>({text:SAFE_FIRST_PAGE_QUESTION,used_suggestion:false});
 
 /** Only an authenticated server context may create a question scope. A request
  * supplies an order and revision selector, never OA/customer/conversation/SHA. */
-export async function previewBoundFirstPageQuestion(pool:SqlPool,root:string,
-  configured:SyntheticArtifactScope,actor:Principal,orderId:string,revision:number){
+export async function resolveBoundFirstPageQuestionScope(pool:SqlPool,
+  configured:SyntheticArtifactScope,actor:Principal,orderId:string,revision:number):
+  Promise<FirstPageQuestionScope|null>{
   assertStaff(actor);
   if(actor.shop_id!==configured.shop_id||!uuid.test(orderId)||
-     !Number.isSafeInteger(revision)||revision<1)return generic();
+     !Number.isSafeInteger(revision)||revision<1)return null;
   const trusted=(await pool.query<Pick<Bound,'oa_id'|'customer_id'|'conversation_id'>>(
     'SELECT d.oa_id,o.customer_id,o.conversation_id FROM core_orders o '+
     "JOIN ai0_inbound_artifact_drafts d ON d.order_id=o.id AND d.shop_id=o.shop_id AND d.status='CREATED' "+
     "JOIN core_shop_settings s ON s.shop_id=o.shop_id AND s.mode='simulation' "+
     'WHERE o.shop_id=$1 AND o.id=$2::uuid AND o.active_revision=$3 AND d.oa_id=$4',
     [actor.shop_id,orderId,revision,configured.oa_id])).rows;
-  if(trusted.length!==1||!trusted[0]?.customer_id||!trusted[0].conversation_id)return generic();
-  const scope:FirstPageQuestionScope={shop_id:actor.shop_id,order_id:orderId,revision,
+  if(trusted.length!==1||!trusted[0]?.customer_id||!trusted[0].conversation_id||
+     trusted[0].oa_id!==configured.oa_id)return null;
+  return {shop_id:actor.shop_id,order_id:orderId,revision,
     oa_id:trusted[0].oa_id,customer_id:trusted[0].customer_id,
     conversation_id:trusted[0].conversation_id};
+}
+
+export async function previewBoundFirstPageQuestion(pool:SqlPool,root:string,
+  configured:SyntheticArtifactScope,actor:Principal,orderId:string,revision:number){
+  const scope=await resolveBoundFirstPageQuestionScope(pool,configured,actor,orderId,revision);
+  if(!scope)return generic();
   return prepareBoundFirstPageQuestion(scope,firstPageQuestionReadPort(pool,root,configured));
 }
 

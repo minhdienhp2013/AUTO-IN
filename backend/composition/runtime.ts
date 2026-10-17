@@ -12,7 +12,8 @@ import { createSyntheticInboundDraft } from './inbound-draft.js';
 import { reconcileSyntheticInboundDraft } from './inbound-reconcile.js';
 import { adoptSyntheticSourceHttp } from './source-adoption-http.js';
 import {classifyBoundFirstPage} from './first-page-suggestion.js';
-import {previewBoundFirstPageQuestion} from './first-page-question-port.js';
+import {previewBoundFirstPageQuestion,resolveBoundFirstPageQuestionScope} from './first-page-question-port.js';
+import type {FirstPageQuestionScope} from '../conversation/first-page-question.js';
 import { createSyntheticVerifiedButtonPlugin, type SyntheticButtonScope } from './synthetic-verified-button.js';
 import { pendingReviewSqlPool } from './pending-review-errors.js';
 import { assertApprovedPrintJobEvidence, type ApprovedDocumentEvidenceOptions } from './approved-document-evidence.js';
@@ -31,6 +32,9 @@ export interface RuntimeOptions {
   officialZaloSimulation?: { shop_id: string; webhook: OfficialZaloWebhookConfig };
   zaloWorkerConfigured?: boolean;
   syntheticArtifactIngest?: { artifactRoot: string; scope: SyntheticArtifactScope };
+  /** AI2's simulation-only advisory enqueue hook. This never sends a provider message. */
+  firstPageQuestionQueue?: (input:{outbound_id:string;
+    scope:Readonly<FirstPageQuestionScope>})=>Promise<unknown>;
   previewArtifactRoot?: string;
   /** Opt-in HMAC signed fixture endpoint; NEVER configured for live OA. */
   syntheticVerifiedButton?: SyntheticButtonScope;
@@ -52,6 +56,26 @@ export function identityResolver(identities: readonly ServiceIdentity[]) {
     if (!match) throw new DomainError('UNAUTHENTICATED', 'Credential required', 401);
     return match.principal;
   };
+}
+
+/** Stable across HTTP retries; a new revision or changed source gets a new ID. */
+function firstPageQuestionOutboundId(input:{shop_id:string;order_id:string;revision:number;
+  request_hash:string;source_sha256:string}):string {
+  const bytes=createHash('sha256').update([
+    'AUTO-IN:TN005:first-page-question:v1',input.shop_id,input.order_id,
+    String(input.revision),input.request_hash,input.source_sha256
+  ].join('\0')).digest().subarray(0,16);
+  bytes[6]=(bytes[6]!&0x0f)|0x50;
+  bytes[8]=(bytes[8]!&0x3f)|0x80;
+  const hex=bytes.toString('hex');
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-`+
+    `${hex.slice(16,20)}-${hex.slice(20)}`;
+}
+
+function queuedQuestionId(value:unknown,outboundId:string):boolean {
+  return !!value&&typeof value==='object'&&!Array.isArray(value)&&
+    (value as {status?:unknown}).status==='queued'&&
+    (value as {outbound_id?:unknown}).outbound_id===outboundId;
 }
 
 /** Simulation-only composition. Uses AI1 routes exactly once, not CODE-000 routes. */
@@ -206,8 +230,33 @@ export function buildIntegratedApp(options: RuntimeOptions) {
       const result=await classifyBoundFirstPage(options.pool,
         options.syntheticArtifactIngest.artifactRoot,options.syntheticArtifactIngest.scope,
         actor,params.order_id,Number(params.revision));
+      let questionOutbox:{status:'skipped'|'not_configured'|'blocked'|'queued';outbound_id?:string}=
+        {status:'skipped'};
+      if(result.metadata.status==='SUGGESTED'){
+        if(!options.firstPageQuestionQueue)questionOutbox={status:'not_configured'};
+        else{
+          try{
+            const scope=await resolveBoundFirstPageQuestionScope(options.pool,
+              options.syntheticArtifactIngest.scope,actor,params.order_id,Number(params.revision));
+            if(!scope)questionOutbox={status:'blocked'};
+            else{
+              const outbound_id=firstPageQuestionOutboundId({shop_id:scope.shop_id,
+                order_id:scope.order_id,revision:scope.revision,
+                request_hash:result.request_hash,source_sha256:result.artifact_sha256});
+              const queued=await options.firstPageQuestionQueue({outbound_id,scope});
+              questionOutbox=queuedQuestionId(queued,outbound_id)
+                ?{status:'queued',outbound_id}:{status:'blocked'};
+            }
+          }catch{
+            // Classification remains a stored advisory; queue errors do not
+            // alter authority or expose database/source details to the caller.
+            questionOutbox={status:'blocked'};
+          }
+        }
+      }
       return reply.header('Cache-Control','no-store')
-        .header('X-Content-Type-Options','nosniff').send(result);
+        .header('X-Content-Type-Options','nosniff')
+        .send({...result,suggested_question_outbox:questionOutbox});
     });
   app.get('/internal/simulation/orders/:order_id/revisions/:revision/first-page-question',
     async (request,reply)=>{

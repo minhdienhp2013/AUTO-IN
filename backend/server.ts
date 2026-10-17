@@ -28,6 +28,7 @@ const zaloRuntime = registry === undefined ? undefined : createSyntheticZaloRunt
   ...(process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT
     ? { artifactRoot: process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT } : {})
 });
+const documentArtifactRoot = process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT;
 const configuredTick = process.env.AUTOIN_ZALO_SYNTHETIC_TICK_MS;
 const tickMs = configuredTick === undefined ? 0 : Number(configuredTick);
 if (configuredTick !== undefined && (!zaloRuntime || !Number.isInteger(tickMs) || tickMs < 1000 || tickMs > 60000))
@@ -38,11 +39,12 @@ const app = buildIntegratedApp({ pool: asSqlPool(pool), identities,
   ...(tls ? { tls } : {}), ...(zaloRuntime ? { zaloWebhook: zaloRuntime.webhook } : {}),
   zaloWorkerConfigured: tickMs > 0,
   ...(process.env.AUTOIN_ARTIFACT_ROOT ? {previewArtifactRoot: process.env.AUTOIN_ARTIFACT_ROOT} : {}),
-  ...(zaloRuntime && process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT ? {
+  ...(zaloRuntime && documentArtifactRoot ? {
     syntheticArtifactIngest: {
-      artifactRoot: process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT,
+      artifactRoot: documentArtifactRoot,
       scope: zaloRuntime.trustedScope
-    }
+    },
+    firstPageQuestionQueue: input => zaloRuntime.queue_first_page_suggested_question(input)
   } : {}) });
 app.addHook('onClose', async () => { if (timer) clearInterval(timer); await pool.end(); });
 try {
