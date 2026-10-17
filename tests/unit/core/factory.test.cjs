@@ -36,6 +36,7 @@ test('factory registers one complete AI1 route set with fail-closed customer and
    resolvePrintAgent:async()=>({...agent,printer_ids:[]})
  });
  assert.ok(routes.has('POST /api/v1/orders/:order_id/confirmations'));
+ assert.ok(routes.has('POST /api/v1/orders/:order_id/preview-reviews'));
  assert.ok(routes.has('POST /internal/v1/print-jobs/claim'));
  assert.ok(routes.has('POST /api/v1/conversations/:conversation_id/handover'));
  assert.ok(routes.has('POST /api/v1/conversations/:conversation_id/return-to-ai'));

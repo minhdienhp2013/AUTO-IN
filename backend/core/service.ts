@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { assertAgent, assertOwner, assertPlan, assertProcessor, assertStaff, canAccessShop, canonical, checkRevision, dbSafeInteger, DomainError, newId, nonNegativeVnd, printingAllowed, sha, shortage, type JobRow, type OrderRow, type Principal, type PrintPlan, type QuoteRow, type RevisionRow, type SettingsRow } from './model.js';
 import { PgStore, type SqlConnection } from '../storage/database.js';
 import { readPendingUpdates } from './pending-updates.js';
-import {currentEvidence,type TrustedPrintEvidencePort} from './print-evidence.js';
+import {checkedEvidence,currentEvidence,type PrintEvidenceV1,type TrustedPrintEvidencePort} from './print-evidence.js';
+import {internalReviewReceipt,previewReviewReadModel,requirePreviewReview} from './preview-review.js';
 
 export class OrderService {
  constructor(private readonly store:PgStore, private readonly now:()=>Date=()=>new Date(),private readonly evidence?:TrustedPrintEvidencePort){}
@@ -23,6 +24,25 @@ export class OrderService {
   this.assertRevisionBinding(rev);
   return currentEvidence(db,this.evidence,{shop_id:o.shop_id,order_id:o.id,revision:rev.revision,
    request_hash:rev.request_hash,plan:rev.plan});
+ }
+ private async verifiedEvidenceProof(db:SqlConnection,o:OrderRow,rev:RevisionRow):Promise<PrintEvidenceV1>{
+  if(!this.evidence)throw new DomainError('PRINT_EVIDENCE_NOT_CONFIGURED','V1 evidence Port chưa cấu hình',503);
+  this.assertRevisionBinding(rev);
+  const scope={shop_id:o.shop_id,order_id:o.id,revision:rev.revision,
+   request_hash:rev.request_hash,plan:rev.plan};
+  try{
+   const proof=await this.evidence.read_verified(db,Object.freeze(scope));
+   checkedEvidence(scope,proof);
+   return proof!;
+  }catch(e){
+   if(e instanceof DomainError)throw e;
+   throw new DomainError('PRINT_EVIDENCE_UNAVAILABLE','Lỗi kiểm chứng bằng chứng in',503,true);
+  }
+ }
+ private async assertPreviewReview(db:SqlConnection,o:OrderRow,rev:RevisionRow,evidenceHash:string|null):Promise<void>{
+  if(!this.evidence)return;
+  await requirePreviewReview(db,{shop_id:o.shop_id,order_id:o.id,revision:rev.revision,
+   request_hash:rev.request_hash},evidenceHash);
  }
  private async assertCustomerBinding(db:SqlConnection,o:OrderRow,rev:RevisionRow,q:QuoteRow|null,
   evidenceHash:string|null=null):Promise<void>{
@@ -50,6 +70,8 @@ export class OrderService {
    for(const confirmation of effective){
     if(!confirmation||confirmation.evidence_sha256!==evidenceHash)
      throw new DomainError('STALE_PRINT_EVIDENCE','Cột evidence SHA ở xác nhận khách đã cũ/NULL',409);
+    await requirePreviewReview(db,{shop_id:o.shop_id,order_id:o.id,revision:rev.revision,
+     request_hash:rev.request_hash},evidenceHash,new Date(confirmation.created_at));
     const audit=(await db.query<{details:{evidence_sha256?:string}}>(
      "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 "+
      "AND action IN ('customer.confirmed','customer.confirmed_verified_event') "+
@@ -76,6 +98,7 @@ export class OrderService {
   if(!a||a.request_hash!==rev.request_hash||(a.quote_revision??null)!==(q?.quote_revision??null))
    throw new DomainError('STALE_APPROVAL','Duyệt không còn khớp báo giá hiện hành',409);
   const evidenceHash=await this.evidenceHash(db,o,rev);
+  await this.assertPreviewReview(db,o,rev,evidenceHash);
   const binding=(await db.query<{details:{plan_sha256?:string;quote_sha256?:string|null;evidence_sha256?:string}}>(
    "SELECT details FROM core_audit WHERE shop_id=$1 AND order_id=$2 "+
    "AND action IN ('print.approved','job.reprint_owner_approved') AND details->>'approval_id'=$3 "+
@@ -138,6 +161,43 @@ export class OrderService {
    return {order_id:id,revision:next,requires_reconfirmation:true};
   }));
  }
+ async reviewPreview(p:Principal,id:string,input:{expected_revision:number;expected_request_hash:string;
+  expected_evidence_sha256:string;decision:'checked';idempotency_key:string}){
+  assertStaff(p);
+  if(!this.evidence)throw new DomainError('PRINT_EVIDENCE_NOT_CONFIGURED','V1 preview review cần byte verifier',503);
+  if(!Number.isSafeInteger(input.expected_revision)||input.expected_revision<1||
+     typeof input.expected_request_hash!=='string'||!/^[0-9a-f]{64}$/.test(input.expected_request_hash)||
+     typeof input.expected_evidence_sha256!=='string'||!/^[0-9a-f]{64}$/.test(input.expected_evidence_sha256)||
+     input.decision!=='checked'||typeof input.idempotency_key!=='string'||
+     !input.idempotency_key.trim()||input.idempotency_key.length>128)
+   throw new DomainError('INVALID_PREVIEW_REVIEW','Thiếu điều kiện phiên bản/preview hợp lệ',422);
+  return this.store.tx(async db=>{
+   // Keep the shared order-first lock order used by revision, approval and send gates.
+   const o=await this.order(db,id,p);
+   return this.store.once(db,p,`orders.${id}.preview-review`,input.idempotency_key,input,async()=>{
+    checkRevision(input.expected_revision,o.active_revision);
+    if(o.manual_lock||o.print_closed)throw new DomainError('ORDER_LOCKED','Đơn bị khóa/đóng',409);
+    const rev=await this.revision(db,o);
+    if(rev.request_hash!==input.expected_request_hash)
+     throw new DomainError('STALE_REQUEST_HASH','Nội dung đơn đã đổi, cần tải lại preview',409);
+    const evidenceHash=await this.evidenceHash(db,o,rev);
+    if(evidenceHash!==input.expected_evidence_sha256)
+     throw new DomainError('STALE_PRINT_EVIDENCE','Preview đã đổi, cần tải lại trước khi kiểm tra',409);
+    const receipt_id=newId();
+    const saved=await db.query<{reviewed_at:Date}>(
+     `INSERT INTO core_preview_review_receipts
+      (id,shop_id,order_id,revision,request_hash,evidence_sha256,reviewer_id,decision,idempotency_key)
+      VALUES($1,$2,$3,$4,$5,$6,$7,'checked',$8) RETURNING reviewed_at`,
+     [receipt_id,o.shop_id,o.id,rev.revision,rev.request_hash,evidenceHash,p.id,input.idempotency_key]);
+    const reviewed_at=saved.rows[0]?.reviewed_at;
+    if(!reviewed_at)throw new DomainError('PREVIEW_REVIEW_NOT_STORED','Không lưu được receipt kiểm preview',500);
+    await this.audit(db,p,'preview.reviewed',id,{receipt_id,revision:rev.revision,
+     request_hash:rev.request_hash,evidence_sha256:evidenceHash,decision:'checked'});
+    return {receipt_id,order_id:id,revision:rev.revision,request_hash:rev.request_hash,
+     evidence_sha256:evidenceHash,reviewer_id:p.id,reviewed_at};
+   });
+  });
+ }
  async setQuote(p:Principal,id:string,input:{expected_revision:number;amount_vnd:number;deposit_required_vnd:number;significant_cost:boolean;idempotency_key:string}){
   assertStaff(p);nonNegativeVnd(input.amount_vnd);nonNegativeVnd(input.deposit_required_vnd);
   return this.store.tx(db=>this.store.once(db,p,`orders.${id}.quote`,input.idempotency_key,input,async()=>{
@@ -162,7 +222,9 @@ export class OrderService {
     if(!q||q.quote_revision!==input.quote_revision)throw new DomainError('STALE_QUOTE','Giá đã thay đổi',409);
     quote_revision=q.quote_revision;
    }
-   const evidenceHash=await this.evidenceHash(db,o,rev),confirmation_id=newId();
+   const evidenceHash=await this.evidenceHash(db,o,rev);
+   await this.assertPreviewReview(db,o,rev,evidenceHash);
+   const confirmation_id=newId();
    await db.query('INSERT INTO core_confirmations(id,order_id,revision,request_hash,kind,quote_revision,customer_id,channel,evidence_sha256) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[confirmation_id,id,rev.revision,rev.request_hash,input.kind,quote_revision,p.customer_id,'verified_credential',evidenceHash]);
    await this.audit(db,p,'customer.confirmed',id,{confirmation_id,revision:rev.revision,kind:input.kind,quote_revision,
     ...(evidenceHash?{evidence_sha256:evidenceHash}:{})});
@@ -307,6 +369,8 @@ export class OrderService {
     }
    }
    const rev=await this.revision(db,o);this.assertRevisionBinding(rev);
+   const evidenceHash=await this.evidenceHash(db,o,rev);
+   await this.assertPreviewReview(db,o,rev,evidenceHash);
    // Keep the FIRST valid customer confirmation: retries/duplicate messages must not delay queue position.
    const q=await this.quote(db,id);
    // The first confirmation counts only until a later quote revision changes.
@@ -326,7 +390,6 @@ export class OrderService {
     if(!approvedQuote.rows[0]?.confirmed_at)throw new DomainError('PRICE_CONFIRMATION_REQUIRED','Khách chưa xác nhận mức giá');
     queueConfirmedAt=new Date(Math.max(queueConfirmedAt.getTime(),new Date(approvedQuote.rows[0].confirmed_at).getTime()));
    }
-   const evidenceHash=await this.evidenceHash(db,o,rev);
    await this.assertCustomerBinding(db,o,rev,q,evidenceHash);
    const missing=shortage(q?.deposit_required_vnd??0,await this.received(db,id));
    if(missing>0&&!input.acknowledge_deposit_shortage)throw new DomainError('DEPOSIT_WARNING_REQUIRED','Cần xác nhận đã xem cảnh báo thiếu cọc');
@@ -384,7 +447,26 @@ export class OrderService {
    const {o,j,rev}=await this.validateJob(db,p,job_id,input.lease_token,input.expected_revision);
    if(j.state!=='NOT_SENT'||!j.lease_until||j.lease_until<this.now())throw new DomainError('LEASE_EXPIRED','Job đã gửi hoặc lease hết hạn',409);
    const settings=await this.checkGates(db,o,j,rev);
-   return {allowed:true,job_id,revision:j.revision,mode:settings.mode,approval_id:j.approval_id};
+   const base={allowed:true as const,job_id,revision:j.revision,mode:settings.mode,approval_id:j.approval_id};
+   if(!this.evidence)return base;
+   // Internal-only provenance envelope. Receipt authority is the exact DB row;
+   // evidence fields are re-read and validated from the trusted server Port.
+   const proof=await this.verifiedEvidenceProof(db,o,rev);
+   const scope={shop_id:o.shop_id,order_id:o.id,revision:rev.revision,request_hash:rev.request_hash};
+   const receipt=await requirePreviewReview(db,scope,proof.evidence_sha256);
+   if(j.evidence_sha256!==proof.evidence_sha256)
+    throw new DomainError('STALE_PRINT_EVIDENCE','Bằng chứng job không còn khớp nguồn hiện hành',409);
+   return {...base,
+    review_receipt:internalReviewReceipt(receipt),
+    trusted_evidence:{schema:proof.schema,shop_id:proof.shop_id,order_id:proof.order_id,
+     revision:proof.revision,request_hash:proof.request_hash,evidence_sha256:proof.evidence_sha256,
+     settings_sha256:proof.settings_sha256,renderer_sha256:proof.renderer_sha256,
+     printer_capability_sha256:proof.printer_capability_sha256,
+     preview_sha256:proof.previews.map(preview=>preview.sha256),printer_id:proof.printer_id},
+    trusted_job:{job_id:j.id,shop_id:o.shop_id,order_id:o.id,revision:j.revision,
+     request_hash:j.request_hash,approval_id:j.approval_id,printer_id:j.printer_id,
+     evidence_sha256:j.evidence_sha256,mode:settings.mode,state:j.state}
+   };
   });
  }
  async markSending(p:Principal,job_id:string,input:{expected_revision:number;lease_token:string;idempotency_key:string}){
@@ -503,6 +585,7 @@ export class OrderService {
     await this.assertJobBinding(db,o,original,rev);
    if(!original.confirmed_at)throw new DomainError('QUEUE_CONFIRMATION_MISSING','Lệnh cũ thiếu xác nhận khách để xếp hàng; phải đối soát',409);
    const replayEvidence=await this.evidenceHash(db,o,rev);
+   await this.assertPreviewReview(db,o,rev,replayEvidence);
    const job_id=newId();await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,printer_id,original_job_id,authorized_reprint_by,confirmed_at,evidence_sha256) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[job_id,id,rev.revision,rev.request_hash,original.approval_id,original.printer_id,original.id,p.id,original.confirmed_at??null,replayEvidence]);
    const currentQuote=await this.quote(db,id);
    await this.audit(db,p,'job.reprint_owner_approved',id,{job_id,original_job_id:original.id,
@@ -594,10 +677,15 @@ export class OrderService {
    // V1 evidence-gated read model: an old approval/confirmation must not look
    // current to staff after source bytes, manifest, settings or preview change.
    let visibleEvidence:string|null=null;
+   let printEvidence:{schema:'ai0.print_evidence.v1';order_id:string;revision:number;request_hash:string;evidence_sha256:string}|null=null;
    let currentEvidenceConfirmIds:Set<string>|null=null;
    if(this.evidence){
     try{
-     visibleEvidence=await this.evidenceHash(db,o,current);
+     const evidenceSha256=await this.evidenceHash(db,o,current);
+     if(!evidenceSha256)throw new DomainError('PRINT_EVIDENCE_NOT_CONFIGURED','Không đọc được evidence hiện hành',503);
+     visibleEvidence=evidenceSha256;
+     printEvidence={schema:'ai0.print_evidence.v1',order_id:id,revision:current.revision,
+      request_hash:current.request_hash,evidence_sha256:evidenceSha256};
      const bound=await db.query<{confirmation_id:string}>(
       "SELECT details->>'confirmation_id' AS confirmation_id FROM core_audit "+
       "WHERE shop_id=$1 AND order_id=$2 AND details->>'evidence_sha256'=$3 "+
@@ -606,9 +694,12 @@ export class OrderService {
      currentEvidenceConfirmIds=new Set(bound.rows.map(c=>c.confirmation_id));
     }catch{
      visibleEvidence=null;
+     printEvidence=null;
      currentEvidenceConfirmIds=new Set();
     }
    }
+   const previewReview=this.evidence?await previewReviewReadModel(db,{shop_id:o.shop_id,
+    order_id:id,revision:current.revision,request_hash:current.request_hash},visibleEvidence):null;
    const quoteCutoff=quote&&quote.quote_revision>1
     ? (await db.query<{created_at:Date}>('SELECT created_at FROM core_quotes WHERE order_id=$1 AND quote_revision=$2',
       [id,quote.quote_revision])).rows[0]?.created_at : null;
@@ -666,6 +757,7 @@ export class OrderService {
     refundable_vnd:Math.max(0,received-(quote?.amount_vnd??0)),
     current:{
      revision:current.revision,request_hash:current.request_hash,
+     print_evidence:printEvidence,preview_review:previewReview,
      pending_updates:pendingUpdates,verified_plan:verifiedPlan,preview_ref:previewRef,
      request_confirmation:requestConfirmation,price_confirmation:priceConfirmation,
      requires_price_confirmation:needsPrice,approval:approval?{...approval,deposit_short_vnd:dbSafeInteger(approval.deposit_short_vnd,'approval.deposit_short_vnd')}:null,

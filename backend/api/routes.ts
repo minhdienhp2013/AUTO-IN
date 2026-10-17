@@ -52,6 +52,8 @@ export function registerCoreRoutes(app:RouteRegistrar,d:CoreRouteDependencies):v
  app.get('/api/v1/orders',wrap(async(r)=>({orders:await d.service.listOrders(await staff(r))})));
  app.post('/api/v1/orders',wrap(async(r)=>d.service.createDraft(await staff(r),bodyOf<Parameters<OrderService['createDraft']>[1]>(r))));
  app.get('/api/v1/orders/:order_id',wrap(async(r)=>d.service.getOrder(await staff(r),id(r))));
+ app.post('/api/v1/orders/:order_id/preview-reviews',wrap(async(r)=>
+  d.service.reviewPreview(await staff(r),id(r),bodyOf<Parameters<OrderService['reviewPreview']>[2]>(r))));
  app.post('/api/v1/orders/:order_id/revisions',wrap(async(r)=>d.service.revise(await staff(r),id(r),bodyOf<Parameters<OrderService['revise']>[2]>(r))));
  app.post('/api/v1/orders/:order_id/confirmations',wrap(async(r)=>d.service.confirm(await customer(r),id(r),bodyOf<Parameters<OrderService['confirm']>[2]>(r))));
  app.post('/api/v1/orders/:order_id/quote',wrap(async(r)=>d.service.setQuote(await staff(r),id(r),bodyOf<Parameters<OrderService['setQuote']>[2]>(r))));

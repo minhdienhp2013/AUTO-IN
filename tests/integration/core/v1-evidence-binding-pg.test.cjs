@@ -1,5 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
+const fs=require('node:fs');
 const path=require('node:path');
 const {randomUUID}=require('node:crypto');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../../.ai1-build/backend');
@@ -17,6 +18,8 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
  assert.match(u.pathname,/test/i);
  const a=new pg.Pool({connectionString:url,max:6}),b=new pg.Pool({connectionString:url,max:6});
  try{
+  await a.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/011_print_evidence_binding.sql'),'utf8'));
+  await a.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/012_preview_review_receipts.sql'),'utf8'));
   const shop=key('v1-evidence-shop');
   await a.query("INSERT INTO core_shop_settings(shop_id,open_at,close_at) VALUES($1,'00:00','24:00')",[shop]);
   const staffId=uid();
@@ -46,6 +49,27 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
   // Exercise the same factory entry that AI0 will use for product V1 wiring.
   const A=createCoreModule({pool:a,mode:'v1',evidence:fakePort}).service;
   const B=createCoreModule({pool:b,mode:'v1',evidence:fakePort}).service;
+  const evidenceFor=async orderId=>{
+   const row=(await a.query('SELECT shop_id,active_revision FROM core_orders WHERE id=$1',[orderId])).rows[0];
+   const rev=(await a.query('SELECT request_hash,plan FROM core_revisions WHERE order_id=$1 AND revision=$2',[orderId,row.active_revision])).rows[0];
+   const state=states.get(orderId);
+   const sources=[{source_artifact_ref:'fixture/source.pdf',format:'pdf',size_bytes:10,source_sha256:sha(state.source)}];
+   const body={schema:'ai0.print_evidence.v1',shop_id:row.shop_id,order_id:orderId,
+    revision:row.active_revision,request_hash:rev.request_hash,sources,
+    source_set_sha256:sha(canonical(sources)),settings_sha256:sha(state.settings),
+    manifest_ref:'fixture/manifest',manifest_sha256:sha(state.manifest),
+    previews:[{index:0,bytes:300,sha256:sha(state.preview)}],renderer_sha256:sha(state.renderer),
+    plan_sha256:sha(canonical(rev.plan)),printer_id:rev.plan.printer_id,
+    printer_capability_sha256:sha(state.capability)};
+   return sha(canonical(body));
+  };
+  const review=(id,service=A,actor=staff,override={})=>a.query(
+   'SELECT active_revision FROM core_orders WHERE id=$1',[id]).then(async order=>{
+    const rev=(await a.query('SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=$2',[id,order.rows[0].active_revision])).rows[0];
+    return service.reviewPreview(actor,id,{expected_revision:order.rows[0].active_revision,
+     expected_request_hash:rev.request_hash,expected_evidence_sha256:await evidenceFor(id),
+     decision:'checked',idempotency_key:key('preview-review'),...override});
+   });
   const make=async(label,conversation_id)=>{
    const data={files:[{file_id:'fixture/source.pdf',copies:1,format:'pdf'}],
     settings:{paper:'A4',duplex:false,copies:1}};
@@ -60,11 +84,69 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
     manifest:'manifest-'+label,preview:'page0-'+label,renderer:'PDF-v1',capability:'Ricoh-driver-fixture'});
    return draft.order_id;
   };
-  const confirm=id=>A.confirm(customer,id,{expected_revision:2,kind:'request',idempotency_key:key('confirm')});
+  const confirm=async id=>{await review(id);return A.confirm(customer,id,{expected_revision:2,kind:'request',idempotency_key:key('confirm')});};
   const approve=(id,service=A)=>service.approve(staff,id,{expected_revision:2,
    acknowledge_deposit_shortage:true,idempotency_key:key('approve')});
   const jobCount=async id=>Number((await a.query('SELECT count(*)::int n FROM core_print_jobs WHERE order_id=$1',[id])).rows[0].n);
   const cancel=async id=>a.query("UPDATE core_print_jobs SET cancelled_at=now() WHERE order_id=$1 AND state='NOT_SENT'",[id]);
+  await t.test('missing/stale/wrong-scope review blocks every confirmation/approval path with zero writes',async()=>{
+   const conv=key('missing-review-conv'),id=await make('missing-review',conv);
+   const challengePort=createVerifiedConfirmationPort({store:new PgStore(b),trusted:{shop_id:shop,oa_id:key('missing-review-oa')},evidence:fakePort});
+   const requestHash=(await a.query('SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=2',[id])).rows[0].request_hash;
+   const target={order_id:id,expected_revision:2,request_hash:requestHash,kind:'request',expected_generation:0};
+   await assert.rejects(A.confirm(customer,id,{expected_revision:2,kind:'request',idempotency_key:key('no-review-confirm')}),error('PREVIEW_REVIEW_REQUIRED'));
+   await assert.rejects(approve(id),error('PREVIEW_REVIEW_REQUIRED'));
+   await assert.rejects(challengePort.issue_challenge(target),error('PREVIEW_REVIEW_REQUIRED'));
+   const counts=await a.query('SELECT '+
+    '(SELECT count(*)::int FROM core_confirmation_challenges WHERE order_id=$1) challenges,'+
+    '(SELECT count(*)::int FROM core_confirmations WHERE order_id=$1) confirmations,'+
+    '(SELECT count(*)::int FROM core_approvals WHERE order_id=$1) approvals,'+
+    '(SELECT count(*)::int FROM core_print_jobs WHERE order_id=$1) jobs',[id]);
+   assert.deepEqual(counts.rows[0],{challenges:0,confirmations:0,approvals:0,jobs:0});
+   const wrongScope={...staff,shop_id:key('wrong-shop')};
+   await assert.rejects(review(id,A,wrongScope),error('FORBIDDEN'));
+   assert.equal(await count(a,'core_preview_review_receipts',id),0);
+   const currentEvidence=await evidenceFor(id);
+   await assert.rejects(A.reviewPreview(staff,id,{expected_revision:2,expected_request_hash:requestHash,
+    expected_evidence_sha256:sha('wrong-evidence'),decision:'checked',idempotency_key:key('stale-evidence')}),error('STALE_PRINT_EVIDENCE'));
+   await assert.rejects(A.reviewPreview(staff,id,{expected_revision:2,expected_request_hash:sha('wrong-request'),
+    expected_evidence_sha256:currentEvidence,decision:'checked',idempotency_key:key('stale-request')}),error('STALE_REQUEST_HASH'));
+   assert.equal(await count(a,'core_preview_review_receipts',id),0);
+   const historical=await make('review-cannot-authorize-old-confirmation');
+   const historicalProof=await evidenceFor(historical),historicalId=uid();
+   await a.query(`INSERT INTO core_confirmations
+    (id,order_id,revision,request_hash,kind,customer_id,channel,evidence_sha256,created_at)
+    VALUES($1,$2,2,$3,'request',$4,'verified_credential',$5,now()-interval '1 minute')`,
+    [historicalId,historical,requestHash,customerId,historicalProof]);
+   await a.query(`INSERT INTO core_audit(id,shop_id,actor_id,action,order_id,details,created_at)
+    VALUES($1,$2,$3,'customer.confirmed',$4,$5::jsonb,now()-interval '1 minute')`,
+    [uid(),shop,'synthetic-old-customer',historical,JSON.stringify({confirmation_id:historicalId,evidence_sha256:historicalProof})]);
+   await review(historical);
+   await assert.rejects(approve(historical),error('PREVIEW_REVIEW_REQUIRED'));
+   assert.equal(await count(a,'core_approvals',historical),0);
+   assert.equal(await count(a,'core_print_jobs',historical),0);
+  });
+  await t.test('review receipt binds exact snapshot and idempotent replay/conflict',async()=>{
+   const id=await make('review-idempotency');
+   const order=(await a.query('SELECT active_revision FROM core_orders WHERE id=$1',[id])).rows[0];
+   const rev=(await a.query('SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=$2',[id,order.active_revision])).rows[0];
+   const payload={expected_revision:order.active_revision,expected_request_hash:rev.request_hash,
+    expected_evidence_sha256:await evidenceFor(id),decision:'checked',idempotency_key:key('same-review')};
+   const first=await A.reviewPreview(staff,id,payload),replayed=await A.reviewPreview(staff,id,payload);
+   assert.equal(replayed.receipt_id,first.receipt_id);
+   assert.equal(await count(a,'core_preview_review_receipts',id),1);
+   await assert.rejects(A.reviewPreview(staff,id,{...payload,expected_evidence_sha256:sha('different')}),error('IDEMPOTENCY_CONFLICT'));
+   assert.equal(await count(a,'core_preview_review_receipts',id),1);
+   const view=await A.getOrder(staff,id);
+   assert.deepEqual(view.current.print_evidence,{schema:'ai0.print_evidence.v1',order_id:id,
+    revision:order.active_revision,request_hash:rev.request_hash,evidence_sha256:payload.expected_evidence_sha256});
+   assert.equal(view.current.preview_review.status,'matching');
+   assert.equal(view.current.preview_review.receipt_id,first.receipt_id);
+   states.get(id).preview+='-changed-after-review';
+   const stale=await A.getOrder(staff,id);
+   assert.equal(stale.current.preview_review.status,'stale');
+   assert.equal(stale.current.preview_review.evidence_sha256,(await evidenceFor(id)));
+  });
   await t.test('confirmation pins evidence; source/manifest/settings/preview drift blocks approval',async()=>{
    for(const part of ['source','manifest','settings','preview']){
     const id=await make('before-approve-'+part);await confirm(id);
@@ -74,7 +156,7 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
     assert.equal(audit.details.evidence_sha256,column.evidence_sha256);
     states.get(id)[part]+='-changed';
     assert.equal((await A.getOrder(staff,id)).current.request_confirmed,false);
-    await assert.rejects(approve(id),error('STALE_PRINT_EVIDENCE'));
+    await assert.rejects(approve(id),error('PREVIEW_REVIEW_REQUIRED'));
     assert.equal(await jobCount(id),0);
    }
   });
@@ -109,6 +191,7 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    const challengePort=createVerifiedConfirmationPort(port);
    const hash=(await a.query('SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=2',[id])).rows[0].request_hash;
    const target={order_id:id,expected_revision:2,request_hash:hash,kind:'request',expected_generation:0};
+   await review(id);
    const initial=await challengePort.issue_challenge(target);assert.equal(initial.status,'issued');
    assert.match((await a.query('SELECT evidence_sha256 FROM core_confirmation_challenges WHERE id=$1',[initial.challenge_id])).rows[0].evidence_sha256,/^[0-9a-f]{64}$/);
    states.get(id).preview+='-preview-rerendered';
@@ -121,8 +204,10 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
     return event;
    };
    const oldEvent=await inbound(initial);
-   assert.deepEqual(await challengePort.confirm_verified_event({...target,event_id:oldEvent}),{status:'stale'});
+   await assert.rejects(challengePort.confirm_verified_event({...target,event_id:oldEvent}),error('PREVIEW_REVIEW_REQUIRED'));
    assert.equal((await a.query('SELECT count(*)::int n FROM core_confirmations WHERE order_id=$1',[id])).rows[0].n,0);
+   await review(id);
+   await assert.rejects(challengePort.confirm_verified_event({...target,event_id:oldEvent}),error('PREVIEW_REVIEW_REQUIRED'));
    const newer=await challengePort.issue_challenge(target);
    assert.equal(newer.status,'issued');
    const event=await inbound(newer);
@@ -155,7 +240,7 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
     const id=await make('before-claim-'+part);await confirm(id);await approve(id);
     states.get(id)[part]+='-changed';
     assert.equal((await A.getOrder(staff,id)).current.staff_approved,false);
-    await assert.rejects(A.claim(agent,{printer_id:'RMP7000',idempotency_key:key('claim')}),error('STALE_PRINT_EVIDENCE'));
+    await assert.rejects(A.claim(agent,{printer_id:'RMP7000',idempotency_key:key('claim')}),error('PREVIEW_REVIEW_REQUIRED'));
     assert.equal((await a.query('SELECT state FROM core_print_jobs WHERE order_id=$1',[id])).rows[0].state,'NOT_SENT');
     assert.equal(await jobCount(id),1);
     await cancel(id);
@@ -165,10 +250,32 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    const id=await make('before-send');await confirm(id);const approved=await approve(id);
    const claim=(await A.claim(agent,{printer_id:'RMP7000',idempotency_key:key('lease')})).job;
    assert.equal(claim.job_id,approved.job_id);
+   const preflight=await B.preflight(agent,claim.job_id,{expected_revision:2,lease_token:claim.lease_token});
+   assert.equal(preflight.allowed,true);
+   assert.deepEqual(Object.keys(preflight.review_receipt).sort(),[
+    'receipt_id','shop_id','order_id','revision','request_hash','evidence_sha256',
+    'reviewer_id','reviewed_at','decision'
+   ].sort());
+   assert.equal(preflight.review_receipt.decision,'checked');
+   assert.equal(preflight.review_receipt.shop_id,shop);
+   assert.equal(preflight.review_receipt.order_id,id);
+   assert.equal(preflight.review_receipt.reviewer_id,staffId);
+   assert.deepEqual(Object.keys(preflight.trusted_evidence).sort(),[
+    'schema','shop_id','order_id','revision','request_hash','evidence_sha256',
+    'settings_sha256','renderer_sha256','printer_capability_sha256','preview_sha256','printer_id'
+   ].sort());
+   assert.deepEqual(preflight.trusted_evidence.preview_sha256,[sha(states.get(id).preview)]);
+   assert.deepEqual(preflight.trusted_job,{job_id:claim.job_id,shop_id:shop,order_id:id,
+    revision:2,request_hash:preflight.review_receipt.request_hash,approval_id:approved.approval_id,
+    printer_id:'RMP7000',evidence_sha256:preflight.review_receipt.evidence_sha256,
+    mode:'simulation',state:'NOT_SENT'});
+   const publicView=await A.getOrder(staff,id);
+   assert.equal('review_receipt' in publicView,false);
+   assert.equal('trusted_job' in publicView,false);
    states.get(id).preview+='-after-lease';
-   await assert.rejects(B.preflight(agent,claim.job_id,{expected_revision:2,lease_token:claim.lease_token}),error('STALE_PRINT_EVIDENCE'));
+   await assert.rejects(B.preflight(agent,claim.job_id,{expected_revision:2,lease_token:claim.lease_token}),error('PREVIEW_REVIEW_REQUIRED'));
    await assert.rejects(B.markSending(agent,claim.job_id,{expected_revision:2,lease_token:claim.lease_token,
-    idempotency_key:key('sending')}),error('STALE_PRINT_EVIDENCE'));
+    idempotency_key:key('sending')}),error('PREVIEW_REVIEW_REQUIRED'));
    assert.equal((await a.query('SELECT state FROM core_print_jobs WHERE id=$1',[claim.job_id])).rows[0].state,'NOT_SENT');
    await cancel(id);
   });

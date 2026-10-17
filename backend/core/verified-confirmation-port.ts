@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { DomainError, dbSafeInteger, newId, sha, canonical } from './model.js';
 import {currentEvidence,type TrustedPrintEvidencePort} from './print-evidence.js';
+import {requirePreviewReview} from './preview-review.js';
 import type { PgStore, SqlConnection } from '../storage/database.js';
 
 /** Created only by AI0 from a VERIFIED provider OA -> shop mapping; never from HTTP body. */
@@ -24,7 +25,7 @@ type Order = { id: string; shop_id: string; customer_id: string; conversation_id
 type Challenge = { id: string; order_id: string; revision: number; request_hash: string;
   customer_id: string; conversation_id: string; kind: ConfirmationKind; quote_revision: number | null;
   generation: string | number; secret_hash: string; expires_at: Date;
-  consumed_event_id: string | null; confirmation_id: string | null; evidence_sha256:string|null };
+  consumed_event_id: string | null; confirmation_id: string | null; evidence_sha256:string|null; created_at:Date };
 function bounded(value: string, name: string, max = 256) {
   if (typeof value !== 'string' || !value.trim() || value.length > max)
     throw new DomainError('INVALID_CONFIRMATION_INPUT', `Invalid ${name}`, 422);
@@ -62,6 +63,11 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
     throw new DomainError('STALE_PRINT_EVIDENCE','Chưa có file/hash/plan hiện hành',409);
    return currentEvidence(db,options.evidence,{shop_id:o.shop_id,order_id:o.id,
     revision:o.active_revision,request_hash:rev.request_hash,plan:rev.plan});
+  }
+  async function assertPreviewReview(db:SqlConnection,o:Order,revision:number,requestHash:string,
+    evidenceSha256:string|null,reviewedBefore?:Date):Promise<void>{
+   if(!options.evidence)return;
+   await requirePreviewReview(db,{shop_id:o.shop_id,order_id:o.id,revision,request_hash:requestHash},evidenceSha256,reviewedBefore);
   }
 
   async function lockedTarget(db: SqlConnection, input: ConfirmationTarget) {
@@ -101,6 +107,7 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
       const bound=await lockedTarget(db,input);
       if (!bound || bound.approved) return {status:'stale'};
       const evidence=await evidenceHash(db,bound.order);
+      await assertPreviewReview(db,bound.order,input.expected_revision,input.request_hash,evidence);
       const id=newId(), token=randomBytes(32).toString('base64url');
       const result=await db.query<{expires_at:Date}>(
         `INSERT INTO core_confirmation_challenges
@@ -147,7 +154,7 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
         throw new DomainError('CONFIRMATION_CHALLENGE_REQUIRED','Verified confirmation challenge missing',403);
       const challenges=await db.query<Challenge>(
         `SELECT id,order_id,revision,request_hash,customer_id,conversation_id,kind,quote_revision,
-                generation,secret_hash,expires_at,consumed_event_id,confirmation_id,evidence_sha256
+        generation,secret_hash,expires_at,consumed_event_id,confirmation_id,evidence_sha256,created_at
          FROM core_confirmation_challenges WHERE id=$1 AND shop_id=$2 AND oa_id=$3 FOR UPDATE`,
         [data.challenge_id,shopId,oaId]);
       const challenge=challenges.rows[0];
@@ -158,13 +165,15 @@ export function createVerifiedConfirmationPort(options: { store: PgStore; truste
           dbSafeInteger(challenge.generation,'challenge.generation')!==input.expected_generation ||
           challenge.secret_hash!==sha(data.challenge_token))
         throw new DomainError('CONFIRMATION_CHALLENGE_MISMATCH','Challenge does not match active order',403);
+      const printEvidence=await evidenceHash(db,bound.order);
+      await assertPreviewReview(db,bound.order,input.expected_revision,input.request_hash,printEvidence,challenge.created_at);
       if (challenge.consumed_event_id) {
         if (challenge.consumed_event_id!==input.event_id || !challenge.confirmation_id)
           throw new DomainError('CONFIRMATION_REPLAY','Challenge already consumed by a different event',409);
+        if(challenge.evidence_sha256!==printEvidence)return {status:'stale'};
         return {status:'existing',confirmation_id:challenge.confirmation_id,
           order_id:bound.order.id,revision:input.expected_revision,kind:input.kind,quote_revision:bound.quote};
       }
-      const printEvidence=await evidenceHash(db,bound.order);
       if(printEvidence && challenge.evidence_sha256!==printEvidence)return {status:'stale'};
       if(printEvidence){
        const challengeProof=(await db.query<{details:{evidence_sha256?:string}}>(

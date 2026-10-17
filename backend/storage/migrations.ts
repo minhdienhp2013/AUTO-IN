@@ -14,5 +14,6 @@ export const CORE_MIGRATIONS = [
   '008_shop_schedule.sql',
   '009_tn005_suggested_outbox.sql',
   '010_customer_print_choice_evidence.sql',
-  '011_print_evidence_binding.sql'
+  '011_print_evidence_binding.sql',
+  '012_preview_review_receipts.sql'
 ] as const;
