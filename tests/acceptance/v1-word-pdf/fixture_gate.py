@@ -88,14 +88,28 @@ def source(kind,label):
         return _pdf(label)
     if kind in ("png","jpg"):
         if kind=="png": return _png(label)
-        # Minimal non-photo sentinel only; MUST route manual, never auto-print.
-        return b"\xff\xd8\xff\xe0"+label.encode()+b"\xff\xd9"
+        # A genuine small JPEG, generated locally; never a real ID photograph.
+        from PIL import Image
+        output=io.BytesIO()
+        rgb=tuple(hashlib.sha256(label.encode()).digest()[:3])
+        with Image.new("RGB",(20,20),rgb) as image:
+            image.save(output,format="JPEG")
+        return output.getvalue()
     if kind=="docx":
         xml=(f'<?xml version="1.0" encoding="UTF-8"?>'
              f'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
              f'<w:body><w:p><w:r><w:t>{label}</w:t></w:r></w:p></w:body></w:document>').encode()
-        return _zip({"[Content_Types].xml":b'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
-                     "_rels/.rels":b'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>',
+        types=(b'<?xml version="1.0"?>'
+          b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+          b'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+          b'<Default Extension="xml" ContentType="application/xml"/>'
+          b'<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+          b'</Types>')
+        rels=(b'<?xml version="1.0"?>'
+          b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+          b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+          b'</Relationships>')
+        return _zip({"[Content_Types].xml":types,"_rels/.rels":rels,
                      "word/document.xml":xml})
     if kind=="xlsx": return _zip({"xl/workbook.xml":b"<workbook/>"})
     if kind=="zip": return _zip({f"synthetic_{i:02d}.pdf":_pdf(label+str(i)) for i in range(6)})
