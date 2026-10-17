@@ -39,3 +39,30 @@ Synthetic tests use real PyMuPDF PDFs and fake COM; check PDF page plan (3 pages
 ## Acceptance / handoff
 
 AI0 and AI1 must define authoritative ticket/CAS binding, Word staff layout confirmation, secure filesystem scope, timeout-isolated Windows Word COM worker, temporary preview retention, font substitution and printer capabilities before integration. AI5 then independently tests the exact integrated SHA. Windows Word automation, Vietnamese fonts, Ricoh IM7000 actual driver, real page/duplex/printed-paper comparison, Zalo OA and production deployment are NOT RUN. Neither V1 ready-to-print nor physical completion may be inferred from a mock. Do not merge/deploy or resend UNKNOWN.
+
+
+## V1-CORE-AGENT-EVIDENCE-01 — AI0 contract adopted (18/10/2026)
+
+Source: AI0 Draft PR #150, docs/architecture/V1_CORE_AGENT_EVIDENCE_CONTRACT_20261017.md, SHA 05cf967be45d084a0e288efbdbaa3e2a308afc4f. This PR stays AI3-only; no Core/schema/API/driver change.
+
+### Exact-byte snapshot + trusted Core comparison
+
+- workers.documents.print_evidence_v1.create_print_evidence_v1 constructs the internal schema ai0.print_evidence.v1 from private original DOCX/PDF bytes, ordered sources, preview PNG bytes, manifest bytes, print settings, renderer identity and Ricoh capability inventory. Each file is checked against manifest source SHA, original size, format and settings digest; previews are verified by raw byte SHA, order and size. processor.plan recomputes page/face/sheet counts. The derived tuple contains shop/order/revision/request_hash, sources with source hashes, source_set_sha256, settings_sha256, manifest_ref/sha256, previews index/bytes/sha256, renderer_sha256, plan_sha256, RMP7000, printer_capability_sha256 and canonical evidence_sha256. Deriving a digest is NOT authorization.
+- verify_print_evidence_v1 recreates and compares every field against the independent Core-trusted evidence_sha256, including active revision; changed content, manifest, settings, preview, renderer, printer capability, source order or revision is fail-closed. Every result has allowed_to_print=false and allowed_to_simulate=false.
+- AI0 MUST provide the Core scope/anchor from authenticated DB plus independently read no-follow source/preview bytes, native Word renderer version and real queue inventory. Pure Python data and hashes cannot authenticate their own provenance. Any new migration/wire is AI0/AI1-owned.
+
+### Staff review is required even for simulation
+
+- agents.windows.native_simulation_review.TrustedStaffReview is a proposed internal AI0/AI1-sourced receipt with reviewer/role/time, shop/order/revision, evidence_sha256, source request hash, settings/renderer/capability digests, preview digest list, job_id and approval_id.
+- review_simulation_only requires separately verified Core evidence, the exact matching staff review receipt and a trusted job in NOT_SENT / simulation mode. Missing review, stale digest, changed preview, wrong approval, nonstaff, SENDING/UNKNOWN, production mode or different job blocks.
+- The success output is SIMULATION_ONLY_REVIEW_CONFIRMED: allowed_to_simulate=true BUT allowed_to_print=false, queue_submission_enabled=false and physical_print_verified=false. It does not call or authorize any printer or journal transition; only AI0 can connect a labeled fake driver to this state.
+
+### Original DOCX remains original
+
+- native_word_document.py adds renderer_identity from Word COM app.Version when separately authorized on real Windows; injected mock is explicitly engine=injected_fake. Word raster PNG is made from a temporary preview-only Word PDF, which is deleted after use; it is never substituted for the original DOCX.
+- native_word_artifacts.py includes the renderer identity in private ai3.native_word_preview.v1 manifest. Word stays REVIEW_REQUIRED, ready=false, regardless of snapshot generation.
+- Synthetic unit tests intentionally spoof a COM-like envelope solely to exercise byte hashing and fail-closed simulation gating. This is NOT evidence real Word COM, Vietnamese fonts, pagination against paper, Ricoh or physical printing worked.
+
+### AI0/AI1 integration still required
+
+AI0 and AI1 own transactionally trusted evidence_sha256 on customer confirmation, staff approval and job, CAS at claim/preflight/mark-sending, staff review receipt authority, time-bounded isolated Windows COM, real Ricoh inventory, and reconciliation of ambiguous driver ACK. Cached SENDING/UNKNOWN never permits a second driver call. AI5 independently accepts the same integrated SHA. No real OA, Ricoh, Windows Word, merge or deployment in this PR.
