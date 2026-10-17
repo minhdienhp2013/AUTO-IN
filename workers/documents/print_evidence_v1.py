@@ -48,6 +48,33 @@ def _check(ok: bool, reason: str) -> None:
         raise _Invalid(reason)
 
 
+def _check_core_plan(plan: Any, *, context: dict[str, Any],
+                     manifest_ref: str, counted: dict[str, Any]) -> str:
+    """Hash the exact active Core PrintPlan and compare its processor counts.
+
+    The processor's rich paper-plan object is not Core's PrintPlan. Hashing
+    that object would produce a valid digest for the wrong contract. AI0 must
+    supply the independently loaded plan from the active Core revision.
+    """
+    _check(type(plan) is dict, "CORE_PLAN_UNVERIFIED")
+    _check(plan.get("request_hash") == context["request_hash"] and
+           plan.get("printer_id") == context["printer_id"] == "RMP7000" and
+           plan.get("artifact_ref") == manifest_ref and
+           plan.get("ready") is True and
+           type(plan.get("verified_by")) is str and bool(plan["verified_by"]),
+           "CORE_PLAN_SCOPE_UNVERIFIED")
+    for key in ("document_pages", "printed_faces", "physical_sheets"):
+        value = plan.get(key)
+        _check(type(value) is int and value > 0 and value == counted.get(key),
+               "CORE_PLAN_COUNT_MISMATCH")
+    try:
+        # Preserve optional fields exactly as stored in Core. checkedEvidence
+        # hashes canonical(scope.plan), including those fields when present.
+        return _canonical_hash(plan)
+    except Exception as exc:
+        raise _Invalid("CORE_PLAN_UNVERIFIED") from exc
+
+
 def _json_unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, val in pairs:
@@ -62,6 +89,7 @@ def create_print_evidence_v1(*, context: dict[str, Any],
                              originals: tuple[bytes, ...],
                              previews: tuple[bytes, ...],
                              settings: tuple[dict[str, Any], ...],
+                             trusted_core_plan: dict[str, Any] | None = None,
                              renderer_identity: dict[str, Any],
                              printer_capabilities: dict[str, Any]) -> dict[str, Any]:
     """Create a verified content tuple, but NOT a trustworthy Core approval.
@@ -157,6 +185,9 @@ def create_print_evidence_v1(*, context: dict[str, Any],
                all(manifest["counts"].get(k) == counted[k] for k in
                    ("document_pages", "printed_faces", "physical_sheets",
                     "requires_price_confirmation")), "PRINT_PLAN_CHANGED")
+        plan_sha256 = _check_core_plan(
+            trusted_core_plan, context=context,
+            manifest_ref=context["manifest_ref"], counted=counted)
         preview_data: list[dict[str, Any]] = []
         for index, (entry, png) in enumerate(zip(images, previews)):
             _check(type(entry) is dict and type(png) is bytes and
@@ -175,7 +206,7 @@ def create_print_evidence_v1(*, context: dict[str, Any],
             "settings_sha256": _canonical_hash(list(settings)),
             "manifest_ref": context["manifest_ref"], "manifest_sha256": _sha(manifest_bytes),
             "previews": preview_data, "renderer_sha256": _canonical_hash(renderer_identity),
-            "plan_sha256": _canonical_hash(counted), "printer_id": "RMP7000",
+            "plan_sha256": plan_sha256, "printer_id": "RMP7000",
             "printer_capability_sha256": _canonical_hash(printer_capabilities),
         }
         evidence["evidence_sha256"] = _canonical_hash(evidence)
@@ -198,6 +229,7 @@ def verify_print_evidence_v1(*, expected: dict[str, Any],
                              originals: tuple[bytes, ...],
                              previews: tuple[bytes, ...],
                              settings: tuple[dict[str, Any], ...],
+                             trusted_core_plan: dict[str, Any] | None = None,
                              renderer_identity: dict[str, Any],
                              printer_capabilities: dict[str, Any]) -> dict[str, Any]:
     """Compare all raw bytes to the independently persisted Core SHA anchor."""
@@ -210,7 +242,8 @@ def verify_print_evidence_v1(*, expected: dict[str, Any],
         return _hold("CORE_EVIDENCE_OR_REVISION_UNVERIFIED")
     result = create_print_evidence_v1(
         context=context, manifest_bytes=manifest_bytes, originals=originals,
-        previews=previews, settings=settings, renderer_identity=renderer_identity,
+        previews=previews, settings=settings, trusted_core_plan=trusted_core_plan,
+        renderer_identity=renderer_identity,
         printer_capabilities=printer_capabilities)
     if result["status"] != "SNAPSHOT_DERIVED":
         return result

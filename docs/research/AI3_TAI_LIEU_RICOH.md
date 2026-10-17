@@ -29,6 +29,16 @@
 Đây chỉ là code khởi đầu CODE-103, không mở vận hành thật.
 
 
+## V1-NATIVE-02 — Core PrintEvidenceV1 parity (2026-10-18)
+
+- `create_print_evidence_v1` và `verify_print_evidence_v1` nhận `trusted_core_plan` nguyên bản, được AI0 đọc từ revision hiện hành. `plan_sha256` là SHA-256 của canonical JSON cho đúng `Core PrintPlan`; không hash kết quả mở rộng `processor.plan()`.
+- Trước khi tạo evidence, AI3 kiểm manifest `paper_plan` và tổng `document_pages`, `printed_faces`, `physical_sheets` bằng processor; ba số này bắt buộc khớp `trusted_core_plan`. Request hash, printer, `ready`, `verified_by` và `artifact_ref` cũng phải khớp scope. Thiếu Core plan hoặc sai counts/ref giữ `NEEDS_HUMAN`.
+- Vector tổng hợp dùng chung với Core nằm tại `tests/unit/documents/fixtures/print_evidence_v1_core_vector.json`. AI0 có thể đưa nguyên `scope` và `proof` của fixture vào `checkedEvidence`; SHA đã đối chiếu trực tiếp với `checkedEvidence` ở PR154 HEAD `c5569ab85210d5cba29957cc27f6b4cb43d35840`: `plan_sha256=72e532a6…20e46c`, `source_set_sha256=7bbfa007…481a0de3`, `evidence_sha256=a11e80e0…a5d92c6`. Fixture chỉ chứa dữ liệu tổng hợp, không phải evidence của đơn thật.
+- Word manifest vẫn `ready=false`, `requires_staff_review=true`; DOCX gốc vẫn là nguồn in. Hàm xác minh native hiện trả `WORD_NATIVE_RENDER_AND_STAFF_REVIEW_REQUIRED` cho DOCX vì module AI3 chưa nhận ticket đã xác thực từ Core có approval/job hiện hành, evidence SHA bằng chính snapshot, và biên nhận nhân viên xem đúng preview digest. `TrustedStaffReview`/COM trong unit test là fixture tổng hợp; tự khởi tạo chúng không cấp quyền.
+- **Blocker Word simulation tích hợp:** PR154 lưu `evidence_sha256` trên approval/job, nhưng PR152 chưa có đường AI0→Windows agent cung cấp cùng lúc bản Core plan, bằng chứng hiện hành đã được xác minh byte, và review receipt được Core tin cậy cho preview đó. AI0 phải nối ticket này hoặc chốt rõ approval Core là receipt review và dựng ticket từ các hàng DB/audit đã khóa đúng revision. Tới lúc đó, Word tiếp tục REVIEW_REQUIRED/NEEDS_HUMAN; không nâng READY, không cho `PrintOut`, queue submission hoặc quyền in.
+- Chưa kiểm Windows/Word COM/font, Ricoh/driver, queue thật, OA thật. Kiểm thử hiện tại chỉ là Python/Linux với bytes và review synthetic; không chứng minh preview Word trên máy vận hành hay trang giấy.
+
+
 ## Cập nhật CODE-103 — tiếp tục nối hợp đồng AI1 (không mở in thật)
 
 - Đã kiểm tra `backend/core/service.ts` và `backend/api/routes.ts` trên nhánh `ai0/nen-tang-dieu-phoi-v1`. Adapter HTTP gửi đúng body hiện có: claim `{printer_id,idempotency_key}`; preflight `{expected_revision,lease_token}`; mark-sending thêm `idempotency_key`; reports dùng `{expected_revision,lease_token,result,evidence_kind,idempotency_key}`. Đó vẫn chỉ là kiểm thử bằng fake HTTP, chưa có credential/API server chạy thực.
