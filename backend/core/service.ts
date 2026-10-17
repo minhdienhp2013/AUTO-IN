@@ -81,9 +81,10 @@ export class OrderService {
    "AND details->>'job_id'=$4 ORDER BY created_at DESC LIMIT 1",
    [o.shop_id,o.id,j.approval_id,j.id])).rows[0]?.details;
   if(!binding || binding.plan_sha256!==sha(canonical(rev.plan)) ||
-     (binding.quote_sha256??null)!==(q?this.quoteFingerprint(q):null)||
-     (evidenceHash!==null&&binding.evidence_sha256!==evidenceHash))
+     (binding.quote_sha256??null)!==(q?this.quoteFingerprint(q):null))
    throw new DomainError('STALE_PRINT_BINDING','File, báo giá hoặc thông số in đã thay đổi',409);
+  if(evidenceHash!==null&&binding.evidence_sha256!==evidenceHash)
+   throw new DomainError('STALE_PRINT_EVIDENCE','SHA nguồn/manifest/preview/settings đã đổi',409);
   await this.assertCustomerBinding(db,o,rev,q,evidenceHash);
  }
  private async received(db:SqlConnection,id:string):Promise<number>{const x=await this.store.one<{amount:string}>(db,"SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_vnd WHEN direction='refunded' THEN -amount_vnd ELSE 0 END),0)::text AS amount FROM core_payments WHERE order_id=$1",[id]);return dbSafeInteger(x.amount,'payment.received_vnd');}
