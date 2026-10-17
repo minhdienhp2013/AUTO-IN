@@ -54,7 +54,7 @@ Việc kiểm chứng Zalo OA có quyền thật, Windows/Ricoh thật, iPhone S
 - **PR #146 AI3:** kiểm kê TN-011 chỉ đọc; không có cleanup runtime hay xóa dữ liệu.
 - **PR #147 AI4:** thêm harness WebKit/notification, không đổi product UI; WebKit runtime NOT RUN và không có iPhone thật.
 - **PR #148 AI1:** đề xuất hợp đồng retention/closure, không có code/schema/migration/delete. Kết luận hiện tại: chưa có terminal event hợp lệ để chạy xóa tự động.
-- **PR #149 AI5:** benchmark OCR tổng hợp thuộc Phase 2; HEAD mới nhất quan sát `6b34a4639988f893b22f8f1f198ccb634b4be6c1`, Actions đang chạy tại thời điểm rà soát. Không đưa vào V1 acceptance.
+- **PR #149 AI5:** Draft, HEAD hiện tại `dc29eeea34cd668d472a7ea8aa9274c8a23765c0`; CODE checks #39041115917 và composition #39041115882 SUCCESS. CI không chạy runner `tn021_ocr_variety_benchmark.py`; benchmark exact-source vẫn NOT RUN. OCR tổng hợp thuộc Phase 2, không đưa vào V1 acceptance.
 - **PR #116 AI3:** kiểm tra tĩnh Word trên Windows, không phải native render hoặc in. Khi chuyển AI3 sang V1 native work, không tiếp tục sửa nhánh #116 đồng thời; tạo nhánh mới trên candidate dưới đây và ghi rõ nếu thay thế phạm vi của #116.
 
 Không PR nào được merge/deploy trong lượt này.
