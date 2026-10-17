@@ -71,6 +71,7 @@ test('V1-CORE-01 real PG two-pool: confirmed source/quote/plan, concurrent appro
    assert.equal(await jobs(d.id),1);
    const row=(await a.query('SELECT state FROM core_print_jobs WHERE order_id=$1',[d.id])).rows[0];
    assert.equal(row.state,'NOT_SENT');
+   assert.equal((await A.getOrder(staff,d.id)).current.request_confirmed,false);
    // Stop polluted fixture from winning next claim.
    await a.query('UPDATE core_print_jobs SET cancelled_at=now() WHERE order_id=$1',[d.id]);
   });
@@ -82,6 +83,7 @@ test('V1-CORE-01 real PG two-pool: confirmed source/quote/plan, concurrent appro
    await assert.rejects(B.preflight(agent,got.job.job_id,{expected_revision:2,lease_token:got.job.lease_token}),err('STALE_PRINT_BINDING'));
    await assert.rejects(B.markSending(agent,got.job.job_id,{expected_revision:2,lease_token:got.job.lease_token,idempotency_key:k('bad-send')}),err('STALE_PRINT_BINDING'));
    assert.equal((await a.query('SELECT state FROM core_print_jobs WHERE id=$1',[got.job.job_id])).rows[0].state,'NOT_SENT');
+   assert.equal((await A.getOrder(staff,d.id)).current.staff_approved,false);
    await a.query('UPDATE core_print_jobs SET cancelled_at=now() WHERE order_id=$1',[d.id]);
   });
   await t.test('reprice rev2 invalidates request confirmation; fresh confirmation permits new job',async()=>{
@@ -93,15 +95,18 @@ test('V1-CORE-01 real PG two-pool: confirmed source/quote/plan, concurrent appro
    const q2=await B.setQuote(staff,d.id,{expected_revision:2,amount_vnd:30000,deposit_required_vnd:0,
     significant_cost:false,idempotency_key:k('quote2')});
    assert.equal(q2.quote_revision,2);
+   assert.equal((await A.getOrder(staff,d.id)).current.request_confirmed,false);
    await assert.rejects(approve(d.id),e=>['CUSTOMER_NOT_CONFIRMED','STALE_CUSTOMER_CONFIRMATION'].includes(e.code));
    // Force a later timestamp; CI transaction timestamp precision may be the same millisecond.
    await a.query("UPDATE core_quotes SET created_at=created_at-interval '1 second' WHERE order_id=$1 AND quote_revision=2",[d.id]);
    await confirm(d.id);
+   assert.equal((await A.getOrder(staff,d.id)).current.request_confirmed,true);
    const ok=await approve(d.id);
    assert.ok(ok.job_id);
    // Altering quote content outside approved action proves audit fingerprint is checked.
    await a.query('UPDATE core_quotes SET amount_vnd=amount_vnd+1 WHERE order_id=$1 AND quote_revision=2',[d.id]);
    await assert.rejects(A.claim(agent,{printer_id:'RMP7000',idempotency_key:k('claim-quote')}),err('STALE_PRINT_BINDING'));
+   assert.equal((await A.getOrder(staff,d.id)).current.staff_approved,false);
    assert.equal(await jobs(d.id),2); // old cancelled job + new active job
    await a.query('UPDATE core_print_jobs SET cancelled_at=now() WHERE order_id=$1',[d.id]);
   });
