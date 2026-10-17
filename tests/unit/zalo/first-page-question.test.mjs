@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   SAFE_FIRST_PAGE_QUESTION,formatBoundFirstPageQuestion,
+  formatMissingPrintChoicesQuestion,
   prepareBoundFirstPageQuestion,
 } from "../../../backend/conversation/first-page-question.ts";
 
@@ -24,6 +25,53 @@ const fallback=(value,context=scope)=>{
  assert.equal(out.text,SAFE_FIRST_PAGE_QUESTION);
  assert.ok(!out.text.includes("OCR PRIVATE SOURCE"));
 };
+
+test("TN005 partial-choice formatter emits static text for each valid subset",()=>{
+ const cases=[
+  [["copies"],"Bạn muốn in bao nhiêu bản?"],
+  [["paper"],"Bạn muốn chọn khổ giấy nào?"],
+  [["duplex"],"Bạn muốn in một mặt hay hai mặt?"],
+  [["copies","paper"],"Bạn muốn in bao nhiêu bản? Bạn muốn chọn khổ giấy nào?"],
+  [["copies","duplex"],"Bạn muốn in bao nhiêu bản? Bạn muốn in một mặt hay hai mặt?"],
+  [["paper","duplex"],"Bạn muốn chọn khổ giấy nào? Bạn muốn in một mặt hay hai mặt?"],
+  [["copies","paper","duplex"],"Bạn muốn in bao nhiêu bản? Bạn muốn chọn khổ giấy nào? Bạn muốn in một mặt hay hai mặt?"],
+ ];
+ for(const [missing,questions] of cases){
+  assert.equal(formatMissingPrintChoicesQuestion(missing),
+   `${questions} Cửa hàng sẽ kiểm tra bản xem trước để bạn xác nhận.`);
+ }
+ assert.equal(formatMissingPrintChoicesQuestion(["duplex","copies"]),
+  "Bạn muốn in bao nhiêu bản? Bạn muốn in một mặt hay hai mặt? Cửa hàng sẽ kiểm tra bản xem trước để bạn xác nhận.",
+  "Output order is deterministic regardless of input order");
+});
+
+test("TN005 partial-choice formatter fails closed on invalid or untrusted input",()=>{
+ for(const value of [null,undefined,"copies",{},[],["copies","copies"],
+   ["copies","unknown"],["copies",1],new Array(1),["copies","paper","duplex","extra"]])
+  assert.equal(formatMissingPrintChoicesQuestion(value),null,JSON.stringify(value));
+ const withExtraProperty=["copies"];
+ withExtraProperty.untrusted="duplex";
+ assert.equal(formatMissingPrintChoicesQuestion(withExtraProperty),null);
+ class ChoiceList extends Array {}
+ assert.equal(formatMissingPrintChoicesQuestion(new ChoiceList("copies")),null);
+ let accessorCalls=0;
+ const accessorInput=[];
+ Object.defineProperty(accessorInput,"0",{enumerable:true,get(){accessorCalls++;return "copies";}});
+ assert.equal(formatMissingPrintChoicesQuestion(accessorInput),null);
+ assert.equal(accessorCalls,0,"validation must not evaluate accessor input");
+});
+
+test("TN005 partial-choice formatter is pure and accepts no Port",()=>{
+ const input=Object.freeze(["duplex","copies"]);
+ const before=[...input];
+ let portReads=0;
+ const port=new Proxy({}, {get(){portReads++;throw Error("formatter must not access a Port");}});
+ const result=formatMissingPrintChoicesQuestion(input,port);
+ assert.equal(result,"Bạn muốn in bao nhiêu bản? Bạn muốn in một mặt hay hai mặt? Cửa hàng sẽ kiểm tra bản xem trước để bạn xác nhận.");
+ assert.deepEqual(input,before,"formatter must not mutate caller input");
+ assert.equal(portReads,0);
+ assert.equal(formatMissingPrintChoicesQuestion.length,1);
+});
 
 test("TN005 trusted SUGGESTED uses ONLY static Vietnamese category label",()=>{
  const out=formatBoundFirstPageQuestion(scope,trusted());
