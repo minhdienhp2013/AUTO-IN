@@ -68,6 +68,7 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
     const audit=(await a.query("SELECT details FROM core_audit WHERE action='customer.confirmed' AND order_id=$1",[id])).rows[0];
     assert.match(audit.details.evidence_sha256,/^[0-9a-f]{64}$/);
     states.get(id)[part]+='-changed';
+    assert.equal((await A.getOrder(staff,id)).current.request_confirmed,false);
     await assert.rejects(approve(id),error('STALE_PRINT_EVIDENCE'));
     assert.equal(await jobCount(id),0);
    }
@@ -86,6 +87,7 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    for(const part of ['source','manifest','settings','preview']){
     const id=await make('before-claim-'+part);await confirm(id);await approve(id);
     states.get(id)[part]+='-changed';
+    assert.equal((await A.getOrder(staff,id)).current.staff_approved,false);
     await assert.rejects(A.claim(agent,{printer_id:'RMP7000',idempotency_key:key('claim')}),error('STALE_PRINT_EVIDENCE'));
     assert.equal((await a.query('SELECT state FROM core_print_jobs WHERE order_id=$1',[id])).rows[0].state,'NOT_SENT');
     assert.equal(await jobCount(id),1);
