@@ -399,7 +399,7 @@ function App() {
                       identity={{shopId:'',orderId:selectedOrder.order_id,revision:selectedOrder.revision,requestHash:selectedOrder.request_hash,
                         sourceSha256:'',manifestSha256:'',
                         authenticatedStaff:Boolean(session && ['staff','owner'].includes(session.role))}}
-                      receipt={selectedOrder.preview_review?.status ?? 'unavailable'}
+                      receipt="unavailable"
                       state={{status:'NOT_WIRED'}}/>}
                   </div>)}
                   {selectedOrder.documents.length===0 && <div className="empty-panel">API chưa cấp dữ liệu phân tách theo từng file; ảnh raster xác minh (nếu có) không phải bằng chứng khách đã xác nhận. Kế hoạch in tổng hợp: {selectedOrder.total_sheets??'chưa xác minh'} tờ; không dùng số này thay preview để duyệt.</div>}

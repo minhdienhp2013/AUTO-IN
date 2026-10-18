@@ -59,7 +59,21 @@ test('missing endpoint, network/auth/stale errors, and unauthenticated state nev
     assert.doesNotMatch(markup,/word-review-pages|api\/v1\/orders\/order-01\/word-preview/);
     assert.match(markup,/Giữ đơn|đã bị ẩn|chờ phản hồi|Chưa nối API/);
   }
+  assert.doesNotMatch(html({status:'NOT_WIRED'}),/REVIEW_REQUIRED · Không phải quyền in/);
   assert.equal(currentWordReviewProjection({status:'CURRENT',projection:good},{...identity,authenticatedStaff:false}),null);
+  const anonymous=renderToStaticMarkup(React.createElement(WordReviewPanel,{
+    identity:{...identity,authenticatedStaff:false},state:{status:'CURRENT',projection:good}}));
+  assert.equal(anonymous,'');
+});
+
+test('malformed projection objects and private source fields fail closed without crashing',()=>{
+  const malformed:unknown[]=[null, {...good,pages:[null]}, {...good,pages:[{}]},
+    {...good,private_bytes:{source:new Uint8Array([1])}}, {...good,source:{artifact_ref:'/private/source.docx'}}];
+  for(const value of malformed){
+    const markup=html({status:'CURRENT',projection:value as WordReviewPreviewV1});
+    assert.match(markup,/data-status="STALE"/);
+    assert.doesNotMatch(markup,/word-review-pages|private_bytes|source\.docx/);
+  }
 });
 
 test('NEEDS_HUMAN has no pages and remains held, all authority flags stay false',()=>{

@@ -36,13 +36,18 @@ export interface WordReviewPanelState { status: WordReviewStatus; projection?: W
 export type PreviewReceiptStatus = 'unavailable' | 'missing' | 'matching' | 'stale';
 
 const digest = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
-function appRelativeUrl(value: string): boolean {
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function appRelativeUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
   if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return false;
   try {
     const u = new URL(value, 'https://ui.invalid');
     const rawPath = value.split(/[?#]/, 1)[0];
     const segments = rawPath.split('/').map(segment => decodeURIComponent(segment));
-    return u.origin === 'https://ui.invalid' && u.pathname === rawPath && !segments.some(segment => segment === '.' || segment === '..');
+    return u.origin === 'https://ui.invalid' && u.pathname === rawPath &&
+      !segments.some(segment => segment === '.' || segment === '..' || segment.includes('/') || segment.includes('\\'));
   }
   catch { return false; }
 }
@@ -50,7 +55,8 @@ function appRelativeUrl(value: string): boolean {
 /** Fail closed unless the authenticated projection matches all active scope and hashes. */
 export function currentWordReviewProjection(state: WordReviewPanelState, expected: WordReviewIdentity): WordReviewPreviewV1 | null {
   if (!expected.authenticatedStaff || state.status !== 'CURRENT' || !state.projection) return null;
-  const p = state.projection;
+  const p: unknown = state.projection;
+  if (!isRecord(p)) return null;
   const allowedProjectionKeys = new Set(['schema','shop_id','order_id','revision','request_hash','source_sha256',
     'manifest_sha256','status','reason_code','pages','document_pages','printed_faces','physical_sheets','settings',
     'ready','allowed_to_print','requires_staff_review','physical_print_verified']);
@@ -59,13 +65,14 @@ export function currentWordReviewProjection(state: WordReviewPanelState, expecte
       !digest(p.request_hash) || !digest(expected.sourceSha256) || p.source_sha256 !== expected.sourceSha256 ||
       !digest(expected.manifestSha256) || p.manifest_sha256 !== expected.manifestSha256 ||
       Object.keys(p).some(key => !allowedProjectionKeys.has(key)) ||
-      !['REVIEW_REQUIRED', 'NEEDS_HUMAN'].includes(p.status) || p.ready !== false || p.allowed_to_print !== false ||
-      p.requires_staff_review !== true || p.physical_print_verified !== false || !Array.isArray(p.pages) ||
-      p.pages.some(page => Object.keys(page).some(key => !['index','url','content_type','sha256','bytes'].includes(key)) ||
-        !Number.isSafeInteger(page.index) || page.index < 1 || !appRelativeUrl(page.url) ||
-        page.content_type !== 'image/png' || !digest(page.sha256) || !Number.isSafeInteger(page.bytes) || page.bytes <= 0)) return null;
+      (p.status !== 'REVIEW_REQUIRED' && p.status !== 'NEEDS_HUMAN') || p.ready !== false || p.allowed_to_print !== false ||
+      p.requires_staff_review !== true || p.physical_print_verified !== false || !Array.isArray(p.pages)) return null;
+  const pageKeys = new Set(['index','url','content_type','sha256','bytes']);
+  if (p.pages.some((page: unknown) => !isRecord(page) || Object.keys(page).some(key => !pageKeys.has(key)) ||
+      !Number.isSafeInteger(page.index) || (page.index as number) < 1 || !appRelativeUrl(page.url) ||
+      page.content_type !== 'image/png' || !digest(page.sha256) || !Number.isSafeInteger(page.bytes) || (page.bytes as number) <= 0)) return null;
   if (p.status === 'NEEDS_HUMAN' && p.pages.length !== 0) return null;
-  return p;
+  return p as unknown as WordReviewPreviewV1;
 }
 
 const receiptText: Record<PreviewReceiptStatus, string> = {
@@ -78,6 +85,7 @@ const receiptText: Record<PreviewReceiptStatus, string> = {
 export function WordReviewPanel({ identity, state, receipt = 'unavailable' }: {
   identity: WordReviewIdentity; state: WordReviewPanelState; receipt?: PreviewReceiptStatus;
 }) {
+  if (!identity.authenticatedStaff) return null;
   const projection = currentWordReviewProjection(state, identity);
   const stale = state.status === 'CURRENT' && !projection;
   const status = stale ? 'STALE' : state.status;
@@ -94,6 +102,9 @@ export function WordReviewPanel({ identity, state, receipt = 'unavailable' }: {
     ...projection.pages.map(page => e('figure', { key: `${page.index}:${page.sha256}` },
       e('img', { src: page.url, alt: `Preview Word, trang ${page.index}` }),
       e('figcaption', null, `Trang ${page.index} · ${page.bytes} byte · chỉ để nhân viên kiểm tra`)))) : null;
+  const statusBadge = status === 'CURRENT' && projection?.status === 'REVIEW_REQUIRED' ? 'REVIEW_REQUIRED · Không phải quyền in'
+    : status === 'CURRENT' && projection?.status === 'NEEDS_HUMAN' ? 'NEEDS_HUMAN · Giữ đơn'
+    : 'Chưa có preview được xác minh';
   const body = status === 'NOT_WIRED' ? 'API preview Word chưa được AI0 nối. Giữ đơn để nhân viên xử lý; không dùng preview cũ.'
     : status === 'LOADING' ? 'Đang chờ phản hồi API có staff bearer; preview cũ bị ẩn.'
     : status === 'MISSING' ? 'Máy chủ chưa cấp snapshot của order/revision hiện hành. Giữ đơn và chuyển nhân viên.'
@@ -103,7 +114,7 @@ export function WordReviewPanel({ identity, state, receipt = 'unavailable' }: {
     : 'Preview chỉ dùng để kiểm tra. Word/DOCX gốc vẫn là nguồn in theo TN-034.';
   return e('section', { className: 'word-review-panel', 'data-testid': 'word-review-panel', 'data-status': status, 'aria-label': 'Preview Word và receipt nhân viên' },
     e('div', { className: 'word-review-heading' }, e('strong', null, titles[status]),
-      e('span', { className: 'word-review-required' }, 'REVIEW_REQUIRED · Không phải quyền in')),
+      e('span', { className: 'word-review-required' }, statusBadge)),
     e('p', null, body),
     projection && status === 'CURRENT' && e('dl', { className: 'word-review-source-facts' },
       e('div', null, e('dt', null, 'Order / revision'), e('dd', null, `${projection.order_id} / ${projection.revision}`)),
