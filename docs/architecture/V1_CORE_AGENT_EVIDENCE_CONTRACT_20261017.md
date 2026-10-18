@@ -127,7 +127,43 @@ AI1/Core chỉ dựng snapshot từ shop/order/revision/request hiện hành c�
 
 ### AI3 → AI0/UI: kết quả preview native Word
 
-Worker dùng metadata trên và bytes riêng tư để tạo bundle preview có manifest riêng. Kết quả nội bộ phải là `schema: "ai3.native_word_preview.v1"`, lặp lại chính xác shop/order/active_revision/request_hash/source SHA/source size/source ref/manifest SHA làm input anchors, kèm preview page digest/counts/settings/renderer facts đã kiểm chứng. Trạng thái thành công chỉ là `REVIEW_REQUIRED`; luôn `ready:false`, `allowed_to_print:false`, `requires_staff_review:true`, `physical_print_verified:false`. Lỗi, DOCX/font/layout không chắc chắn, hash hoặc scope lệch trả `NEEDS_HUMAN` và không phát hành bundle như hiện hành. DOCX byte gốc vẫn là nguồn in; PDF Word tạm chỉ phục vụ dựng preview rồi xóa.
+Worker dùng metadata trên và bytes riêng tư để tạo bundle preview có manifest riêng. Kết quả nội bộ phải theo DTO sau (các field `source` và `input_manifest` lặp lại giá trị đã kiểm tra từ snapshot; `manifest_sha256` là hash byte manifest preview do AI3 vừa ghi):
+
+```json
+{
+  "schema": "ai3.native_word_preview.v1",
+  "status": "REVIEW_REQUIRED",
+  "shop_id": "...",
+  "order_id": "...",
+  "active_revision": 1,
+  "request_hash": "<64 lowercase hex>",
+  "source": {
+    "format": "DOCX",
+    "artifact_ref": "bundle-id/source.docx",
+    "sha256": "<64 lowercase hex>",
+    "size_bytes": 1
+  },
+  "input_manifest": { "ref": "bundle-id/manifest.json", "sha256": "<64 lowercase hex>" },
+  "artifact_ref": "word-review-id/manifest.json",
+  "manifest_sha256": "<64 lowercase hex>",
+  "settings_sha256": "<64 lowercase hex>",
+  "preview_artifacts": [{ "ref": "word-review-id/page-1.png", "sha256": "<64 lowercase hex>", "bytes": 8 }],
+  "document_pages": 1,
+  "printed_faces": 1,
+  "physical_sheets": 1,
+  "requires_price_confirmation": false,
+  "ready": false,
+  "allowed_to_print": false,
+  "requires_staff_review": true,
+  "physical_print_verified": false
+}
+```
+
+`NEEDS_HUMAN` results retain schema and false authority flags, include a bounded `reason_code`, and do not claim a preview artifact when one was not verified. Trạng thái thành công chỉ là `REVIEW_REQUIRED`; lỗi, DOCX/font/layout không chắc chắn, hash hoặc scope lệch trả `NEEDS_HUMAN`. DOCX byte gốc vẫn là nguồn in; PDF Word tạm chỉ phục vụ dựng preview rồi xóa.
+
+### AI0 → AI4: authenticated UI projection
+
+AI0 composition may project the internal bundle only after authenticating staff scope and rechecking the active order revision. The browser DTO is `ai0.word_review_preview.v1` and contains no source bytes or private storage refs: `shop_id`, `order_id`, `revision`, `request_hash`, `source_sha256`, `manifest_sha256`, `status`, `reason_code?`, `pages:[{index,url,content_type,sha256,bytes}]`, verified counts/settings for display, and the same four false/review-only flags. Page URLs are app-relative endpoints served under the existing staff bearer session; AI4 must never fetch a caller-provided URL. A mismatch, absent endpoint, auth/network error, or stale revision hides all prior preview pages and shows waiting-for-staff. AI4 does not implement this API or infer a source from filename.
 
 AI0 composition chịu trách nhiệm nối Core snapshot → AI3 worker → private preview/evidence registry. AI3 không tự truy cập DB/API, không tự suy diễn `request_data` thành một schema mới và không gửi lệnh in. UI chỉ dùng API có xác thực và read model hiện có/được AI0 cấp; không tạo endpoint giả, không nhận `private_bytes`, không hiển thị preview nếu revision/hash không khớp. Thiếu endpoint/dữ liệu thì giữ trạng thái chờ nhân viên.
 
