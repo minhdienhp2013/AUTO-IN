@@ -27,6 +27,14 @@ test('V1-CORE-03 migration binds nullable evidence SHA without defaults or backf
   }
   await db.query(sql);
   await db.query(sql); // the registered migration must also remain safe to reapply.
+  const rejectsConstraint=async(query,values)=>{
+   await db.query('SAVEPOINT invalid_evidence_digest');
+   try{await assert.rejects(db.query(query,values),e=>e.code==='23514');}
+   finally{
+    await db.query('ROLLBACK TO SAVEPOINT invalid_evidence_digest');
+    await db.query('RELEASE SAVEPOINT invalid_evidence_digest');
+   }
+  };
   for(const table of tables){
    const column=(await db.query(
     `SELECT format_type(a.atttypid,a.atttypmod) AS type,a.attnotnull,
@@ -44,8 +52,8 @@ test('V1-CORE-03 migration binds nullable evidence SHA without defaults or backf
     [table,constraintName])).rows[0];
    assert.match(constraint.definition,/evidence_sha256 IS NULL/i);
    await db.query(`INSERT INTO ${table}(id,evidence_sha256) VALUES(2,$1)`,['a'.repeat(64)]);
-   await assert.rejects(db.query(`INSERT INTO ${table}(id,evidence_sha256) VALUES(3,$1)`,['A'.repeat(64)]),e=>e.code==='23514');
-   await assert.rejects(db.query(`INSERT INTO ${table}(id,evidence_sha256) VALUES(4,$1)`,['a'.repeat(63)]),e=>e.code==='23514');
+   await rejectsConstraint(`INSERT INTO ${table}(id,evidence_sha256) VALUES(3,$1)`,['A'.repeat(64)]);
+   await rejectsConstraint(`INSERT INTO ${table}(id,evidence_sha256) VALUES(4,$1)`,['a'.repeat(63)]);
   }
  }finally{
   await db.query('ROLLBACK').catch(()=>{});
