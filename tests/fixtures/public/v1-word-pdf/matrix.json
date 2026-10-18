@@ -326,6 +326,78 @@
       ]
     }
   ],
+  "additional_cases": [
+    {
+      "id": "V1-032",
+      "key": "inbound_queue_bearer_no_store",
+      "format": "metadata",
+      "kind": "staff_inbound_read",
+      "goal": "Queue API requires staff bearer auth, returns no-store metadata only, and has no caller-selected shop query",
+      "tier": "product",
+      "expected": "PASS",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "missing_bearer_401", "nonstaff_403", "staff_bearer_no_store",
+        "no_shop_query", "metadata_only_response"
+      ]
+    },
+    {
+      "id": "V1-033",
+      "key": "inbound_queue_principal_shop_scope",
+      "format": "metadata",
+      "kind": "tenant_scope",
+      "goal": "Rows are scoped from authenticated principal.shop_id; spoofed shop query never exposes another shop",
+      "tier": "product",
+      "expected": "PASS",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "principal_shop_a_only", "spoof_shop_query_ignored_or_denied",
+        "cross_shop_403", "foreign_ids_absent"
+      ]
+    },
+    {
+      "id": "V1-034",
+      "key": "inbound_queue_truthful_status_and_copy",
+      "format": "metadata",
+      "kind": "staff_ui_copy",
+      "goal": "Display NEEDS_HUMAN and AWAITING_MEDIA exactly and clearly state the original file is not saved/ready",
+      "tier": "ui",
+      "expected": "PASS",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "status_NEEDS_HUMAN", "media_state_AWAITING_MEDIA",
+        "source_not_ready_disclaimer", "no_preview_confirmation_approval_print_claim"
+      ]
+    },
+    {
+      "id": "V1-035",
+      "key": "inbound_queue_error_no_stale_rows",
+      "format": "metadata",
+      "kind": "ui_network_error",
+      "goal": "Network, authorization and server errors clear old queue rows and show an explicit unverified/error state",
+      "tier": "ui",
+      "expected": "PASS",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "network_error_clears_old_rows", "401_clears_old_rows",
+        "503_clears_old_rows", "error_state_no_cached_data"
+      ]
+    },
+    {
+      "id": "V1-036",
+      "key": "inbound_queue_read_only",
+      "format": "metadata",
+      "kind": "no_mutation",
+      "goal": "Staff queue is a metadata-only GET; it creates no preview, customer confirmation, approval or print job",
+      "tier": "product",
+      "expected": "PASS",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "only_GET_inbound_queue", "preview_reads_zero",
+        "confirmation_writes_zero", "approval_writes_zero", "print_job_writes_zero"
+      ]
+    }
+  ],
   "contract": {
     "source": "AI0 Draft PR150 docs/architecture/V1_CORE_AGENT_EVIDENCE_CONTRACT_20261017.md",
     "schema": "ai0.print_evidence.v1",
@@ -335,6 +407,8 @@
       "V1-027"
     ],
     "required_status": "NOT_RUN_until_exact_integrated_candidate",
-    "note": "same-path changes are synthetic fixture invariants; client supplied digests cannot authorize printing"
+    "note": "same-path changes are synthetic fixture invariants; client supplied digests cannot authorize printing",
+    "inbound_review_cases": ["V1-032", "V1-033", "V1-034", "V1-035", "V1-036"],
+    "inbound_review_required_status": "NOT_RUN_until_exact_integrated_candidate"
   }
 }

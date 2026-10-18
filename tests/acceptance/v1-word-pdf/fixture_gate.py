@@ -55,6 +55,18 @@ def ticket_gate_cases():
     return data
 
 
+def inbound_queue_cases():
+    """Product acceptance rows for the metadata-only inbound staff queue."""
+    data=manifest()
+    cases=data.get("additional_cases")
+    assert isinstance(cases,list)
+    assert [case["id"] for case in cases]==[f"V1-{i:03d}" for i in range(32,37)]
+    assert all(case["expected"]=="PASS" and case["observed"]=="NOT_RUN"
+               for case in cases)
+    assert len({case["key"] for case in cases})==5
+    return cases
+
+
 def current_candidate_sha():
     """Bind fixture output to the checkout that actually ran the gate."""
     value=subprocess.run(["git","rev-parse","HEAD"],cwd=ROOT,
@@ -255,7 +267,7 @@ def fixture_result():
     return {"schema":"autoin.v1.word_pdf.fixture.v1","mode":"fixture_only",
             "status":"FIXTURE_PASS_PRODUCT_NOT_RUN","count":27,"distinct_sha256":27,
             "source_candidate_sha":current_candidate_sha(),"cases":rows,
-            "product_acceptance_cases":ticket_gate_cases()["cases"],
+            "product_acceptance_cases":[*ticket_gate_cases()["cases"],*inbound_queue_cases()],
             "same_path_digest_controls":pairs}
 
 

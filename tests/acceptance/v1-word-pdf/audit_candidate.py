@@ -175,6 +175,87 @@ def ticket_gate_evidence_issues(case_id, details):
     return issues
 
 
+def inbound_queue_evidence_issues(case_id, details):
+    """Check evidence shape for authenticated, read-only inbound queue cases."""
+    matrix=json.loads(MANIFEST.read_text(encoding="utf-8"))
+    spec=next(case for case in matrix["additional_cases"] if case["id"]==case_id)
+    queue=details.get("inbound_queue")
+    if not isinstance(queue,dict):
+        return [case_id+": inbound queue evidence missing"]
+    issues=[]
+    for field in ("api_trace_sha256","ui_trace_sha256","db_guard_trace_sha256"):
+        if not HEX64.fullmatch(str(queue.get(field,""))):
+            issues.append(case_id+": invalid/missing "+field)
+    checks=queue.get("checks")
+    if not isinstance(checks,dict) or any(checks.get(name) is not True
+                                         for name in spec["required_checks"]):
+        issues.append(case_id+": required acceptance checks incomplete/failed")
+
+    if case_id=="V1-032":
+        if queue.get("endpoint")!="/api/v1/inbound-review-items":
+            issues.append(case_id+": wrong endpoint")
+        if (queue.get("method")!="GET" or queue.get("unauthenticated_status")!=401 or
+                queue.get("non_staff_status")!=403 or
+                queue.get("authorized_bearer") is not True or
+                queue.get("cache_control")!="no-store" or
+                queue.get("query_parameters")!=[]):
+            issues.append(case_id+": auth/no-store/tenant-neutral contract failed")
+        expected_fields={"id","kind","mapped_customer","media_state",
+                         "raw_event_sha256","received_at","status"}
+        if set(queue.get("response_item_fields",[]))!=expected_fields:
+            issues.append(case_id+": response is not exact metadata-only shape")
+    elif case_id=="V1-033":
+        scope=queue.get("tenant_scope")
+        if not isinstance(scope,dict):
+            issues.append(case_id+": tenant scope proof missing")
+        else:
+            returned=scope.get("returned_item_ids")
+            own=scope.get("principal_shop_item_ids")
+            foreign=scope.get("foreign_shop_item_ids")
+            if (scope.get("scope_source")!="authenticated_principal.shop_id" or
+                    not isinstance(returned,list) or not isinstance(own,list) or
+                    not isinstance(foreign,list) or not set(returned).issubset(set(own)) or
+                    set(returned).intersection(set(foreign)) or
+                    scope.get("spoof_query_status") not in (200,400)):
+                issues.append(case_id+": principal shop scope/spoof query not proven")
+            if scope.get("cross_shop_status")!=403:
+                issues.append(case_id+": cross-shop request not denied")
+    elif case_id=="V1-034":
+        if set(queue.get("displayed_statuses",[]))!={"NEEDS_HUMAN"}:
+            issues.append(case_id+": displayed NEEDS_HUMAN status missing")
+        if set(queue.get("displayed_media_states",[]))!={"AWAITING_MEDIA"}:
+            issues.append(case_id+": displayed AWAITING_MEDIA status missing")
+        copy=queue.get("source_not_ready_copy")
+        if (not isinstance(copy,str) or
+                "tệp gốc chưa được lưu hoặc chưa sẵn sàng" not in copy):
+            issues.append(case_id+": original file not-ready copy missing")
+        if queue.get("visible_actions") not in ([],["refresh"]):
+            issues.append(case_id+": queue exposes a non-read-only action")
+    elif case_id=="V1-035":
+        rows=queue.get("error_observations")
+        expected={"network","401","503"}
+        if (not isinstance(rows,list) or
+                {row.get("condition") for row in rows if isinstance(row,dict)}!=expected or
+                len(rows)!=len(expected) or
+                any(row.get("old_rows_present") is not False or
+                    row.get("visible_error") is not True for row in rows
+                    if isinstance(row,dict))):
+            issues.append(case_id+": stale rows/error state not verified for every failure")
+    elif case_id=="V1-036":
+        requests=queue.get("requests")
+        if (not isinstance(requests,list) or not requests or
+                any(not isinstance(req,dict) or req.get("method")!="GET" or
+                    req.get("path")!="/api/v1/inbound-review-items" for req in requests)):
+            issues.append(case_id+": queue performed a non-GET/non-queue request")
+        before,after=queue.get("mutation_counts_before"),queue.get("mutation_counts_after")
+        keys=("preview_reads","confirmations","approvals","print_jobs")
+        if (not isinstance(before,dict) or not isinstance(after,dict) or
+                any(type(before.get(key)) is not int or type(after.get(key)) is not int or
+                    before.get(key)!=after.get(key) for key in keys)):
+            issues.append(case_id+": preview/confirmation/approval/job counters changed")
+    return issues
+
+
 def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
     if not HEX40.fullmatch(expected_sha):
         raise AssertionError("INVALID_CANDIDATE_SHA")
@@ -201,7 +282,11 @@ def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
     assert len(sentinels)==1 and json.loads(sentinels[0])==report, "TAP_JSON_MISMATCH"
     matrix=json.loads(MANIFEST.read_text(encoding="utf-8"))
     ticket_matrix=json.loads(TICKET_GATE_MATRIX.read_text(encoding="utf-8"))
-    expected={c["id"]:c for c in [*matrix["cases"],*ticket_matrix["cases"]]}
+    expected_rows=[*matrix["cases"],*ticket_matrix["cases"],
+                   *matrix.get("additional_cases",[])]
+    expected={c["id"]:c for c in expected_rows}
+    assert len(expected)==len(expected_rows), "DUPLICATE_EXPECTED_CASE_ID"
+    inbound_ids={case["id"] for case in matrix.get("additional_cases",[])}
     tests=report.get("cases")
     assert isinstance(tests,list) and len(tests)==len(expected)
     assert len({row.get("id") for row in tests})==len(expected)
@@ -216,30 +301,33 @@ def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
         if not isinstance(details,dict) or details.get("source") not in ("real_pg_http","staging_signed","windows_verified"):
             issues.append(f'{row["id"]}: no authoritative product source')
             continue
-        # Require explicit role/source/settings verification, no ungrounded
-        # schema-level "pass": staging owns the original SQL/HTTP traces.
-        for key in GATES:
-            if key not in details:
-                issues.append(f'{row["id"]}: missing {key}')
-        if not HEX64.fullmatch(str(details.get("source_sha256",""))):
-            issues.append(f'{row["id"]}: invalid source sha')
-        if not HEX64.fullmatch(str(details.get("settings_sha256",""))):
-            issues.append(f'{row["id"]}: invalid settings SHA')
-        for digest_field in ("manifest_sha256","renderer_sha256","plan_sha256",
-                             "printer_capability_sha256","evidence_sha256"):
-            if not HEX64.fullmatch(str(details.get(digest_field,""))):
-                issues.append(f'{row["id"]}: invalid {digest_field}')
-        if not HEX64.fullmatch(str(details.get("request_hash",""))):
-            issues.append(f'{row["id"]}: invalid request hash')
-        for phase in ("guards_before","guards_after"):
-            guards=details.get(phase)
-            if not isinstance(guards,dict) or any(not isinstance(guards.get(k),int) for k in COUNTS):
-                issues.append(f'{row["id"]}: missing {phase} DB counts')
-        if e["expected"] in ("STALE","DENY","CONFLICT","HOLD","MANUAL"):
-            pre=details.get("guards_before",{})
-            post=details.get("guards_after",{})
-            if isinstance(pre,dict) and isinstance(post,dict) and post.get("print_jobs")!=pre.get("print_jobs"):
-                issues.append(f'{row["id"]}: unauthorized print job mutation')
+        if row["id"] in inbound_ids:
+            issues.extend(inbound_queue_evidence_issues(row["id"],details))
+        else:
+            # Require explicit role/source/settings verification, no ungrounded
+            # schema-level "pass": staging owns the original SQL/HTTP traces.
+            for key in GATES:
+                if key not in details:
+                    issues.append(f'{row["id"]}: missing {key}')
+            if not HEX64.fullmatch(str(details.get("source_sha256",""))):
+                issues.append(f'{row["id"]}: invalid source sha')
+            if not HEX64.fullmatch(str(details.get("settings_sha256",""))):
+                issues.append(f'{row["id"]}: invalid settings SHA')
+            for digest_field in ("manifest_sha256","renderer_sha256","plan_sha256",
+                                 "printer_capability_sha256","evidence_sha256"):
+                if not HEX64.fullmatch(str(details.get(digest_field,""))):
+                    issues.append(f'{row["id"]}: invalid {digest_field}')
+            if not HEX64.fullmatch(str(details.get("request_hash",""))):
+                issues.append(f'{row["id"]}: invalid request hash')
+            for phase in ("guards_before","guards_after"):
+                guards=details.get(phase)
+                if not isinstance(guards,dict) or any(not isinstance(guards.get(k),int) for k in COUNTS):
+                    issues.append(f'{row["id"]}: missing {phase} DB counts')
+            if e["expected"] in ("STALE","DENY","CONFLICT","HOLD","MANUAL"):
+                pre=details.get("guards_before",{})
+                post=details.get("guards_after",{})
+                if isinstance(pre,dict) and isinstance(post,dict) and post.get("print_jobs")!=pre.get("print_jobs"):
+                    issues.append(f'{row["id"]}: unauthorized print job mutation')
         if row["id"] in ("V1-025","V1-026","V1-027"):
             issues.extend(stale_digest_evidence_issues(row["id"],details))
         if row["id"] in {case["id"] for case in ticket_matrix["cases"]}:

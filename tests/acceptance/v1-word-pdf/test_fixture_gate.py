@@ -31,7 +31,7 @@ def test_27_synthetic_bytes_have_distinct_sha_and_correct_formats():
     assert all(row["product_status"] == "NOT_RUN" for row in result["cases"])
     assert result["source_candidate_sha"] == gate.current_candidate_sha()
     assert [row["id"] for row in result["product_acceptance_cases"]] == [
-        f"V1-{number:03d}" for number in range(28, 32)]
+        f"V1-{number:03d}" for number in range(28, 37)]
     assert all(row["observed"] == "NOT_RUN"
                for row in result["product_acceptance_cases"])
 
@@ -46,6 +46,20 @@ def test_ticket_gate_matrix_covers_core_contract_and_exact_lease():
         "job_id", "order_id", "revision", "request_hash", "approval_id",
         "printer_id", "lease_token"}
     assert all(row["expected"] == "HOLD" and row["observed"] == "NOT_RUN"
+               for row in cases)
+
+
+def test_inbound_queue_matrix_is_product_only_and_shop_scoped():
+    cases = gate.inbound_queue_cases()
+    assert [row["id"] for row in cases] == [f"V1-{number:03d}" for number in range(32, 37)]
+    by_id = {row["id"]: row for row in cases}
+    assert set(by_id["V1-032"]["required_checks"]) >= {
+        "missing_bearer_401", "nonstaff_403", "staff_bearer_no_store", "no_shop_query"}
+    assert "spoof_query_ignored_or_denied" in by_id["V1-033"]["required_checks"]
+    assert "source_not_ready_disclaimer" in by_id["V1-034"]["required_checks"]
+    assert "network_error_clears_old_rows" in by_id["V1-035"]["required_checks"]
+    assert "print_job_writes_zero" in by_id["V1-036"]["required_checks"]
+    assert all(row["expected"] == "PASS" and row["observed"] == "NOT_RUN"
                for row in cases)
 
 
@@ -96,6 +110,49 @@ def test_ticket_gate_auditor_requires_all_mutations_and_no_side_effects():
     issues = verifier.ticket_gate_evidence_issues("V1-031", unsafe)
     assert any("unexpected event" in issue for issue in issues)
     assert any("driver_send_calls not zero" in issue for issue in issues)
+
+
+def test_inbound_queue_auditor_requires_auth_scope_ui_and_read_only_proof():
+    spec = importlib.util.spec_from_file_location(
+        "v1_candidate_auditor", MODULE.with_name("audit_candidate.py"))
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    cases = gate.inbound_queue_cases()
+    common = {"api_trace_sha256": "a"*64, "ui_trace_sha256": "b"*64,
+              "db_guard_trace_sha256": "c"*64,
+              "checks": {name: True for case in cases for name in case["required_checks"]}}
+    evidence = {
+        "V1-032": {"endpoint":"/api/v1/inbound-review-items", "method":"GET",
+            "unauthenticated_status":401,"non_staff_status":403,"authorized_bearer":True,
+            "cache_control":"no-store","query_parameters":[],
+            "response_item_fields":["id","kind","mapped_customer","media_state",
+                "raw_event_sha256","received_at","status"]},
+        "V1-033": {"tenant_scope":{"scope_source":"authenticated_principal.shop_id",
+            "principal_shop_item_ids":["a"],"returned_item_ids":["a"],
+            "foreign_shop_item_ids":["b"],"spoof_query_status":200,"cross_shop_status":403}},
+        "V1-034": {"displayed_statuses":["NEEDS_HUMAN"],
+            "displayed_media_states":["AWAITING_MEDIA"],
+            "source_not_ready_copy":"tệp gốc chưa được lưu hoặc chưa sẵn sàng.",
+            "visible_actions":["refresh"]},
+        "V1-035": {"error_observations":[
+            {"condition":name,"old_rows_present":False,"visible_error":True}
+            for name in ("network","401","503")]},
+        "V1-036": {"requests":[{"path":"/api/v1/inbound-review-items","method":"GET"}],
+            "mutation_counts_before":{"preview_reads":0,"confirmations":0,"approvals":0,"print_jobs":0},
+            "mutation_counts_after":{"preview_reads":0,"confirmations":0,"approvals":0,"print_jobs":0}},
+    }
+    for case in cases:
+        assert verifier.inbound_queue_evidence_issues(
+            case["id"], {"inbound_queue":{**common,**evidence[case["id"]]}}) == []
+    bad = {"inbound_queue":{**common,**evidence["V1-034"],
+        "displayed_media_states":["SAVED"]}}
+    assert any("AWAITING_MEDIA" in issue for issue in
+        verifier.inbound_queue_evidence_issues("V1-034",bad))
+    stale = {"inbound_queue":{**common,**evidence["V1-035"],
+        "error_observations":[{"condition":"network","old_rows_present":True,
+                               "visible_error":True}]}}
+    assert any("stale rows" in issue for issue in
+        verifier.inbound_queue_evidence_issues("V1-035",stale))
 
 
 @pytest.mark.parametrize("kind", ["pdf", "docx", "png", "xlsx", "zip"])
@@ -158,7 +215,8 @@ def test_matrix_requires_manual_handoff_for_image_and_color():
 def test_no_live_or_unsafe_operation_in_synthetic_generator():
     script = MODULE.read_text(encoding="utf-8")
     assert "requests.post(" not in script
-    assert "subprocess.run(" not in script
+    assert script.count("subprocess.run(") == 1
+    assert '["git","rev-parse","HEAD"]' in script
     assert "raw9100" not in script.lower()
     assert "zalo.official" not in script.lower()
 
