@@ -95,3 +95,22 @@
 .v1-queue-list-label{display:block;color:#936325;font-size:11px;font-weight:750;margin-top:8px}
 .v1-word-pdf-status{font-size:11px;color:#2e7259;line-height:1.5;margin:9px 0}
 @media(max-width:760px){.v1-routing-panel{margin:12px 13px;padding:12px}}
+
+/* V1-QUEUE-04: metadata-only AWAITING_MEDIA staff inbox. */
+.inbound-review-page{max-width:1100px;margin:0 auto;padding:24px 4px}
+.inbound-review-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:18px}
+.inbound-review-heading h1{font-size:30px;margin:4px 0 7px}
+.inbound-review-heading .outline-btn{display:flex;align-items:center;gap:7px;white-space:nowrap}
+.inbound-review-disclaimer{padding:13px 15px;border:1px solid #ead6ae;border-left:4px solid #b47a38;border-radius:10px;background:#fffaf1;color:#76542b;font-size:13px;line-height:1.6;margin-bottom:16px}
+.inbound-review-error,.inbound-review-empty{padding:14px;border-radius:9px;background:#fff1ed;color:#904331;font-size:13px;line-height:1.55}
+.inbound-review-empty{background:#f5f8f5;color:#52675a}
+.inbound-review-list{display:grid;gap:12px}
+.inbound-review-card{background:#fff;border:1px solid #d9e4dc;border-radius:11px;padding:15px;min-width:0}
+.inbound-review-card-head{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.inbound-review-card-head strong{font-size:15px;color:#274d3b}
+.inbound-review-card-head span{flex:0 0 auto;border-radius:20px;background:#fff0dc;color:#875516;padding:5px 9px;font-size:10px;font-weight:800;letter-spacing:.04em}
+.inbound-review-awaiting{margin:10px 0;color:#8a452d;font-size:13px;line-height:1.55}
+.inbound-review-meta{display:flex;gap:12px;flex-wrap:wrap;align-items:center;color:#5e7164;font-size:11px;overflow-wrap:anywhere}
+.inbound-review-meta code{font-size:10px;overflow-wrap:anywhere}
+.inbound-review-card>small{display:block;margin-top:10px;color:#78877d;font-size:10px}
+@media(max-width:600px){.inbound-review-page{padding:14px 0}.inbound-review-heading{flex-direction:column}.inbound-review-heading h1{font-size:24px}.inbound-review-heading>.outline-btn{width:100%;justify-content:center}.inbound-review-card{padding:12px}.inbound-review-card-head{align-items:flex-start}}

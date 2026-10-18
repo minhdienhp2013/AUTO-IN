@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle, ArrowDownToLine, ArrowLeft, Bell, BookOpen, Check, CheckCheck, ChevronDown, ChevronRight,
   CircleHelp, ClipboardCheck, Clock3, CreditCard, FileText, Hand, History, LayoutDashboard, LockKeyhole,
-  LogOut, Menu, MonitorSmartphone, MoreHorizontal, PackageCheck, PauseCircle, Play, Printer,
+  Inbox, LogOut, Menu, MonitorSmartphone, MoreHorizontal, PackageCheck, PauseCircle, Play, Printer,
   RefreshCw, Search, Settings2, ShieldAlert, ShieldCheck, SlidersHorizontal, Smartphone, UserRound,
   Wallet, X
 } from 'lucide-react';
@@ -20,8 +20,9 @@ import { canApproveAfterInboundReview, canEditPrintRequest, groupOpenOrdersByCha
 import { manualQueueRowsForDisplay, pendingStaffQueue, routeVerifiedDocument } from './v1-routing.ts';
 import { previewReviewBlock, previewReviewBlockMessage, previewReviewErrorMessage,
   previewReviewSequence } from './preview-review.ts';
+import { inboundReviewErrorMessage, inboundReviewItemCopy, type InboundReviewItem } from './inbound-review.ts';
 
-type View = 'orders' | 'overview' | 'settings';
+type View = 'orders' | 'overview' | 'settings' | 'inbound-review';
 type DetailTab = 'document' | 'activity';
 type Filter = 'all' | 'approval' | 'attention' | 'delivery';
 const port: PrintPort = makePort();
@@ -34,6 +35,9 @@ const modeTone = (mode: OperationMode) => mode === 'simulation' ? 'demo' : mode 
 function App() {
   const [session, setSession] = useState<StaffSession | null>(null);
   const [orders, setOrders] = useState<OrderView[]>([]);
+  const [inboundItems,setInboundItems]=useState<InboundReviewItem[]|null>(null);
+  const [inboundLoading,setInboundLoading]=useState(false);
+  const [inboundError,setInboundError]=useState<string|null>(null);
   const [mode, setMode] = useState<OperationMode>(useDemo ? 'simulation' : 'unverified');
   const [view, setView] = useState<View>('orders');
   const [filter, setFilter] = useState<Filter>('all');
@@ -46,6 +50,7 @@ function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const [chatLoaded, setChatLoaded] = useState(false);
   const requestEpoch = useRef(0);
+  const inboundEpoch=useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -86,7 +91,7 @@ function App() {
       setApiHealthy(true);
     } catch (e) {
       const fault = e as ApiFault;
-      if (fault.status === 401) { setSession(null); setOrders([]); setSelected(null); }
+      if (fault.status === 401) { inboundEpoch.current++;setSession(null);setOrders([]);setSelected(null);setInboundItems(null); }
       setApiHealthy(false);
       setError(fault.message || 'Không kết nối được.');
     } finally { setLoading(false); }
@@ -131,6 +136,21 @@ function App() {
   }).sort((a,b) => (Number(b.urgent)-Number(a.urgent)) || b.created_at.localeCompare(a.created_at)), [orders, query, filter]);
   const openChatGroups = useMemo(() => chatLoaded ? groupOpenOrdersByChat(orders) : [],
     [chatLoaded,orders]);
+  const loadInboundReviewQueue=async()=>{
+    if(useDemo||!session)return;
+    const epoch=++inboundEpoch.current;
+    setInboundItems(null);setInboundError(null);setInboundLoading(true);
+    try{
+      const items=await port.listInboundReviewItems();
+      if(epoch!==inboundEpoch.current)return;
+      setInboundItems(items);
+    }catch(error){
+      if(epoch!==inboundEpoch.current)return;
+      const fault=error as ApiFault;
+      setInboundError(inboundReviewErrorMessage(fault));
+      if(fault.status===401){setSession(null);setOrders([]);setSelected(null);setInboundItems(null);}
+    }finally{if(epoch===inboundEpoch.current)setInboundLoading(false);}
+  };
   const loadChatGroups = async () => {
     if(useDemo || !session || busy || chatLoading) return;
     const epoch=++requestEpoch.current;
@@ -200,6 +220,7 @@ function App() {
     } finally { lock.current = false; setBusy(false); }
   };
   const doLogin = async (ev: FormEvent) => {
+    inboundEpoch.current++;setInboundItems(null);setInboundError(null);
     requestEpoch.current++;
     setChatLoaded(false);setChatLoading(false);
     ev.preventDefault(); setBusy(true); setError(null);
@@ -208,6 +229,7 @@ function App() {
     finally { setBusy(false); }
   };
   const doLogout = async () => {
+    inboundEpoch.current++;setInboundItems(null);setInboundError(null);
     requestEpoch.current++;
     setChatLoaded(false);setChatLoading(false);
     setError(null);
@@ -242,6 +264,7 @@ function App() {
       <nav aria-label="Điều hướng chính" className="nav">
         <button className={view === 'overview' ? 'active' : ''} onClick={() => {setView('overview');setMenuOpen(false)}}><LayoutDashboard size={19}/> Tổng quan</button>
         <button className={view === 'orders' ? 'active' : ''} onClick={() => {setView('orders');setMenuOpen(false);setMobileDetail(false)}}><BookOpen size={19}/> Quản lý đơn in <span className="nav-count">{totals.count}</span></button>
+        {!useDemo&&session&&<button className={view==='inbound-review'?'active':''} data-testid="inbound-review-nav" onClick={()=>{setView('inbound-review');setMenuOpen(false);setMobileDetail(false);void loadInboundReviewQueue()}}><Inbox size={19}/> Sự kiện cần nhân viên {inboundItems&&inboundItems.length>0&&<span className="nav-count">{inboundItems.length}</span>}</button>}
         <button disabled title="Chưa có API hội thoại độc lập"><Smartphone size={19}/> Hội thoại <span className="soon">Sớm</span></button>
         <button disabled title="Chưa có API quản lý print job độc lập"><Printer size={19}/> Hàng đợi máy in <span className="soon">Sớm</span></button>
       </nav>
@@ -252,8 +275,8 @@ function App() {
     {menuOpen && <button className="mobile-backdrop" onClick={()=>setMenuOpen(false)} aria-label="Đóng điều hướng"/>}
     <div className="main-area">
       <header className="topbar">
-        <div className="top-left"><button aria-label="Mở menu" className="menu-icon" onClick={() => setMenuOpen(x=>!x)}><Menu size={22}/></button><div className="breadcrumb">Vận hành <ChevronRight size={14}/> <strong>{view === 'orders' ? 'Quản lý đơn in' : view === 'overview' ? 'Tổng quan' : 'Cài đặt'}</strong></div></div>
-        <div className="top-right"><span data-testid="operation-mode" className={`mode-pill ${modeTone(mode)}`}><span className="status-dot"/>{labelMode(mode)}</span><button className="icon-button" title="Làm mới" aria-label="Làm mới dữ liệu" disabled={loading || busy} onClick={()=>void load()}><RefreshCw size={19}/></button><div className="user-avatar" title={session?.display_name ?? 'Chưa đăng nhập'}><UserRound size={19}/></div></div>
+        <div className="top-left"><button aria-label="Mở menu" className="menu-icon" onClick={() => setMenuOpen(x=>!x)}><Menu size={22}/></button><div className="breadcrumb">Vận hành <ChevronRight size={14}/> <strong>{view === 'orders' ? 'Quản lý đơn in' : view === 'overview' ? 'Tổng quan' : view==='inbound-review'?'Sự kiện cần nhân viên':'Cài đặt'}</strong></div></div>
+        <div className="top-right"><span data-testid="operation-mode" className={`mode-pill ${modeTone(mode)}`}><span className="status-dot"/>{labelMode(mode)}</span><button className="icon-button" title="Làm mới" aria-label="Làm mới dữ liệu" disabled={loading || busy || inboundLoading} onClick={()=>view==='inbound-review'?void loadInboundReviewQueue():void load()}><RefreshCw size={19}/></button><div className="user-avatar" title={session?.display_name ?? 'Chưa đăng nhập'}><UserRound size={19}/></div></div>
       </header>
       <div className="content">
         {error && <div className="banner error" role="alert" data-testid="api-error"><AlertCircle size={19}/><span>{error}</span><button aria-label="Đóng lỗi" onClick={()=>setError(null)}><X size={17}/></button></div>}
@@ -262,6 +285,7 @@ function App() {
         {!useDemo && !session && !loading ? <section className="login-card"><div className="login-icon"><LockKeyhole/></div><h1>Đăng nhập nhân viên</h1><p>Đăng nhập bằng tài khoản cấp từ máy chủ AUTO-IN. Quyền được kiểm tra tại server.</p><form data-testid="staff-login" onSubmit={doLogin}><label>Mã cửa hàng<input autoComplete="organization" required value={loginShop} onChange={e=>setLoginShop(e.target.value)} /></label><label>Tên đăng nhập<input autoComplete="username" required value={loginUser} onChange={e=>setLoginUser(e.target.value)}/></label><label>Mật khẩu<input autoComplete="current-password" type="password" required value={loginPassword} onChange={e=>setLoginPassword(e.target.value)}/></label><button className="primary" disabled={busy}>Đăng nhập an toàn</button></form></section>
           : loading ? <div className="empty-center"><RefreshCw className="spin" size={26}/> Đang tải dữ liệu…</div>
           : view === 'settings' ? <SettingsView mode={mode} session={session} onLogout={()=>void doLogout()}/>
+          : view === 'inbound-review' ? <InboundReviewQueue items={inboundItems} loading={inboundLoading} error={inboundError} refresh={()=>void loadInboundReviewQueue()}/>
           : view === 'overview' ? <Overview totals={totals} orders={orders} open={(id)=>{doSelect(id);setView('orders')}}/>
           : <>
             <section className={`page-intro ${mobileDetail ? 'mobile-hidden-detail' : ''}`}><div><p className="eyebrow">BẢNG ĐIỀU KHIỂN · V1</p><h1>Quản lý đơn in</h1><p className="subtext">Theo dõi từ lúc khách xác nhận đến kiểm tra, giao giấy và thanh toán.</p></div><div className="header-actions"><button className="outline-btn" onClick={()=>void load()} disabled={busy}><RefreshCw size={16}/> Làm mới</button><button className="primary" disabled title="Chờ API tạo đơn và xác nhận từ kênh thật">+ Tạo đơn mới</button></div></section>
@@ -402,6 +426,28 @@ function App() {
     </div>
   </div>;
 }
+function InboundReviewQueue({items,loading,error,refresh}:{items:InboundReviewItem[]|null;loading:boolean;error:string|null;refresh:()=>void}){
+  return <section className="inbound-review-page" data-testid="inbound-review-queue" aria-labelledby="inbound-review-title">
+    <div className="inbound-review-heading"><div><p className="eyebrow">HÀNG CHỜ NHÂN VIÊN</p><h1 id="inbound-review-title">Sự kiện đến cần xử lý</h1><p className="subtext">Danh sách chỉ chứa metadata sự kiện đã được máy chủ ghi nhận.</p></div>
+      <button className="outline-btn" onClick={refresh} disabled={loading}><RefreshCw size={16}/>{loading?'Đang tải…':'Tải lại hàng chờ'}</button></div>
+    <div className="inbound-review-disclaimer" data-testid="inbound-review-media-disclaimer">
+      Hàng chờ này không chứng minh byte ảnh/tệp đã được lưu hoặc xử lý. Với trạng thái AWAITING_MEDIA, chưa có file để xem preview, xác nhận khách, duyệt hoặc in.
+    </div>
+    {error&&<p className="inbound-review-error" role="alert" data-testid="inbound-review-error">{error}</p>}
+    {loading&&<p role="status" data-testid="inbound-review-loading">Đang tải trạng thái hiện hành từ máy chủ…</p>}
+    {!loading&&!error&&items===null&&<p className="inbound-review-error" role="alert">Chưa xác minh được hàng chờ. Tải lại để đọc dữ liệu từ máy chủ.</p>}
+    {!loading&&!error&&items?.length===0&&<p className="inbound-review-empty" data-testid="inbound-review-empty">Máy chủ xác nhận hiện không có sự kiện đang chờ.</p>}
+    {!loading&&!error&&items&&items.length>0&&<div className="inbound-review-list" data-testid="inbound-review-list">
+      {items.map(item=>{const copy=inboundReviewItemCopy(item);return <article className="inbound-review-card" key={item.id} data-testid="inbound-review-item">
+        <div className="inbound-review-card-head"><strong>{copy.title}</strong><span>CẦN NHÂN VIÊN</span></div>
+        <p className="inbound-review-awaiting">{copy.message}</p>
+        <div className="inbound-review-meta"><span>Mã sự kiện: <code>{item.id}</code></span><span>{copy.customer}</span><time dateTime={item.received_at}>{time(item.received_at)}</time></div>
+        <small>Trạng thái máy chủ: {item.status} · {item.media_state}</small>
+      </article>;})}
+    </div>}
+  </section>;
+}
+
 function Stat({ icon,label,value,note,color,onClick }: { icon: ReactNode; label: string; value: number; note: string; color: string; onClick:()=>void }) {
   return <button className="stat-card" onClick={onClick}><div className={`stat-icon ${color}`}>{icon}</div><span>{label}</span><strong>{value.toString().padStart(2,'0')}</strong><small>{note}</small></button>;
 }

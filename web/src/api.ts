@@ -4,6 +4,7 @@ import { canEditPrintRequest, enrichOrderWithCode008 } from './code008.ts';
 import { parseServerManualQueue } from './v1-routing.ts';
 import { parsePreviewReviewReadModel } from './preview-review.ts';
 import { parseShopSchedule, type ShopSchedule, type SchedulePatch, type SchedulePort } from './shop-schedule.ts';
+import { parseInboundReviewItems, type InboundReviewItem } from './inbound-review.ts';
 
 export class ApiFault extends Error {
   readonly status: number; readonly code: string; readonly currentRevision?: number;
@@ -14,6 +15,7 @@ export interface PrintPort extends SchedulePort {
   logout(): Promise<void>;
   me(): Promise<StaffSession>;
   listOrders(): Promise<OrderView[]>;
+  listInboundReviewItems(): Promise<InboundReviewItem[]>;
   getOrder(id: string): Promise<OrderView>;
   /** Verified *raster* bytes only; NOT customer confirmation or approval. */
   loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{pages:Blob[];files:VerifiedFileFact[]}>;
@@ -282,6 +284,14 @@ export class HttpPrintPort implements PrintPort {
     if (!Array.isArray(raw)) throw new ApiFault(503, 'INVALID_ORDERS', 'Danh sách đơn từ API chưa đúng hợp đồng.');
     return raw.map(mapOrderSummary);
   }
+  async listInboundReviewItems():Promise<InboundReviewItem[]> {
+    if(!this.token)throw new ApiFault(401,'UNAUTHENTICATED','Vui lòng đăng nhập để xem hàng chờ sự kiện đến.');
+    const token=this.token;
+    const raw=await this.call('/api/v1/inbound-review-items');
+    if(this.token!==token)throw new ApiFault(401,'INBOUND_REVIEW_SESSION_CHANGED','Phiên đăng nhập đã đổi; không dùng phản hồi cũ.');
+    try{return parseInboundReviewItems(raw);}
+    catch{throw new ApiFault(503,'INVALID_INBOUND_REVIEW_ITEMS','Hàng chờ trả dữ liệu không đúng hợp đồng; không hiển thị một phần.');}
+  }
   async getOrder(id: string) {
     const raw = await this.call(`/api/v1/orders/${encodeURIComponent(id)}`);
     return mapCoreOrderDetail(raw);
@@ -467,6 +477,7 @@ export class DemoPrintPort implements PrintPort {
   async logout() { this.checkNetwork(); }
   async me() { this.checkNetwork(); return structuredClone(this.session); }
   async listOrders() { this.checkNetwork(); return structuredClone(this.orders); }
+  async listInboundReviewItems():Promise<InboundReviewItem[]> { this.checkNetwork(); return []; }
   async getOrder(id: string) {
     this.checkNetwork(); const found = this.orders.find(o => o.order_id === id);
     if (!found) throw new ApiFault(404, 'NOT_FOUND', 'Không tìm thấy đơn mô phỏng.');
