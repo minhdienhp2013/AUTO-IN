@@ -131,8 +131,8 @@ test("REAL PostgreSQL AI2: image HUMAN route survives committed lost ACK and wor
         e.kind,e.file_ref,q.status AS ingress_status
       FROM zalo_batches b
       JOIN zalo_batch_items i ON i.batch_id=b.id
-      JOIN zalo_inbound_events e USING(oa_id,event_id)
-      JOIN zalo_process_queue q USING(oa_id,event_id)
+      JOIN zalo_inbound_events e ON e.oa_id=i.oa_id AND e.event_id=i.event_id
+      JOIN zalo_process_queue q ON q.oa_id=i.oa_id AND q.event_id=i.event_id
       JOIN core_conversation_controls c ON c.shop_id=$1 AND c.conversation_id=$2
       WHERE i.oa_id=$3 AND i.event_id=$4`,[shop,conversation,oa,eventId])).rows[0];
     assert.equal(afterLostAck.status,"OPEN","lost worker ACK retries the durable batch");
@@ -158,8 +158,8 @@ test("REAL PostgreSQL AI2: image HUMAN route survives committed lost ACK and wor
         c.generation::text AS generation,e.kind,e.file_ref,q.status AS ingress_status
       FROM zalo_batches b
       JOIN zalo_batch_items i ON i.batch_id=b.id
-      JOIN zalo_inbound_events e USING(oa_id,event_id)
-      JOIN zalo_process_queue q USING(oa_id,event_id)
+      JOIN zalo_inbound_events e ON e.oa_id=i.oa_id AND e.event_id=i.event_id
+      JOIN zalo_process_queue q ON q.oa_id=i.oa_id AND q.event_id=i.event_id
       JOIN core_conversation_controls c ON c.shop_id=$1 AND c.conversation_id=$2
       WHERE i.oa_id=$3 AND i.event_id=$4`,[shop,conversation,oa,eventId])).rows;
     assert.equal(finalRows.length,1,"one durable source remains linked to one batch");
