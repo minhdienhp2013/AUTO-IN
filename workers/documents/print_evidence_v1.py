@@ -23,6 +23,8 @@ HEX = re.compile(r"^[0-9a-f]{64}$")
 BUNDLE = re.compile(r"^doc-[A-Za-z0-9_-]{6,64}/manifest\.json$")
 SOURCE = re.compile(r"^doc-[A-Za-z0-9_-]{6,64}/source-\d{3}-[a-f0-9]{64}\.(pdf|docx)$")
 PNG = re.compile(r"^doc-[A-Za-z0-9_-]{6,64}/[A-Za-z0-9_-]+-p[1-9]\d*\.png$")
+PDF_INPUT_REF_PART = re.compile(r"^[A-Za-z0-9_-]+$")
+PDF_INPUT_REF_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _sha(blob: bytes) -> str:
@@ -84,6 +86,104 @@ def _json_unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return out
 
 
+def _no_nonfinite_json(value: str) -> None:
+    raise _Invalid("PDF_INPUT_MANIFEST_UNVERIFIED")
+
+
+def _safe_pdf_input_ref(value: Any) -> bool:
+    if (type(value) is not str or not value or len(value) > 512 or
+            value != value.strip() or re.search(r"[\x00-\x20\\:?#\[\]]", value)):
+        return False
+    parts = value.split("/")
+    return (len(parts) == 2 and PDF_INPUT_REF_PART.fullmatch(parts[0]) is not None
+            and PDF_INPUT_REF_FILE.fullmatch(parts[1]) is not None
+            and parts[1] not in (".", ".."))
+
+
+def _verify_native_pdf_request(*, request_data: Any, context: dict[str, Any],
+                               settings: Any) -> None:
+    """Bind the provided plan setup to AI1's exact canonical request data."""
+    from .native_pdf_artifacts import _request_settings
+
+    try:
+        request_hash = _canonical_hash(request_data)
+    except Exception as exc:
+        raise _Invalid("PDF_REQUEST_HASH_UNVERIFIED") from exc
+    _check(request_hash == context["request_hash"], "PDF_REQUEST_HASH_UNVERIFIED")
+    expected_settings = _request_settings(request_data)
+    _check(expected_settings is not None and type(settings) is tuple and len(settings) == 1
+           and type(settings[0]) is dict
+           and _canonical_hash(settings[0]) == _canonical_hash(expected_settings),
+           "PDF_REQUEST_SETTINGS_MISMATCH")
+
+
+def _verify_native_pdf_input_manifest(*, manifest: dict[str, Any], context: dict[str, Any],
+                                      source_bytes: bytes,
+                                      input_manifest_bytes: bytes | None) -> None:
+    """Check the AI1 PDF source anchor and its exact private manifest bytes.
+
+    This validation-only anchor is committed transitively by the AI3 preview
+    manifest SHA in ai0.print_evidence.v1; the Core evidence schema is unchanged.
+    """
+    _check(type(input_manifest_bytes) is bytes and 2 <= len(input_manifest_bytes) <= 256 * 1024,
+           "PDF_INPUT_MANIFEST_UNVERIFIED")
+    source = manifest.get("source")
+    input_anchor = manifest.get("input_manifest")
+    _check(type(source) is dict and set(source) == {"format", "artifact_ref", "sha256", "size_bytes"}
+           and source.get("format") == "PDF" and type(source.get("artifact_ref")) is str
+           and _safe_pdf_input_ref(source["artifact_ref"])
+           and type(source.get("sha256")) is str and HEX.fullmatch(source["sha256"]) is not None
+           and type(source.get("size_bytes")) is int and source["size_bytes"] == len(source_bytes)
+           and source["sha256"] == _sha(source_bytes)
+           and source["artifact_ref"].lower().endswith(".pdf"),
+           "PDF_SOURCE_ANCHOR_UNVERIFIED")
+    _check(type(input_anchor) is dict and set(input_anchor) == {"ref", "sha256"}
+           and type(input_anchor.get("ref")) is str
+           and _safe_pdf_input_ref(input_anchor["ref"])
+           and input_anchor["ref"].endswith("/manifest.json")
+           and type(input_anchor.get("sha256")) is str
+           and HEX.fullmatch(input_anchor["sha256"]) is not None
+           and input_anchor["ref"].split("/", 1)[0] == source["artifact_ref"].split("/", 1)[0]
+           and _sha(input_manifest_bytes) == input_anchor["sha256"],
+           "PDF_INPUT_MANIFEST_ANCHOR_UNVERIFIED")
+    try:
+        source_manifest = json.loads(input_manifest_bytes.decode("utf-8"),
+            object_pairs_hook=_json_unique, parse_constant=_no_nonfinite_json)
+    except Exception as exc:
+        if isinstance(exc, _Invalid):
+            raise
+        raise _Invalid("PDF_INPUT_MANIFEST_UNVERIFIED") from exc
+    _check(type(source_manifest) is dict and set(source_manifest) == {
+        "schema", "manifest_ref", "shop_id", "order_id", "active_revision", "request_hash", "source"
+    }, "PDF_INPUT_MANIFEST_UNVERIFIED")
+    input_source = source_manifest.get("source")
+    _check(type(input_source) is dict and set(input_source) == {
+        "format", "artifact_ref", "sha256", "size_bytes"
+    }, "PDF_INPUT_MANIFEST_UNVERIFIED")
+    _check(type(source_manifest.get("shop_id")) is str and bool(source_manifest["shop_id"])
+           and type(source_manifest.get("order_id")) is str and bool(source_manifest["order_id"])
+           and type(source_manifest.get("active_revision")) is int
+           and source_manifest["active_revision"] > 0
+           and type(source_manifest.get("request_hash")) is str
+           and HEX.fullmatch(source_manifest["request_hash"]) is not None
+           and type(source_manifest.get("manifest_ref")) is str
+           and type(input_source.get("format")) is str
+           and type(input_source.get("artifact_ref")) is str
+           and type(input_source.get("sha256")) is str
+           and HEX.fullmatch(input_source["sha256"]) is not None
+           and type(input_source.get("size_bytes")) is int
+           and input_source["size_bytes"] > 0,
+           "PDF_INPUT_MANIFEST_UNVERIFIED")
+    _check(source_manifest.get("schema") == "ai0.pdf_review_manifest.v1"
+           and source_manifest.get("manifest_ref") == input_anchor["ref"]
+           and source_manifest.get("shop_id") == context["shop_id"]
+           and source_manifest.get("order_id") == context["order_id"]
+           and source_manifest.get("active_revision") == context["revision"]
+           and source_manifest.get("request_hash") == context["request_hash"]
+           and input_source == source,
+           "PDF_INPUT_MANIFEST_SCOPE_MISMATCH")
+
+
 def create_print_evidence_v1(*, context: dict[str, Any],
                              manifest_bytes: bytes,
                              originals: tuple[bytes, ...],
@@ -91,7 +191,9 @@ def create_print_evidence_v1(*, context: dict[str, Any],
                              settings: tuple[dict[str, Any], ...],
                              trusted_core_plan: dict[str, Any] | None = None,
                              renderer_identity: dict[str, Any],
-                             printer_capabilities: dict[str, Any]) -> dict[str, Any]:
+                             printer_capabilities: dict[str, Any],
+                             input_manifest_bytes: bytes | None = None,
+                             request_data: Any = None) -> dict[str, Any]:
     """Create a verified content tuple, but NOT a trustworthy Core approval.
 
     All values must be independently obtained by AI0. A matching stored
@@ -111,13 +213,37 @@ def create_print_evidence_v1(*, context: dict[str, Any],
         manifest = json.loads(manifest_bytes, object_pairs_hook=_json_unique,
                               parse_constant=lambda _: (_ for _ in ()).throw(_Invalid("MANIFEST_UNVERIFIED")))
         _check(type(manifest) is dict and
-               manifest.get("schema") in ("ai3.document_bridge.v1", "ai3.native_word_preview.v1") and
+               manifest.get("schema") in ("ai3.document_bridge.v1", "ai3.native_word_preview.v1",
+                                           "ai3.native_pdf_preview.v1") and
                manifest.get("request_hash") == context["request_hash"], "MANIFEST_UNVERIFIED")
-        if manifest["schema"] == "ai3.native_word_preview.v1":
+        native_word = manifest["schema"] == "ai3.native_word_preview.v1"
+        native_pdf = manifest["schema"] == "ai3.native_pdf_preview.v1"
+        if native_word:
             _check(manifest.get("revision") == context["revision"] and
                    manifest.get("ready") is False and
                    manifest.get("requires_staff_review") is True,
                    "WORD_REVIEW_PENDING")
+        if native_pdf:
+            import fitz
+
+            _check(type(manifest.get("active_revision")) is int and
+                   manifest.get("status") == "REVIEW_REQUIRED" and
+                   manifest.get("active_revision") == context["revision"] and
+                   manifest.get("ready") is False and manifest.get("allowed_to_print") is False and
+                   manifest.get("requires_staff_review") is True and
+                   manifest.get("physical_print_verified") is False and
+                   manifest.get("evidence_kind") == "pymupdf_pdf_preview_only" and
+                   type(manifest.get("source")) is dict and manifest["source"].get("format") == "PDF",
+                   "PDF_REVIEW_PENDING")
+            _check(manifest.get("renderer_versions") == {"pymupdf": fitz.VersionBind},
+                   "PDF_RENDERER_CHANGED")
+            _check(len(manifest.get("files", [])) == 1,
+                   "PDF_SINGLE_SOURCE_REQUIRED")
+            _verify_native_pdf_request(request_data=request_data, context=context,
+                                       settings=settings)
+            _verify_native_pdf_input_manifest(manifest=manifest, context=context,
+                                              source_bytes=originals[0] if type(originals) is tuple and originals else b"",
+                                              input_manifest_bytes=input_manifest_bytes)
         _check(type(originals) is tuple and 1 <= len(originals) <= processor.MAX_DOCS and
                type(previews) is tuple and 1 <= len(previews) <= 3*len(originals) and
                type(settings) is tuple and len(settings) == len(originals) and
@@ -153,8 +279,11 @@ def create_print_evidence_v1(*, context: dict[str, Any],
                 _check(raw.startswith(b"%PDF-") and
                        type(entry.get("render_method")) is str and
                        entry["render_method"].startswith("pymupdf-") and
-                       manifest["schema"] == "ai3.document_bridge.v1",
+                       manifest["schema"] in ("ai3.document_bridge.v1", "ai3.native_pdf_preview.v1"),
                        "PDF_NATIVE_UNVERIFIED")
+                if native_pdf:
+                    from .bridge import _pdf_font_reliable
+                    _check(_pdf_font_reliable(raw), "PDF_FONT_OR_ENCRYPTION_UNVERIFIED")
             else:
                 _check(raw.startswith(b"PK") and zipfile.is_zipfile(io.BytesIO(raw)) and
                        manifest["schema"] == "ai3.native_word_preview.v1" and
@@ -231,7 +360,9 @@ def verify_print_evidence_v1(*, expected: dict[str, Any],
                              settings: tuple[dict[str, Any], ...],
                              trusted_core_plan: dict[str, Any] | None = None,
                              renderer_identity: dict[str, Any],
-                             printer_capabilities: dict[str, Any]) -> dict[str, Any]:
+                             printer_capabilities: dict[str, Any],
+                             input_manifest_bytes: bytes | None = None,
+                             request_data: Any = None) -> dict[str, Any]:
     """Compare all raw bytes to the independently persisted Core SHA anchor."""
     if (type(expected) is not dict or type(context) is not dict or
             type(trusted_evidence_sha256) is not str or
@@ -243,8 +374,8 @@ def verify_print_evidence_v1(*, expected: dict[str, Any],
     result = create_print_evidence_v1(
         context=context, manifest_bytes=manifest_bytes, originals=originals,
         previews=previews, settings=settings, trusted_core_plan=trusted_core_plan,
-        renderer_identity=renderer_identity,
-        printer_capabilities=printer_capabilities)
+        renderer_identity=renderer_identity, printer_capabilities=printer_capabilities,
+        input_manifest_bytes=input_manifest_bytes, request_data=request_data)
     if result["status"] != "SNAPSHOT_DERIVED":
         return result
     observed = result["snapshot"]

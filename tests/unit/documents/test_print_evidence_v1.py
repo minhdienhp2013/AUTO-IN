@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import fitz
 import pytest
 
 from workers.documents.print_evidence_v1 import (
@@ -18,6 +19,7 @@ from tests.unit.documents.test_native_word_pdf_v1 import (
 from agents.windows.native_word_document import preview_word_native
 from workers.documents.native_word_artifacts import make_word_review_artifacts
 from workers.documents.bridge import _canonical
+from workers.documents.native_pdf_review import prepare_native_pdf_review_from_snapshot
 
 
 CAPS = {
@@ -85,6 +87,51 @@ def _pdf_inputs(tmp_path):
     return args, trusted, job
 
 
+def _native_pdf_inputs(tmp_path):
+    with fitz.open() as document:
+        page = document.new_page()
+        page.draw_rect(fitz.Rect(20, 20, 100, 120))
+        original = document.tobytes()
+    # Exact request_data fixture from AI1's V1-CORE-12 source-contract test.
+    request_data = {"documents": [{"format": "PDF", "copies": 1}],
+                    "settings": {"paper": "A4"}}
+    request_hash = sha(_canonical(request_data).encode("utf-8"))
+    source_anchor = {"format": "PDF", "artifact_ref": "bundle-1/source.pdf",
+                     "sha256": sha(original), "size_bytes": len(original)}
+    input_manifest = {"schema": "ai0.pdf_review_manifest.v1",
+        "manifest_ref": "bundle-1/manifest.json", "shop_id": "native-pdf-shop",
+        "order_id": "native-pdf-order", "active_revision": 7,
+        "request_hash": request_hash, "source": source_anchor}
+    input_manifest_bytes = json.dumps(input_manifest, separators=(",", ":")).encode("utf-8")
+    snapshot = {"schema": "ai0.pdf_review_source.v1", "shop_id": "native-pdf-shop",
+        "order_id": "native-pdf-order", "active_revision": 7,
+        "request_hash": request_hash, "request_data": request_data,
+        "source": source_anchor,
+        "manifest": {"ref": "bundle-1/manifest.json", "sha256": sha(input_manifest_bytes)},
+        "private_bytes": {"source": original, "manifest": input_manifest_bytes}}
+    artifact_root = tmp_path / "native-pdf-artifacts"
+    artifact_root.mkdir()
+    preview_result = prepare_native_pdf_review_from_snapshot(
+        snapshot=snapshot, artifact_root=artifact_root)
+    assert preview_result["status"] == "REVIEW_REQUIRED", preview_result
+    assert preview_result["allowed_to_print"] is False
+    manifest_bytes = (artifact_root / preview_result["artifact_ref"]).read_bytes()
+    manifest = json.loads(manifest_bytes)
+    source_bytes = (artifact_root / manifest["files"][0]["source_artifact_ref"]).read_bytes()
+    previews = tuple((artifact_root / p["ref"]).read_bytes() for p in manifest["previews"])
+    settings = ({"paper": "A4", "copies": 1},)
+    context = {"shop_id": snapshot["shop_id"], "order_id": snapshot["order_id"],
+        "revision": snapshot["active_revision"], "request_hash": snapshot["request_hash"],
+        "manifest_ref": preview_result["artifact_ref"], "printer_id": "RMP7000"}
+    args = {"context": context, "manifest_bytes": manifest_bytes,
+        "originals": (source_bytes,), "previews": previews, "settings": settings,
+        "trusted_core_plan": _core_plan(context, manifest["counts"]),
+        "renderer_identity": manifest["renderer_versions"],
+        "printer_capabilities": CAPS, "input_manifest_bytes": input_manifest_bytes,
+        "request_data": snapshot["request_data"]}
+    return args, snapshot, input_manifest_bytes
+
+
 def _approved_snapshot(tmp_path):
     args, trusted, job = _pdf_inputs(tmp_path)
     observed = create_print_evidence_v1(**args)
@@ -137,6 +184,131 @@ def test_pdf_exact_tuple_core_anchor_and_staff_review_allows_simulation_only(tmp
     assert ok["allowed_to_print"] is False
     assert ok["queue_submission_enabled"] is False
     assert ok["physical_print_verified"] is False
+
+
+def test_native_pdf_review_manifest_binds_original_source_input_manifest_and_core_plan(tmp_path):
+    args, source_snapshot, input_manifest_bytes = _native_pdf_inputs(tmp_path)
+    observed = create_print_evidence_v1(**args)
+    assert observed["status"] == "SNAPSHOT_DERIVED", observed
+    assert observed["allowed_to_print"] is False
+    assert observed["allowed_to_simulate"] is False
+    proof = observed["snapshot"]
+    assert proof["schema"] == "ai0.print_evidence.v1"
+    assert proof["sources"][0]["format"] == "PDF"
+    assert proof["sources"][0]["source_sha256"] == source_snapshot["source"]["sha256"]
+    assert proof["sources"][0]["size_bytes"] == source_snapshot["source"]["size_bytes"]
+    assert proof["plan_sha256"] == sha(_canonical(args["trusted_core_plan"]).encode())
+    assert proof["manifest_sha256"] == sha(args["manifest_bytes"])
+    assert set(proof) == {
+        "schema", "shop_id", "order_id", "revision", "request_hash", "sources",
+        "source_set_sha256", "settings_sha256", "manifest_ref", "manifest_sha256",
+        "previews", "renderer_sha256", "plan_sha256", "printer_id",
+        "printer_capability_sha256", "evidence_sha256",
+    }
+    verified = verify_print_evidence_v1(
+        expected=proof, trusted_evidence_sha256=proof["evidence_sha256"],
+        active_revision=source_snapshot["active_revision"], **args)
+    assert verified["status"] == "EVIDENCE_VERIFIED", verified
+    assert verified["allowed_to_print"] is False
+    assert verified["physical_print_verified"] is False
+    assert sha(input_manifest_bytes) == json.loads(args["manifest_bytes"])["input_manifest"]["sha256"]
+
+
+def test_native_pdf_evidence_rejects_missing_drifted_or_wrong_input_manifest(tmp_path):
+    args, _, input_manifest_bytes = _native_pdf_inputs(tmp_path)
+    missing = {key: value for key, value in args.items() if key != "input_manifest_bytes"}
+    assert create_print_evidence_v1(**missing)["status"] == "NEEDS_HUMAN"
+
+    changed = {**args, "input_manifest_bytes": input_manifest_bytes + b" "}
+    result = create_print_evidence_v1(**changed)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "PDF_INPUT_MANIFEST_ANCHOR_UNVERIFIED"
+    assert result["allowed_to_print"] is False
+
+    changed_source = {**args, "originals": (args["originals"][0] + b"drift",)}
+    result = create_print_evidence_v1(**changed_source)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "PDF_SOURCE_ANCHOR_UNVERIFIED"
+
+    changed_scope = {**args, "context": {**args["context"], "revision": 8}}
+    result = create_print_evidence_v1(**changed_scope)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "PDF_REVIEW_PENDING"
+
+
+def test_native_pdf_evidence_binds_core_request_hash_to_native_plan_settings(tmp_path):
+    args, _, _ = _native_pdf_inputs(tmp_path)
+    changed_settings = {**args, "settings": ({"paper": "A4", "copies": 2},)}
+    result = create_print_evidence_v1(**changed_settings)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "PDF_REQUEST_SETTINGS_MISMATCH"
+    assert result["allowed_to_print"] is False
+
+    changed_request = {**args, "request_data": {
+        "documents": [{"format": "PDF", "copies": 2}], "settings": {"paper": "A4"}}}
+    result = create_print_evidence_v1(**changed_request)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "PDF_REQUEST_HASH_UNVERIFIED"
+    assert result["allowed_to_print"] is False
+
+
+def test_native_pdf_input_manifest_rejects_unsafe_private_references(tmp_path):
+    args, _, _ = _native_pdf_inputs(tmp_path)
+    output_manifest = json.loads(args["manifest_bytes"])
+    output_manifest["source"]["artifact_ref"] = "bundle-1/../source.pdf"
+    args["manifest_bytes"] = json.dumps(
+        output_manifest, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    result = create_print_evidence_v1(**args)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "PDF_SOURCE_ANCHOR_UNVERIFIED"
+    assert result["allowed_to_print"] is False
+
+
+def test_native_pdf_renderer_paper_plan_and_core_counts_are_bound(tmp_path):
+    args, _, _ = _native_pdf_inputs(tmp_path)
+
+    changed_renderer = dict(args)
+    renderer_manifest = json.loads(args["manifest_bytes"])
+    renderer_manifest["renderer_versions"] = {"pymupdf": "0.0.0"}
+    changed_renderer["manifest_bytes"] = json.dumps(
+        renderer_manifest, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    changed_renderer["renderer_identity"] = renderer_manifest["renderer_versions"]
+    result = create_print_evidence_v1(**changed_renderer)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "PDF_RENDERER_CHANGED"
+    assert result["allowed_to_print"] is False
+
+    changed_plan = dict(args)
+    plan_manifest = json.loads(args["manifest_bytes"])
+    plan_manifest["paper_plan"][0]["physical_sheets"] += 1
+    changed_plan["manifest_bytes"] = json.dumps(
+        plan_manifest, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    result = create_print_evidence_v1(**changed_plan)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "PRINT_PLAN_CHANGED"
+    assert result["allowed_to_print"] is False
+
+    changed_core = {**args, "trusted_core_plan": {
+        **args["trusted_core_plan"], "physical_sheets": args["trusted_core_plan"]["physical_sheets"] + 1}}
+    result = create_print_evidence_v1(**changed_core)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "CORE_PLAN_COUNT_MISMATCH"
+    assert result["allowed_to_print"] is False
+
+
+def test_native_pdf_evidence_requires_unambiguous_input_manifest_json(tmp_path):
+    args, _, input_manifest_bytes = _native_pdf_inputs(tmp_path)
+    duplicate = input_manifest_bytes.replace(
+        b'"schema":', b'"schema":"ai0.pdf_review_manifest.v1","schema":', 1)
+    output_manifest = json.loads(args["manifest_bytes"])
+    output_manifest["input_manifest"]["sha256"] = sha(duplicate)
+    args["manifest_bytes"] = json.dumps(
+        output_manifest, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    args["input_manifest_bytes"] = duplicate
+    result = create_print_evidence_v1(**args)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "MANIFEST_UNVERIFIED"
+    assert result["allowed_to_print"] is False
 
 
 def test_processor_counts_must_match_the_active_core_plan(tmp_path):
