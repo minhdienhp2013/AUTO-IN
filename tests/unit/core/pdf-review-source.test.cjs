@@ -134,3 +134,57 @@ test('V1-CORE-12 missing trusted reader fails closed before opening a transactio
  await assert.rejects(service.readPdfReviewSource({id:'staff',role:'staff',shop_id:scope.shop_id,verified:true},scope.order_id),
   e=>e.code==='PDF_SOURCE_NOT_CONFIGURED'&&e.status===503);
 });
+
+test('V1-CORE-14 readPdfReviewSource preserves the exact stored Core PDF request and raw canonical hash',async()=>{
+ const artifactRef='doc-test/source-000-'+'a'.repeat(64)+'.pdf';
+ const coreRequestData={documents:[{artifact_name:artifactRef,copies:3,duplex:true,paper:'A3'}]};
+ const coreRequestHash=sha(canonical(coreRequestData));
+ const coreScope={shop_id:'shop-pdf',order_id:'order-pdf',active_revision:5,
+  request_hash:coreRequestHash,request_data:coreRequestData};
+ const source=Buffer.from('%PDF-1.7\nsynthetic original source');
+ const sourceHash=digest(source),manifestRef='doc-test/manifest.json';
+ const manifestBytes=Buffer.from(JSON.stringify({schema:'ai0.pdf_review_manifest.v1',manifest_ref:manifestRef,
+  shop_id:coreScope.shop_id,order_id:coreScope.order_id,active_revision:coreScope.active_revision,
+  request_hash:coreRequestHash,source:{format:'PDF',artifact_ref:artifactRef,sha256:sourceHash,size_bytes:source.length}}));
+ const state={order:{id:coreScope.order_id,shop_id:coreScope.shop_id,active_revision:coreScope.active_revision},
+  revision:{request_hash:coreRequestHash,request_data:coreRequestData}};
+ let reads=0;
+ const reader={async read_registered(_db,passed){
+  reads++;
+  assert.deepEqual(passed.request_data,coreRequestData);
+  assert.equal(passed.request_hash,coreRequestHash);
+  return {source:{artifact_ref:artifactRef,bytes:source},manifest:{ref:manifestRef,bytes:manifestBytes}};
+ }};
+ const {store}=fakeStore(state),service=new OrderService(store,undefined,undefined,undefined,reader);
+ const staff={id:'staff-pdf',role:'staff',shop_id:coreScope.shop_id,verified:true};
+ const result=await service.readPdfReviewSource(staff,coreScope.order_id);
+ assert.equal(reads,2,'Core verifies the same registered bundle twice');
+ assert.deepEqual(result.request_data,coreRequestData,'Core data is returned unchanged');
+ assert.deepEqual(result.request_data.documents[0],{
+  artifact_name:artifactRef,copies:3,duplex:true,paper:'A3'
+ });
+ assert.equal(Object.hasOwn(result.request_data.documents[0],'format'),false);
+ assert.equal(Object.hasOwn(result.request_data,'settings'),false);
+ assert.equal(result.request_hash,coreRequestHash);
+ assert.equal(sha(canonical(result.request_data)),coreRequestHash,
+  'request hash binds the exact stored fields, without AI3 shape rewriting');
+ assert.notEqual(sha(canonical({documents:[{format:'PDF',copies:3}],settings:{paper:'A3',duplex:true}})),
+  coreRequestHash,'AI3 preview settings shape has a different digest from the stored Core request');
+});
+
+test('V1-CORE-14 rejects a PDF request hash computed from a pre-hash AI3 shape rewrite',async()=>{
+ const artifactRef='doc-test/source-000-'+'b'.repeat(64)+'.pdf';
+ const coreRequestData={documents:[{artifact_name:artifactRef,copies:2,duplex:false,paper:'A4'}]};
+ const rewrittenAi3Request={documents:[{format:'PDF',copies:2}],settings:{paper:'A4',duplex:false}};
+ const rawHash=sha(canonical(coreRequestData)),rewrittenHash=sha(canonical(rewrittenAi3Request));
+ assert.notEqual(rewrittenHash,rawHash,'rewriting request data changes the digest');
+ const state={order:{id:'order-pdf-stale',shop_id:'shop-pdf',active_revision:2},
+  revision:{request_hash:rewrittenHash,request_data:coreRequestData}};
+ let reads=0;
+ const reader={async read_registered(){reads++;return null;}};
+ const {store}=fakeStore(state),service=new OrderService(store,undefined,undefined,undefined,reader);
+ await assert.rejects(service.readPdfReviewSource(
+  {id:'staff-pdf',role:'staff',shop_id:'shop-pdf',verified:true},'order-pdf-stale'),
+  e=>e.code==='STALE_FILE_BINDING'&&e.status===409);
+ assert.equal(reads,0,'stale request hash is rejected before private storage access');
+});
