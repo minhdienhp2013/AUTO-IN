@@ -1,8 +1,17 @@
 # Phạm vi V1 ưu tiên Word/PDF và Phase 2
 
-**Ngày điều phối:** 17/10/2026. **Candidate nền kiểm tra:** PR #144, SHA `0673460af71205986b901a21fc7724dbea23c991`; nhánh `ai0/tn005-trigger-dispatch-pg-20261017`. **Main hiện hành:** `cb2be7a7b84d689dbe6c2c773192f111897c4063`.
+**Ngày điều phối ban đầu:** 17/10/2026. **Cập nhật:** 18/10/2026. Candidate tích hợp cục bộ mới nhất tại lúc cập nhật: `cdf3d42` trên nhánh `ai0/v1-word-pdf-integration-20261018`; không thay đổi `main`.
 
 Tài liệu này ghi nhận hướng ưu tiên mới của chủ dự án. Nó không sửa hay thay thế các quyết định TN đã chốt. Mục tiêu tuần tới là hoàn thành **ứng viên mã V1 Word/PDF** để chủ xem xét; tài liệu này không tuyên bố phần mềm đã sẵn sàng mở vận hành thật. Nguồn TN gốc vẫn là [đặc tả TN-001–TN-037 và TN-005A](../spec/DAC_TA_TN001-TN037.md).
+
+### Tiến độ candidate ngày 18/10
+
+- AI1 đã thêm read API `GET /api/v1/inbound-review-items`: bearer session bắt buộc, shop lấy từ principal, `Cache-Control: no-store`, response chỉ có metadata được duyệt. AI1 cũng thêm test tích hợp Fastify/PostgreSQL; test đó chưa chạy vì thiếu PostgreSQL cô lập.
+- AI4 đã thêm màn hình hàng chờ nhân viên cho `NEEDS_HUMAN/AWAITING_MEDIA`. Màn hình nói rõ tệp gốc chưa được lưu/sẵn sàng và không cung cấp preview, xác nhận, duyệt hoặc in. 109/109 UI tests PASS.
+- AI2 đã nối event ảnh/tệp đã quarantine vào Core queue trong **simulation**; replay có thể khôi phục mục hàng chờ bị thiếu mà không nhân đôi. Đây chỉ là metadata pointer: chưa lưu byte ảnh/tệp và chưa gắn file gốc vào order. Hợp đồng lấy media từ OA thật vẫn chưa được nhà cung cấp xác minh; route live tiếp tục OFF.
+- Word watchdog đã có như module cách ly riêng; đường intake hiện vẫn chưa nối đủ native Word preview → manifest/hash → receipt → xác nhận/duyệt. AI3 đang làm adapter review-only. Không có Windows COM, font thật, Ricoh hoặc giấy thật được kiểm thử.
+- Tại candidate `cdf3d42`, backend build/typecheck PASS; Core 46 PASS/0 FAIL/17 PostgreSQL SKIP; Zalo 160 PASS/0 FAIL/6 PostgreSQL SKIP; composition 20 PASS/0 FAIL/18 PostgreSQL SKIP; UI 109 PASS/0 FAIL. Web typecheck chưa chạy được vì thiếu `vite/client`; browser Safari/iPhone chưa chạy.
+- **Trạng thái V1: BLOCKED.** Ảnh chưa đáp ứng yêu cầu giữ file gốc trong TN nếu chưa có artifact custody; Word end-to-end và kiểm chứng OA/Windows/Ricoh thật còn thiếu. TN không được tự sửa để che các khoảng trống này.
 
 ## 1. Mục tiêu và ranh giới V1
 
@@ -37,12 +46,12 @@ Việc kiểm chứng Zalo OA có quyền thật, Windows/Ricoh thật, iPhone S
 
 | Mảng | Đã có bằng chứng trên repo/candidate | Còn thiếu để đạt phạm vi mới |
 | --- | --- | --- |
-| Core đơn, revision, xác nhận, duyệt | Core có transaction PostgreSQL, revision/hash, xác nhận khách, quyền nhân viên, idempotency, khóa trước khi gửi và hàng rào tin/file chưa đối soát. Publish plan tạo revision mới; khách phải xác nhận lại revision đó. | Chốt cùng AI0/AI3 cách lưu và kiểm tra trực tiếp source SHA, settings digest, manifest/preview digest xuyên suốt xác nhận → duyệt → claim/preflight → agent. Kiểm thử mọi thay đổi file/thông số làm stale; không tạo job thứ hai sau retry/UNKNOWN. |
-| Zalo và thu yêu cầu | Có ingress/quarantine, gom đơn và giờ lịch, callback/confirmation candidate cùng các test mô phỏng. PR #145 bổ sung rà tài liệu nút/callback chính thức. | Không có bằng chứng OA thật, chữ ký callback/golden vector và tải file từ OA thật. Hoàn thiện route theo loại file và lời khách, giữ chính sách gom tin/giờ hoạt động; không để AI/DeepSeek là điều kiện nhận Word/PDF. |
+| Core đơn, revision, xác nhận, duyệt | Core có transaction PostgreSQL, revision/hash, xác nhận khách, quyền nhân viên, idempotency, khóa trước khi gửi và hàng rào tin/file chưa đối soát. Candidate 18/10 bổ sung read API hàng chờ nhân viên; endpoint này không mutate đơn. | Chốt cùng AI0/AI3 cách lưu và kiểm tra trực tiếp source SHA, settings digest, manifest/preview digest xuyên suốt xác nhận → duyệt → claim/preflight → agent. Integration test API thật còn SKIP do thiếu PostgreSQL cô lập. |
+| Zalo và thu yêu cầu | Có ingress/quarantine, gom đơn và giờ lịch, callback/confirmation candidate cùng các test mô phỏng. Candidate 18/10 nối event ảnh/tệp đã quarantine vào metadata queue trong simulation. | Chưa có byte file trong private storage; quarantine hiện chỉ giữ metadata/hash sự kiện. Chưa có bằng chứng OA thật, chữ ký callback/golden vector hoặc tải file từ OA thật. |
 | PDF và Word native | PDF có đường đọc/render/preview và kiểm tra hash ở worker. Processor hiện giữ DOCX ở NEEDS_HUMAN với lý do WORD_RENDER_PATH_NOT_VERIFIED. PR #116 chỉ kiểm tra tĩnh registry/dependency; không khởi chạy COM, không render. | Word native preflight/preview/page count và đối chiếu font/layout trên Windows trung tâm; luồng PDF/Word qua backend thật theo contract; xác minh khổ/chiều/duplex/khay và chuẩn bị ca thử được chủ giám sát. |
 | Windows agent/Ricoh | Agent có journal bền, simulation, UNKNOWN và cấm resend; test spooler chỉ dùng InMemorySpooler giả. GuardedWindowsDriver cố ý fail-closed. | Chưa có adapter Windows/Ricoh production được kiểm chứng. Cần server/agent binding nguồn và plan, lấy queue/capability thật, ghi ACK/lỗi, đối soát giấy; lệnh in thật chỉ chạy sau chủ duyệt riêng. |
-| Giao diện và hàng chờ | UI có read model, trạng thái order/in, preview cho nhân viên, khóa duyệt khi thiếu bằng chứng, xác minh giấy và nhóm attention/needs_human. | Chưa có bằng chứng end-to-end rằng ảnh/CCCD/TEMhoa/format chưa hỗ trợ tạo hàng chờ có nhãn/lý do và nhân viên tiếp nhận được; cần thể hiện rõ “đã nhận, chuyển nhân viên, chưa tự xử lý”. |
-| Acceptance | PR #143/#144 có nghiệm thu AI5 cho synthetic TN005 dispatch và LOAD100 trên đúng candidate. PR #144 có CODE checks và composition jobs SUCCESS; unified job kiểm SHA chính xác `0673460af71205986b901a21fc7724dbea23c991`. | Chưa có acceptance Word/PDF native, customer confirmation → staff approval → agent, retry/ACK mơ hồ và handoff ảnh trên candidate tích hợp mới. |
+| Giao diện và hàng chờ | UI có read model, trạng thái order/in, preview cho nhân viên, khóa duyệt khi thiếu bằng chứng, xác minh giấy và nhóm attention/needs_human. Candidate 18/10 thêm màn hình metadata queue, nhãn AWAITING_MEDIA và trạng thái lỗi không dùng dữ liệu cũ. | Chưa có end-to-end chứng minh file gốc được lưu và nhân viên có thể mở file; acceptance cập nhật đang làm. |
+| Acceptance | PR #143/#144 có nghiệm thu AI5 cho synthetic TN005 dispatch và LOAD100 trên đúng candidate. PR #144 có CODE checks và composition jobs SUCCESS; unified job kiểm SHA chính xác `0673460af71205986b901a21fc7724dbea23c991`. Candidate 18/10 có Core/Zalo/Composition/UI tests trên local SHA. | Chưa có acceptance Word/PDF native, customer confirmation → staff approval → agent, retry/ACK mơ hồ và hàng chờ inbound đã chạy qua PostgreSQL trên cùng candidate. |
 | Vận hành thật | Chưa có bằng chứng gửi OA thật, Windows/Ricoh thật, giấy thực tế, Safari iPhone hoặc 210 đơn sạch/7 ngày. | Chuẩn bị checklist; chỉ làm sau khi chủ cửa hàng duyệt rõ account/OA/máy, một mã đơn, revision/hash, số bản/tờ và người đứng máy. |
 
 ## 4. Trạng thái PR liên quan khi kiểm tra ngày 17/10/2026
@@ -75,7 +84,9 @@ Không PR nào được merge/deploy trong lượt này.
 
 **Điểm cần chủ quyết định:** có duyệt nội dung đề xuất sửa TN-005 ở trên và giữ TN-037 là cổng mở vận hành thật sau khi ứng viên mã hoàn tất hay muốn ban hành một gate riêng cho pilot Word/PDF? Cho đến khi có quyết định, tài liệu TN không đổi và V1 không được gọi là đã mở vận hành thật.
 
-## 6. Phân công mới trên cùng candidate
+## 6. Phân công ban đầu ngày 17/10
+
+Bảng dưới đây ghi lại phân công ban đầu trên PR #144. Tiến độ và việc tiếp theo ngày 18/10 được cập nhật ở mục 6A; bảng cũ không còn là trạng thái hiện thời.
 
 Base chung: PR #144 HEAD `0673460af71205986b901a21fc7724dbea23c991`, nhánh `ai0/tn005-trigger-dispatch-pg-20261017`. Mỗi AI tạo branch riêng; không sửa chéo phạm vi. Đây là prompt để chủ gửi vào từng phiên AI chuyên môn, theo quy tắc repo; comment PR không tự chạy AI.
 
@@ -87,6 +98,17 @@ Base chung: PR #144 HEAD `0673460af71205986b901a21fc7724dbea23c991`, nhánh `ai0
 | AI3 / `ai3/v1-native-word-pdf-agent-20261017` | **[AI3][V1-NATIVE-01]** Làm native Word/PDF preflight, preview, số trang/tờ và thông số Windows; mở DOCX bằng Word native, in từ bản gốc, không ép DOCX→PDF làm đầu vào. Tạo đường agent/Ricoh fail-closed khi thiếu evidence; chuẩn bị runbook cho ca Windows/Ricoh do chủ đứng máy duyệt. Chỉ sửa workers/documents/**, agents/windows/**, tests/unit/documents/**, tests/unit/printing/** và file runbook mới trong docs/research/. Không gọi driver thật/in giấy. Không sửa nhánh PR #116 đồng thời; báo nếu branch mới thay thế PR #116. | `python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing`; `python -m pytest -q tests/unit/documents tests/unit/printing`. Ghi rõ Windows COM/render/Ricoh thật NOT RUN nếu thiếu host/approval. |
 | AI4 / `ai4/v1-manual-routing-queue-20261017` | **[AI4][V1-QUEUE-01]** Làm UI hiển thị tình trạng Word/PDF, preview/version, lỗi/UNKNOWN, và hàng chờ gắn nhãn “đã nhận—chờ nhân viên” cho ảnh/CCCD/TEMhoa/màu/định dạng chưa hỗ trợ. Không báo đã xử lý/in; giữ quyền nhân viên và hiển thị đúng trạng thái server. Chỉ sửa web/src/** và tạo tests/ui/v1-word-pdf-routing.test.ts. Không sửa web/package.json hiện có trong PR #147. | `cd web && npm ci && npm test && npm run typecheck && VITE_DEMO_MODE=false npm run build && npm run test:chromium:code008`. Bàn giao screenshot/test output và giới hạn browser thật. |
 | AI5 / `ai5/v1-word-pdf-acceptance-20261017` | **[AI5][V1-ACCEPTANCE-01]** Không tiếp tục OCR benchmark như điều kiện V1; giữ PR #149 Draft/Phase 2. Tạo ma trận độc lập và tests trong docs/acceptance/V1_WORD_PDF_ACCEPTANCE_20261017.md, tests/acceptance/v1-word-pdf/**, tests/fixtures/public/v1-word-pdf/**; không sửa sản phẩm. Trước hết chuẩn bị ca, sau khi AI0 tích hợp thì chạy đúng candidate SHA và review artifact/hash. | Chạy candidate integration `npm run check`, Python compile/pytest, UI Chromium và bộ V1 mới. Ít nhất cover source/settings changed, stale confirmation, staff role, duplicate submit, UNKNOWN no retry, lỗi AI/mạng giữ đơn, ảnh chuyển người, không tạo print job. Không dùng CI của PR riêng làm bằng chứng thay candidate. |
+
+### 6A. Tiến độ phân công ngày 18/10
+
+| AI | Việc trên candidate mới | Trạng thái |
+| --- | --- | --- |
+| AI0 | Tích hợp candidate cục bộ, chạy kiểm tra và cập nhật tài liệu; không merge/deploy/live. | Đang làm; HEAD khi viết `cdf3d42`. |
+| AI1 | V1-CORE-06 read API và V1-CORE-07 test HTTP/PostgreSQL cho hàng chờ inbound. | Code/API và test đã tích hợp; test PG **NOT RUN** do thiếu DB cô lập. |
+| AI2 | V1-ZALO-04: nối event ảnh/tệp đã quarantine vào Core queue simulation; giữ live OFF, không giả lập lưu byte. | Đã tích hợp; test PostgreSQL composition **NOT RUN** do thiếu `TEST_DATABASE_URL`. Provider media contract và storage bytes còn BLOCKED. |
+| AI3 | V1-NATIVE-07: adapter Word review-only gọi watchdog và tạo bundle có hash/revision. | Đang làm; Windows Word/COM thật **NOT RUN**. |
+| AI4 | V1-QUEUE-04: UI hàng chờ metadata, lỗi và AWAITING_MEDIA. | Đã tích hợp; 109/109 UI tests PASS; web typecheck và Safari/iPhone **NOT RUN**. |
+| AI5 | V1-ACCEPTANCE-04: bổ sung acceptance độc lập cho API/UI hàng chờ, chạy candidate SHA. | Đang làm; product acceptance chưa có PASS. |
 
 Các lệnh trên là lệnh repo hiện có tại base candidate. AI phải bổ sung ca kiểm thử mới theo hợp đồng đã được AI0 chốt; không báo PASS chỉ từ unit test không chạy trên candidate tích hợp.
 
