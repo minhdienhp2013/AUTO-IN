@@ -4,9 +4,11 @@ import { PgStore, type SqlConnection } from '../storage/database.js';
 import { readPendingUpdates } from './pending-updates.js';
 import {checkedEvidence,currentEvidence,type PrintEvidenceV1,type TrustedPrintEvidencePort} from './print-evidence.js';
 import {internalReviewReceipt,previewReviewReadModel,requirePreviewReview} from './preview-review.js';
+import {readWordReviewSnapshot,wordReviewPrincipalScope,type TrustedWordReviewSourceReader,type WordReviewSnapshot} from './word-review-source.js';
 
 export class OrderService {
- constructor(private readonly store:PgStore, private readonly now:()=>Date=()=>new Date(),private readonly evidence?:TrustedPrintEvidencePort){}
+ constructor(private readonly store:PgStore, private readonly now:()=>Date=()=>new Date(),private readonly evidence?:TrustedPrintEvidencePort,
+  private readonly wordSource?:TrustedWordReviewSourceReader){}
  private async order(db:SqlConnection,id:string,p:Principal):Promise<OrderRow>{
   const o=await this.store.one<Omit<OrderRow,'delivered_sheets'> & {delivered_sheets:string}>(db,'SELECT * FROM core_orders WHERE id=$1 FOR UPDATE',[id]);canAccessShop(p,o.shop_id);return {...o,delivered_sheets:dbSafeInteger(o.delivered_sheets,'delivered_sheets')};
  }
@@ -777,4 +779,33 @@ export class OrderService {
   });
  }
  async listOrders(p:Principal){assertStaff(p);const res=await this.store.pool.query('SELECT id,customer_id,active_revision,manual_lock,print_closed,delivered_sheets,created_at FROM core_orders WHERE shop_id=$1 ORDER BY created_at DESC LIMIT 100',[p.shop_id]);return res.rows;}
+
+ /** Read-only server-to-worker handoff. No public route serializes these bytes. */
+ async readWordReviewSource(p:Principal,id:string):Promise<WordReviewSnapshot>{
+  assertStaff(p);const tenantOrder=wordReviewPrincipalScope(p,id);
+  if(!this.wordSource)throw new DomainError('WORD_SOURCE_NOT_CONFIGURED','Word source registry chưa được nối',503);
+  return this.store.tx(async db=>{
+   await db.query('SET TRANSACTION READ ONLY');
+   const load=async()=>{
+    const order=(await db.query<{id:string;shop_id:string;active_revision:number}>(
+     'SELECT id,shop_id,active_revision FROM core_orders WHERE id=$1 AND shop_id=$2',[tenantOrder.order_id,tenantOrder.shop_id])).rows[0];
+    if(!order)throw new DomainError('NOT_FOUND','Không tìm thấy đơn trong cửa hàng',404);
+    const revision=(await db.query<{revision:number;request_hash:string;request_data:unknown}>(
+     'SELECT revision,request_hash,request_data FROM core_revisions WHERE order_id=$1 AND revision=$2',[order.id,order.active_revision])).rows[0];
+    if(!revision||revision.revision!==order.active_revision||! /^[0-9a-f]{64}$/.test(revision.request_hash)||
+       sha(canonical(revision.request_data))!==revision.request_hash)
+     throw new DomainError('STALE_FILE_BINDING','Revision/request hash hiện hành không hợp lệ',409);
+    return {order,revision};
+   };
+   const before=await load();
+   const scope={shop_id:before.order.shop_id,order_id:before.order.id,active_revision:before.order.active_revision,
+    request_hash:before.revision.request_hash,request_data:before.revision.request_data};
+   const snapshot=await readWordReviewSnapshot(db,this.wordSource!,scope);
+   const after=await load();
+   if(after.order.active_revision!==scope.active_revision||after.revision.request_hash!==scope.request_hash||
+      canonical(after.revision.request_data)!==canonical(scope.request_data))
+    throw new DomainError('STALE_WORD_SOURCE','Đơn đã đổi phiên bản trong lúc đọc file Word',409);
+   return snapshot;
+  });
+ }
 }
