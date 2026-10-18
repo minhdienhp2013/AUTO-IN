@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, rm } from 'node:fs/promises';
-import { resolve, sep } from 'node:path';
+import { chmod, lstat, mkdtemp, open, rm } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
 import { canonical, DomainError } from '../core/model.js';
 import type { PdfReviewSnapshot } from '../core/pdf-review-source.js';
 
@@ -12,6 +12,7 @@ const HEX = /^[a-f0-9]{64}$/;
 const SAFE_REF = /^[A-Za-z0-9_-]+\/[A-Za-z0-9._-]+$/;
 const MAX_PAGE_BYTES = 10 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 16 * 1024;
+const CLI_TIMEOUT_MS = 120_000;
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 32;
 
@@ -88,6 +89,7 @@ export interface PreparedPdfReviewPreview {
   request_hash: string;
   /** Server-only; never include these refs in an HTTP DTO. */
   private_pages: readonly CachedPage[];
+  private_work_dir: string | null;
   private_bundle_ref: string | null;
   expires_at: number;
 }
@@ -156,7 +158,8 @@ function safeSettings(snapshot: PdfReviewSnapshot) {
   return { copies: item.copies as number, duplex: item.duplex, paper: item.paper } as const;
 }
 
-function runCli(snapshot: PdfReviewSnapshot, root: string, pythonExecutable: string): Promise<CliResult> {
+function runCli(snapshot: PdfReviewSnapshot, root: string, pythonExecutable: string,
+  timeoutMs: number): Promise<CliResult> {
   const input = JSON.stringify({
     schema: snapshot.schema, shop_id: snapshot.shop_id, order_id: snapshot.order_id,
     active_revision: snapshot.active_revision, request_hash: snapshot.request_hash,
@@ -169,32 +172,32 @@ function runCli(snapshot: PdfReviewSnapshot, root: string, pythonExecutable: str
   if (Buffer.byteLength(input) > 36 * 1024 * 1024) return Promise.reject(unavailable());
   return new Promise((resolvePromise, rejectPromise) => {
     let stdout = Buffer.alloc(0);
+    let failed = false;
     let settled = false;
     const child = spawn(pythonExecutable,
       ['-m', 'workers.documents.native_pdf_review_cli', '--artifact-root', root],
       { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'], shell: false });
-    const finishError = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.kill('SIGKILL');
-      rejectPromise(unavailable());
+    const terminate = () => {
+      if (settled || failed) return;
+      failed = true;
+      try { child.kill('SIGKILL'); } catch { /* close still owns settlement */ }
     };
-    const timer = setTimeout(finishError, 120_000);
+    const timer = setTimeout(terminate, timeoutMs);
     timer.unref?.();
     child.stdout.on('data', (chunk: Buffer) => {
-      if (stdout.length + chunk.length > MAX_OUTPUT_BYTES) { finishError(); return; }
+      if (failed) return;
+      if (stdout.length + chunk.length > MAX_OUTPUT_BYTES) { terminate(); return; }
       stdout = Buffer.concat([stdout, chunk]);
     });
     // The worker must not expose source contents through logs. Consume stderr
     // without retaining or forwarding it to the app logger.
     child.stderr.on('data', () => undefined);
-    child.on('error', finishError);
+    child.on('error', () => { failed = true; });
     child.on('close', code => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (code !== 0 || !stdout.length || stdout.at(-1) !== 0x0a ||
+      if (failed || code !== 0 || !stdout.length || stdout.at(-1) !== 0x0a ||
           stdout.subarray(0, stdout.length - 1).includes(0x0a)) {
         rejectPromise(unavailable()); return;
       }
@@ -204,7 +207,7 @@ function runCli(snapshot: PdfReviewSnapshot, root: string, pythonExecutable: str
         resolvePromise(parsed as CliResult);
       } catch { rejectPromise(unavailable()); }
     });
-    child.stdin.on('error', finishError);
+    child.stdin.on('error', terminate);
     child.stdin.end(input, 'utf8');
   });
 }
@@ -232,12 +235,12 @@ async function readPrivateArtifact(root: string, ref: string, maxBytes: number):
   } finally { await file?.close(); }
 }
 
-async function removePrivateBundle(root: string, ref: string | null): Promise<void> {
-  if (!ref || !safeRef(ref)) return;
-  const [folder, name] = ref.split('/') as [string, string];
-  if (name !== 'manifest.json' || !/^doc-[A-Za-z0-9_-]{6,64}$/.test(folder)) return;
-  const base = resolve(root), target = resolve(base, folder);
+async function removeWorkDirectory(root: string, workDir: string | null): Promise<void> {
+  if (!workDir) return;
+  const base = resolve(root), target = resolve(workDir);
   if (!target.startsWith(base + sep)) return;
+  const name = target.slice(base.length + 1);
+  if (name.includes(sep) || !/^pdf-review-[A-Za-z0-9_-]+$/.test(name)) return;
   const rootStat = await lstat(base).catch(() => null);
   const stat = await lstat(target).catch(() => null);
   if (rootStat?.isDirectory() && !rootStat.isSymbolicLink() && !(rootStat.mode & 0o077) &&
@@ -253,8 +256,12 @@ async function assertPrivateRoot(root: string): Promise<void> {
 export function createPdfReviewPreviewService(options: {
   artifactRoot: string;
   pythonExecutable?: string;
+  timeoutMs?: number;
 }) {
   if (!options.artifactRoot) throw new Error('PDF_REVIEW_ARTIFACT_ROOT_REQUIRED');
+  const timeoutMs = options.timeoutMs ?? CLI_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > CLI_TIMEOUT_MS)
+    throw new Error('PDF_REVIEW_TIMEOUT_INVALID');
   const artifactRoot = resolve(options.artifactRoot);
   const python = options.pythonExecutable?.trim() || process.env.AUTOIN_PYTHON?.trim() || 'python3';
   const cache = new Map<string, PreparedPdfReviewPreview>();
@@ -262,7 +269,7 @@ export function createPdfReviewPreviewService(options: {
 
   const evict = async (entry: PreparedPdfReviewPreview | undefined) => {
     if (!entry) return;
-    await removePrivateBundle(artifactRoot, entry.private_bundle_ref);
+    await removeWorkDirectory(artifactRoot, entry.private_work_dir);
   };
   const prune = async () => {
     const now = Date.now();
@@ -280,9 +287,13 @@ export function createPdfReviewPreviewService(options: {
   return {
     async prepare(snapshot: PdfReviewSnapshot): Promise<PreparedPdfReviewPreview> {
       await assertPrivateRoot(artifactRoot);
-      const settings = safeSettings(snapshot);
-      const result = await runCli(snapshot, artifactRoot, python);
+      let workDir: string | null = null;
+      let keep = false;
       try {
+      const settings = safeSettings(snapshot);
+      workDir = await mkdtemp(join(artifactRoot, 'pdf-review-'));
+      await chmod(workDir, 0o700);
+      const result = await runCli(snapshot, workDir, python, timeoutMs);
       if (result.schema !== CLI_SCHEMA || result.preview_schema !== PREVIEW_SCHEMA ||
           result.shop_id !== snapshot.shop_id || result.order_id !== snapshot.order_id ||
           result.active_revision !== snapshot.active_revision || result.request_hash !== snapshot.request_hash ||
@@ -308,7 +319,8 @@ export function createPdfReviewPreviewService(options: {
             (!Array.isArray(result.preview_artifacts) || result.preview_artifacts.length !== 0)) throw invalid();
         return { projection, shop_id: snapshot.shop_id, order_id: snapshot.order_id,
           revision: snapshot.active_revision, request_hash: snapshot.request_hash,
-          private_pages: [], private_bundle_ref: null, expires_at: Date.now() + CACHE_TTL_MS };
+          private_pages: [], private_work_dir: null, private_bundle_ref: null,
+          expires_at: Date.now() + CACHE_TTL_MS };
       }
 
       if (!safeRef(result.artifact_ref) || !result.artifact_ref.endsWith('/manifest.json') ||
@@ -322,7 +334,7 @@ export function createPdfReviewPreviewService(options: {
 
       const bundleRef = result.artifact_ref;
       const bundleFolder = bundleRef.split('/')[0];
-      const manifestBytes = await readPrivateArtifact(artifactRoot, bundleRef, 256 * 1024);
+      const manifestBytes = await readPrivateArtifact(workDir, bundleRef, 256 * 1024);
       if (sha(manifestBytes) !== result.manifest_sha256) throw invalid();
       const manifest = parseJsonNoDuplicateKeys(new TextDecoder('utf-8', { fatal: true }).decode(manifestBytes));
       if (!isRecord(manifest) || manifest.schema !== PREVIEW_SCHEMA || manifest.status !== 'REVIEW_REQUIRED' ||
@@ -360,7 +372,7 @@ export function createPdfReviewPreviewService(options: {
             !Number.isSafeInteger(page.size_bytes) || page.size_bytes < 1 || page.size_bytes > MAX_PAGE_BYTES ||
             !isRecord(manifestPage) || manifestPage.ref !== page.artifact_ref ||
             manifestPage.sha256 !== page.sha256 || manifestPage.bytes !== page.size_bytes) throw invalid();
-        const pageBytes = await readPrivateArtifact(artifactRoot, page.artifact_ref, MAX_PAGE_BYTES);
+        const pageBytes = await readPrivateArtifact(workDir, page.artifact_ref, MAX_PAGE_BYTES);
         if (pageBytes.length !== page.size_bytes || sha(pageBytes) !== page.sha256 ||
             !pageBytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw invalid();
         privatePages.push({ artifact_ref: page.artifact_ref, sha256: page.sha256, size_bytes: page.size_bytes });
@@ -370,13 +382,17 @@ export function createPdfReviewPreviewService(options: {
       }
       Object.assign(projection, { pages: publicPages, document_pages: result.document_pages,
         printed_faces: result.printed_faces, physical_sheets: result.physical_sheets });
-      return { projection, shop_id: snapshot.shop_id, order_id: snapshot.order_id,
+      const prepared = { projection, shop_id: snapshot.shop_id, order_id: snapshot.order_id,
         revision: snapshot.active_revision, request_hash: snapshot.request_hash,
-        private_pages: privatePages, private_bundle_ref: bundleRef, expires_at: Date.now() + CACHE_TTL_MS };
+        private_pages: privatePages, private_work_dir: workDir, private_bundle_ref: bundleRef,
+        expires_at: Date.now() + CACHE_TTL_MS };
+      keep = true;
+      return prepared;
       } catch (error) {
-        await removePrivateBundle(artifactRoot,
-          typeof result.artifact_ref === 'string' ? result.artifact_ref : null);
-        throw error;
+        if (error instanceof DomainError) throw error;
+        throw unavailable();
+      } finally {
+        if (!keep) await removeWorkDirectory(artifactRoot, workDir);
       }
     },
 
@@ -386,7 +402,7 @@ export function createPdfReviewPreviewService(options: {
       const previous = cache.get(entryKey);
       cache.delete(entryKey);
       cache.set(entryKey, prepared);
-      if (previous && previous.private_bundle_ref !== prepared.private_bundle_ref) await evict(previous);
+      if (previous && previous.private_work_dir !== prepared.private_work_dir) await evict(previous);
       await prune();
     },
 
@@ -414,14 +430,11 @@ export function createPdfReviewPreviewService(options: {
     async readPage(entry: PreparedPdfReviewPreview, index: number): Promise<Buffer> {
       const page = entry.private_pages[index];
       if (!page || !Number.isSafeInteger(index) || index < 0) throw new DomainError('NOT_FOUND', 'Preview không tồn tại', 404);
-      const bytes = await readPrivateArtifact(artifactRoot, page.artifact_ref, MAX_PAGE_BYTES);
+      if (!entry.private_work_dir) throw new DomainError('NOT_FOUND', 'Preview không tồn tại', 404);
+      const bytes = await readPrivateArtifact(entry.private_work_dir, page.artifact_ref, MAX_PAGE_BYTES);
       if (bytes.length !== page.size_bytes || sha(bytes) !== page.sha256 ||
           !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw invalid();
       return bytes;
-    },
-
-    async discardFolder(ref: string | null): Promise<void> {
-      await removePrivateBundle(artifactRoot, ref);
     }
   };
 }
