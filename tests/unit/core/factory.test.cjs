@@ -21,8 +21,10 @@ test('factory requires PostgreSQL port and trusted resolvers; no test principal 
 });
 test('V1 factory requires and forwards the server-owned evidence verifier; legacy mode remains available',()=>{
  const evidence={read_verified:async()=>null};
- const v1=createCoreModule({pool:noopPool,mode:'v1',evidence});
+ const pdfSource={read_registered:async()=>null};
+ const v1=createCoreModule({pool:noopPool,mode:'v1',evidence,pdfSource});
  assert.equal(v1.service.evidence,evidence,'Core must receive the exact factory-injected verifier');
+ assert.equal(v1.service.pdfSource,pdfSource,'Core must receive the optional PDF registry reader port');
  assert.throws(()=>createCoreModule({pool:noopPool,mode:'v1'}),e=>e.code==='PRINT_EVIDENCE_NOT_CONFIGURED');
  assert.throws(()=>createCoreModule({pool:noopPool,mode:'v1',evidence:{}}),e=>e.code==='PRINT_EVIDENCE_NOT_CONFIGURED');
  assert.throws(()=>createCoreModule({pool:noopPool,evidence}),e=>e.code==='V1_MODE_REQUIRED');

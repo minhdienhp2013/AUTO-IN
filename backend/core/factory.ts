@@ -7,6 +7,7 @@ import { PgStore, type SqlPool } from '../storage/database.js';
 import { registerCoreRoutes, type RouteRegistrar, type CoreRouteDependencies } from '../api/routes.js';
 import type { TrustedPrintEvidencePort } from './print-evidence.js';
 import type { TrustedWordReviewSourceReader } from './word-review-source.js';
+import type { TrustedPdfReviewSourceReader } from './pdf-review-source.js';
 
 /**
  * AI1 composition port, for AI0 to wire into ONE Fastify application.
@@ -35,8 +36,9 @@ export interface VerifiedIdentityPorts {
  * verifier; an incomplete V1 configuration is rejected at construction.
  */
 export type CoreModuleOptions =
-  | {pool: SqlPool; now?: () => Date; mode?: 'legacy'; evidence?: never; wordSource?: never}
-  | {pool: SqlPool; now?: () => Date; mode: 'v1'; evidence: TrustedPrintEvidencePort; wordSource?: TrustedWordReviewSourceReader};
+  | {pool: SqlPool; now?: () => Date; mode?: 'legacy'; evidence?: never; wordSource?: never; pdfSource?: never}
+  | {pool: SqlPool; now?: () => Date; mode: 'v1'; evidence: TrustedPrintEvidencePort;
+      wordSource?: TrustedWordReviewSourceReader;pdfSource?:TrustedPdfReviewSourceReader};
 
 function validCustomer(p: Principal | null | undefined): p is Principal {
   return !!p?.verified && p.role === 'customer' &&
@@ -62,7 +64,8 @@ export function createCoreModule(options: CoreModuleOptions): CoreModule {
   const auth = new AuthService(store);
   const service = new OrderService(store, options.now ?? (() => new Date()),
     options.mode === 'v1' ? options.evidence : undefined,
-    options.mode === 'v1' ? options.wordSource : undefined);
+    options.mode === 'v1' ? options.wordSource : undefined,
+    options.mode === 'v1' ? options.pdfSource : undefined);
   const schedule = new ShopScheduleService(store);
   const inboundReviewReader = createInboundReviewReader({store});
   return {
