@@ -89,6 +89,17 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    acknowledge_deposit_shortage:true,idempotency_key:key('approve')});
   const jobCount=async id=>Number((await a.query('SELECT count(*)::int n FROM core_print_jobs WHERE order_id=$1',[id])).rows[0].n);
   const cancel=async id=>a.query("UPDATE core_print_jobs SET cancelled_at=now() WHERE order_id=$1 AND state='NOT_SENT'",[id]);
+  const waitForOrderLockWaiters=async minimum=>{
+   const deadline=Date.now()+5000;
+   while(Date.now()<deadline){
+    const waiting=Number((await a.query(
+     "SELECT count(*)::int n FROM pg_stat_activity WHERE wait_event_type='Lock' AND state='active' AND query LIKE '%core_orders%FOR UPDATE%'"
+    )).rows[0].n);
+    if(waiting>=minimum)return;
+    await new Promise(resolve=>setTimeout(resolve,10));
+   }
+   throw new Error(`Timed out waiting for ${minimum} Core order-lock waiters`);
+  };
   await t.test('missing/stale/wrong-scope review blocks every confirmation/approval path with zero writes',async()=>{
    const conv=key('missing-review-conv'),id=await make('missing-review',conv);
    const challengePort=createVerifiedConfirmationPort({store:new PgStore(b),trusted:{shop_id:shop,oa_id:key('missing-review-oa')},evidence:fakePort});
@@ -234,6 +245,49 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    const audit=(await a.query("SELECT details FROM core_audit WHERE action='print.approved' AND order_id=$1",[id])).rows[0];
    assert.match(audit.details.evidence_sha256,/^[0-9a-f]{64}$/);
    await cancel(id);
+  });
+  await t.test('revision wins queued order-lock race; stale customer confirmation creates no challenge, approval or job',async()=>{
+   const conv=key('revision-race-conv'),id=await make('revision-wins-race',conv);
+   await review(id);
+   const requestHash=(await a.query(
+    'SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=2',[id])).rows[0].request_hash;
+   const challengePort=createVerifiedConfirmationPort({store:new PgStore(b),
+    trusted:{shop_id:shop,oa_id:key('revision-race-oa')},evidence:fakePort});
+   const target={order_id:id,expected_revision:2,request_hash:requestHash,kind:'request',expected_generation:0};
+   const lock=await a.connect();
+   await lock.query('BEGIN');
+   await lock.query('SELECT id FROM core_orders WHERE id=$1 FOR UPDATE',[id]);
+   try{
+    // Queue the legitimate revision mutation before stale confirmation consumers.
+    const reviseRace=A.revise(staff,id,{expected_revision:2,
+     request_data:{files:[{file_id:'fixture/revised-source.pdf',copies:1,format:'pdf'}],
+      settings:{paper:'A4',duplex:false,copies:1}},idempotency_key:key('revision-race')});
+    await waitForOrderLockWaiters(1);
+    const confirmRace=assert.rejects(B.confirm(customer,id,
+     {expected_revision:2,kind:'request',idempotency_key:key('stale-confirm-race')}),error('STALE_REVISION'));
+    await waitForOrderLockWaiters(2);
+    const challengeRace=challengePort.issue_challenge(target);
+    await waitForOrderLockWaiters(3);
+    await lock.query('COMMIT');
+    await reviseRace;
+    await confirmRace;
+    assert.deepEqual(await challengeRace,{status:'stale'});
+   }finally{
+    await lock.query('ROLLBACK').catch(()=>{});
+    lock.release();
+   }
+   await assert.rejects(approve(id),error('STALE_REVISION'));
+   const writes=await a.query('SELECT '+
+    '(SELECT count(*)::int FROM core_confirmation_challenges WHERE order_id=$1) challenges,'+
+    '(SELECT count(*)::int FROM core_confirmations WHERE order_id=$1) confirmations,'+
+    '(SELECT count(*)::int FROM core_approvals WHERE order_id=$1) approvals,'+
+    '(SELECT count(*)::int FROM core_print_jobs WHERE order_id=$1) jobs',[id]);
+   assert.deepEqual(writes.rows[0],{challenges:0,confirmations:0,approvals:0,jobs:0});
+   const outboxTable=(await a.query("SELECT to_regclass('public.core_tn005_suggested_outbox') AS relation")).rows[0].relation;
+   if(outboxTable){
+    const outbox=await a.query('SELECT count(*)::int n FROM core_tn005_suggested_outbox WHERE order_id=$1',[id]);
+    assert.equal(outbox.rows[0].n,0);
+   }
   });
   await t.test('source/manifest/settings/preview changed after approval blocks claim with no extra job',async()=>{
    for(const part of ['source','manifest','settings','preview']){
