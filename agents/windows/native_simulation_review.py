@@ -1,46 +1,41 @@
-"""Staff-reviewed simulation-only gate for the AI0 print_evidence.v1 contract.
+"""Core-receipt-gated, simulation-only review of native print evidence.
 
-No driver, COM, spooler, network, queue mutation, print job creation or retry.
-An external AI0/Core Port must load the review and job from an authenticated,
-durable transaction; constructing a dataclass here does not grant authority.
+This module performs no driver, COM, spooler, network, queue mutation, print
+job creation or retry. The preflight envelope must come from AI1 over the
+authenticated agent HTTPS session; a browser DTO or a client-built review
+object is never accepted as authority. A passing result remains unsent.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
 from typing import Any
 
+from workers.documents.bridge import _canonical
+from workers.documents.native_job_binding import (
+    is_safe_core_preflight_result,
+    validate_core_preflight_ticket,
+)
+
 SCHEMA = "ai3.staff_review_simulation.v1"
+HEX = frozenset("0123456789abcdef")
 
 
-@dataclass(frozen=True)
-class TrustedStaffReview:
-    """AI0/AI1 only: reviewed preview digest and exact approved revision."""
-
-    shop_id: str
-    order_id: str
-    revision: int
-    request_hash: str
-    evidence_sha256: str
-    settings_sha256: str
-    renderer_sha256: str
-    printer_capability_sha256: str
-    preview_sha256: tuple[str, ...]
-    approval_id: str
-    job_id: str
-    reviewer_id: str
-    reviewer_role: str
-    reviewed_at: str
-    decision: str
+def _is_sha256(value: Any) -> bool:
+    return (type(value) is str and len(value) == 64 and
+            all(char in HEX for char in value))
 
 
 def review_simulation_only(*, verified_evidence: dict[str, Any],
                            snapshot: dict[str, Any],
-                           review: TrustedStaffReview | None,
-                           trusted_job: dict[str, Any]) -> dict[str, Any]:
-    """Require staff preview review *after* the anchored evidence verification.
+                           preflight_ticket: dict[str, Any] | None,
+                           claimed_job: dict[str, Any]) -> dict[str, Any]:
+    """Require the current Core review receipt before a no-print simulation.
 
-    Returned permission is to run an isolated *simulation*, never to mark
-    SENDING, invoke PrintOut, call a physical spooler, or resend UNKNOWN.
+    The receipt, evidence and job projections are checked together by
+    ``validate_core_preflight_ticket``. Staff identity/authorization is
+    established when Core persists the receipt, not by a caller-supplied role
+    flag. This function only confirms the exact current evidence digest and
+    preview list, then returns PREPARED_NOT_SENT.
     """
     def hold(reason: str) -> dict[str, Any]:
         return {"schema": SCHEMA, "status": "NEEDS_HUMAN",
@@ -48,48 +43,64 @@ def review_simulation_only(*, verified_evidence: dict[str, Any],
                 "allowed_to_print": False, "queue_submission_enabled": False,
                 "physical_print_verified": False}
 
-    if (not isinstance(verified_evidence, dict) or
-            verified_evidence.get("schema") != "ai0.print_evidence.v1" or
+    if (type(verified_evidence) is not dict or
+            verified_evidence.get("schema") not in
+            ("ai0.print_evidence.v1", "ai3.native_job_binding.v1") or
             verified_evidence.get("status") != "EVIDENCE_VERIFIED" or
             verified_evidence.get("allowed_to_print") is not False or
-            not isinstance(snapshot, dict) or
+            verified_evidence.get("allowed_to_simulate") is not False or
+            verified_evidence.get("physical_print_verified") is not False or
+            type(snapshot) is not dict or
             snapshot.get("schema") != "ai0.print_evidence.v1" or
+            not _is_sha256(snapshot.get("evidence_sha256")) or
             verified_evidence.get("evidence_sha256") != snapshot.get("evidence_sha256")):
         return hold("CORE_EVIDENCE_NOT_VERIFIED")
-    if not isinstance(trusted_job, dict) or trusted_job.get("mode") != "simulation":
-        return hold("SIMULATION_MODE_REQUIRED")
-    if trusted_job.get("state") != "NOT_SENT":
-        return hold("JOB_UNCERTAIN_OR_ALREADY_SENT")
-    if not isinstance(review, TrustedStaffReview):
-        return hold("STAFF_PREVIEW_REVIEW_MISSING")
-    fields = ("shop_id", "order_id", "revision", "request_hash",
-              "evidence_sha256", "settings_sha256", "renderer_sha256",
-              "printer_capability_sha256")
-    if (any(getattr(review, name) != snapshot.get(name) for name in fields) or
-            type(review.revision) is not int or review.revision < 1 or
-            type(snapshot.get("revision")) is not int or
-            any(trusted_job.get(name) != snapshot.get(name)
-                for name in ("shop_id", "order_id", "revision", "request_hash",
-                             "evidence_sha256"))):
-        return hold("STAFF_REVIEW_STALE_EVIDENCE")
-    images = snapshot.get("previews")
-    if (not isinstance(images, list) or
-            tuple(x.get("sha256") for x in images if isinstance(x, dict)) != review.preview_sha256 or
-            len(images) != len(review.preview_sha256)):
-        return hold("STAFF_REVIEW_PREVIEW_CHANGED")
-    if (review.decision != "STAFF_PREVIEW_CONFIRMED" or
-            review.reviewer_role not in ("staff", "owner") or
-            any(type(x) is not str or not x for x in
-                (review.reviewer_id, review.reviewed_at, review.approval_id,
-                 review.job_id, review.shop_id, review.order_id)) or
-            trusted_job.get("approval_id") != review.approval_id or
-            trusted_job.get("job_id") != review.job_id or
-            trusted_job.get("printer_id") != "RMP7000" or
-            snapshot.get("printer_id") != "RMP7000"):
-        return hold("STAFF_REVIEW_OR_JOB_UNVERIFIED")
-    return {"schema": SCHEMA, "status": "SIMULATION_ONLY_REVIEW_CONFIRMED",
-            "reason_code": "NONE",
-            "evidence_sha256": snapshot["evidence_sha256"],
-            "source_formats": tuple(s["format"] for s in snapshot["sources"]),
-            "allowed_to_simulate": True, "allowed_to_print": False,
-            "queue_submission_enabled": False, "physical_print_verified": False}
+
+    try:
+        body = {key: value for key, value in snapshot.items()
+                if key != "evidence_sha256"}
+        digest = hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()
+    except Exception:
+        return hold("SNAPSHOT_OR_PREVIEW_CHANGED")
+    if digest != snapshot["evidence_sha256"]:
+        return hold("SNAPSHOT_OR_PREVIEW_CHANGED")
+
+    result = validate_core_preflight_ticket(
+        preflight_ticket=preflight_ticket, claimed_job=claimed_job)
+    if (result.get("status") != "PREPARED_NOT_SENT" or
+            not is_safe_core_preflight_result(
+                result, preflight_ticket=preflight_ticket)):
+        return hold(result.get("reason_code", "CORE_REVIEW_RECEIPT_REQUIRED"))
+
+    evidence = preflight_ticket["trusted_evidence"]
+    previews = snapshot.get("previews")
+    sources = snapshot.get("sources")
+    if (snapshot["evidence_sha256"] != evidence.get("evidence_sha256") or
+            snapshot.get("shop_id") != evidence.get("shop_id") or
+            snapshot.get("order_id") != evidence.get("order_id") or
+            snapshot.get("revision") != evidence.get("revision") or
+            snapshot.get("request_hash") != evidence.get("request_hash") or
+            snapshot.get("settings_sha256") != evidence.get("settings_sha256") or
+            snapshot.get("renderer_sha256") != evidence.get("renderer_sha256") or
+            snapshot.get("printer_capability_sha256") != evidence.get("printer_capability_sha256") or
+            snapshot.get("printer_id") != "RMP7000" or
+            type(previews) is not list or not previews or
+            any(type(item) is not dict or not _is_sha256(item.get("sha256"))
+                for item in previews) or
+            [item["sha256"] for item in previews] != evidence.get("preview_sha256") or
+            type(sources) is not list or not sources or
+            any(type(item) is not dict or item.get("format") not in ("PDF", "DOCX")
+                for item in sources) or
+            len({item["format"] for item in sources}) != 1):
+        return hold("STAFF_REVIEW_OR_PREVIEW_UNVERIFIED")
+
+    trusted_job = preflight_ticket["trusted_job"]
+    return {**result, "schema": SCHEMA,
+            "source_formats": tuple(item["format"] for item in sources),
+            "shop_id": trusted_job["shop_id"],
+            "order_id": trusted_job["order_id"],
+            "job_id": trusted_job["job_id"],
+            "revision": trusted_job["revision"],
+            "request_hash": trusted_job["request_hash"],
+            "approval_id": trusted_job["approval_id"],
+            "printer_id": trusted_job["printer_id"]}

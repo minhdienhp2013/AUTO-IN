@@ -28,6 +28,41 @@ def job():
             'lease_seconds': 90, 'mode': 'simulation'}
 
 
+def native_ticket(claimed, *, extra=None, state='NOT_SENT'):
+    digest = 'a' * 64
+    receipt = {
+        'receipt_id': 'receipt-1', 'shop_id': 'shop-1',
+        'order_id': claimed['order_id'], 'revision': claimed['revision'],
+        'request_hash': claimed['request_hash'], 'evidence_sha256': digest,
+        'reviewer_id': 'staff-1', 'reviewed_at': '2026-10-18T10:00:00Z',
+        'decision': 'checked',
+    }
+    evidence = {
+        'schema': 'ai0.print_evidence.v1', 'shop_id': 'shop-1',
+        'order_id': claimed['order_id'], 'revision': claimed['revision'],
+        'request_hash': claimed['request_hash'], 'evidence_sha256': digest,
+        'settings_sha256': 'b' * 64, 'renderer_sha256': 'c' * 64,
+        'printer_capability_sha256': 'd' * 64,
+        'preview_sha256': ['e' * 64], 'printer_id': 'RMP7000',
+    }
+    trusted_job = {
+        'job_id': claimed['job_id'], 'shop_id': 'shop-1',
+        'order_id': claimed['order_id'], 'revision': claimed['revision'],
+        'request_hash': claimed['request_hash'],
+        'approval_id': claimed['approval_id'], 'printer_id': 'RMP7000',
+        'evidence_sha256': digest, 'mode': 'simulation', 'state': state,
+    }
+    ticket = {
+        'allowed': True, 'job_id': claimed['job_id'],
+        'revision': claimed['revision'], 'mode': 'simulation',
+        'approval_id': claimed['approval_id'], 'review_receipt': receipt,
+        'trusted_evidence': evidence, 'trusted_job': trusted_job,
+    }
+    if extra:
+        ticket.update(extra)
+    return ticket
+
+
 def test_wire_exact_body_and_routes(monkeypatch):
     captured = []
 
@@ -106,6 +141,47 @@ def test_bad_report_ack_is_not_marked_confirmed(monkeypatch):
     client = backend_http.HttpBackendClient('https://backend.example', 'T' * 24)
     with pytest.raises(RuntimeError):
         client.report(job(), 'SIMULATED_DONE', {'evidence_kind': 'simulated'})
+
+
+def test_native_preflight_caches_only_exact_core_review_ticket(monkeypatch):
+    claimed = job()
+    ticket = native_ticket(claimed)
+    monkeypatch.setattr(backend_http, 'urlopen', lambda *_a, **_k: Response(ticket))
+    client = backend_http.HttpBackendClient('https://backend.example', 'T' * 24)
+    result = client.preflight_native(claimed)
+    assert result['status'] == 'PREPARED_NOT_SENT'
+    cached = client.native_preflight_ticket(claimed)
+    assert cached == ticket
+    assert client.native_preflight_ticket(claimed) is None
+    changed_lease = {**claimed, 'lease_token': 'other-lease'}
+    assert client.native_preflight_ticket(changed_lease) is None
+
+
+@pytest.mark.parametrize('bad', [
+    {'document_evidence_verified': True},
+    {'allowed_to_print': True},
+])
+def test_native_preflight_rejects_client_authority_extensions(monkeypatch, bad):
+    claimed = job()
+    monkeypatch.setattr(backend_http, 'urlopen',
+                        lambda *_a, **_k: Response(native_ticket(claimed, extra=bad)))
+    client = backend_http.HttpBackendClient('https://backend.example', 'T' * 24)
+    result = client.preflight_native(claimed)
+    assert result['status'] == 'NEEDS_HUMAN'
+    assert result['allowed_to_print'] is False
+    assert client.native_preflight_ticket(claimed) is None
+
+
+def test_native_preflight_rejects_sending_or_unknown_replay(monkeypatch):
+    claimed = job()
+    for state in ('SENDING', 'UNKNOWN', 'SIMULATED_DONE'):
+        monkeypatch.setattr(backend_http, 'urlopen',
+                            lambda *_a, _state=state, **_k:
+                            Response(native_ticket(claimed, state=_state)))
+        client = backend_http.HttpBackendClient('https://backend.example', 'T' * 24)
+        result = client.preflight_native(claimed)
+        assert result['status'] == 'NEEDS_HUMAN', (state, result)
+        assert client.native_preflight_ticket(claimed) is None
 
 
 def test_end_to_end_agent_with_ai1_wire_mock(monkeypatch, tmp_path):

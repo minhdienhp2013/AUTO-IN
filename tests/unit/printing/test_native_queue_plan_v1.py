@@ -8,9 +8,21 @@ def _args():
         queue_name="RMP7000", printer_id="RMP7000",
         printer_model="Ricoh IM7000", driver_name="Ricoh PCL6 V4",
         port_name="IP_192.168.1.195")
-    job = {"printer_id": "RMP7000", "mode": "simulation"}
-    evidence = {"status": "EVIDENCE_VERIFIED", "allowed_to_print": False,
-                "native_format": "PDF"}
+    job = {
+        "shop_id": "synthetic-shop", "order_id": "synthetic-order",
+        "job_id": "synthetic-job", "revision": 2,
+        "request_hash": "b" * 64, "approval_id": "synthetic-approval",
+        "evidence_sha256": "a" * 64, "printer_id": "RMP7000",
+        "mode": "simulation", "state": "NOT_SENT",
+    }
+    evidence = {
+        **{key: value for key, value in job.items() if key != "state"},
+        "status": "PREPARED_NOT_SENT", "review_status": "EVIDENCE_REVIEWED",
+        "reason_code": "CORE_REVIEW_RECEIPT_MATCHED",
+        "receipt_id": "synthetic-receipt", "source_formats": ("PDF",),
+        "allowed_to_simulate": True, "allowed_to_print": False,
+        "queue_submission_enabled": False, "physical_print_verified": False,
+    }
     settings = {"paper": "A4", "copies": 2, "duplex": True,
                 "orientation": "landscape", "binding": "short_edge"}
     return queue, job, evidence, settings
@@ -55,13 +67,37 @@ def test_unverified_ricoh_queue_never_falls_back(field, changed):
 
 def test_word_requires_more_than_preview():
     q, j, e, s = _args()
-    e["native_format"] = "DOCX"
-    e["status"] = "REVIEW_REQUIRED"
+    e["source_formats"] = ("DOCX",)
+    e["status"] = "EVIDENCE_VERIFIED"
     out = plan_native_ricoh(
         observed=q, sealed_job=j, verified_evidence=e,
         file_format="DOCX", settings=s, host_windows_verified=True)
     assert out["status"] == "NEEDS_HUMAN"
     assert out["reason_code"] == "MANIFEST_OR_STAFF_REVIEW_INCOMPLETE"
+
+
+def test_reviewed_docx_prepares_without_changing_print_source():
+    q, j, e, s = _args()
+    e["source_formats"] = ("DOCX",)
+    out = plan_native_ricoh(observed=q, sealed_job=j, verified_evidence=e,
+                            file_format="DOCX", settings=s,
+                            host_windows_verified=True)
+    assert out["status"] == "PREPARED_NOT_SENT", out
+    assert out["print_source_format"] == "DOCX"
+    assert out["native_application"] == "Word.Application"
+    assert out["allowed_to_print"] is False
+    assert out["queue_submission_enabled"] is False
+
+
+def test_unknown_job_cannot_replay_into_prepared_plan():
+    q, j, e, s = _args()
+    j["state"] = "UNKNOWN"
+    out = plan_native_ricoh(observed=q, sealed_job=j, verified_evidence=e,
+                            file_format="PDF", settings=s,
+                            host_windows_verified=True)
+    assert out["status"] == "NEEDS_HUMAN"
+    assert out["reason_code"] == "JOB_REVIEW_SCOPE_OR_REPLAY"
+    assert out["queue_submission_enabled"] is False
 
 
 def test_driver_not_called_and_uncertain_job_not_resubmitted():

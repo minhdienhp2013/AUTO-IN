@@ -2,15 +2,14 @@
 from dataclasses import replace
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
 from workers.documents.print_evidence_v1 import (
     create_print_evidence_v1, verify_print_evidence_v1,
 )
-from agents.windows.native_simulation_review import (
-    TrustedStaffReview, review_simulation_only,
-)
+from agents.windows.native_simulation_review import review_simulation_only
 from tests.unit.documents.test_native_word_pdf_v1 import (
     _ready_pdf, _docx, FakeWordSession, sha,
 )
@@ -26,6 +25,47 @@ CAPS = {
 }
 
 
+def _core_plan(context, counts):
+    """Synthetic copy of the Core PrintPlan row for this isolated test."""
+    return {
+        "request_hash": context["request_hash"],
+        "physical_sheets": counts["physical_sheets"],
+        "document_pages": counts["document_pages"],
+        "printed_faces": counts["printed_faces"],
+        "ready": True,
+        "printer_id": context["printer_id"],
+        "artifact_ref": context["manifest_ref"],
+        "verified_by": "ai3.processor.v1",
+    }
+
+
+def test_shared_vector_matches_core_canonical_digests():
+    fixture = Path(__file__).parent / "fixtures" / "print_evidence_v1_core_vector.json"
+    vector = json.loads(fixture.read_text(encoding="utf-8"))
+    scope = vector["scope"]
+    proof = vector["proof"]
+    expected = vector["expected_sha256"]
+
+    def core_sha(value):
+        return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+    assert vector["synthetic_only"] is True
+    assert vector["processor_counts"] == {
+        key: scope["plan"][key]
+        for key in ("document_pages", "printed_faces", "physical_sheets")
+    }
+    assert proof["plan_sha256"] == expected["plan_sha256"] == core_sha(scope["plan"])
+    assert proof["source_set_sha256"] == expected["source_set_sha256"] == core_sha(proof["sources"])
+    body = {key: value for key, value in proof.items() if key != "evidence_sha256"}
+    assert proof["evidence_sha256"] == expected["evidence_sha256"] == core_sha(body)
+    assert set(proof) == {
+        "schema", "shop_id", "order_id", "revision", "request_hash", "sources",
+        "source_set_sha256", "settings_sha256", "manifest_ref", "manifest_sha256",
+        "previews", "renderer_sha256", "plan_sha256", "printer_id",
+        "printer_capability_sha256", "evidence_sha256",
+    }
+
+
 def _pdf_inputs(tmp_path):
     trusted, job, manifest_bytes, source, previews, settings = _ready_pdf(tmp_path)
     manifest = json.loads(manifest_bytes)
@@ -34,8 +74,10 @@ def _pdf_inputs(tmp_path):
         "revision": trusted.revision, "request_hash": trusted.request_hash,
         "manifest_ref": trusted.manifest_ref, "printer_id": trusted.printer_id,
     }
+    core_plan = _core_plan(context, manifest["counts"])
     args = dict(context=context, manifest_bytes=manifest_bytes,
                 originals=(source,), previews=previews, settings=(settings,),
+                trusted_core_plan=core_plan,
                 renderer_identity=manifest["renderer_versions"],
                 printer_capabilities=CAPS)
     return args, trusted, job
@@ -55,24 +97,50 @@ def _approved_snapshot(tmp_path):
 
 
 def _review(trusted, snapshot):
-    return TrustedStaffReview(
-        shop_id=trusted.shop_id, order_id=trusted.order_id,
-        revision=trusted.revision, request_hash=trusted.request_hash,
-        evidence_sha256=snapshot["evidence_sha256"],
-        settings_sha256=snapshot["settings_sha256"],
-        renderer_sha256=snapshot["renderer_sha256"],
-        printer_capability_sha256=snapshot["printer_capability_sha256"],
-        preview_sha256=tuple(p["sha256"] for p in snapshot["previews"]),
-        approval_id=trusted.approval_id, job_id=trusted.job_id,
-        reviewer_id="synthetic-staff-reviewer", reviewer_role="staff",
-        reviewed_at="2026-10-17T10:00:00Z",
-        decision="STAFF_PREVIEW_CONFIRMED",
-    )
+    del trusted
+    return {
+        "receipt_id": "synthetic-review-receipt",
+        "shop_id": snapshot["shop_id"], "order_id": snapshot["order_id"],
+        "revision": snapshot["revision"],
+        "request_hash": snapshot["request_hash"],
+        "evidence_sha256": snapshot["evidence_sha256"],
+        "reviewer_id": "synthetic-staff-reviewer",
+        "reviewed_at": "2026-10-17T10:00:00Z", "decision": "checked",
+    }
 
 
 def _job(job, snapshot):
     return {**job, "evidence_sha256": snapshot["evidence_sha256"],
             "state": "NOT_SENT"}
+
+
+def _ticket(job, snapshot):
+    return {
+        "allowed": True, "job_id": job["job_id"],
+        "revision": job["revision"], "mode": "simulation",
+        "approval_id": job["approval_id"],
+        "review_receipt": _review(None, snapshot),
+        "trusted_evidence": {
+            "schema": "ai0.print_evidence.v1",
+            "shop_id": snapshot["shop_id"], "order_id": snapshot["order_id"],
+            "revision": snapshot["revision"],
+            "request_hash": snapshot["request_hash"],
+            "evidence_sha256": snapshot["evidence_sha256"],
+            "settings_sha256": snapshot["settings_sha256"],
+            "renderer_sha256": snapshot["renderer_sha256"],
+            "printer_capability_sha256": snapshot["printer_capability_sha256"],
+            "preview_sha256": [item["sha256"] for item in snapshot["previews"]],
+            "printer_id": snapshot["printer_id"],
+        },
+        "trusted_job": {
+            "job_id": job["job_id"], "shop_id": snapshot["shop_id"],
+            "order_id": job["order_id"], "revision": job["revision"],
+            "request_hash": job["request_hash"],
+            "approval_id": job["approval_id"], "printer_id": job["printer_id"],
+            "evidence_sha256": snapshot["evidence_sha256"],
+            "mode": "simulation", "state": "NOT_SENT",
+        },
+    }
 
 
 def test_pdf_exact_tuple_core_anchor_and_staff_review_allows_simulation_only(tmp_path):
@@ -81,18 +149,53 @@ def test_pdf_exact_tuple_core_anchor_and_staff_review_allows_simulation_only(tmp
     assert snapshot["sources"][0]["format"] == "PDF"
     assert snapshot["sources"][0]["source_sha256"] == sha(args["originals"][0])
     assert snapshot["manifest_sha256"] == sha(args["manifest_bytes"])
+    assert snapshot["plan_sha256"] == sha(_canonical(args["trusted_core_plan"]).encode())
     assert snapshot["settings_sha256"] == sha(_canonical(list(args["settings"])).encode())
     assert snapshot["source_set_sha256"] == sha(_canonical(snapshot["sources"]).encode())
     assert snapshot["printer_capability_sha256"] == sha(_canonical(CAPS).encode())
     assert verified["allowed_to_simulate"] is False
+    current_job = _job(job, snapshot)
     ok = review_simulation_only(
         verified_evidence=verified, snapshot=snapshot,
-        review=_review(trusted, snapshot), trusted_job=_job(job, snapshot))
-    assert ok["status"] == "SIMULATION_ONLY_REVIEW_CONFIRMED", ok
+        preflight_ticket=_ticket(current_job, snapshot), claimed_job=current_job)
+    assert ok["status"] == "PREPARED_NOT_SENT", ok
     assert ok["allowed_to_simulate"] is True
     assert ok["allowed_to_print"] is False
     assert ok["queue_submission_enabled"] is False
     assert ok["physical_print_verified"] is False
+
+
+def test_processor_counts_must_match_the_active_core_plan(tmp_path):
+    args, trusted, _ = _pdf_inputs(tmp_path)
+    changed_plan = {**args["trusted_core_plan"], "physical_sheets": 99}
+    result = create_print_evidence_v1(**{**args, "trusted_core_plan": changed_plan})
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "CORE_PLAN_COUNT_MISMATCH"
+    assert result["allowed_to_print"] is False
+
+
+def test_missing_active_core_plan_fails_closed(tmp_path):
+    args, _, _ = _pdf_inputs(tmp_path)
+    result = create_print_evidence_v1(**{**args, "trusted_core_plan": None})
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "CORE_PLAN_UNVERIFIED"
+    assert result["allowed_to_print"] is False
+
+
+@pytest.mark.parametrize("field,value", [
+    ("request_hash", "0" * 64),
+    ("printer_id", "Canon"),
+    ("artifact_ref", "doc-other/manifest.json"),
+    ("ready", False),
+    ("verified_by", ""),
+])
+def test_core_plan_scope_and_readiness_must_match_manifest(tmp_path, field, value):
+    args, _, _ = _pdf_inputs(tmp_path)
+    changed_plan = {**args["trusted_core_plan"], field: value}
+    result = create_print_evidence_v1(**{**args, "trusted_core_plan": changed_plan})
+    assert result["status"] == "NEEDS_HUMAN", (field, result)
+    assert result["reason_code"] == "CORE_PLAN_SCOPE_UNVERIFIED"
+    assert result["allowed_to_print"] is False
 
 
 @pytest.mark.parametrize("mutation", [
@@ -137,31 +240,31 @@ def test_each_changed_byte_or_tuple_member_invalidates_core_anchor(tmp_path, mut
 ])
 def test_simulation_admission_requires_same_staff_review_and_unsent_job(tmp_path, mutation):
     args, trusted, job, snapshot, verified = _approved_snapshot(tmp_path)
-    review = _review(trusted, snapshot)
     current_job = _job(job, snapshot)
+    ticket = _ticket(current_job, snapshot)
     if mutation == "missing_review":
-        review = None
+        ticket.pop("review_receipt")
     elif mutation == "old_digest":
-        review = replace(review, evidence_sha256="0" * 64)
+        ticket["review_receipt"]["evidence_sha256"] = "0" * 64
     elif mutation == "wrong_approval":
-        review = replace(review, approval_id="different")
+        ticket["trusted_job"]["approval_id"] = "different"
     elif mutation == "wrong_preview":
-        review = replace(review, preview_sha256=("0" * 64,))
+        ticket["trusted_evidence"]["preview_sha256"] = ["0" * 64]
     elif mutation == "changed_driver":
-        review = replace(review, printer_capability_sha256="0" * 64)
+        ticket["trusted_evidence"]["printer_capability_sha256"] = "0" * 64
     elif mutation == "unverified_staff":
-        review = replace(review, decision="PENDING")
+        ticket["review_receipt"]["decision"] = "pending"
     elif mutation == "unknown":
-        current_job["state"] = "UNKNOWN"
+        ticket["trusted_job"]["state"] = "UNKNOWN"
     elif mutation == "sending":
-        current_job["state"] = "SENDING"
+        ticket["trusted_job"]["state"] = "SENDING"
     elif mutation == "mode_production":
         current_job["mode"] = "production"
     elif mutation == "changed_job":
-        current_job["job_id"] = "different"
+        ticket["trusted_job"]["job_id"] = "different"
     result = review_simulation_only(
         verified_evidence=verified, snapshot=snapshot,
-        review=review, trusted_job=current_job)
+        preflight_ticket=ticket, claimed_job=current_job)
     assert result["status"] == "NEEDS_HUMAN", (mutation, result)
     assert result["allowed_to_simulate"] is False
     assert result["queue_submission_enabled"] is False
@@ -211,6 +314,7 @@ def test_word_original_docx_and_renderer_version_bind_and_review_only(tmp_path):
         manifest_bytes=manifest_bytes, originals=(source,), previews=previews,
         settings=({"copies": 2, "paper": "A4", "duplex": True},),
         renderer_identity=manifest["renderer_identity"], printer_capabilities=CAPS)
+    args["trusted_core_plan"] = _core_plan(args["context"], manifest["counts"])
     evidence = create_print_evidence_v1(**args)
     assert evidence["status"] == "SNAPSHOT_DERIVED", evidence
     snap = evidence["snapshot"]
@@ -221,33 +325,20 @@ def test_word_original_docx_and_renderer_version_bind_and_review_only(tmp_path):
         active_revision=3, **args)
     assert verify["status"] == "EVIDENCE_VERIFIED", verify
     # Even with a synthetic staff review, the only result is a no-print simulator.
-    trusted = replace(_review_obj_for_word(snap), job_id="fake-word-job")
     job = {
         "shop_id": snap["shop_id"], "order_id": snap["order_id"],
         "revision": 3, "request_hash": snap["request_hash"],
         "evidence_sha256": snap["evidence_sha256"], "printer_id": "RMP7000",
-        "approval_id": trusted.approval_id, "job_id": trusted.job_id,
-        "mode": "simulation", "state": "NOT_SENT",
+        "approval_id": "fake-word-approval", "job_id": "fake-word-job",
+        "lease_token": "synthetic-lease", "mode": "simulation",
     }
+    ticket = _ticket(job, snap)
     simulation = review_simulation_only(
-        verified_evidence=verify, snapshot=snap, review=trusted, trusted_job=job)
-    assert simulation["status"] == "SIMULATION_ONLY_REVIEW_CONFIRMED", simulation
+        verified_evidence=verify, snapshot=snap, preflight_ticket=ticket,
+        claimed_job=job)
+    assert simulation["status"] == "PREPARED_NOT_SENT", simulation
     assert simulation["source_formats"] == ("DOCX",)
     assert simulation["allowed_to_print"] is False
-
-
-def _review_obj_for_word(s):
-    return TrustedStaffReview(
-        shop_id=s["shop_id"], order_id=s["order_id"],
-        revision=s["revision"], request_hash=s["request_hash"],
-        evidence_sha256=s["evidence_sha256"],
-        settings_sha256=s["settings_sha256"],
-        renderer_sha256=s["renderer_sha256"],
-        printer_capability_sha256=s["printer_capability_sha256"],
-        preview_sha256=tuple(p["sha256"] for p in s["previews"]),
-        approval_id="fake-word-approval", job_id="fake-word-job",
-        reviewer_id="fake-staff", reviewer_role="staff",
-        reviewed_at="2026-10-17T10:00:00Z", decision="STAFF_PREVIEW_CONFIRMED")
 
 
 def test_missing_core_context_returns_hold_not_exception(tmp_path):
