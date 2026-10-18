@@ -1,5 +1,27 @@
 # V1-NATIVE-01 — AI3 Word/PDF native preparation (no live print)
 
+## V1-NATIVE-10 — source contract adapter (18/10/2026)
+
+`prepare_native_word_review_from_snapshot` accepts only the server-to-worker
+`ai0.word_review_source.v1` object and verifies its strict keys, tenant/order/
+revision/request anchors, byte lengths and SHA-256 digests, opaque relative
+refs, same-bundle source/manifest location, and exact
+`ai0.word_review_manifest.v1` bytes. Duplicate JSON keys are rejected. The
+existing Core request data is preserved and hashed as-is; the current
+`documents[]` shape is accepted only when exactly one registered DOCX matches
+the trusted source locator. Unknown shapes or ambiguous/missing DOCX stay
+`NEEDS_HUMAN` pending a Core-owned schema/registry contract.
+
+Successful bundles repeat shop/order/revision/request hash, original DOCX ref,
+hash and size, input manifest ref/hash, page/face/sheet counts, settings digest,
+renderer facts, and preview page refs/digests. They always remain
+`REVIEW_REQUIRED`, `ready=false`, `allowed_to_print=false`,
+`requires_staff_review=true`, and `physical_print_verified=false`. The DOCX
+remains the source intended for printing; no API, DB, driver or physical print
+path is added. Word COM, Windows host behavior and Ricoh paper output remain
+NOT RUN; mock tests exercise contract and denial behavior only.
+
+
 **BASE:** AI0 PR #144 at SHA 0673460af71205986b901a21fc7724dbea23c991. **Ownership:** AI3 modules/tests/documentation only. **Safety:** No live Word, Ricoh, Zalo, physical printing, schema, API or Core change in CI.
 
 ## TN-009 / TN-012 / TN-023 / TN-029 / TN-034
