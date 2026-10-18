@@ -36,7 +36,9 @@ def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str,
     def hold(code: str) -> dict[str, Any]:
         return {"schema": SCHEMA, "status": "NEEDS_HUMAN",
                 "reason_code": code, "ready": False,
-                "allowed_to_print": False}
+                "allowed_to_print": False, "requires_staff_review": True,
+                "physical_print_verified": False,
+                "source_format": "DOCX", "print_source_format": "DOCX"}
 
     folder: Path | None = None
     try:
@@ -133,7 +135,8 @@ def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str,
                                                "physical_sheets", "requires_price_confirmation")},
             "evidence_kind": "windows_word_com_preview_only",
             "renderer_identity": observation["renderer_identity"],
-            "ready": False, "requires_staff_review": True,
+            "ready": False, "allowed_to_print": False,
+            "requires_staff_review": True,
             "physical_print_verified": False,
         }
         manifest_file = folder / "manifest.json"
@@ -145,6 +148,8 @@ def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str,
             "schema": SCHEMA, "status": "REVIEW_REQUIRED",
             "reason_code": "WORD_FONT_AND_RICOH_LAYOUT_UNVERIFIED",
             "ready": False, "allowed_to_print": False,
+            "requires_staff_review": True, "physical_print_verified": False,
+            "source_format": "DOCX", "print_source_format": "DOCX",
             "artifact_ref": f"{folder.name}/manifest.json",
             "manifest_sha256": _sha(manifest_file.read_bytes()),
             "source_sha256": source_hash,
