@@ -118,3 +118,29 @@ Thực hiện mỗi ca ở **Safari iPhone vật lý**, tối thiểu chiều d�
 - **Lưu theo ca:** `IPH-xx | thiết bị | iOS/Safari | viewport CSS px | UI SHA | backend SHA | kiểu API (synthetic/PG) | PASS/FAIL/BLOCKED/NOT RUN | ảnh/video/log | số mutation trước/sau | lỗi & AI phụ trách`. Nếu thiếu model/iOS/viewport hoặc bằng chứng khóa duyệt/no mutation, **không ghi PASS**.
 
 **Điều kiện kết luận:** chỉ ghi **PASS iPhone Safari thực tế** sau khi có thiết bị, dữ liệu kiểm thử an toàn, thao tác chạy và đủ bằng chứng. Nếu chưa có iPhone/môi trường/tester hoặc chưa xuất được log mutation, giữ **NOT RUN/BLOCKED** đúng mục. Mốc Chromium synthetic PR #84 (28/28) chỉ là tham chiếu hồi quy, **không** thay nghiệm thu Safari hay chứng minh Zalo OA, Ricoh, in giấy thật, TN-037/V1.
+
+
+## TN008-WEBKIT-REGRESSION-01 — kiểm thử WebKit desktop/mobile (2026-10-18)
+
+**Mục đích:** tăng coverage giao diện thông báo từ candidate product chính xác 0673460af71205986b901a21fc7724dbea23c991; không mở Web Push vận hành và không sửa sản phẩm. Không sửa CI/workflow gốc, backend, service worker, CODE008, CODE501.
+
+**Công cụ có sẵn:** bộ CI AI0 chỉ cài **Playwright Chromium 1.58.0**, chạy CODE008+CODE501 synthetic, không cài WebKit. Máy kiểm tra độc lập có Python Playwright 1.57.0 nhưng **không có WebKit browser binary**, tải về bị chặn DNS; vì vậy không được đánh dấu WebKit PASS nếu chưa có job WebKit chạy thật. Test AST trong npm test chỉ kiểm tra cú pháp Python, KHÔNG phải chạy WebKit.
+
+**Bổ sung AI4:**
+- tests/ui/tn008-webkit-notifications.py sử dụng Playwright **WebKit** chạy UI Vite production đã build với VITE_DEMO_MODE=false, một Vite preview cục bộ chỉ ở 127.0.0.1:4175, desktop 1440×900 và mobile viewport 390×844.
+- 10 tình huống mỗi viewport: native_probe (đọc capability gốc, không bấm xin quyền); unsupported_no_notification; unsupported_missing_method; unsupported_insecure; denied; default; granted; granted_on_click; rejected_then_retry; rejected_to_denied. Tổng cộng **20 case-viewport**. Các trạng thái điều khiển đều dùng **Notification/serviceWorker synthetic qua add_init_script**; chỉ native_probe không can thiệp API browser. Thử lại có thể hồi phục; không hỏi quyền tự động và không retry khi bị denied.
+- Kiểm tra **chính xác** các dòng: “Trình duyệt hoặc kết nối HTTPS chưa hỗ trợ thông báo”; “Chưa cấp quyền thông báo”; “Đã từ chối quyền — kiểm tra cài đặt trình duyệt”; “Đã cấp quyền, chưa nối Web Push”; “Yêu cầu quyền thất bại. Có thể thử lại; Web Push chưa kết nối.”; và lời nhắc chung “Web Push thật chưa được kết nối; thông báo sẽ mở đúng đơn sau khi có backend phát Push được xác thực.”
+- Chỉ giả lập API đăng nhập/đọc đơn/đọc lịch để mở SettingsView trong bundle thật, **không mock Web Push backend và không có Web Push subscription**. Chặn kết nối ngoài localhost, đếm cuộc gọi permission, đếm các lần thử pushManager.subscribe, mutation và URL Push backend; bất cứ gọi subscribe/Push backend/mutation bất thường nào cũng FAIL. Lưu mỗi ca một ảnh chụp tại /tmp/autoin-tn008-webkit-evidence theo mặc định (không ghi ảnh vào Git).
+- web/package.json thêm npm run test:webkit:tn008; tests/ui/tn008-webkit-harness.test.ts kiểm tra Python AST trong npm test mà **không gọi giả WebKit**.
+
+**Lệnh dành cho AI0, chỉ trong runner CI cô lập** (đúng PR HEAD, Node 24, Python 3.12, không phải thiết bị thật):
+
+1. cd web && npm ci && npm test && npm run typecheck
+2. VITE_DEMO_MODE=false npm run build
+3. python3 -m pip install playwright==1.58.0
+4. python3 -m playwright install --with-deps webkit
+5. npm run test:webkit:tn008
+
+AI0 sở hữu workflow: cần thêm job WebKit độc lập trên runner Linux có dependency hệ thống, chạy đúng SHA PR, lưu logs/screenshots/artifacts, ghi tách riêng desktop/mobile, không sửa và không đổi tên 28 ca Chromium CODE008. Nếu thiếu WebKit binary/runner, **20/20 WebKit NOT RUN**, tuyệt đối không khẳng định PASS từ syntax-only hoặc Chromium.
+
+**Ranh giới nghiệm thu:** WebKit trên Linux ở viewport mobile **KHÔNG thay thế Safari WebKit trên iPhone vật lý**. Bộ IPH-01–IPH-10 Safari thật vẫn **10/10 NOT RUN**; model/iOS/Safari/viewport vật lý và Network chưa có. Không xác nhận Web Push được cấp phép ở OS, đã tạo subscription, đã gửi/nhận thông báo, có VAPID/backend Push, hay Zalo OA/Ricoh thật. V1/TN-037 vẫn chưa đạt. Không merge/deploy.
