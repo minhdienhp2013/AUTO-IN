@@ -63,8 +63,8 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    acknowledge_deposit_shortage:true,idempotency_key:key('approve')});
   const jobCount=async id=>Number((await a.query('SELECT count(*)::int n FROM core_print_jobs WHERE order_id=$1',[id])).rows[0].n);
   const cancel=async id=>a.query("UPDATE core_print_jobs SET cancelled_at=now() WHERE order_id=$1 AND state='NOT_SENT'",[id]);
-  await t.test('confirmation pins evidence; source/manifest/settings/preview drift blocks approval',async()=>{
-   for(const part of ['source','manifest','settings','preview']){
+  await t.test('confirmation pins evidence; source/manifest/settings/preview/renderer/capability drift blocks approval',async()=>{
+   for(const part of ['source','manifest','settings','preview','renderer','capability']){
     const id=await make('before-approve-'+part);await confirm(id);
     const column=(await a.query("SELECT evidence_sha256 FROM core_confirmations WHERE order_id=$1 AND kind='request'",[id])).rows[0];
     assert.match(column.evidence_sha256,/^[0-9a-f]{64}$/);
@@ -75,6 +75,24 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
     await assert.rejects(approve(id),error('STALE_PRINT_EVIDENCE'));
     assert.equal(await jobCount(id),0);
    }
+  });
+  await t.test('same-key confirmation and approval retries are idempotent and create one job',async()=>{
+   const id=await make('idempotent');
+   const confirmInput={expected_revision:2,kind:'request',idempotency_key:key('confirm-stable')};
+   const first=await A.confirm(customer,id,confirmInput);
+   const retry=await B.confirm(customer,id,confirmInput);
+   assert.deepEqual(retry,first);
+   assert.equal((await a.query("SELECT count(*)::int n FROM core_confirmations WHERE order_id=$1 AND kind='request'",[id])).rows[0].n,1);
+   const stored=(await a.query("SELECT evidence_sha256 FROM core_confirmations WHERE order_id=$1 AND kind='request'",[id])).rows[0];
+   assert.match(stored.evidence_sha256,/^[0-9a-f]{64}$/);
+   const approveInput={expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('approve-stable')};
+   const approved=await A.approve(staff,id,approveInput);
+   const approveRetry=await B.approve(staff,id,approveInput);
+   assert.deepEqual(approveRetry,approved);
+   assert.equal(await jobCount(id),1);
+   const bound=(await a.query('SELECT a.evidence_sha256 approval,j.evidence_sha256 job FROM core_approvals a JOIN core_print_jobs j ON j.approval_id=a.id WHERE j.order_id=$1',[id])).rows[0];
+   assert.equal(bound.approval,stored.evidence_sha256);assert.equal(bound.job,stored.evidence_sha256);
+   await cancel(id);
   });
   await t.test('verified OA challenge binds evidence at issue and click, stale preview cannot confirm',async()=>{
    const conv=key('verified-conversation'),oa=key('oa'),id=await make('verified-oa',conv);
@@ -108,6 +126,16 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    const approved=await A.approve(staff,id,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('approve-verified')});
    assert.ok(approved.job_id);
    assert.equal((await a.query('SELECT evidence_sha256 FROM core_print_jobs WHERE id=$1',[approved.job_id])).rows[0].evidence_sha256,acceptedProof);
+   const oldId=await make('legacy-challenge',conv);
+   const oldHash=(await a.query('SELECT request_hash FROM core_revisions WHERE order_id=$1 AND revision=2',[oldId])).rows[0].request_hash;
+   const oldTarget={order_id:oldId,expected_revision:2,request_hash:oldHash,kind:'request',expected_generation:0};
+   const legacyChallengePort=createVerifiedConfirmationPort({store:new PgStore(a),trusted:{shop_id:shop,oa_id:oa}});
+   const oldChallenge=await legacyChallengePort.issue_challenge(oldTarget);
+   assert.equal(oldChallenge.status,'issued');
+   assert.equal((await a.query('SELECT evidence_sha256 FROM core_confirmation_challenges WHERE id=$1',[oldChallenge.challenge_id])).rows[0].evidence_sha256,null);
+   const legacyEventId=await inbound(oldChallenge);
+   assert.deepEqual(await challengePort.confirm_verified_event({...oldTarget,event_id:legacyEventId}),{status:'stale'});
+   assert.equal((await a.query('SELECT count(*)::int n FROM core_confirmations WHERE order_id=$1',[oldId])).rows[0].n,0);
    await cancel(id);
   });
   await t.test('two pools compete on same digest, exactly one approval/job',async()=>{
@@ -123,8 +151,8 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    assert.match(audit.details.evidence_sha256,/^[0-9a-f]{64}$/);
    await cancel(id);
   });
-  await t.test('source/manifest/settings/preview changed after approval blocks claim with no extra job',async()=>{
-   for(const part of ['source','manifest','settings','preview']){
+  await t.test('source/manifest/settings/preview/renderer/capability changed after approval blocks claim with no extra job',async()=>{
+   for(const part of ['source','manifest','settings','preview','renderer','capability']){
     const id=await make('before-claim-'+part);await confirm(id);await approve(id);
     states.get(id)[part]+='-changed';
     assert.equal((await A.getOrder(staff,id)).current.staff_approved,false);
@@ -133,6 +161,30 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
     assert.equal(await jobCount(id),1);
     await cancel(id);
    }
+  });
+  await t.test('legacy NULL evidence cannot confirm, approve, claim, preflight or mark sending',async()=>{
+   const legacy=new OrderService(new PgStore(a),()=>new Date());
+   const confirmationId=await make('legacy-confirmation');
+   await legacy.confirm(customer,confirmationId,{expected_revision:2,kind:'request',idempotency_key:key('legacy-confirm')});
+   assert.equal((await a.query("SELECT evidence_sha256 FROM core_confirmations WHERE order_id=$1",[confirmationId])).rows[0].evidence_sha256,null);
+   await assert.rejects(approve(confirmationId),error('STALE_PRINT_EVIDENCE'));
+   assert.equal((await a.query('SELECT count(*)::int n FROM core_approvals WHERE order_id=$1',[confirmationId])).rows[0].n,0);
+   assert.equal(await jobCount(confirmationId),0);
+
+   const jobOrder=await make('legacy-job');
+   await legacy.confirm(customer,jobOrder,{expected_revision:2,kind:'request',idempotency_key:key('legacy-job-confirm')});
+   const oldApproval=await legacy.approve(staff,jobOrder,{expected_revision:2,acknowledge_deposit_shortage:true,idempotency_key:key('legacy-job-approve')});
+   const old=(await a.query('SELECT a.evidence_sha256 approval,j.evidence_sha256 job FROM core_approvals a JOIN core_print_jobs j ON j.approval_id=a.id WHERE j.id=$1',[oldApproval.job_id])).rows[0];
+   assert.equal(old.approval,null);assert.equal(old.job,null);
+   await assert.rejects(A.claim(agent,{printer_id:'RMP7000',idempotency_key:key('legacy-claim')}),error('STALE_PRINT_EVIDENCE'));
+   assert.equal((await a.query('SELECT state FROM core_print_jobs WHERE id=$1',[oldApproval.job_id])).rows[0].state,'NOT_SENT');
+   const lease='legacy-null-test-lease';
+   await a.query("UPDATE core_print_jobs SET claimed_by=$2,lease_secret_hash=$3,lease_until=now()+interval '60 seconds' WHERE id=$1",
+    [oldApproval.job_id,agent.id,sha(lease)]);
+   await assert.rejects(A.preflight(agent,oldApproval.job_id,{expected_revision:2,lease_token:lease}),error('STALE_PRINT_EVIDENCE'));
+   await assert.rejects(A.markSending(agent,oldApproval.job_id,{expected_revision:2,lease_token:lease,idempotency_key:key('legacy-send')}),error('STALE_PRINT_EVIDENCE'));
+   assert.equal((await a.query('SELECT state FROM core_print_jobs WHERE id=$1',[oldApproval.job_id])).rows[0].state,'NOT_SENT');
+   await cancel(jobOrder);
   });
   await t.test('preflight and mark-sending both recheck the current evidence',async()=>{
    const id=await make('before-send');await confirm(id);const approved=await approve(id);
