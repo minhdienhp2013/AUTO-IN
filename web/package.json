@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --experimental-strip-types --test ../tests/ui/*.test.ts",
     "prebuild": "npm test",
-    "test:chromium:code008": "python3 ../tests/ui/code008-chromium.py"
+    "test:chromium:code008": "python3 ../tests/ui/code008-chromium.py",
+    "test:webkit:tn008": "python3 ../tests/ui/tn008-webkit-notifications.py"
   },
   "dependencies": {
     "react": "19.2.0",
