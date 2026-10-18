@@ -395,7 +395,7 @@ function App() {
                 <div className="detail-tabs" role="tablist"><button role="tab" aria-selected={detailTab==='document'} className={detailTab==='document'?'on':''} onClick={()=>setDetailTab('document')}><FileText size={17}/> Tài liệu & duyệt</button><button role="tab" aria-selected={detailTab==='activity'} className={detailTab==='activity'?'on':''} onClick={()=>setDetailTab('activity')}><History size={17}/> Lịch sử ({selectedOrder.audit.length})</button></div>
                 {detailTab==='activity' ? <div className="activity-content">{selectedOrder.audit.length === 0 ? <div className="empty-panel">Chưa có dữ liệu lịch sử từ API (không tự suy đoán).</div> : selectedOrder.audit.map((row,i)=><div className="activity" key={`${row.at}-${i}`}><span className="activity-dot"/><div><strong>{row.action}</strong><p>{row.summary}</p><small>{row.actor} · {time(row.at)}</small></div></div>)}</div> : <div className="detail-scroll">
                   <div className="section-head"><h3><FileText size={18}/> Tài liệu đính kèm</h3><span>{selectedOrder.documents.length} file</span></div>
-                  {!useDemo && <VerifiedPreviewGallery key={`${selectedOrder.order_id}:${selectedOrder.revision}:${selectedOrder.request_hash}`} port={port} order={selectedOrder} session={session} apiHealthy={apiHealthy} busy={busy} onFreshOrder={fresh=>setOrders(prev=>prev.map(o=>o.order_id===fresh.order_id?fresh:o))}/>}
+                  {!useDemo && <VerifiedPreviewGallery key={`${port.authenticatedShopId()??''}:${session?.actor_id??''}:${session?.role??''}:${selectedOrder.order_id}:${selectedOrder.revision}:${selectedOrder.request_hash}`} port={port} order={selectedOrder} session={session} apiHealthy={apiHealthy} busy={busy} onFreshOrder={fresh=>setOrders(prev=>prev.map(o=>o.order_id===fresh.order_id?fresh:o))}/>}
                   {selectedOrder.documents.map(d=>{
                     const format=d.format.trim().toUpperCase();
                     const isWord=['DOC','DOCX','WORD'].includes(format);
@@ -618,9 +618,17 @@ function VerifiedPreviewGallery({port,order,session,apiHealthy,busy,onFreshOrder
   const [reviewNotice,setReviewNotice]=useState<string|null>(null);
   const reviewLock=useRef(false);
   const reviewKey=useRef<{fingerprint:string;key:string}|null>(null);
+  const shopId=port.authenticatedShopId()??'';
+  const actorId=session?.actor_id??'';
+  const actorRole=session?.role??'';
+  const authenticatedStaff=Boolean(actorId&&['staff','owner'].includes(actorRole));
+  const requestKey=[shopId,actorId,actorRole,order.order_id,order.revision,order.request_hash].join('|');
+  const [loadedKey,setLoadedKey]=useState('');
   useEffect(()=>{
     let cancelled=false;
     const owned:string[]=[];
+    const revokeOwned=()=>{owned.splice(0).forEach(url=>URL.revokeObjectURL(url));};
+    setLoadedKey(requestKey);
     setUrls([]);
     setFacts([]);
     setStatus('loading');
@@ -628,25 +636,35 @@ function VerifiedPreviewGallery({port,order,session,apiHealthy,busy,onFreshOrder
     setReviewError(null);
     setReviewNotice(null);
     reviewKey.current=null;
+    if(!authenticatedStaff||!apiHealthy||!shopId||order.detail_loaded!==true){
+      setStatus('unavailable');
+      return()=>{cancelled=true;revokeOwned();};
+    }
     void port.loadVerifiedPreviewPages(order).then(({pages,files})=>{
       if(cancelled) return;
       if(!pages.length){setStatus('unavailable');return;}
       for(const page of pages) owned.push(URL.createObjectURL(page));
-      if(cancelled){owned.forEach(url=>URL.revokeObjectURL(url));return;}
+      if(cancelled){revokeOwned();return;}
       setFacts(files);
       setUrls([...owned]);
       setStatus('verified');
     }).catch(()=>{
+      revokeOwned();
       if(!cancelled){setFacts([]);setUrls([]);setStatus('unavailable');}
     });
     return ()=>{
       cancelled=true;
-      owned.forEach(url=>URL.revokeObjectURL(url));
+      revokeOwned();
     };
-  },[port,order.order_id,order.revision,order.request_hash]);
+  },[apiHealthy,authenticatedStaff,actorId,actorRole,shopId,port,order.detail_loaded,order.order_id,order.revision,order.request_hash,requestKey,session?.actor_id,session?.role]);
+  const identityCurrent=loadedKey===requestKey;
+  const current=identityCurrent&&authenticatedStaff&&apiHealthy;
+  const visibleStatus:typeof status=!identityCurrent?'loading':!authenticatedStaff||!apiHealthy?'unavailable':status;
+  const visibleUrls=current?urls:[];
+  const visibleFacts=current?facts:[];
   const evidenceSha=order.print_evidence?.evidence_sha256??'';
   const block=previewReviewBlock({order,staff:session,apiHealthy,simulation:useDemo,
-    previewVerified:status==='verified',previewPages:urls.length,previewFiles:facts,
+    previewVerified:current&&status==='verified',previewPages:visibleUrls.length,previewFiles:visibleFacts,
     checked,busy:busy||reviewBusy});
   const sequence=previewReviewSequence(order);
   const canRenderReviewAction=Boolean(session&&session.can_approve&&['staff','owner'].includes(session.role));
@@ -683,11 +701,11 @@ function VerifiedPreviewGallery({port,order,session,apiHealthy,busy,onFreshOrder
   };
   return <section className="verified-previews" data-testid="verified-preview-gallery" aria-label="Ảnh xem trước đã xác minh">
     <strong><ShieldCheck size={15}/> Xem trước bản raster theo phiên bản {order.revision}</strong>
-    {status==='loading' && <p role="status">Đang kiểm tra manifest, SHA-256 và quyền đọc ảnh…</p>}
-    {status==='unavailable' && <p data-testid="preview-unavailable">Chưa thể xác minh đầy đủ ảnh xem trước. Không dùng ảnh thiếu tin cậy để duyệt in.</p>}
-    {status==='verified' && facts.length>0 && <div className="verified-document-list" data-testid="verified-document-list">
+    {visibleStatus==='loading' && <p role="status">Đang kiểm tra manifest, SHA-256 và quyền đọc ảnh…</p>}
+    {visibleStatus==='unavailable' && <p data-testid="preview-unavailable">Chưa thể xác minh đầy đủ ảnh xem trước. Không dùng ảnh thiếu tin cậy để duyệt in.</p>}
+    {visibleStatus==='verified' && visibleFacts.length>0 && <div className="verified-document-list" data-testid="verified-document-list">
       <h4>Thông số từng file do AI3 xác minh</h4>
-      {facts.map(f=><div className="verified-document-row" data-testid="verified-document-row" key={f.index}>
+      {visibleFacts.map(f=><div className="verified-document-row" data-testid="verified-document-row" key={f.index}>
         <div className="verified-document-title"><FileText size={16}/> <b>{f.label}</b> <small>{f.format}</small></div>
         <p className="v1-word-pdf-status" data-testid="v1-word-pdf-status">
           {routeVerifiedDocument(f)==='word'?'Word/DOCX':routeVerifiedDocument(f)==='pdf'?'PDF':'Ngoài luồng Word/PDF V1 — chờ nhân viên'}
@@ -704,11 +722,11 @@ function VerifiedPreviewGallery({port,order,session,apiHealthy,busy,onFreshOrder
         {f.warnings.length>0 && <p>AI3 khuyến nghị nhân viên kiểm tra nội dung trước khi duyệt.</p>}
       </div>)}
     </div>}
-    {status==='verified' && facts.length===0 && <p data-testid="document-facts-unavailable">Chưa có thông số từng file đã được AI3 xác minh; không suy đoán số trang hoặc số tờ.</p>}
-    {status==='verified' && <div className="verified-preview-grid">
-      {urls.map((url,index)=><figure key={url}>
+    {visibleStatus==='verified' && visibleFacts.length===0 && <p data-testid="document-facts-unavailable">Chưa có thông số từng file đã được AI3 xác minh; không suy đoán số trang hoặc số tờ.</p>}
+    {visibleStatus==='verified' && <div className="verified-preview-grid">
+      {visibleUrls.map((url,index)=><figure key={url}>
         <img data-testid="verified-preview-image" src={url} alt={`Ảnh xem trước đã xác minh, trang ${index+1}`} loading="lazy"/>
-        <figcaption>Trang {index+1}/{urls.length} · đã kiểm tra SHA-256</figcaption>
+        <figcaption>Trang {index+1}/{visibleUrls.length} · đã kiểm tra SHA-256</figcaption>
       </figure>)}
     </div>}
     <section className="preview-review-workflow" data-testid="preview-review-workflow" aria-label="Kiểm preview, xác nhận khách và duyệt riêng">
@@ -725,9 +743,9 @@ function VerifiedPreviewGallery({port,order,session,apiHealthy,busy,onFreshOrder
           {order.preview_review?.status==='missing'&&<small data-testid="preview-review-missing">Chưa có receipt cho snapshot hiện hành.</small>}
           {order.preview_review?.status==='stale'&&<small className="preview-review-stale" data-testid="preview-review-stale">Receipt cũ: revision {order.preview_review.revision??'không rõ'} / hash không khớp snapshot hiện hành. Cần kiểm tra lại preview.</small>}
           {order.preview_review?.status==='unavailable'&&<small data-testid="preview-review-unavailable">Không đọc được trạng thái evidence/receipt từ API hiện hành.</small>}
-          {status==='verified'&&facts.some(f=>f.warnings.length>0)&&<small className="preview-review-stale" data-testid="preview-review-renderer-warnings">AI3 có cảnh báo: {facts.flatMap(f=>f.warnings).join(', ')}. Nếu font, bố cục hoặc thông số còn chưa chắc chắn, giữ đơn để xử lý thủ công.</small>}
+          {visibleStatus==='verified'&&visibleFacts.some(f=>f.warnings.length>0)&&<small className="preview-review-stale" data-testid="preview-review-renderer-warnings">AI3 có cảnh báo: {visibleFacts.flatMap(f=>f.warnings).join(', ')}. Nếu font, bố cục hoặc thông số còn chưa chắc chắn, giữ đơn để xử lý thủ công.</small>}
           {canRenderReviewAction&&sequence.staff_preview!=='complete'&&<>
-            {status==='verified'&&urls.length>0&&facts.length>0&&facts.every(f=>routeVerifiedDocument(f)!=='staff_only')&&<label className="preview-review-ack"><input data-testid="preview-review-ack" type="checkbox" checked={checked} onChange={e=>setChecked(e.target.checked)} disabled={busy||reviewBusy}/><span>Tôi đã xem toàn bộ preview và thông số; tôi sẽ giữ đơn chuyển xử lý thủ công nếu phát hiện lỗi hoặc còn điểm chưa chắc chắn.</span></label>}
+            {visibleStatus==='verified'&&visibleUrls.length>0&&visibleFacts.length>0&&visibleFacts.every(f=>routeVerifiedDocument(f)!=='staff_only')&&<label className="preview-review-ack"><input data-testid="preview-review-ack" type="checkbox" checked={checked} onChange={e=>setChecked(e.target.checked)} disabled={busy||reviewBusy}/><span>Tôi đã xem toàn bộ preview và thông số; tôi sẽ giữ đơn chuyển xử lý thủ công nếu phát hiện lỗi hoặc còn điểm chưa chắc chắn.</span></label>}
             <button data-testid="preview-review-action" className="outline-btn" disabled={block!=='allowed'} onClick={()=>void submitReview()}>
               <ClipboardCheck size={16}/>{reviewBusy?'Đang ghi nhận…':order.preview_review?.status==='stale'?'Kiểm tra lại preview hiện hành':'Ghi nhận đã kiểm tra preview'}
             </button>
