@@ -106,14 +106,14 @@ class _WordCOM:
                 self._pythoncom.CoUninitialize()
 
 
-def preview_word_native(source_bytes: bytes, *, expected_sha256: str,
-                        allow_word_launch: bool = False,
-                        session_factory: Callable[[], Any] | None = None) -> dict[str, Any]:
+def _preview_word_native_in_process(source_bytes: bytes, *, expected_sha256: str,
+                                    allow_word_launch: bool = False,
+                                    session_factory: Callable[[], Any] | None = None) -> dict[str, Any]:
     """Return preview bytes for staff review; print authorization is always false.
 
     Fake injected session is clearly labeled, never counted as live Windows.
-    The real session requires Windows + explicit privileged opt-in; caller
-    MUST provide a separate hard-kill watchdog (COM calls may hang).
+    This private implementation runs inside a watchdog child for real Word;
+    COM calls may hang and must never execute in the product worker process.
     """
     if type(expected_sha256) is not str or hashlib.sha256(source_bytes if type(source_bytes) is bytes else b"").hexdigest() != expected_sha256:
         return _error("SOURCE_HASH_MISMATCH")
@@ -176,3 +176,22 @@ def preview_word_native(source_bytes: bytes, *, expected_sha256: str,
     except Exception:
         # COM exceptions may contain file paths/customer content: never expose.
         return _error("WORD_NATIVE_RENDER_UNVERIFIED")
+
+
+def preview_word_native(source_bytes: bytes, *, expected_sha256: str,
+                        allow_word_launch: bool = False,
+                        session_factory: Callable[[], Any] | None = None) -> dict[str, Any]:
+    """Render Word preview in a killable child when using real Windows COM.
+
+    Injected test sessions remain in-process and are explicitly marked fake.
+    Real Word execution is delegated to a bounded worker process; this caller
+    returns a held result if the worker times out or its response is invalid.
+    """
+    if session_factory is not None:
+        return _preview_word_native_in_process(
+            source_bytes, expected_sha256=expected_sha256,
+            allow_word_launch=allow_word_launch, session_factory=session_factory)
+    from agents.windows.native_word_watchdog import preview_word_native_isolated
+    return preview_word_native_isolated(
+        source_bytes, expected_sha256=expected_sha256,
+        allow_word_launch=allow_word_launch)
