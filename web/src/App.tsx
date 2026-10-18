@@ -22,6 +22,7 @@ import { previewReviewBlock, previewReviewBlockMessage, previewReviewErrorMessag
   previewReviewSequence } from './preview-review.ts';
 import { inboundReviewErrorMessage, inboundReviewItemCopy, type InboundReviewItem } from './inbound-review.ts';
 import { WordReviewPanel } from './word-review-panel.ts';
+import { PdfReviewPanel } from './pdf-review-panel.ts';
 
 type View = 'orders' | 'overview' | 'settings' | 'inbound-review';
 type DetailTab = 'document' | 'activity';
@@ -389,19 +390,36 @@ function App() {
                 {detailTab==='activity' ? <div className="activity-content">{selectedOrder.audit.length === 0 ? <div className="empty-panel">Chưa có dữ liệu lịch sử từ API (không tự suy đoán).</div> : selectedOrder.audit.map((row,i)=><div className="activity" key={`${row.at}-${i}`}><span className="activity-dot"/><div><strong>{row.action}</strong><p>{row.summary}</p><small>{row.actor} · {time(row.at)}</small></div></div>)}</div> : <div className="detail-scroll">
                   <div className="section-head"><h3><FileText size={18}/> Tài liệu đính kèm</h3><span>{selectedOrder.documents.length} file</span></div>
                   {!useDemo && <VerifiedPreviewGallery key={`${selectedOrder.order_id}:${selectedOrder.revision}:${selectedOrder.request_hash}`} port={port} order={selectedOrder} session={session} apiHealthy={apiHealthy} busy={busy} onFreshOrder={fresh=>setOrders(prev=>prev.map(o=>o.order_id===fresh.order_id?fresh:o))}/>}
-                  {selectedOrder.documents.map(d=><div className="doc-box" key={d.document_id}><div className="doc-primary"><div className="file-icon"><FileText size={23}/></div><div className="doc-name"><strong>{d.filename}</strong><small>{d.format} · {d.paper} · {d.orientation==='portrait'?'Dọc':'Ngang'} · {d.duplex?'Hai mặt':'Một mặt'} · {d.copies} bản</small></div>{['DOC','DOCX','WORD'].includes(d.format.toUpperCase()) ? <span className="invalid-label"><AlertCircle size={15}/> Chờ Word snapshot</span> : d.preview_trusted ? <span className="verified-label"><ShieldCheck size={15}/> Đã kiểm</span> : <span className="invalid-label"><AlertCircle size={15}/> Chưa tin cậy</span>}</div>
-                    <div className="doc-stats"><div><span>Trang gốc</span><b>{d.pages ?? '—'}</b></div><div><span>Mặt in</span><b>{d.printed_faces ?? '—'}</b></div><div><span>Tờ giấy</span><b>{d.physical_sheets ?? '—'}</b></div></div>
-                    {(['DOC', 'DOCX', 'WORD'].includes(d.format.toUpperCase()))
-                      ? <p className="inline-warning" data-testid="word-preview-source-gated">Preview Word chỉ hiển thị từ snapshot nguồn hiện hành đã xác minh ở mục review bên dưới.</p>
-                      : <Preview url={d.preview_url} trusted={d.preview_trusted}/>}
-                    {d.warnings.map((w,i)=><p className="inline-warning" key={i}><AlertCircle size={15}/> {w}</p>)}
-                    {!useDemo && session && ['DOC', 'DOCX', 'WORD'].includes(d.format.toUpperCase()) && <WordReviewPanel
-                      identity={{shopId:'',orderId:selectedOrder.order_id,revision:selectedOrder.revision,requestHash:selectedOrder.request_hash,
-                        sourceSha256:'',manifestSha256:'',
-                        authenticatedStaff:Boolean(session && ['staff','owner'].includes(session.role))}}
-                      receipt="unavailable"
-                      state={{status:'NOT_WIRED'}}/>}
-                  </div>)}
+                  {selectedOrder.documents.map(d=>{
+                    const format=d.format.trim().toUpperCase();
+                    const isWord=['DOC','DOCX','WORD'].includes(format);
+                    const isPdf=format==='PDF';
+                    const authenticatedStaff=Boolean(session&&['staff','owner'].includes(session.role));
+                    return <div className="doc-box" key={d.document_id} data-testid={isPdf?'pdf-document-row':undefined}>
+                      <div className="doc-primary"><div className="file-icon"><FileText size={23}/></div><div className="doc-name"><strong>{d.filename}</strong><small>{d.format} · {d.paper} · {d.orientation==='portrait'?'Dọc':'Ngang'} · {d.duplex?'Hai mặt':'Một mặt'} · {d.copies} bản</small></div>
+                        {isWord ? <span className="invalid-label"><AlertCircle size={15}/> Chờ Word snapshot</span>
+                          : isPdf ? <span className="invalid-label"><AlertCircle size={15}/> Preview PDF chưa nối</span>
+                            : d.preview_trusted ? <span className="verified-label"><ShieldCheck size={15}/> Đã kiểm</span>
+                              : <span className="invalid-label"><AlertCircle size={15}/> Chưa tin cậy</span>}
+                      </div>
+                      <div className="doc-stats"><div><span>Trang gốc</span><b>{d.pages ?? '—'}</b></div><div><span>Mặt in</span><b>{d.printed_faces ?? '—'}</b></div><div><span>Tờ giấy</span><b>{d.physical_sheets ?? '—'}</b></div></div>
+                      {isWord
+                        ? <p className="inline-warning" data-testid="word-preview-source-gated">Preview Word chỉ hiển thị từ snapshot nguồn hiện hành đã xác minh ở mục review bên dưới.</p>
+                        : isPdf
+                          ? <p className="inline-warning" data-testid="pdf-preview-source-gated">Preview PDF riêng chưa được nối; không dùng URL preview cũ theo file. Ảnh đã xác minh (nếu có) chỉ hiển thị trong gallery bên trên.</p>
+                          : <Preview url={d.preview_url} trusted={d.preview_trusted}/>}
+                      {d.warnings.map((w,i)=><p className="inline-warning" key={i}><AlertCircle size={15}/> {w}</p>)}
+                      {!useDemo && authenticatedStaff && isWord && <WordReviewPanel
+                        identity={{shopId:'',orderId:selectedOrder.order_id,revision:selectedOrder.revision,requestHash:selectedOrder.request_hash,
+                          sourceSha256:'',manifestSha256:'',authenticatedStaff}}
+                        receipt="unavailable"
+                        state={{status:'NOT_WIRED'}}/>}
+                      {!useDemo && authenticatedStaff && isPdf && <PdfReviewPanel
+                        identity={{shopId:'',orderId:selectedOrder.order_id,revision:selectedOrder.revision,requestHash:selectedOrder.request_hash,
+                          sourceSha256:'',manifestSha256:'',authenticatedStaff}}
+                        state={{status:'NOT_WIRED'}}/>}
+                    </div>;
+                  })}
                   {selectedOrder.documents.length===0 && <div className="empty-panel">API chưa cấp dữ liệu phân tách theo từng file; ảnh raster xác minh (nếu có) không phải bằng chứng khách đã xác nhận. Kế hoạch in tổng hợp: {selectedOrder.total_sheets??'chưa xác minh'} tờ; không dùng số này thay preview để duyệt.</div>}
                   {selectedOrder.warnings.length>0 && <div className="warnings"><strong><ShieldAlert size={17}/> Cảnh báo cần đọc</strong>{selectedOrder.warnings.map((w,i)=><p key={i}>• {w}</p>)}</div>}
                   <div className="section-head spaced"><h3><Wallet size={18}/> Giá & tiền</h3><span>Nhân viên xác nhận</span></div>
