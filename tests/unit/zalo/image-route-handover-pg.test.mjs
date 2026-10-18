@@ -128,7 +128,8 @@ test("REAL PostgreSQL AI2: image HUMAN route survives committed lost ACK and wor
 
     const afterLostAck=(await query(`SELECT b.status,b.attempts,b.last_error_code,
         c.status AS control_status,c.generation::text AS generation,
-        e.kind,e.file_ref,q.status AS ingress_status
+        e.payload_json->>'kind' AS kind,e.payload_json->>'file_ref' AS file_ref,
+        q.status AS ingress_status
       FROM zalo_batches b
       JOIN zalo_batch_items i ON i.batch_id=b.id
       JOIN zalo_inbound_events e ON e.oa_id=i.oa_id AND e.event_id=i.event_id
@@ -155,7 +156,9 @@ test("REAL PostgreSQL AI2: image HUMAN route survives committed lost ACK and wor
     assert.equal((await restarted.tick_inbound()).claimed,0,"terminal NEEDS_HUMAN is not auto-replayed");
 
     const finalRows=(await query(`SELECT b.status,b.attempts,b.event_count,c.status AS control_status,
-        c.generation::text AS generation,e.kind,e.file_ref,q.status AS ingress_status
+        c.generation::text AS generation,
+        e.payload_json->>'kind' AS kind,e.payload_json->>'file_ref' AS file_ref,
+        q.status AS ingress_status
       FROM zalo_batches b
       JOIN zalo_batch_items i ON i.batch_id=b.id
       JOIN zalo_inbound_events e ON e.oa_id=i.oa_id AND e.event_id=i.event_id
