@@ -63,3 +63,12 @@
 .settings-box[data-testid=schedule-box] .outline-btn{margin:6px 8px 0 0;max-width:100%;white-space:normal}
 .settings-box .schedule-alert{color:#aa4a36;font-weight:700}
 @media(max-width:450px){.shop-schedule-fields{grid-template-columns:minmax(0,1fr)}}
+
+
+/* V1-QUEUE-01: read-only server-bound statuses inside existing detail layout. */
+.v1-routing-panel{margin:12px 23px;padding:14px 15px;border:1px solid #d8e4df;background:#f8fbf8;border-radius:11px;color:#335649;font-size:11px;line-height:1.6}
+.v1-routing-panel>strong{font-size:13px;color:#27533f}
+.v1-routing-panel p{margin:8px 0}
+.v1-routing-panel small{display:block;color:#718b79}
+.v1-word-pdf-status{font-size:11px;color:#2e7259;line-height:1.5;margin:9px 0}
+@media(max-width:760px){.v1-routing-panel{margin:12px 13px;padding:12px}}
