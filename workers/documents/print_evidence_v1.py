@@ -33,6 +33,22 @@ def _canonical_hash(value: Any) -> str:
     return _sha(_canonical(value).encode("utf-8"))
 
 
+def _valid_digest(value: Any) -> bool:
+    return type(value) is str and HEX.fullmatch(value) is not None
+
+
+def _valid_core_ref(value: Any) -> bool:
+    if (type(value) is not str or not value or len(value) > 512 or
+            value != value.strip() or "\\" in value or any(
+                ord(char) <= 0x20 or char in ":?#[]" for char in value)):
+        return False
+    parts = value.split("/")
+    return (len(parts) == 2 and
+            re.fullmatch(r"[A-Za-z0-9_-]+", parts[0]) is not None and
+            re.fullmatch(r"[A-Za-z0-9._-]+", parts[1]) is not None and
+            parts[1] not in (".", ".."))
+
+
 def _hold(reason: str) -> dict[str, Any]:
     return {"schema": SCHEMA, "status": "NEEDS_HUMAN",
             "reason_code": reason, "allowed_to_print": False,
@@ -118,6 +134,24 @@ def create_print_evidence_v1(*, context: dict[str, Any],
                    manifest.get("ready") is False and
                    manifest.get("requires_staff_review") is True,
                    "WORD_REVIEW_PENDING")
+            source_anchor = manifest.get("source")
+            input_manifest = manifest.get("input_manifest")
+            _check(manifest.get("shop_id") == context["shop_id"] and
+                   manifest.get("order_id") == context["order_id"] and
+                   manifest.get("active_revision") == context["revision"] and
+                   type(manifest.get("active_revision")) is int and
+                   type(source_anchor) is dict and set(source_anchor) == {
+                       "format", "artifact_ref", "sha256", "size_bytes"} and
+                   source_anchor.get("format") == "DOCX" and
+                   _valid_core_ref(source_anchor.get("artifact_ref")) and
+                   _valid_digest(source_anchor.get("sha256")) and
+                   type(source_anchor.get("size_bytes")) is int and
+                   source_anchor["size_bytes"] > 0 and
+                   type(input_manifest) is dict and set(input_manifest) == {"ref", "sha256"} and
+                   _valid_core_ref(input_manifest.get("ref")) and
+                   input_manifest["ref"].split("/")[0] == source_anchor["artifact_ref"].split("/")[0] and
+                   _valid_digest(input_manifest.get("sha256")),
+                   "WORD_CORE_SOURCE_ANCHOR_UNVERIFIED")
         _check(type(originals) is tuple and 1 <= len(originals) <= processor.MAX_DOCS and
                type(previews) is tuple and 1 <= len(previews) <= 3*len(originals) and
                type(settings) is tuple and len(settings) == len(originals) and
@@ -171,6 +205,10 @@ def create_print_evidence_v1(*, context: dict[str, Any],
                "MIXED_FORMAT_REQUIRES_REVIEW")
         is_word = sources[0]["format"] == "DOCX"
         if is_word:
+            source_anchor = manifest.get("source")
+            _check(source_anchor.get("sha256") == sources[0]["source_sha256"] and
+                   source_anchor.get("size_bytes") == sources[0]["size_bytes"],
+                   "WORD_CORE_SOURCE_BYTES_CHANGED")
             _check(renderer_identity == manifest.get("renderer_identity") and
                    renderer_identity.get("engine") == "microsoft_word_com" and
                    type(renderer_identity.get("version")) is str and

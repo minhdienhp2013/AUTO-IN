@@ -14,9 +14,11 @@ import pytest
 from workers.documents.bridge import _canonical, process_request
 from workers.documents.native_job_binding import TrustedNativeJob, verify_native_job
 from workers.documents.native_word_artifacts import make_word_review_artifacts
+from workers.documents.word_review_source_adapter import adapt_word_review_source
 from agents.windows.native_word_document import preview_word_native
 from workers.documents.print_evidence_v1 import create_print_evidence_v1
 from agents.windows.native_simulation_review import review_simulation_only
+from tests.unit.documents.word_review_source_fixture import source_snapshot
 
 
 CAPS = {
@@ -351,11 +353,13 @@ def test_reviewed_word_keeps_docx_source_and_stops_prepared_not_sent(tmp_path):
                               "paper": "A4", "duplex": True,
                               "orientation": "portrait", "binding": "long_edge"}]}
     request_hash = sha(_canonical(request).encode())
-    packaged = make_word_review_artifacts(
-        source=source, trusted_request_data=request,
-        expected_request_hash=request_hash, revision=4,
-        observation=observation, artifact_root=tmp_path)
+    core_source = source_snapshot(
+        source, request, shop_id="test-shop", order_id="word-order", revision=4)
+    packaged = adapt_word_review_source(
+        snapshot=core_source, observation=observation, artifact_root=tmp_path)
     assert packaged["status"] == "REVIEW_REQUIRED", packaged
+    assert packaged["source"] == core_source["source"]
+    assert packaged["input_manifest"] == core_source["manifest"]
     manifest_ref = packaged["artifact_ref"]
     manifest_bytes = (tmp_path / manifest_ref).read_bytes()
     manifest = json.loads(manifest_bytes)

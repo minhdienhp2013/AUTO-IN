@@ -14,7 +14,8 @@ from tests.unit.documents.test_native_word_pdf_v1 import (
     _ready_pdf, _docx, FakeWordSession, sha,
 )
 from agents.windows.native_word_document import preview_word_native
-from workers.documents.native_word_artifacts import make_word_review_artifacts
+from workers.documents.word_review_source_adapter import adapt_word_review_source
+from tests.unit.documents.word_review_source_fixture import source_snapshot
 from workers.documents.bridge import _canonical
 
 
@@ -294,11 +295,13 @@ def test_word_original_docx_and_renderer_version_bind_and_review_only(tmp_path):
                                          "version": "SYNTHETIC-NOT-REAL"}}
     request = {"documents": [{"artifact_name": "synthetic.docx", "copies": 2,
                               "paper": "A4", "duplex": True}]}
-    result = make_word_review_artifacts(
-        source=data, trusted_request_data=request,
-        expected_request_hash=sha(_canonical(request).encode()),
-        revision=3, observation=observation, artifact_root=tmp_path)
+    core_source = source_snapshot(
+        data, request, shop_id="synthetic-shop", order_id="word-order", revision=3)
+    result = adapt_word_review_source(
+        snapshot=core_source, observation=observation, artifact_root=tmp_path)
     assert result["status"] == "REVIEW_REQUIRED", result
+    assert result["source"] == core_source["source"]
+    assert result["input_manifest"] == core_source["manifest"]
     assert result["allowed_to_print"] is False
     manifest_bytes = (tmp_path / result["artifact_ref"]).read_bytes()
     manifest = json.loads(manifest_bytes)
@@ -320,6 +323,14 @@ def test_word_original_docx_and_renderer_version_bind_and_review_only(tmp_path):
     snap = evidence["snapshot"]
     assert snap["sources"][0]["format"] == "DOCX"
     assert snap["sources"][0]["source_sha256"] == sha(data)
+    changed_anchor = dict(manifest)
+    changed_anchor["source"] = {**manifest["source"], "sha256": "0" * 64}
+    changed_bytes = json.dumps(
+        changed_anchor, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    rejected = create_print_evidence_v1(**{**args, "manifest_bytes": changed_bytes})
+    assert rejected["status"] == "NEEDS_HUMAN"
+    assert rejected["reason_code"] == "WORD_CORE_SOURCE_BYTES_CHANGED"
     verify = verify_print_evidence_v1(
         expected=snap, trusted_evidence_sha256=snap["evidence_sha256"],
         active_revision=3, **args)
