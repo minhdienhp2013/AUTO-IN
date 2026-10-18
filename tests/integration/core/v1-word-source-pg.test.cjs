@@ -17,10 +17,15 @@ test('V1-CORE-10 PostgreSQL: authenticated read-only source handoff and stale re
  assert.match(parsed.pathname,/test/i,'test DB name must include test');
  const admin=new pg.Pool({connectionString:url,max:2});
  const schema='ai1_word_source_'+randomUUID().replaceAll('-','');
- const pool=new pg.Pool({connectionString:url,max:3,options:`-c search_path=${schema}`});
+ const pool=new pg.Pool({connectionString:url,max:1,options:`-c search_path=${schema}`});
  try{
   await admin.query(`CREATE SCHEMA ${schema}`);
   await pool.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/001_core.sql'),'utf8'));
+  const configured=await pool.connect();
+  await configured.query('SET default_transaction_isolation TO REPEATABLE READ');
+  configured.release();
+  const isolation=(await pool.query('SHOW default_transaction_isolation')).rows[0].default_transaction_isolation;
+  assert.equal(isolation,'repeatable read','test exercises a pool whose default is not READ COMMITTED');
   const shop='shop-'+randomUUID(),orderId=randomUUID(),staffId=randomUUID();
   await pool.query("INSERT INTO core_shop_settings(shop_id) VALUES($1)",[shop]);
   await pool.query("INSERT INTO core_users(id,shop_id,username,password_hash,role) VALUES($1,$2,'staff','test-only','staff')",[staffId,shop]);
@@ -43,8 +48,8 @@ test('V1-CORE-10 PostgreSQL: authenticated read-only source handoff and stale re
   const racing={async read_registered(_db,scope){reads++;
    if(reads===1){
     const next={changed:'revision'};const hash=sha(canonical(next));
-    await pool.query('INSERT INTO core_revisions(order_id,revision,request_hash,request_data) VALUES($1,2,$2,$3::jsonb)',[orderId,hash,JSON.stringify(next)]);
-    await pool.query('UPDATE core_orders SET active_revision=2 WHERE id=$1',[orderId]);
+    await admin.query(`INSERT INTO ${schema}.core_revisions(order_id,revision,request_hash,request_data) VALUES($1,2,$2,$3::jsonb)`,[orderId,hash,JSON.stringify(next)]);
+    await admin.query(`UPDATE ${schema}.core_orders SET active_revision=2 WHERE id=$1`,[orderId]);
    }
    return {source:{artifact_ref:'test-bundle/source.docx',bytes:source},manifest:{ref:'test-bundle/manifest.json',bytes:manifest(scope)}};
   }};

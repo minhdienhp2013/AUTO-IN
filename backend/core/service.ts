@@ -786,7 +786,9 @@ export class OrderService {
   assertStaff(p);const tenantOrder=wordReviewPrincipalScope(p,id);
   if(!this.wordSource)throw new DomainError('WORD_SOURCE_NOT_CONFIGURED','Word source registry chưa được nối',503);
   return this.store.tx(async db=>{
-   await db.query('SET TRANSACTION READ ONLY');
+   // The post-I/O revision reread must see concurrent commits even when the
+   // pool's session default is REPEATABLE READ.
+   await db.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY');
    const load=async()=>{
     const order=(await db.query<{id:string;shop_id:string;active_revision:number}>(
      'SELECT id,shop_id,active_revision FROM core_orders WHERE id=$1 AND shop_id=$2',[tenantOrder.order_id,tenantOrder.shop_id])).rows[0];
