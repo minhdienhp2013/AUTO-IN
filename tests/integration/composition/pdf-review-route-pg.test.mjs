@@ -92,7 +92,11 @@ test('AI5 PDF review route: scoped staff POST, private source binding, page byte
     const scope={shop_id:shop,oa_id:oa};
     app=buildIntegratedApp({pool:asSqlPool(pool),
       syntheticArtifactIngest:{artifactRoot:sourceRoot,scope},
-      previewArtifactRoot:previewRoot});
+      previewArtifactRoot:previewRoot,
+      pdfReviewArtifactRoot:previewRoot,
+      trustedPrintEvidence:{artifactRoot:sourceRoot,printerCapabilities:{
+        simulation_only:true,printer_id:'RMP7000',queue_name:'RMP7000'
+      }}});
     await app.ready();
 
     await pool.query('INSERT INTO zalo_inbound_events '+

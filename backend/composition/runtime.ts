@@ -18,6 +18,8 @@ import { createSyntheticVerifiedButtonPlugin, type SyntheticButtonScope } from '
 import { pendingReviewSqlPool } from './pending-review-errors.js';
 import { assertApprovedPrintJobEvidence, type ApprovedDocumentEvidenceOptions } from './approved-document-evidence.js';
 import { createTrustedPrintEvidencePort, type TrustedPrintEvidenceOptions } from './trusted-print-evidence.js';
+import { createSyntheticPdfReviewSourceReader } from './pdf-review-source.js';
+import { createPdfReviewPreviewService } from './pdf-review-preview.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
 export interface RuntimeOptions {
@@ -41,6 +43,10 @@ export interface RuntimeOptions {
   syntheticVerifiedButton?: SyntheticButtonScope;
   /** Required before an approved job can enter SENDING; reads only server-bound artifacts. */
   approvedDocumentEvidence?: ApprovedDocumentEvidenceOptions;
+  /** Private simulation-only root for generated PDF review bundles/pages. Must be owner-only (0700). */
+  pdfReviewArtifactRoot?: string;
+  /** Optional interpreter override for the bounded native PDF review CLI. */
+  nativePdfReviewPython?: string;
   /** Opt-in V1 Core gate. This simulation runtime accepts synthetic capability
    * snapshots only; it cannot authorize a real Windows/Ricoh print operation.
    */
@@ -90,9 +96,16 @@ export function buildIntegratedApp(options: RuntimeOptions) {
   const corePool = pendingReviewSqlPool(options.pool);
   const trustedPrintEvidence = options.trustedPrintEvidence
     ? createTrustedPrintEvidencePort(options.trustedPrintEvidence) : undefined;
+  const pdfSource = trustedPrintEvidence && options.syntheticArtifactIngest
+    ? createSyntheticPdfReviewSourceReader(options.syntheticArtifactIngest.artifactRoot,
+      options.syntheticArtifactIngest.scope) : undefined;
   const core = trustedPrintEvidence
-    ? createCoreModule({ pool: corePool, mode: 'v1', evidence: trustedPrintEvidence })
+    ? createCoreModule({ pool: corePool, mode: 'v1', evidence: trustedPrintEvidence,
+      ...(pdfSource ? { pdfSource } : {}) })
     : createCoreModule({ pool: corePool });
+  const pdfReviewPreview = pdfSource && options.pdfReviewArtifactRoot
+    ? createPdfReviewPreviewService({ artifactRoot: options.pdfReviewArtifactRoot,
+      ...(options.nativePdfReviewPython ? { pythonExecutable: options.nativePdfReviewPython } : {}) }) : undefined;
   const resolve = identityResolver(options.identities ?? []);
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024,
     ...(options.tls ? { https: options.tls } : {}) });
@@ -105,6 +118,12 @@ export function buildIntegratedApp(options: RuntimeOptions) {
         message: 'Request failed', retryable: false } });
   });
   const registered: string[] = [];
+  app.addHook('onSend', async (request, reply, payload) => {
+    const path = request.url.split('?')[0] ?? '';
+    if (path.endsWith('/pdf-review-previews') || /\/previews\/[^/]+$/.test(path))
+      reply.header('Cache-Control', 'no-store');
+    return payload;
+  });
   const register = (method: 'GET' | 'POST' | 'PATCH', path: string,
     handler: Parameters<RouteRegistrar['post']>[1]) => {
     registered.push(`${method} ${path}`);
@@ -172,6 +191,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
     official_zalo_simulation_configured: !!options.officialZaloSimulation,
     zalo_worker_configured: options.zaloWorkerConfigured === true,
     processor_configured: false, preview_configured: !!options.previewArtifactRoot,
+    pdf_review_preview_configured: !!pdfReviewPreview,
     synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
     trusted_print_evidence_v1_configured: !!trustedPrintEvidence,
     integration_stage: 'core-http' }));
@@ -196,6 +216,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
         physical_print_enabled: false,
         manual_lock: settings.rows[0].manual_lock,
         preview_configured: !!options.previewArtifactRoot,
+        pdf_review_preview_configured: !!pdfReviewPreview,
         synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
         trusted_print_evidence_v1_configured: !!trustedPrintEvidence
       });
@@ -310,17 +331,78 @@ export function buildIntegratedApp(options: RuntimeOptions) {
       .send(catalog);
   });
   app.get('/api/v1/orders/:order_id/revisions/:revision/previews/:index', async (request, reply) => {
-    if (!options.previewArtifactRoot) throw new DomainError('FEATURE_UNAVAILABLE', 'Verified preview unavailable', 503);
     const token = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
     const actor = await core.auth.principal(token);
     const params = request.params as { order_id: string; revision: string; index: string };
+    const revision = Number(params.revision), index = Number(params.index);
+    if (pdfReviewPreview && Number.isSafeInteger(revision) && revision > 0 &&
+        Number.isSafeInteger(index) && index >= 0) {
+      const cached = await pdfReviewPreview.find(actor.shop_id, params.order_id, revision);
+      if (cached) {
+        try {
+          const current = await core.service.readPdfReviewSource(actor, params.order_id);
+          if (current.active_revision !== cached.revision || current.request_hash !== cached.request_hash ||
+              current.source.sha256 !== cached.projection.source_sha256 ||
+              current.manifest.sha256 !== cached.projection.manifest_sha256)
+            throw new DomainError('STALE_PDF_PREVIEW', 'Đơn hoặc file PDF đã đổi; cần tạo preview mới', 409);
+          const preview = await pdfReviewPreview.readPage(cached, index);
+          const after = await core.service.readPdfReviewSource(actor, params.order_id);
+          if (after.active_revision !== cached.revision || after.request_hash !== cached.request_hash ||
+              after.source.sha256 !== cached.projection.source_sha256 ||
+              after.manifest.sha256 !== cached.projection.manifest_sha256)
+            throw new DomainError('STALE_PDF_PREVIEW', 'Đơn hoặc file PDF đã đổi; cần tạo preview mới', 409);
+          return reply.header('Content-Type', 'image/png')
+            .header('X-Content-Type-Options', 'nosniff')
+            .header('Content-Security-Policy', "default-src 'none'")
+            .send(preview);
+        } catch (error) {
+          await pdfReviewPreview.clearOrder(actor.shop_id, params.order_id);
+          throw error;
+        }
+      }
+    }
+    if (!options.previewArtifactRoot) throw new DomainError('FEATURE_UNAVAILABLE', 'Verified preview unavailable', 503);
     const preview = await loadVerifiedOrderPreview(options.pool, options.previewArtifactRoot,
-      actor, params.order_id, Number(params.revision), Number(params.index));
+      actor, params.order_id, revision, index);
     return reply.header('Content-Type', 'image/png')
       .header('Cache-Control', 'no-store')
       .header('X-Content-Type-Options', 'nosniff')
       .header('Content-Security-Policy', "default-src 'none'")
       .send(preview);
+  });
+  app.post('/api/v1/orders/:order_id/revisions/:revision/pdf-review-previews', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store')
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Content-Security-Policy', "default-src 'none'");
+    const token = request.headers.authorization?.startsWith('Bearer ')
+      ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    if (!pdfReviewPreview) throw new DomainError('FEATURE_UNAVAILABLE',
+      'PDF review preview chưa được cấu hình ở runtime mô phỏng', 503);
+    const params = request.params as { order_id: string; revision: string };
+    if (!/^[1-9]\d*$/.test(params.revision) || !Number.isSafeInteger(Number(params.revision)))
+      throw new DomainError('INVALID_REVISION', 'Revision không hợp lệ', 422);
+    if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body) ||
+        Object.keys(request.body as object).length !== 0)
+      throw new DomainError('INVALID_INPUT', 'PDF review chỉ nhận JSON object rỗng', 422);
+    await pdfReviewPreview.clearOrder(actor.shop_id, params.order_id);
+    const snapshot = await core.service.readPdfReviewSource(actor, params.order_id);
+    if (snapshot.active_revision !== Number(params.revision))
+      throw new DomainError('STALE_PDF_PREVIEW', 'Revision không còn hiện hành; cần tải lại đơn', 409);
+    const prepared = await pdfReviewPreview.prepare(snapshot);
+    try {
+      const current = await core.service.readPdfReviewSource(actor, params.order_id);
+      if (current.active_revision !== snapshot.active_revision ||
+          current.request_hash !== snapshot.request_hash || current.source.sha256 !== snapshot.source.sha256 ||
+          current.source.artifact_ref !== snapshot.source.artifact_ref ||
+          current.manifest.sha256 !== snapshot.manifest.sha256)
+        throw new DomainError('STALE_PDF_PREVIEW', 'Đơn hoặc file PDF đã đổi trong lúc tạo preview', 409);
+      await pdfReviewPreview.remember(prepared);
+      return reply.code(200).send(prepared.projection);
+    } catch (error) {
+      await pdfReviewPreview.discard(prepared);
+      throw error;
+    }
   });
   if (options.syntheticVerifiedButton)
     app.register(createSyntheticVerifiedButtonPlugin(
