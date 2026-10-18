@@ -23,6 +23,8 @@ test('revision protection and canonical request hash',()=>{
 test('untrusted plan cannot be passed to approval',()=>{
  const hash=sha('request');
  assert.throws(()=>assertPlan({request_hash:hash,physical_sheets:151,document_pages:151,printed_faces:151,ready:false,printer_id:'RMP7000',artifact_ref:'x',verified_by:'processor'},hash),DomainError);
+ assert.throws(()=>assertPlan({request_hash:hash,physical_sheets:151,document_pages:151,printed_faces:151,ready:true,status:'REVIEW_REQUIRED',printer_id:'RMP7000',artifact_ref:'x',verified_by:'processor'},hash),e=>e.code==='UNTRUSTED_PLAN');
+ assert.throws(()=>assertPlan({request_hash:hash,physical_sheets:151,document_pages:151,printed_faces:151,ready:true,status:'NEEDS_HUMAN',printer_id:'RMP7000',artifact_ref:'x',verified_by:'processor'},hash),e=>e.code==='UNTRUSTED_PLAN');
  assert.throws(()=>assertPlan({request_hash:'bad',physical_sheets:151,document_pages:151,printed_faces:151,ready:true,printer_id:'RMP7000',artifact_ref:'x',verified_by:'processor'},hash),DomainError);
 });
 test('simulation still honors holidays, opening hours and manual lock',()=>{

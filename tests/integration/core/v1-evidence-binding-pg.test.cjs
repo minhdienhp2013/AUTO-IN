@@ -158,6 +158,30 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    assert.equal(stale.current.preview_review.status,'stale');
    assert.equal(stale.current.preview_review.evidence_sha256,(await evidenceFor(id)));
   });
+  await t.test('Word REVIEW_REQUIRED and ready=false plans block confirmation and approval with zero writes',async()=>{
+   for(const [label,mutation] of [
+    ['explicit-review-required',{status:'REVIEW_REQUIRED'}],
+    ['not-ready',{ready:false}]
+   ]){
+    const id=await make('word-'+label);
+    await a.query('UPDATE core_revisions SET plan=plan || $2::jsonb WHERE order_id=$1 AND revision=2',
+     [id,JSON.stringify(mutation)]);
+    await assert.rejects(A.confirm(customer,id,{expected_revision:2,kind:'request',
+     idempotency_key:key('word-confirm-'+label)}),error('UNTRUSTED_PLAN'));
+    await assert.rejects(approve(id),error('UNTRUSTED_PLAN'));
+    const counts=await a.query('SELECT '+
+     '(SELECT count(*)::int FROM core_preview_review_receipts WHERE order_id=$1) reviews,'+
+     '(SELECT count(*)::int FROM core_confirmations WHERE order_id=$1) confirmations,'+
+     '(SELECT count(*)::int FROM core_approvals WHERE order_id=$1) approvals,'+
+     '(SELECT count(*)::int FROM core_print_jobs WHERE order_id=$1) jobs',[id]);
+    assert.deepEqual(counts.rows[0],{reviews:0,confirmations:0,approvals:0,jobs:0});
+    const outboxTable=(await a.query("SELECT to_regclass('public.core_tn005_suggested_outbox') AS relation")).rows[0].relation;
+    if(outboxTable){
+     const outbox=await a.query('SELECT count(*)::int n FROM core_tn005_suggested_outbox WHERE order_id=$1',[id]);
+     assert.equal(outbox.rows[0].n,0);
+    }
+   }
+  });
   await t.test('confirmation pins evidence; source/manifest/settings/preview drift blocks approval',async()=>{
    for(const part of ['source','manifest','settings','preview']){
     const id=await make('before-approve-'+part);await confirm(id);
@@ -331,6 +355,18 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
    await assert.rejects(B.markSending(agent,claim.job_id,{expected_revision:2,lease_token:claim.lease_token,
     idempotency_key:key('sending')}),error('PREVIEW_REVIEW_REQUIRED'));
    assert.equal((await a.query('SELECT state FROM core_print_jobs WHERE id=$1',[claim.job_id])).rows[0].state,'NOT_SENT');
+   await cancel(id);
+  });
+  await t.test('Word REVIEW_REQUIRED after approval is blocked at preflight and send',async()=>{
+   const id=await make('word-review-after-approval');await confirm(id);const approved=await approve(id);
+   const claim=(await A.claim(agent,{printer_id:'RMP7000',idempotency_key:key('word-review-lease')})).job;
+   assert.equal(claim.job_id,approved.job_id);
+   await a.query("UPDATE core_revisions SET plan=plan || '{\"status\":\"REVIEW_REQUIRED\"}'::jsonb WHERE order_id=$1 AND revision=2",[id]);
+   await assert.rejects(B.preflight(agent,claim.job_id,{expected_revision:2,lease_token:claim.lease_token}),error('UNTRUSTED_PLAN'));
+   await assert.rejects(B.markSending(agent,claim.job_id,{expected_revision:2,lease_token:claim.lease_token,
+    idempotency_key:key('word-review-send')}),error('UNTRUSTED_PLAN'));
+   assert.equal((await a.query('SELECT state FROM core_print_jobs WHERE id=$1',[claim.job_id])).rows[0].state,'NOT_SENT');
+   assert.equal(await jobCount(id),1);
    await cancel(id);
   });
   await t.test('ambiguous ACK stays UNKNOWN; no automatic second job or provider call',async()=>{

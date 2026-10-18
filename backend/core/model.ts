@@ -4,7 +4,7 @@ export type Role = 'owner' | 'staff' | 'customer' | 'processor' | 'print_agent';
 export type Mode = 'simulation' | 'controlled_test' | 'production' | 'safe';
 export type JobState = 'NOT_SENT' | 'SENDING' | 'SENT_UNVERIFIED' | 'UNKNOWN' | 'VERIFIED_DONE' | 'SIMULATED_DONE';
 export interface Principal { id: string; role: Role; shop_id: string; customer_id?: string; verified: boolean; printer_ids?: readonly string[]; verified_channel_id?: string; }
-export interface PrintPlan { request_hash: string; physical_sheets: number; document_pages: number; printed_faces: number; ready: boolean; printer_id: string; artifact_ref: string; verified_by: string; preview_ref?: string; preview_verified?: boolean; }
+export interface PrintPlan { request_hash: string; physical_sheets: number; document_pages: number; printed_faces: number; ready: boolean; status?: string; printer_id: string; artifact_ref: string; verified_by: string; preview_ref?: string; preview_verified?: boolean; }
 export interface OrderRow { id: string; shop_id: string; customer_id: string; conversation_id: string | null; active_revision: number; manual_lock: boolean; print_closed: boolean; closed_reason: string | null; delivered_sheets: number; }
 export interface RevisionRow { order_id: string; revision: number; request_hash: string; request_data: unknown; plan: PrintPlan | null; }
 export interface QuoteRow { order_id: string; quote_revision: number; amount_vnd: number; deposit_required_vnd: number; significant_cost: boolean; }
@@ -31,7 +31,12 @@ export function dbSafeInteger(value: number | string, field: string): number {
  return parsed;
 }
 export function assertPlan(plan: PrintPlan, hash: string): void {
- if (plan.request_hash !== hash || !plan.ready || !plan.verified_by || !plan.artifact_ref || !plan.printer_id || !Number.isSafeInteger(plan.physical_sheets) || plan.physical_sheets < 1 || !Number.isSafeInteger(plan.document_pages) || plan.document_pages < 1 || !Number.isSafeInteger(plan.printed_faces) || plan.printed_faces < 1) throw new DomainError('UNTRUSTED_PLAN','Thiếu kế hoạch in được processor xác minh');
+ if (plan.request_hash !== hash || !plan.ready || (plan.status !== undefined && plan.status !== 'READY') ||
+     !plan.verified_by || !plan.artifact_ref || !plan.printer_id ||
+     !Number.isSafeInteger(plan.physical_sheets) || plan.physical_sheets < 1 ||
+     !Number.isSafeInteger(plan.document_pages) || plan.document_pages < 1 ||
+     !Number.isSafeInteger(plan.printed_faces) || plan.printed_faces < 1)
+  throw new DomainError('UNTRUSTED_PLAN','Thiếu kế hoạch in được processor xác minh');
 }
 export function canonical(value: unknown): string {
  if (value === null || typeof value !== 'object') return JSON.stringify(value);
