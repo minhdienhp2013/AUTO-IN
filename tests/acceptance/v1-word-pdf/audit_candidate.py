@@ -39,6 +39,18 @@ def canonical_sha256(value):
     ).encode("utf-8")).hexdigest()
 
 
+def product_capture_issues(capture, candidate_sha, mode, label):
+    """Reject fixture/synthetic or unbound traces for any claimed product PASS."""
+    if (not isinstance(capture,dict) or capture.get("kind")!="authoritative_product_trace"
+        or capture.get("candidate_sha")!=candidate_sha or capture.get("mode")!=mode
+        or capture.get("synthetic") is not False
+        or not isinstance(capture.get("run_id"),str) or not capture["run_id"].strip()
+        or not isinstance(capture.get("evidence_ref"),str) or not capture["evidence_ref"].strip()
+        or not HEX64.fullmatch(str(capture.get("trace_sha256","")))):
+        return [label+": missing/invalid exact-candidate authoritative product capture"]
+    return []
+
+
 def stale_digest_evidence_issues(case_id, details):
     """Require product-original stale actions, not a fixture-only digest check."""
     mutation={
@@ -367,6 +379,252 @@ def word_review_evidence_issues(case_id, details):
     return issues
 
 
+def source_snapshot_evidence_issues(case_id, details, candidate_sha, mode):
+    """Require trace-bound AI1 source snapshot proof; hashes alone are insufficient."""
+    matrix=json.loads(WORD_REVIEW_MATRIX.read_text(encoding="utf-8"))
+    spec=next(case for case in matrix["cases"] if case["id"]==case_id)
+    proof=details.get("source_snapshot")
+    if not isinstance(proof,dict):
+        return [case_id+": source snapshot evidence missing"]
+    issues=[]
+    issues.extend(product_capture_issues(proof.get("product_capture"),candidate_sha,mode,case_id))
+    checks=proof.get("checks")
+    if not isinstance(checks,dict) or any(checks.get(name) is not True
+                                         for name in spec["required_checks"]):
+        issues.append(case_id+": source snapshot checks incomplete/failed")
+    for field in ("snapshot_trace_sha256","storage_trace_sha256",
+                  "manifest_trace_sha256","core_guard_trace_sha256"):
+        if not HEX64.fullmatch(str(proof.get(field,""))):
+            issues.append(case_id+": invalid/missing "+field)
+    expected_result="REVIEW_REQUIRED" if spec["expected"]=="REVIEW_REQUIRED" else "NEEDS_HUMAN"
+    if proof.get("result")!=expected_result:
+        issues.append(case_id+": unexpected source snapshot result")
+    if proof.get("dto_schemas")!={
+        "source":"ai0.word_review_source.v1",
+        "input_manifest":"ai0.word_review_manifest.v1",
+        "worker_result":"ai3.native_word_preview.v1",
+        "ui_projection":"ai0.word_review_preview.v1",
+    }:
+        issues.append(case_id+": source/manifest/worker/UI DTO schemas do not match AI0 contract")
+
+    def counts_unchanged(keys):
+        before,after=proof.get("effects_before"),proof.get("effects_after")
+        if not isinstance(before,dict) or not isinstance(after,dict):
+            issues.append(case_id+": missing before/after database effect counters")
+            return
+        for key in keys:
+            if type(before.get(key)) is not int or type(after.get(key)) is not int or before[key]!=after[key]:
+                issues.append(case_id+": "+key+" changed or is unverified")
+
+    counts_unchanged(("confirmations","approvals","print_jobs","outbox"))
+
+    if case_id in {f"V1-{number:03d}" for number in range(50,56)} | {"V1-057"}:
+        rows=proof.get("negative_control_observations")
+        expected=set(spec["required_checks"])
+        if (not isinstance(rows,list) or len(rows)!=len(expected) or
+                {row.get("check") for row in rows if isinstance(row,dict)}!=expected):
+            issues.append(case_id+": negative-control observation coverage incomplete/duplicate")
+        else:
+            for row in rows:
+                if (row.get("result")!="NEEDS_HUMAN" or
+                    row.get("bundle_created") is not False or
+                    row.get("worker_launch_calls")!=0 or
+                    row.get("untrusted_bytes_opened") is not False or
+                    not HEX64.fullmatch(str(row.get("trace_sha256","")))):
+                    issues.append(case_id+": "+row["check"]+" did not fail closed with trace")
+                before,after=row.get("effects_before"),row.get("effects_after")
+                keys=("confirmations","approvals","print_jobs","outbox")
+                if (not isinstance(before,dict) or not isinstance(after,dict) or
+                    any(type(before.get(key)) is not int or type(after.get(key)) is not int or
+                        before[key]!=after[key] for key in keys)):
+                    issues.append(case_id+": "+row["check"]+" changed/unverified side effects")
+    if case_id=="V1-050":
+        identities=proof.get("identity_mismatches")
+        if (not isinstance(identities,list) or
+            {row.get("field") for row in identities if isinstance(row,dict)}!={"shop_id","order_id"} or
+            len(identities)!=2 or any(row.get("expected") == row.get("observed") or
+                row.get("result")!="NEEDS_HUMAN" for row in identities if isinstance(row,dict))):
+            issues.append(case_id+": tenant/order mismatch values and holds not proven")
+    elif case_id=="V1-051":
+        mismatches=proof.get("identity_mismatches")
+        required={"active_revision","request_hash","source.sha256","source.size_bytes",
+                  "manifest.ref","manifest.sha256"}
+        if (not isinstance(mismatches,list) or
+            {row.get("field") for row in mismatches if isinstance(row,dict)}!=required or
+            len(mismatches)!=len(required) or any(row.get("expected")==row.get("observed") or
+                row.get("result")!="NEEDS_HUMAN" for row in mismatches if isinstance(row,dict))):
+            issues.append(case_id+": revision/request/source/manifest mismatches incomplete")
+    elif case_id=="V1-052":
+        refs=proof.get("invalid_reference_observations")
+        kinds={"url","absolute","parent_traversal","cross_bundle"}
+        if (not isinstance(refs,list) or {row.get("kind") for row in refs if isinstance(row,dict)}!=kinds
+            or len(refs)!=len(kinds) or any(row.get("result")!="NEEDS_HUMAN" or
+                row.get("opened") is not False or row.get("untrusted_bytes_opened") is not False or
+                row.get("bundle_created") is not False or not isinstance(row.get("locator"),str)
+                for row in refs if isinstance(row,dict))):
+            issues.append(case_id+": URL/absolute/traversal/cross-bundle refs not all rejected")
+        else:
+            by_kind={row["kind"]:row for row in refs}
+            loc=by_kind["url"]["locator"].lower()
+            absolute=by_kind["absolute"]["locator"]
+            traversal=by_kind["parent_traversal"]["locator"].replace("\\","/").split("/")
+            cross=by_kind["cross_bundle"]
+            if not (loc.startswith(("http://","https://","file://")) or "//" in loc):
+                issues.append(case_id+": URL test locator is not a URL")
+            if not (absolute.startswith("/") or re.match(r"^[a-zA-Z]:[\\/]",absolute)):
+                issues.append(case_id+": absolute-path test locator is not absolute")
+            if ".." not in traversal:
+                issues.append(case_id+": parent traversal locator lacks a .. segment")
+            if (not cross.get("source_bundle_id") or not cross.get("target_bundle_id") or
+                cross.get("source_bundle_id")==cross.get("target_bundle_id")):
+                issues.append(case_id+": cross-bundle locator does not cross bundle IDs")
+    elif case_id=="V1-053":
+        duplicate=proof.get("duplicate_key_observation")
+        if (not isinstance(duplicate,dict) or duplicate.get("duplicate_key_detected") is not True or
+            type(duplicate.get("duplicate_key_count")) is not int or duplicate["duplicate_key_count"]<1 or
+            duplicate.get("parse_policy")!="reject_duplicate_keys" or
+            duplicate.get("manifest_accepted") is not False or duplicate.get("worker_launch_calls")!=0 or
+            duplicate.get("bundle_created") is not False or
+            not HEX64.fullmatch(str(duplicate.get("trace_sha256","")))):
+            issues.append(case_id+": duplicate JSON-key manifest was not proven rejected")
+    elif case_id=="V1-054":
+        race=proof.get("read_race")
+        if (not isinstance(race,dict) or type(race.get("revision_before_read")) is not int or
+            type(race.get("revision_after_read")) is not int or
+            race.get("revision_before_read")==race.get("revision_after_read") or
+            race.get("scope_reloaded_after_io") is not True or
+            race.get("snapshot_returned") is not False or race.get("worker_launch_calls")!=0):
+            issues.append(case_id+": changed revision during read was not held after I/O")
+    elif case_id=="V1-055":
+        fake=proof.get("fake_renderer_preview")
+        if (not isinstance(fake,dict) or fake.get("renderer_trusted") is not False or
+            fake.get("preview_hash_verified") is not False or
+            fake.get("worker_result_accepted") is not False or fake.get("bundle_created") is not False):
+            issues.append(case_id+": fake renderer/preview accepted or unverified")
+    elif case_id=="V1-056":
+        contract=proof.get("dto_contract")
+        if (not isinstance(contract,dict) or contract.get("worker_schema")!="ai3.native_word_preview.v1" or
+            contract.get("ui_schema")!="ai0.word_review_preview.v1" or
+            contract.get("ready") is not False or contract.get("allowed_to_print") is not False or
+            contract.get("requires_staff_review") is not True or
+            contract.get("physical_print_verified") is not False or
+            contract.get("source_bytes_projected") is not False or
+            contract.get("private_storage_refs_projected") is not False):
+            issues.append(case_id+": worker/UI DTO schema or review-only projection invalid")
+        urls=contract.get("ui_preview_urls") if isinstance(contract,dict) else None
+        if (not isinstance(urls,list) or not urls or
+            any(not isinstance(url,str) or not url.startswith("/api/v1/") or "://" in url
+                for url in urls)):
+            issues.append(case_id+": UI preview URLs are not app-relative authenticated endpoints")
+        if not isinstance(contract,dict) or contract.get("private_bytes_server_only") is not True:
+            issues.append(case_id+": private source bytes are not proven server-only")
+    elif case_id=="V1-057":
+        image=proof.get("image_route")
+        if (not isinstance(image,dict) or image.get("file_preserved") is not True or
+            image.get("staff_queue_created") is not True or
+            image.get("manual_route_disclosed") is not True or
+            image.get("word_worker_launch_calls")!=0):
+            issues.append(case_id+": image request not preserved and routed to staff")
+    elif case_id=="V1-058":
+        counts_unchanged(("confirmations","approvals","print_jobs","outbox"))
+        if proof.get("ready") is not False or proof.get("allowed_to_print") is not False:
+            issues.append(case_id+": review path acquired print authority")
+
+    if case_id=="V1-044":
+        active,requested=proof.get("active_revision"),proof.get("requested_revision")
+        active_hash,requested_hash=proof.get("active_request_hash"),proof.get("requested_request_hash")
+        if (type(active) is not int or type(requested) is not int or active==requested
+            or not HEX64.fullmatch(str(active_hash or ""))
+            or not HEX64.fullmatch(str(requested_hash or "")) or active_hash==requested_hash
+            or proof.get("bundle_created") is not False):
+            issues.append(case_id+": revision/request mismatch was not held before bundle")
+        counts_unchanged(("confirmations","approvals","print_jobs","outbox"))
+    elif case_id=="V1-045":
+        src,manifest=proof.get("source"),proof.get("manifest")
+        if not isinstance(src,dict) or not isinstance(manifest,dict):
+            issues.append(case_id+": source/manifest byte evidence missing")
+        else:
+            if src.get("schema")!="ai0.word_review_source.v1" or manifest.get("schema")!="ai0.word_review_manifest.v1":
+                issues.append(case_id+": source or exact manifest schema mismatch")
+            for field in ("expected_sha256","observed_sha256"):
+                if not HEX64.fullmatch(str(src.get(field,""))):
+                    issues.append(case_id+": source "+field+" invalid")
+            for field in ("expected_sha256","observed_sha256"):
+                if not HEX64.fullmatch(str(manifest.get(field,""))):
+                    issues.append(case_id+": manifest "+field+" invalid")
+            for obj,label in ((src,"source"),(manifest,"manifest")):
+                if (type(obj.get("expected_size_bytes")) is not int or obj["expected_size_bytes"]<=0
+                    or type(obj.get("observed_size_bytes")) is not int
+                    or obj["expected_size_bytes"]!=obj["observed_size_bytes"]):
+                    issues.append(case_id+": "+label+" size missing/mismatched")
+            if src.get("expected_sha256")!=src.get("observed_sha256"):
+                issues.append(case_id+": source bytes do not match trusted source SHA")
+            if manifest.get("expected_sha256")!=manifest.get("observed_sha256"):
+                issues.append(case_id+": manifest bytes do not match trusted manifest SHA")
+            if (manifest.get("source_sha256")!=src.get("expected_sha256")
+                or manifest.get("source_size_bytes")!=src.get("expected_size_bytes")):
+                issues.append(case_id+": manifest does not bind exact source SHA/size")
+        if (type(proof.get("active_revision")) is not int or proof.get("active_revision")<1
+            or proof.get("snapshot_revision")!=proof.get("active_revision")
+            or not HEX64.fullmatch(str(proof.get("active_request_hash","")))
+            or proof.get("snapshot_request_hash")!=proof.get("active_request_hash")):
+            issues.append(case_id+": source snapshot is not bound to current active revision/request")
+        if proof.get("bundle_ready") is not False or proof.get("allowed_to_print") is not False:
+            issues.append(case_id+": verified source snapshot acquired print authority")
+    elif case_id=="V1-046":
+        refs=proof.get("reference_observations")
+        if (not isinstance(refs,list) or {row.get("kind") for row in refs if isinstance(row,dict)}
+            !={"cross_tenant","forged"} or len(refs)!=2
+            or any(row.get("result")!="NEEDS_HUMAN" or row.get("opened") is not False
+                   or row.get("bundle_created") is not False for row in refs if isinstance(row,dict))
+            or any((row.get("kind")=="cross_tenant" and
+                    (row.get("requested_shop_id")==row.get("source_shop_id") or
+                     not row.get("requested_shop_id") or not row.get("source_shop_id"))) or
+                   (row.get("kind")=="forged" and row.get("ref_trusted") is not False)
+                   for row in refs if isinstance(row,dict))
+            or proof.get("client_supplied_ref_used") is not False):
+            issues.append(case_id+": cross-tenant/forged reference was opened or accepted")
+        counts_unchanged(("confirmations","approvals","print_jobs","outbox"))
+    elif case_id=="V1-047":
+        if (proof.get("active_revision_before") == proof.get("active_revision_before_recheck")
+            or type(proof.get("active_revision_before")) is not int
+            or type(proof.get("active_revision_before_recheck")) is not int
+            or proof.get("request_hash_before") == proof.get("request_hash_before_recheck")
+            or not HEX64.fullmatch(str(proof.get("request_hash_before","")))
+            or not HEX64.fullmatch(str(proof.get("request_hash_before_recheck","")))
+            or proof.get("bundle_created") is not False):
+            issues.append(case_id+": stale revision/request was not rechecked before bundle")
+        counts_unchanged(("confirmations","approvals","print_jobs","outbox"))
+    elif case_id=="V1-048":
+        src,bundle=proof.get("source"),proof.get("bundle")
+        manifest=bundle.get("manifest") if isinstance(bundle,dict) else None
+        if (not isinstance(src,dict) or not isinstance(bundle,dict)
+            or type(src.get("size_bytes")) is not int or src["size_bytes"]<=0
+            or type(bundle.get("source_size_bytes")) is not int
+            or bundle.get("source_size_bytes")!=src.get("size_bytes")
+            or not HEX64.fullmatch(str(src.get("sha256","")))
+            or bundle.get("source_sha256")!=src.get("sha256")
+            or bundle.get("source_bytes_sha256")!=src.get("sha256")
+            or bundle.get("source_format")!="DOCX"
+            or bundle.get("print_source_format")!="DOCX"
+            or bundle.get("ready") is not False or bundle.get("allowed_to_print") is not False
+            or bundle.get("requires_staff_review") is not True
+            or bundle.get("preview_pdf_used_as_print_source") is not False):
+            issues.append(case_id+": bundle did not preserve original DOCX bytes as review-only")
+        if (not isinstance(src,dict) or not isinstance(manifest,dict)
+            or manifest.get("source_sha256")!=src.get("sha256")
+            or manifest.get("source_size_bytes")!=src.get("size_bytes")
+            or manifest.get("source_format")!="DOCX"
+            or manifest.get("ready") is not False
+            or manifest.get("allowed_to_print") is not False):
+            issues.append(case_id+": bundle manifest does not bind preserved DOCX source")
+    elif case_id=="V1-049":
+        counts_unchanged(("confirmations","approvals","print_jobs","outbox"))
+        if proof.get("ready") is not False or proof.get("allowed_to_print") is not False:
+            issues.append(case_id+": source review created print authority")
+    return issues
+
+
 def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
     if not HEX40.fullmatch(expected_sha):
         raise AssertionError("INVALID_CANDIDATE_SHA")
@@ -414,10 +672,16 @@ def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
         if not isinstance(details,dict) or details.get("source") not in ("real_pg_http","staging_signed","windows_verified"):
             issues.append(f'{row["id"]}: no authoritative product source')
             continue
+        capture=details.get("product_capture")
+        issues.extend(product_capture_issues(capture,expected_sha,report.get("mode"),row["id"]))
         if row["id"] in inbound_ids:
             issues.extend(inbound_queue_evidence_issues(row["id"],details))
         elif row["id"] in word_review_ids:
-            issues.extend(word_review_evidence_issues(row["id"],details))
+            if row["id"] in {f"V1-{number:03d}" for number in range(37,44)}:
+                issues.extend(word_review_evidence_issues(row["id"],details))
+            else:
+                issues.extend(source_snapshot_evidence_issues(
+                    row["id"],details,expected_sha,report.get("mode")))
             continue
         else:
             # Require explicit role/source/settings verification, no ungrounded

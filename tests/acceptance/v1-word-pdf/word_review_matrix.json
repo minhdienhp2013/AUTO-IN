@@ -1,55 +1,288 @@
 {
   "schema": "autoin.v1.word_review.matrix.v1",
-  "source_contract": "workers/documents/native_word_review.py + workers/documents/native_word_artifacts.py + Core active-revision guard",
+  "source_contract": {
+    "source": "ai0.word_review_source.v1",
+    "input_manifest": "ai0.word_review_manifest.v1",
+    "worker_result": "ai3.native_word_preview.v1",
+    "ui_projection": "ai0.word_review_preview.v1",
+    "contract_doc": "docs/architecture/V1_CORE_AGENT_EVIDENCE_CONTRACT_20261017.md"
+  },
   "cases": [
     {
       "id": "V1-037",
       "key": "word_review_source_hash_mismatch",
       "expected": "HOLD",
       "observed": "NOT_RUN",
-      "required_checks": ["source_hash_mismatch", "no_word_launch", "no_artifacts"]
+      "required_checks": [
+        "source_hash_mismatch",
+        "no_word_launch",
+        "no_artifacts"
+      ]
     },
     {
       "id": "V1-038",
       "key": "word_review_request_hash_mismatch",
       "expected": "HOLD",
       "observed": "NOT_RUN",
-      "required_checks": ["request_hash_mismatch", "no_word_launch", "no_artifacts"]
+      "required_checks": [
+        "request_hash_mismatch",
+        "no_word_launch",
+        "no_artifacts"
+      ]
     },
     {
       "id": "V1-039",
       "key": "word_review_stale_active_revision",
       "expected": "HOLD",
       "observed": "NOT_RUN",
-      "required_checks": ["active_revision_mismatch", "needs_human", "no_bundle_or_print"]
+      "required_checks": [
+        "active_revision_mismatch",
+        "needs_human",
+        "no_bundle_or_print"
+      ]
     },
     {
       "id": "V1-040",
       "key": "word_review_launch_default_off",
       "expected": "HOLD",
       "observed": "NOT_RUN",
-      "required_checks": ["default_launch_disabled", "needs_human", "no_word_process"]
+      "required_checks": [
+        "default_launch_disabled",
+        "needs_human",
+        "no_word_process"
+      ]
     },
     {
       "id": "V1-041",
       "key": "word_review_timeout_and_malformed_fail_closed",
       "expected": "HOLD",
       "observed": "NOT_RUN",
-      "required_checks": ["timeout_needs_human", "malformed_needs_human", "no_print_side_effects"]
+      "required_checks": [
+        "timeout_needs_human",
+        "malformed_needs_human",
+        "no_print_side_effects"
+      ]
     },
     {
       "id": "V1-042",
       "key": "word_review_bundle_is_native_docx_review_only",
       "expected": "REVIEW_REQUIRED",
       "observed": "NOT_RUN",
-      "required_checks": ["bundle_ready_false", "allowed_to_print_false", "staff_review_required", "docx_source_preserved", "no_pdf_print_source"]
+      "required_checks": [
+        "bundle_ready_false",
+        "allowed_to_print_false",
+        "staff_review_required",
+        "docx_source_preserved",
+        "no_pdf_print_source"
+      ]
     },
     {
       "id": "V1-043",
       "key": "word_review_synthetic_fake_never_native_success",
       "expected": "HOLD",
       "observed": "NOT_RUN",
-      "required_checks": ["injected_fake_rejected", "no_native_success_claim", "no_bundle_or_print"]
+      "required_checks": [
+        "injected_fake_rejected",
+        "no_native_success_claim",
+        "no_bundle_or_print"
+      ]
+    },
+    {
+      "id": "V1-044",
+      "key": "word_source_snapshot_binds_active_revision_and_request",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "active_revision_matches_snapshot",
+        "request_hash_matches_snapshot",
+        "mismatch_rejected",
+        "no_bundle"
+      ]
+    },
+    {
+      "id": "V1-045",
+      "key": "word_source_snapshot_verifies_source_manifest_hash_and_size",
+      "expected": "REVIEW_REQUIRED",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "source_sha256_matches_bytes",
+        "manifest_sha256_matches_bytes",
+        "source_size_matches_bytes",
+        "manifest_binds_source_hash_and_size",
+        "source_schema_exact",
+        "manifest_schema_exact"
+      ]
+    },
+    {
+      "id": "V1-046",
+      "key": "word_source_snapshot_rejects_cross_tenant_and_forged_refs",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "cross_tenant_ref_rejected",
+        "forged_ref_rejected",
+        "untrusted_ref_not_opened",
+        "no_bundle_or_side_effects"
+      ]
+    },
+    {
+      "id": "V1-047",
+      "key": "word_source_snapshot_rechecks_staleness_before_bundle",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "active_revision_rechecked",
+        "request_hash_rechecked",
+        "stale_snapshot_rejected",
+        "no_bundle_or_side_effects"
+      ]
+    },
+    {
+      "id": "V1-048",
+      "key": "word_review_bundle_preserves_original_docx_bytes",
+      "expected": "REVIEW_REQUIRED",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "source_bytes_preserved",
+        "source_sha256_preserved",
+        "manifest_source_binding",
+        "review_only_no_print_authority"
+      ]
+    },
+    {
+      "id": "V1-049",
+      "key": "word_source_snapshot_has_zero_confirmation_approval_job_outbox",
+      "expected": "REVIEW_REQUIRED",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "confirmations_zero_delta",
+        "approvals_zero_delta",
+        "print_jobs_zero_delta",
+        "outbox_zero_delta"
+      ]
+    },
+    {
+      "id": "V1-050",
+      "key": "word_source_scope_order_mismatch",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "shop_id_mismatch_rejected",
+        "order_id_mismatch_rejected",
+        "db_principal_scope_used",
+        "untrusted_source_not_opened",
+        "no_bundle_or_side_effects"
+      ]
+    },
+    {
+      "id": "V1-051",
+      "key": "word_source_identity_hash_size_manifest_mismatch",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "revision_mismatch_rejected",
+        "request_hash_mismatch_rejected",
+        "source_sha256_mismatch_rejected",
+        "source_size_mismatch_rejected",
+        "manifest_ref_mismatch_rejected",
+        "manifest_sha256_mismatch_rejected",
+        "no_worker_bundle_or_side_effects"
+      ]
+    },
+    {
+      "id": "V1-052",
+      "key": "word_source_refs_reject_remote_absolute_traversal_crossbundle",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "url_ref_rejected",
+        "absolute_ref_rejected",
+        "parent_traversal_ref_rejected",
+        "cross_bundle_ref_rejected",
+        "untrusted_locator_not_opened",
+        "no_bundle_or_side_effects"
+      ]
+    },
+    {
+      "id": "V1-053",
+      "key": "word_manifest_rejects_duplicate_json_keys",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "duplicate_key_manifest_rejected",
+        "manifest_not_accepted",
+        "worker_not_launched",
+        "no_bundle_or_side_effects"
+      ]
+    },
+    {
+      "id": "V1-054",
+      "key": "word_source_scope_rechecked_after_read_race",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "revision_changed_during_read",
+        "scope_reloaded_after_io",
+        "stale_bytes_not_returned",
+        "worker_not_launched",
+        "no_bundle_or_side_effects"
+      ]
+    },
+    {
+      "id": "V1-055",
+      "key": "word_fake_renderer_or_preview_rejected",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "fake_renderer_rejected",
+        "fake_preview_rejected",
+        "worker_result_not_trusted",
+        "no_bundle_or_side_effects"
+      ]
+    },
+    {
+      "id": "V1-056",
+      "key": "word_worker_and_ui_dtos_preserve_review_only_flags",
+      "expected": "REVIEW_REQUIRED",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "worker_schema_exact",
+        "ui_projection_schema_exact",
+        "ready_false",
+        "allowed_to_print_false",
+        "requires_staff_review_true",
+        "physical_print_verified_false",
+        "source_bytes_not_projected",
+        "private_refs_not_projected",
+        "preview_urls_staff_relative",
+        "private_bytes_server_only"
+      ]
+    },
+    {
+      "id": "V1-057",
+      "key": "image_request_routes_to_staff_without_word_automation",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "image_received_or_preserved",
+        "staff_queue_created",
+        "manual_route_disclosed",
+        "word_worker_not_launched",
+        "confirmation_approval_job_outbox_unchanged"
+      ]
+    },
+    {
+      "id": "V1-058",
+      "key": "word_review_path_has_no_confirmation_approval_job_outbox_mutation",
+      "expected": "REVIEW_REQUIRED",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "confirmations_zero_delta",
+        "approvals_zero_delta",
+        "print_jobs_zero_delta",
+        "outbox_zero_delta",
+        "review_only_flags_preserved"
+      ]
     }
   ]
 }

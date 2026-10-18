@@ -72,8 +72,15 @@ def word_review_cases():
     """Product acceptance overlays for native Word review-only behavior."""
     data=json.loads(WORD_REVIEW_MATRIX.read_text(encoding="utf-8"))
     assert data["schema"]=="autoin.v1.word_review.matrix.v1"
+    assert data["source_contract"]=={
+        "source":"ai0.word_review_source.v1",
+        "input_manifest":"ai0.word_review_manifest.v1",
+        "worker_result":"ai3.native_word_preview.v1",
+        "ui_projection":"ai0.word_review_preview.v1",
+        "contract_doc":"docs/architecture/V1_CORE_AGENT_EVIDENCE_CONTRACT_20261017.md",
+    }
     cases=data["cases"]
-    assert [case["id"] for case in cases]==[f"V1-{i:03d}" for i in range(37,44)]
+    assert [case["id"] for case in cases]==[f"V1-{i:03d}" for i in range(37,59)]
     assert all(case["expected"] in {"HOLD","REVIEW_REQUIRED"} and
                case["observed"]=="NOT_RUN" for case in cases)
     assert len({case["key"] for case in cases})==len(cases)

@@ -32,7 +32,7 @@ def test_27_synthetic_bytes_have_distinct_sha_and_correct_formats():
     assert all(row["product_status"] == "NOT_RUN" for row in result["cases"])
     assert result["source_candidate_sha"] == gate.current_candidate_sha()
     assert [row["id"] for row in result["product_acceptance_cases"]] == [
-        f"V1-{number:03d}" for number in range(28, 44)]
+        f"V1-{number:03d}" for number in range(28, 59)]
     assert all(row["observed"] == "NOT_RUN"
                for row in result["product_acceptance_cases"])
 
@@ -52,7 +52,7 @@ def test_ticket_gate_matrix_covers_core_contract_and_exact_lease():
 
 def test_word_review_overlay_is_product_only_and_not_run():
     cases = gate.word_review_cases()["cases"]
-    assert [row["id"] for row in cases] == [f"V1-{number:03d}" for number in range(37,44)]
+    assert [row["id"] for row in cases] == [f"V1-{number:03d}" for number in range(37,59)]
     by_id = {row["id"]: row for row in cases}
     assert "source_hash_mismatch" in by_id["V1-037"]["required_checks"]
     assert "request_hash_mismatch" in by_id["V1-038"]["required_checks"]
@@ -63,7 +63,39 @@ def test_word_review_overlay_is_product_only_and_not_run():
         "bundle_ready_false", "allowed_to_print_false", "staff_review_required",
         "docx_source_preserved", "no_pdf_print_source"}
     assert "injected_fake_rejected" in by_id["V1-043"]["required_checks"]
+    assert set(by_id["V1-044"]["required_checks"]) >= {
+        "active_revision_matches_snapshot", "request_hash_matches_snapshot",
+        "mismatch_rejected", "no_bundle"}
+    assert set(by_id["V1-045"]["required_checks"]) >= {
+        "source_sha256_matches_bytes", "manifest_sha256_matches_bytes",
+        "source_size_matches_bytes", "manifest_binds_source_hash_and_size"}
+    assert set(by_id["V1-046"]["required_checks"]) >= {
+        "cross_tenant_ref_rejected", "forged_ref_rejected",
+        "untrusted_ref_not_opened"}
+    assert set(by_id["V1-047"]["required_checks"]) >= {
+        "active_revision_rechecked", "request_hash_rechecked",
+        "stale_snapshot_rejected", "no_bundle_or_side_effects"}
+    assert set(by_id["V1-048"]["required_checks"]) >= {
+        "source_bytes_preserved", "source_sha256_preserved",
+        "manifest_source_binding", "review_only_no_print_authority"}
+    assert set(by_id["V1-049"]["required_checks"]) >= {
+        "confirmations_zero_delta", "approvals_zero_delta",
+        "print_jobs_zero_delta", "outbox_zero_delta"}
     assert all(row["observed"] == "NOT_RUN" for row in cases)
+    assert gate.word_review_cases()["source_contract"]["source"] == "ai0.word_review_source.v1"
+    assert gate.word_review_cases()["source_contract"]["input_manifest"] == "ai0.word_review_manifest.v1"
+    assert gate.word_review_cases()["source_contract"]["worker_result"] == "ai3.native_word_preview.v1"
+    assert gate.word_review_cases()["source_contract"]["ui_projection"] == "ai0.word_review_preview.v1"
+    by_id = {row["id"]: row for row in cases}
+    assert set(by_id["V1-050"]["required_checks"]) >= {"shop_id_mismatch_rejected", "order_id_mismatch_rejected"}
+    assert set(by_id["V1-051"]["required_checks"]) >= {"revision_mismatch_rejected", "request_hash_mismatch_rejected", "source_sha256_mismatch_rejected", "source_size_mismatch_rejected", "manifest_ref_mismatch_rejected", "manifest_sha256_mismatch_rejected"}
+    assert set(by_id["V1-052"]["required_checks"]) >= {"url_ref_rejected", "absolute_ref_rejected", "parent_traversal_ref_rejected", "cross_bundle_ref_rejected"}
+    assert "duplicate_key_manifest_rejected" in by_id["V1-053"]["required_checks"]
+    assert "revision_changed_during_read" in by_id["V1-054"]["required_checks"]
+    assert set(by_id["V1-055"]["required_checks"]) >= {"fake_renderer_rejected", "fake_preview_rejected"}
+    assert set(by_id["V1-056"]["required_checks"]) >= {"worker_schema_exact", "ui_projection_schema_exact", "ready_false", "allowed_to_print_false"}
+    assert set(by_id["V1-057"]["required_checks"]) >= {"staff_queue_created", "word_worker_not_launched"}
+    assert set(by_id["V1-058"]["required_checks"]) >= {"confirmations_zero_delta", "approvals_zero_delta", "print_jobs_zero_delta", "outbox_zero_delta"}
 
 
 def test_inbound_queue_matrix_is_product_only_and_shop_scoped():
@@ -268,6 +300,111 @@ def test_word_review_auditor_rejects_fake_native_success_and_requires_docx_revie
         "evidence_kind":"injected_fake","native_word_verified":True}}
     assert verifier.word_review_evidence_issues(
         "V1-043",{"word_review":forged})
+
+
+def test_source_snapshot_auditor_requires_exact_product_capture_and_rejects_forgery():
+    spec = importlib.util.spec_from_file_location(
+        "v1_candidate_auditor", MODULE.with_name("audit_candidate.py"))
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    case = next(row for row in gate.word_review_cases()["cases"]
+                if row["id"] == "V1-046")
+    proof = {"product_capture": {"kind":"authoritative_product_trace",
+            "candidate_sha":"a"*40,"mode":"isolated_simulation",
+            "synthetic":False,"run_id":"run-1","evidence_ref":"artifact://trace/1",
+            "trace_sha256":"b"*64},
+        "checks":{name:True for name in case["required_checks"]},
+        "dto_schemas":{"source":"ai0.word_review_source.v1",
+            "input_manifest":"ai0.word_review_manifest.v1",
+            "worker_result":"ai3.native_word_preview.v1",
+            "ui_projection":"ai0.word_review_preview.v1"},
+        "snapshot_trace_sha256":"c"*64,"storage_trace_sha256":"d"*64,
+        "manifest_trace_sha256":"e"*64,"core_guard_trace_sha256":"f"*64,
+        "result":"NEEDS_HUMAN","client_supplied_ref_used":False,
+        "reference_observations":[
+            {"kind":"cross_tenant","result":"NEEDS_HUMAN","opened":False,"bundle_created":False,
+             "requested_shop_id":"shop-a","source_shop_id":"shop-b"},
+            {"kind":"forged","result":"NEEDS_HUMAN","opened":False,"bundle_created":False,
+             "ref_trusted":False}],
+        "effects_before":{"confirmations":0,"approvals":0,"print_jobs":0,"outbox":0},
+        "effects_after":{"confirmations":0,"approvals":0,"print_jobs":0,"outbox":0}}
+    assert verifier.source_snapshot_evidence_issues(
+        "V1-046", {"source_snapshot":proof}, "a"*40,
+        "isolated_simulation") == []
+    for mutation in (
+        {"synthetic": True}, {"candidate_sha":"9"*40},
+        {"trace_sha256":"bad"}, {"kind":"fixture_only"}):
+        forged=copy.deepcopy(proof)
+        forged["product_capture"].update(mutation)
+        assert verifier.source_snapshot_evidence_issues(
+            "V1-046", {"source_snapshot":forged}, "a"*40,
+            "isolated_simulation")
+    missing=copy.deepcopy(proof)
+    missing.pop("storage_trace_sha256")
+    assert verifier.source_snapshot_evidence_issues(
+        "V1-046", {"source_snapshot":missing}, "a"*40,
+        "isolated_simulation")
+    generic_capture=proof["product_capture"]
+    assert verifier.product_capture_issues(generic_capture,"a"*40,
+        "isolated_simulation","V1-046") == []
+    assert verifier.product_capture_issues({**generic_capture,"synthetic":True},
+        "a"*40,"isolated_simulation","V1-046")
+    assert verifier.product_capture_issues({**generic_capture,"candidate_sha":"9"*40},
+        "a"*40,"isolated_simulation","V1-046")
+
+
+def test_new_word_source_negative_controls_require_real_trace_and_reject_bad_refs_or_duplicate_keys():
+    spec = importlib.util.spec_from_file_location(
+        "v1_candidate_auditor", MODULE.with_name("audit_candidate.py"))
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    matrix = gate.word_review_cases()["cases"]
+    schemas = {"source":"ai0.word_review_source.v1",
+        "input_manifest":"ai0.word_review_manifest.v1",
+        "worker_result":"ai3.native_word_preview.v1",
+        "ui_projection":"ai0.word_review_preview.v1"}
+    def proof_for(case_id):
+        case = next(row for row in matrix if row["id"] == case_id)
+        return {"product_capture":{"kind":"authoritative_product_trace",
+                "candidate_sha":"a"*40,"mode":"isolated_simulation",
+                "synthetic":False,"run_id":"run-1","evidence_ref":"artifact://trace/1",
+                "trace_sha256":"b"*64},
+            "dto_schemas":schemas,
+            "checks":{name:True for name in case["required_checks"]},
+            "snapshot_trace_sha256":"c"*64,"storage_trace_sha256":"d"*64,
+            "manifest_trace_sha256":"e"*64,"core_guard_trace_sha256":"f"*64,
+            "result":"NEEDS_HUMAN",
+            "effects_before":{"confirmations":0,"approvals":0,"print_jobs":0,"outbox":0},
+            "effects_after":{"confirmations":0,"approvals":0,"print_jobs":0,"outbox":0},
+            "negative_control_observations":[{"check":name,"result":"NEEDS_HUMAN",
+                "bundle_created":False,"worker_launch_calls":0,"untrusted_bytes_opened":False,
+                "trace_sha256":"1"*64,
+                "effects_before":{"confirmations":0,"approvals":0,"print_jobs":0,"outbox":0},
+                "effects_after":{"confirmations":0,"approvals":0,"print_jobs":0,"outbox":0}}
+                for name in case["required_checks"]]}
+    proof = proof_for("V1-052")
+    proof["invalid_reference_observations"]=[
+        {"kind":"url","locator":"https://untrusted.invalid/file","result":"NEEDS_HUMAN","opened":False,"untrusted_bytes_opened":False,"bundle_created":False},
+        {"kind":"absolute","locator":"/private/file.docx","result":"NEEDS_HUMAN","opened":False,"untrusted_bytes_opened":False,"bundle_created":False},
+        {"kind":"parent_traversal","locator":"bundle/../secret.docx","result":"NEEDS_HUMAN","opened":False,"untrusted_bytes_opened":False,"bundle_created":False},
+        {"kind":"cross_bundle","locator":"other/source.docx","source_bundle_id":"expected","target_bundle_id":"other","result":"NEEDS_HUMAN","opened":False,"untrusted_bytes_opened":False,"bundle_created":False},
+    ]
+    assert verifier.source_snapshot_evidence_issues(
+        "V1-052",{"source_snapshot":proof},"a"*40,"isolated_simulation")==[]
+    proof["invalid_reference_observations"][2]["locator"]="bundle/source.docx"
+    assert verifier.source_snapshot_evidence_issues(
+        "V1-052",{"source_snapshot":proof},"a"*40,"isolated_simulation")
+
+    duplicate = proof_for("V1-053")
+    duplicate["duplicate_key_observation"]={"duplicate_key_detected":True,
+        "duplicate_key_count":1,"parse_policy":"reject_duplicate_keys",
+        "manifest_accepted":False,"worker_launch_calls":0,"bundle_created":False,
+        "trace_sha256":"2"*64}
+    assert verifier.source_snapshot_evidence_issues(
+        "V1-053",{"source_snapshot":duplicate},"a"*40,"isolated_simulation")==[]
+    duplicate["duplicate_key_observation"]["duplicate_key_count"]=0
+    assert verifier.source_snapshot_evidence_issues(
+        "V1-053",{"source_snapshot":duplicate},"a"*40,"isolated_simulation")
 
 
 @pytest.mark.parametrize("kind", ["pdf", "docx", "png", "xlsx", "zip"])
