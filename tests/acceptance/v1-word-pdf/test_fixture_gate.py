@@ -31,7 +31,7 @@ def test_27_synthetic_bytes_have_distinct_sha_and_correct_formats():
     assert all(row["product_status"] == "NOT_RUN" for row in result["cases"])
     assert result["source_candidate_sha"] == gate.current_candidate_sha()
     assert [row["id"] for row in result["product_acceptance_cases"]] == [
-        f"V1-{number:03d}" for number in range(28, 37)]
+        f"V1-{number:03d}" for number in range(28, 44)]
     assert all(row["observed"] == "NOT_RUN"
                for row in result["product_acceptance_cases"])
 
@@ -47,6 +47,22 @@ def test_ticket_gate_matrix_covers_core_contract_and_exact_lease():
         "printer_id", "lease_token"}
     assert all(row["expected"] == "HOLD" and row["observed"] == "NOT_RUN"
                for row in cases)
+
+
+def test_word_review_overlay_is_product_only_and_not_run():
+    cases = gate.word_review_cases()["cases"]
+    assert [row["id"] for row in cases] == [f"V1-{number:03d}" for number in range(37,44)]
+    by_id = {row["id"]: row for row in cases}
+    assert "source_hash_mismatch" in by_id["V1-037"]["required_checks"]
+    assert "request_hash_mismatch" in by_id["V1-038"]["required_checks"]
+    assert "active_revision_mismatch" in by_id["V1-039"]["required_checks"]
+    assert "default_launch_disabled" in by_id["V1-040"]["required_checks"]
+    assert "timeout_needs_human" in by_id["V1-041"]["required_checks"]
+    assert set(by_id["V1-042"]["required_checks"]) >= {
+        "bundle_ready_false", "allowed_to_print_false", "staff_review_required",
+        "docx_source_preserved", "no_pdf_print_source"}
+    assert "injected_fake_rejected" in by_id["V1-043"]["required_checks"]
+    assert all(row["observed"] == "NOT_RUN" for row in cases)
 
 
 def test_inbound_queue_matrix_is_product_only_and_shop_scoped():
@@ -171,6 +187,49 @@ def test_inbound_queue_auditor_requires_auth_scope_ui_and_read_only_proof():
                                "visible_error":True}]}}
     assert any("stale rows" in issue for issue in
         verifier.inbound_queue_evidence_issues("V1-035",stale))
+
+
+def test_word_review_auditor_rejects_fake_native_success_and_requires_docx_review_only():
+    spec = importlib.util.spec_from_file_location(
+        "v1_candidate_auditor", MODULE.with_name("audit_candidate.py"))
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    case = next(row for row in gate.word_review_cases()["cases"]
+                if row["id"] == "V1-042")
+    source_hash, request_hash = "a"*64, "b"*64
+    proof = {"adapter_trace_sha256":"c"*64,
+        "source_request_trace_sha256":"d"*64,
+        "core_revision_trace_sha256":"e"*64,
+        "checks":{name:True for name in case["required_checks"]},
+        "result":"REVIEW_REQUIRED","ready":False,"allowed_to_print":False,
+        "requires_staff_review":True,"physical_print_verified":False,
+        "printout_calls":0,"driver_send_calls":0,
+        "expected_source_sha256":source_hash,"expected_request_hash":request_hash,
+        "active_revision":7,"bundle":{
+            "status":"REVIEW_REQUIRED","ready":False,"allowed_to_print":False,
+            "requires_staff_review":True,"source_format":"DOCX",
+            "print_source_format":"DOCX","source_sha256":source_hash,
+            "revision":7,"request_hash":request_hash,
+            "preview_pdf_used_as_print_source":False,
+            "manifest":{"ready":False,"allowed_to_print":False,
+                "revision":7,"request_hash":request_hash,
+                "requires_staff_review":True,"files":[{
+                    "file_sha256":source_hash,
+                    "source_artifact_ref":"private/source.docx"}]}}}
+    assert verifier.word_review_evidence_issues(
+        "V1-042",{"word_review":proof}) == []
+    fake = {**proof,"result":"NEEDS_HUMAN","bundle_created":False,
+        "reason_code":"WORD_NATIVE_EVIDENCE_UNVERIFIED",
+        "fake_observation":{"evidence_kind":"injected_fake",
+                             "native_word_verified":False}}
+    fake["checks"] = {name:True for name in next(row for row in
+        gate.word_review_cases()["cases"] if row["id"]=="V1-043")["required_checks"]}
+    assert verifier.word_review_evidence_issues(
+        "V1-043",{"word_review":fake}) == []
+    forged={**fake,"fake_observation":{
+        "evidence_kind":"injected_fake","native_word_verified":True}}
+    assert verifier.word_review_evidence_issues(
+        "V1-043",{"word_review":forged})
 
 
 @pytest.mark.parametrize("kind", ["pdf", "docx", "png", "xlsx", "zip"])

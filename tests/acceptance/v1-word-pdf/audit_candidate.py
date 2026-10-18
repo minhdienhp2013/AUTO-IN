@@ -25,6 +25,7 @@ from collections import Counter
 ROOT=pathlib.Path(__file__).resolve().parents[3]
 MANIFEST=ROOT/"tests/fixtures/public/v1-word-pdf/matrix.json"
 TICKET_GATE_MATRIX=pathlib.Path(__file__).with_name("ticket_gate_matrix.json")
+WORD_REVIEW_MATRIX=pathlib.Path(__file__).with_name("word_review_matrix.json")
 HEX40=re.compile(r"[a-f0-9]{40}\Z")
 HEX64=re.compile(r"[a-f0-9]{64}\Z")
 GATES=("source_sha256","settings_sha256","request_hash","revision","manifest_sha256",
@@ -259,6 +260,100 @@ def inbound_queue_evidence_issues(case_id, details):
     return issues
 
 
+def word_review_evidence_issues(case_id, details):
+    """Require exact-candidate evidence for Word review-only acceptance rows."""
+    matrix=json.loads(WORD_REVIEW_MATRIX.read_text(encoding="utf-8"))
+    spec=next(case for case in matrix["cases"] if case["id"]==case_id)
+    proof=details.get("word_review")
+    if not isinstance(proof,dict):
+        return [case_id+": Word review evidence missing"]
+    issues=[]
+    for field in ("adapter_trace_sha256","source_request_trace_sha256",
+                  "core_revision_trace_sha256"):
+        if not HEX64.fullmatch(str(proof.get(field,""))):
+            issues.append(case_id+": invalid/missing "+field)
+    checks=proof.get("checks")
+    if not isinstance(checks,dict) or any(checks.get(name) is not True
+                                         for name in spec["required_checks"]):
+        issues.append(case_id+": Word review acceptance checks incomplete/failed")
+    expected_result="REVIEW_REQUIRED" if spec["expected"]=="REVIEW_REQUIRED" else "NEEDS_HUMAN"
+    if proof.get("result")!=expected_result:
+        issues.append(case_id+": unexpected Word review result")
+    if (proof.get("ready") is not False or proof.get("allowed_to_print") is not False or
+            proof.get("requires_staff_review") is not True or
+            proof.get("physical_print_verified") is not False or
+            proof.get("printout_calls")!=0 or proof.get("driver_send_calls")!=0):
+        issues.append(case_id+": review-only/no-print invariants failed")
+
+    if case_id=="V1-037":
+        if (not HEX64.fullmatch(str(proof.get("expected_source_sha256",""))) or
+                not HEX64.fullmatch(str(proof.get("observed_source_sha256",""))) or
+                proof.get("expected_source_sha256")==proof.get("observed_source_sha256") or
+                proof.get("word_launch_calls")!=0 or proof.get("artifact_count")!=0):
+            issues.append(case_id+": source hash mismatch was not held before launch")
+    elif case_id=="V1-038":
+        if (not HEX64.fullmatch(str(proof.get("expected_request_hash",""))) or
+                not HEX64.fullmatch(str(proof.get("observed_request_hash",""))) or
+                proof.get("expected_request_hash")==proof.get("observed_request_hash") or
+                proof.get("word_launch_calls")!=0 or proof.get("artifact_count")!=0):
+            issues.append(case_id+": request hash mismatch was not held before launch")
+    elif case_id=="V1-039":
+        if (type(proof.get("active_revision")) is not int or
+                type(proof.get("requested_revision")) is not int or
+                proof.get("active_revision")==proof.get("requested_revision") or
+                proof.get("reason_code") not in ("STALE_REVISION",
+                                                   "CORE_EVIDENCE_OR_REVISION_UNVERIFIED") or
+                proof.get("bundle_created") is not False):
+            issues.append(case_id+": stale active revision was not held")
+    elif case_id=="V1-040":
+        if (proof.get("word_launch_enabled") is not False or
+                proof.get("word_process_started") is not False or
+                proof.get("reason_code")!="WORD_LAUNCH_NOT_AUTHORIZED"):
+            issues.append(case_id+": default Word launch was not disabled")
+    elif case_id=="V1-041":
+        failures=proof.get("failure_observations")
+        if (not isinstance(failures,list) or
+                {row.get("kind") for row in failures if isinstance(row,dict)}!=
+                    {"timeout","malformed"} or len(failures)!=2 or
+                any(row.get("result")!="NEEDS_HUMAN" or
+                    row.get("allowed_to_print") is not False or
+                    row.get("word_process_cleaned") is not True or
+                    row.get("artifact_count")!=0 for row in failures
+                    if isinstance(row,dict))):
+            issues.append(case_id+": timeout/malformed response did not fail closed")
+    elif case_id=="V1-042":
+        bundle=proof.get("bundle")
+        if (not isinstance(bundle,dict) or bundle.get("status")!="REVIEW_REQUIRED" or
+                bundle.get("ready") is not False or
+                bundle.get("allowed_to_print") is not False or
+                bundle.get("requires_staff_review") is not True or
+                bundle.get("source_format")!="DOCX" or
+                bundle.get("print_source_format")!="DOCX" or
+                bundle.get("source_sha256")!=proof.get("expected_source_sha256") or
+                bundle.get("preview_pdf_used_as_print_source") is not False):
+            issues.append(case_id+": DOCX native review bundle not safely bound/review-only")
+        manifest=bundle.get("manifest") if isinstance(bundle,dict) else None
+        files=manifest.get("files") if isinstance(manifest,dict) else None
+        file_row=files[0] if isinstance(files,list) and len(files)==1 else None
+        if (not isinstance(manifest,dict) or manifest.get("ready") is not False or
+                manifest.get("allowed_to_print") is not False or
+                manifest.get("requires_staff_review") is not True or
+                manifest.get("revision")!=proof.get("active_revision") or
+                manifest.get("request_hash")!=proof.get("expected_request_hash") or
+                not isinstance(file_row,dict) or
+                file_row.get("file_sha256")!=proof.get("expected_source_sha256") or
+                not str(file_row.get("source_artifact_ref","" )).lower().endswith(".docx")):
+            issues.append(case_id+": review manifest is missing required DOCX/no-print flags")
+    elif case_id=="V1-043":
+        fake=proof.get("fake_observation")
+        if (not isinstance(fake,dict) or fake.get("evidence_kind")!="injected_fake" or
+                fake.get("native_word_verified") is not False or
+                proof.get("bundle_created") is not False or
+                proof.get("reason_code")!="WORD_NATIVE_EVIDENCE_UNVERIFIED"):
+            issues.append(case_id+": synthetic observation could claim native success")
+    return issues
+
+
 def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
     if not HEX40.fullmatch(expected_sha):
         raise AssertionError("INVALID_CANDIDATE_SHA")
@@ -285,11 +380,13 @@ def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
     assert len(sentinels)==1 and json.loads(sentinels[0])==report, "TAP_JSON_MISMATCH"
     matrix=json.loads(MANIFEST.read_text(encoding="utf-8"))
     ticket_matrix=json.loads(TICKET_GATE_MATRIX.read_text(encoding="utf-8"))
+    word_matrix=json.loads(WORD_REVIEW_MATRIX.read_text(encoding="utf-8"))
     expected_rows=[*matrix["cases"],*ticket_matrix["cases"],
-                   *matrix.get("additional_cases",[])]
+                   *matrix.get("additional_cases",[]),*word_matrix["cases"]]
     expected={c["id"]:c for c in expected_rows}
     assert len(expected)==len(expected_rows), "DUPLICATE_EXPECTED_CASE_ID"
     inbound_ids={case["id"] for case in matrix.get("additional_cases",[])}
+    word_review_ids={case["id"] for case in word_matrix["cases"]}
     tests=report.get("cases")
     assert isinstance(tests,list) and len(tests)==len(expected)
     assert len({row.get("id") for row in tests})==len(expected)
@@ -306,6 +403,9 @@ def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
             continue
         if row["id"] in inbound_ids:
             issues.extend(inbound_queue_evidence_issues(row["id"],details))
+        elif row["id"] in word_review_ids:
+            issues.extend(word_review_evidence_issues(row["id"],details))
+            continue
         else:
             # Require explicit role/source/settings verification, no ungrounded
             # schema-level "pass": staging owns the original SQL/HTTP traces.

@@ -1,0 +1,55 @@
+{
+  "schema": "autoin.v1.word_review.matrix.v1",
+  "source_contract": "workers/documents/native_word_review.py + workers/documents/native_word_artifacts.py + Core active-revision guard",
+  "cases": [
+    {
+      "id": "V1-037",
+      "key": "word_review_source_hash_mismatch",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": ["source_hash_mismatch", "no_word_launch", "no_artifacts"]
+    },
+    {
+      "id": "V1-038",
+      "key": "word_review_request_hash_mismatch",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": ["request_hash_mismatch", "no_word_launch", "no_artifacts"]
+    },
+    {
+      "id": "V1-039",
+      "key": "word_review_stale_active_revision",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": ["active_revision_mismatch", "needs_human", "no_bundle_or_print"]
+    },
+    {
+      "id": "V1-040",
+      "key": "word_review_launch_default_off",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": ["default_launch_disabled", "needs_human", "no_word_process"]
+    },
+    {
+      "id": "V1-041",
+      "key": "word_review_timeout_and_malformed_fail_closed",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": ["timeout_needs_human", "malformed_needs_human", "no_print_side_effects"]
+    },
+    {
+      "id": "V1-042",
+      "key": "word_review_bundle_is_native_docx_review_only",
+      "expected": "REVIEW_REQUIRED",
+      "observed": "NOT_RUN",
+      "required_checks": ["bundle_ready_false", "allowed_to_print_false", "staff_review_required", "docx_source_preserved", "no_pdf_print_source"]
+    },
+    {
+      "id": "V1-043",
+      "key": "word_review_synthetic_fake_never_native_success",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": ["injected_fake_rejected", "no_native_success_claim", "no_bundle_or_print"]
+    }
+  ]
+}

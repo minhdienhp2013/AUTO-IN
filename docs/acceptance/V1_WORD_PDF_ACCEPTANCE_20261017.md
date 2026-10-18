@@ -1,9 +1,11 @@
 # AUTO-IN — V1-ACCEPTANCE-01 | Word/PDF-first acceptance gate
 
-**Status: MATRIX/HARNESS UPDATED (27 synthetic fixtures + 9 acceptance overlays); all 36 product results NOT RUN.** This is a test-first AI5 plan and
+**Status: MATRIX/HARNESS UPDATED (27 synthetic fixtures + 16 acceptance overlays); all 43 product results NOT RUN.** This is a test-first AI5 plan and
 independent verification harness, **not V1 release authorization**.
 
 **AI5 V1-ACCEPTANCE-04 base reviewed:** `9dbaea9919d36a6fddae07cc972dfec1897ff3b5`.
+**AI5 V1-ACCEPTANCE-05 base:** `e7d85b8797344cc69e9b35cd694356f1f8d31502`;
+Word review overlays are acceptance-only and do not claim Windows Word success.
 This acceptance-only update does not claim that the API/UI or database cases
 passed on that product SHA; inbound-queue product rows remain NOT RUN.
 
@@ -30,9 +32,10 @@ passed on that product SHA; inbound-queue product rows remain NOT RUN.
 
 \`tests/fixtures/public/v1-word-pdf/matrix.json\` remains the machine-readable
 27-case source/document manifest. \`tests/acceptance/v1-word-pdf/ticket_gate_matrix.json\`
-adds four ticket-gate cases and the matrix \`additional_cases\` adds five staff
-inbound-queue cases; together the exact-candidate product report must contain
-36 unique case IDs. All rows start with \`observed=NOT_RUN\` deliberately.
+adds four ticket-gate cases, the matrix \`additional_cases\` adds five staff
+inbound-queue cases, and \`word_review_matrix.json\` adds seven Word review
+cases; together the exact-candidate product report must contain 43 unique case
+IDs. All rows start with \`observed=NOT_RUN\` deliberately.
 Acceptance overlays do not increase the synthetic file fixture count.
 
 | Case IDs | Gate | Mandatory observation for final integrated candidate |
@@ -62,6 +65,13 @@ Acceptance overlays do not increase the synthetic file fixture count.
 | V1-034 | Truthful inbound status and file readiness | Show `NEEDS_HUMAN` / `AWAITING_MEDIA`; tell staff the original file is not saved or ready and cannot be previewed, confirmed, approved or printed yet |
 | V1-035 | Failed refresh hides old queue data | Network, 401 and 503 failures clear prior rows and show an error/unverified state; stale rows are not shown as current |
 | V1-036 | Inbound queue stays read-only | Queue only calls its GET endpoint; no preview fetch, customer confirmation, approval or print-job mutation occurs |
+| V1-037 | Word source hash mismatch | Changed DOCX bytes vs trusted source SHA => NEEDS_HUMAN before Word launch or bundle creation |
+| V1-038 | Word request hash mismatch | Changed request payload vs trusted request hash => NEEDS_HUMAN before Word launch or bundle creation |
+| V1-039 | Word active revision mismatch | Current Core active revision differs from requested revision => NEEDS_HUMAN; no stale bundle or print side effect |
+| V1-040 | Word launch default OFF | Default internal adapter config does not start Word; result is NEEDS_HUMAN until privileged runtime configuration is supplied |
+| V1-041 | Word timeout/malformed output | Timeout and malformed worker output each produce NEEDS_HUMAN, cleanup, and zero artifact/print side effects |
+| V1-042 | Word review bundle remains review-only | Native DOCX source and same source hash are retained; bundle status REVIEW_REQUIRED, ready=false, allowed_to_print=false, staff review required; preview PDF never becomes print source |
+| V1-043 | Synthetic/fake Word cannot claim native success | injected_fake evidence is rejected as NEEDS_HUMAN and cannot create a review bundle or print authority |
 
 
 ### Required evidence tuple and authority
@@ -119,7 +129,7 @@ gates cannot PASS from an in-memory plan or synthetic principal.
   counters did not increase. A digest-only synthetic JSON is insufficient.
 - \`audit_candidate.py\`: future fail-closed ZIP SHA256/exact Git checkout/
   exact unified job log/\`product_commit_sha\`/TAP+JSON equality and
-  **36 individually recorded** product observation/guard checks.
+  **43 individually recorded** product observation/guard checks.
   A synthetically fabricated report or generic green CI is **not enough**:
   AI5 independently checks authoritative PG/HTTP/agent traces before declaring
   any candidate PASS. The instrument cannot attest raw device results alone.
@@ -140,6 +150,13 @@ gates cannot PASS from an in-memory plan or synthetic principal.
   not prove the underlying behavior; AI5 must inspect the original traces.
   Unit tests on a candidate do not replace isolated PostgreSQL and
   browser-level evidence for these five acceptance cases.
+- \`word_review_matrix.json\` defines V1-037–043. Word cases require separate
+  adapter/source-request/Core-revision trace digests and exact mismatch/hold
+  evidence; V1-042 requires a review-only bundle with byte-identical DOCX
+  source/hash, DOCX print-source declaration, a non-ready manifest and no
+  print authority. V1-043 is a negative control against injected synthetic
+  evidence claiming native Word success. Fixture/auditor self-tests never
+  count as product evidence or as a Windows Word PASS.
 
 ### Commands to run in the exact integrated checkout (after AI0 hands off)
 
@@ -152,7 +169,7 @@ python -m pytest -q tests/unit/documents tests/unit/printing tests/acceptance/v1
 (cd web && npm ci && npm test && npm run typecheck && VITE_DEMO_MODE=false npm run build && npm run test:chromium:code008)
 python tests/acceptance/v1-word-pdf/fixture_gate.py --check-fixture --json-out /tmp/v1-fixture.json
 
-# Core baseline, NOT all 36 V1 product acceptance cases:
+# Core baseline, NOT all 43 V1 product acceptance cases:
 export AUTOIN_OPERATION_MODE=simulation
 export AUTOIN_ALLOW_PG_ACCEPTANCE=YES_ISOLATED_TEST_DB
 export TEST_DATABASE_URL='postgresql://auto_in:CI_ONLY@127.0.0.1:5432/autoin_test_v1wp'
@@ -163,7 +180,7 @@ node --import tsx --test tests/acceptance/v1-word-pdf/core_baseline_pg.mjs
 
 Do NOT execute on a production DB, production Zalo OA, Windows queue or Ricoh.
 For final V1 product evidence AI0 must bind the exact SHA observed at runner
-start, run all 36 scenarios against **the actual integrated product** (not just the Core
+start, run all 43 scenarios against **the actual integrated product** (not just the Core
 baseline), archive artifact \`v1-word-pdf.json\` and \`v1-word-pdf.tap\`
 with original HTTP/SQL logs, job ID, exact checked-out SHA and SHA256 ZIP digest.
 AI5 then runs:
@@ -181,8 +198,8 @@ outcomes; AI5 must inspect the original, scope-bound evidence. Missing tests
 are explicitly **NOT RUN**, not silent PASS/SKIP.
 
 **Change control (18/10/2026):** File/evidence matrix includes V1-025–027;
-ticket-gate overlay adds V1-028–031; inbound-queue acceptance adds V1-032–036.
-All 36 product scenarios remain NOT RUN.
+ticket-gate overlay adds V1-028–031; inbound-queue acceptance adds V1-032–036;
+Word review acceptance adds V1-037–043. All 43 product scenarios remain NOT RUN.
 No exact integrated candidate SHA or product JSON/TAP/ZIP exists yet for these
 new contract scenarios. Prior PR144/PR153 general CI is not acceptance evidence
 for the Core↔AI3↔agent manifest/preview/renderer hash contract.
@@ -191,15 +208,15 @@ for the Core↔AI3↔agent manifest/preview/renderer hash contract.
 
 | Layer | Status | Limits |
 | --- | --- | --- |
-| Manifest/harness creation | **DONE** | 27 synthetic file fixtures + 9 acceptance overlays; all 36 product results NOT RUN |
-| Fixture gate / Python compile | **FIXTURE PASS** | 27 synthetic inputs pass; nine product acceptance overlays remain NOT RUN |
+| Manifest/harness creation | **DONE** | 27 synthetic file fixtures + 16 acceptance overlays; all 43 product results NOT RUN |
+| Fixture gate / Python compile | **FIXTURE PASS** | 27 synthetic inputs pass; 16 product acceptance overlays remain NOT RUN |
 | `tests/ui/inbound-review.test.ts` | **PASS 5/5** | Node built-in unit tests on base `9dbaea9919d36a6fddae07cc972dfec1897ff3b5`; not browser or DB acceptance |
 | Python pytest | **BLOCKED** | `python -m pytest` unavailable (`No module named pytest`); acceptance Python modules compile successfully |
 | npm run check | **NOT RUN for this docs/acceptance-only branch** | AI0's base-candidate check is separate and does not include this AI5 change |
 | UI Chromium | **NOT RUN for this acceptance-only branch** | Not exercised by ticket-gate acceptance changes |
 | Core PostgreSQL isolated | **NOT RUN** | No isolated PostgreSQL evidence was produced for this task |
-| 36-case integrated V1 acceptance | **NOT RUN / BLOCKED on AI0 integration** | Product runner/traces for V1-028–036 pending; fixture output is not product evidence |
-| Word COM, Windows Ricoh, OA/DeepSeek, Safari/iPhone | **NOT RUN** | Physical account/host/device tests need explicit owner approval |
+| 43-case integrated V1 acceptance | **NOT RUN / BLOCKED on AI0 integration** | Product runner/traces for V1-028–043 pending; fixture output is not product evidence |
+| Real Windows Word COM, fonts/layout, Ricoh, OA/DeepSeek, Safari/iPhone | **NOT RUN** | No actual native Word/render/physical result is claimed |
 | TN037 ≥210 real accepted jobs over ≥7 clean days | **NOT RUN** | Not replaced by synthetic batch or benchmark |
 
 **Handoff to AI0:** jointly settle binding tuple with AI1/AI3, finish AI2 intake

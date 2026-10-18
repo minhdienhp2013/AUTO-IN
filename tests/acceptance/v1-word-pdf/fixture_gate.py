@@ -22,6 +22,7 @@ import zlib
 ROOT=pathlib.Path(__file__).resolve().parents[3]
 MANIFEST=ROOT/"tests/fixtures/public/v1-word-pdf/matrix.json"
 TICKET_GATE_MATRIX=pathlib.Path(__file__).with_name("ticket_gate_matrix.json")
+WORD_REVIEW_MATRIX=pathlib.Path(__file__).with_name("word_review_matrix.json")
 FORMATS={"pdf","docx","png","jpg","xlsx","zip"}
 STATUS={"PASS","STALE","ALLOW","DENY","ONE","CONFLICT","HOLD","MANUAL"}
 VERSION="autoin.v1.word_pdf.acceptance.matrix.v1"
@@ -65,6 +66,18 @@ def inbound_queue_cases():
                for case in cases)
     assert len({case["key"] for case in cases})==5
     return cases
+
+
+def word_review_cases():
+    """Product acceptance overlays for native Word review-only behavior."""
+    data=json.loads(WORD_REVIEW_MATRIX.read_text(encoding="utf-8"))
+    assert data["schema"]=="autoin.v1.word_review.matrix.v1"
+    cases=data["cases"]
+    assert [case["id"] for case in cases]==[f"V1-{i:03d}" for i in range(37,44)]
+    assert all(case["expected"] in {"HOLD","REVIEW_REQUIRED"} and
+               case["observed"]=="NOT_RUN" for case in cases)
+    assert len({case["key"] for case in cases})==len(cases)
+    return data
 
 
 def current_candidate_sha():
@@ -267,7 +280,8 @@ def fixture_result():
     return {"schema":"autoin.v1.word_pdf.fixture.v1","mode":"fixture_only",
             "status":"FIXTURE_PASS_PRODUCT_NOT_RUN","count":27,"distinct_sha256":27,
             "source_candidate_sha":current_candidate_sha(),"cases":rows,
-            "product_acceptance_cases":[*ticket_gate_cases()["cases"],*inbound_queue_cases()],
+            "product_acceptance_cases":[*ticket_gate_cases()["cases"],*inbound_queue_cases(),
+                                         *word_review_cases()["cases"]],
             "same_path_digest_controls":pairs}
 
 
