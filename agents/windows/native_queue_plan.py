@@ -7,8 +7,11 @@ job-scoped backend CAS + durable journal + supervised device acceptance.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import re
 from typing import Any
+
+from workers.documents.bridge import _canonical
 
 SCHEMA = "ai3.native_queue_plan.v1"
 HEX = re.compile(r"^[0-9a-f]{64}$")
@@ -26,7 +29,8 @@ class ObservedQueue:
 
 def plan_native_ricoh(*, observed: ObservedQueue | None, sealed_job: dict[str, Any],
                       verified_evidence: dict[str, Any], file_format: str,
-                      settings: dict[str, Any],
+                      settings: dict[str, Any], renderer_identity: dict[str, Any],
+                      printer_capabilities: dict[str, Any],
                       host_windows_verified: bool = False) -> dict[str, Any]:
     def block(reason: str) -> dict[str, Any]:
         return {"schema": SCHEMA, "status": "NEEDS_HUMAN",
@@ -74,7 +78,8 @@ def plan_native_ricoh(*, observed: ObservedQueue | None, sealed_job: dict[str, A
             type(verified_evidence.get("source_formats")) not in (tuple, list) or
             file_format not in verified_evidence["source_formats"]):
         return block("MANIFEST_OR_STAFF_REVIEW_INCOMPLETE")
-    if not isinstance(settings, dict) or settings.get("paper") not in ("A4", "A3"):
+    if (not isinstance(settings, dict) or
+            settings.get("paper") not in ("A4", "A3")):
         return block("PAPER_SETTING_UNVERIFIED")
     if (type(settings.get("copies")) is not int or
             not 1 <= settings["copies"] <= 999 or
@@ -82,6 +87,26 @@ def plan_native_ricoh(*, observed: ObservedQueue | None, sealed_job: dict[str, A
             settings.get("orientation") not in ("portrait", "landscape") or
             settings.get("binding") not in ("long_edge", "short_edge")):
         return block("PRINT_SETTINGS_UNVERIFIED")
+    if type(renderer_identity) is not dict or not renderer_identity:
+        return block("RENDERER_IDENTITY_UNVERIFIED")
+    if (type(printer_capabilities) is not dict or not printer_capabilities or
+            printer_capabilities.get("printer_id") != observed.printer_id or
+            printer_capabilities.get("queue_name") != observed.queue_name or
+            printer_capabilities.get("driver") != observed.driver_name or
+            printer_capabilities.get("port") != observed.port_name):
+        return block("PRINTER_CAPABILITY_DRIFT")
+    try:
+        settings_sha256 = hashlib.sha256(_canonical([settings]).encode("utf-8")).hexdigest()
+        renderer_sha256 = hashlib.sha256(_canonical(renderer_identity).encode("utf-8")).hexdigest()
+        capability_sha256 = hashlib.sha256(_canonical(printer_capabilities).encode("utf-8")).hexdigest()
+    except Exception:
+        return block("PRINT_EVIDENCE_HASH_UNVERIFIED")
+    if (settings_sha256 != verified_evidence.get("settings_sha256") or
+            renderer_sha256 != verified_evidence.get("renderer_sha256") or
+            capability_sha256 != verified_evidence.get("printer_capability_sha256")):
+        return block("REVIEWED_SETTINGS_RENDERER_OR_CAPABILITY_CHANGED")
+    if tuple(verified_evidence.get("source_formats", ())) != (file_format,):
+        return block("REVIEWED_SOURCE_FORMAT_CHANGED")
     return {"schema": SCHEMA, "status": "PREPARED_NOT_SENT",
             "reason_code": "PHYSICAL_DEVICE_AND_STAFF_ACCEPTANCE_PENDING",
             "printer_id": "RMP7000", "queue_name": "RMP7000",
