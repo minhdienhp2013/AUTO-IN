@@ -8,7 +8,7 @@ const {checkedPdfReviewSnapshot,readPdfReviewSnapshot}=require(path.join(root,'c
 const {OrderService}=require(path.join(root,'core/service.js'));
 const {PgStore}=require(path.join(root,'storage/database.js'));
 
-const request_data={documents:[{format:'PDF',copies:1}],settings:{paper:'A4'}};
+const request_data={documents:[{artifact_name:'bundle-1/source.pdf',copies:1,duplex:false,paper:'A4'}]};
 const request_hash=sha(canonical(request_data));
 const scope={shop_id:'shop-a',order_id:'order-a',active_revision:3,request_hash,request_data};
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -33,6 +33,30 @@ test('V1-CORE-12 returns exact DB-scoped PDF contract with private bytes omitted
  assert.deepEqual(Buffer.from(result.private_bytes.manifest),f.raw.manifest.bytes);
  assert.equal(Object.keys(result).includes('private_bytes'),false);
  assert.equal(JSON.stringify(result).includes('synthetic verified PDF bytes'),false);
+});
+
+test('V1-CORE-15 accepts the exact raw Core PDF request bound to the verified source',()=>{
+ const f=fixture(),result=checkedPdfReviewSnapshot(scope,f.raw);
+ assert.deepEqual(result.request_data,request_data);
+ assert.equal(result.request_hash,request_hash);
+ assert.equal(sha(canonical(result.request_data)),request_hash);
+ assert.equal(result.request_data.documents[0].artifact_name,result.source.artifact_ref);
+});
+
+test('V1-CORE-15 rejects source mismatch, extra or missing fields, and malformed PDF settings',()=>{
+ const rejectsRequest=request=>{
+  const candidate={...scope,request_data:request,request_hash:sha(canonical(request))};
+  bad(()=>checkedPdfReviewSnapshot(candidate,fixture().raw));
+ };
+ rejectsRequest({documents:[{...request_data.documents[0],artifact_name:'bundle-1/other.pdf'}]});
+ rejectsRequest({documents:[{...request_data.documents[0],orientation:'portrait'}]});
+ rejectsRequest({documents:[{artifact_name:request_data.documents[0].artifact_name,
+  copies:1,duplex:false}]});
+ rejectsRequest({documents:[request_data.documents[0],request_data.documents[0]]});
+ rejectsRequest({...request_data,settings:{paper:'A3'}});
+ for(const patch of [
+  {copies:true},{copies:0},{copies:1000},{duplex:1},{paper:'Letter'}
+ ])rejectsRequest({documents:[{...request_data.documents[0],...patch}]});
 });
 
 test('V1-CORE-12 rejects wrong scope, source/manifest digest or size, schema drift, and unsafe refs',()=>{

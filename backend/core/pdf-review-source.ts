@@ -87,6 +87,20 @@ function sameBytes(a:Uint8Array,b:Uint8Array){return a.byteLength===b.byteLength
 function requestDataHash(data:unknown):string{
  try{const serialized=canonical(data);if(typeof serialized!=='string')throw deny();return sha(serialized);}catch{throw deny();}
 }
+/** Accept only the unchanged one-PDF Core request understood by the native PDF review worker. */
+function validatePdfRequestData(data:unknown,artifactRef:string):void{
+ if(!data||typeof data!=='object'||Array.isArray(data))throw deny();
+ const request=data as Record<string,unknown>;
+ if(Object.keys(request).sort().join(',')!=='documents'||!Array.isArray(request.documents)||
+    request.documents.length!==1)throw deny();
+ const document=request.documents[0];
+ if(!document||typeof document!=='object'||Array.isArray(document))throw deny();
+ const fields=document as Record<string,unknown>;
+ if(Object.keys(fields).sort().join(',')!=='artifact_name,copies,duplex,paper'||
+    fields.artifact_name!==artifactRef||!Number.isSafeInteger(fields.copies)||
+    Number(fields.copies)<1||Number(fields.copies)>999||typeof fields.duplex!=='boolean'||
+    (fields.paper!=='A4'&&fields.paper!=='A3'))throw deny();
+}
 function cloneData(data:unknown):unknown{
  try{return structuredClone(data);}catch{throw deny();}
 }
@@ -110,6 +124,7 @@ export function checkedPdfReviewSnapshot(scope:PdfReviewSourceScope,raw:TrustedP
     raw.source.bytes.byteLength>MAX_PDF_BYTES||!pdfHeader(raw.source.bytes)||
     !boundedRef(raw.source.artifact_ref)||!boundedRef(raw.manifest.ref))throw deny();
  const requestData=cloneData(scope.request_data);
+ validatePdfRequestData(requestData,raw.source.artifact_ref);
  if(requestDataHash(requestData)!==scope.request_hash)throw deny();
  const manifest=parseManifest(raw.manifest.bytes);
  const sourceSha=digest(raw.source.bytes),manifestSha=digest(raw.manifest.bytes);
