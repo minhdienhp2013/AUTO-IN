@@ -81,6 +81,9 @@ test("AI0 CODE-402 runtime: default OFF, signed synthetic quarantine blocks prop
     assert.equal((await pool.query(
       "SELECT count(*)::int AS n FROM zalo_process_queue WHERE oa_id=$1 AND event_id=$2",
       [oa,initialEvent])).rows[0].n,1);
+    assert.equal((await pool.query(
+      "SELECT count(*)::int AS n FROM core_inbound_review_items WHERE shop_id=$1",[shop])).rows[0].n,0,
+      "ordinary text events do not enter the image/file review queue");
 
     const aiOrders=createAiOrderPort({store:core.store,trusted:{shop_id:shop,oa_id:oa}});
     const proposal=await aiOrders.suggest_draft({
@@ -117,9 +120,47 @@ test("AI0 CODE-402 runtime: default OFF, signed synthetic quarantine blocks prop
     assert.equal(quarantine.rows[0].status,"NEEDS_HUMAN");
     assert.equal(quarantine.rows[0].customer_id,customer);
     assert.equal(quarantine.rows[0].conversation_id,conversation);
+    const imageReceipt=(await pool.query(
+      "SELECT id::text FROM zalo_official_quarantine WHERE oa_id=$1 AND raw_sha256=$2",
+      [oa,createHash("sha256").update(image.raw).digest("hex")])).rows[0].id;
+    const imageReview=(await pool.query(
+      "SELECT shop_id,oa_id,quarantine_id::text,kind,status,media_state FROM core_inbound_review_items WHERE shop_id=$1",
+      [shop])).rows;
+    assert.equal(imageReview.length,1,"a held image creates exactly one staff review item");
+    assert.deepEqual(imageReview[0],{shop_id:shop,oa_id:oa,quarantine_id:imageReceipt,
+      kind:"image",status:"NEEDS_HUMAN",media_state:"AWAITING_MEDIA"});
     assert.equal((await pool.query(
       "SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2",
       [oa,imageEvent])).rows[0].n,0,"unsupported image must not enter the text queue");
+
+    // Model a process crash after the quarantine commit but before Core's
+    // queue write. The provider retry sees duplicate quarantine and repairs it.
+    const fileEvent="file-replay-gap-"+suffix;
+    const file=signed("user_send_file",fileEvent);
+    const fileReceipt=randomUUID();
+    await pool.query(
+      "INSERT INTO zalo_official_quarantine(id,oa_id,raw_sha256,kind,customer_id,conversation_id,provider_claimed_event_id,status) "+
+      "VALUES($1,$2,$3,'file',$4,$5,$6,'NEEDS_HUMAN')",
+      [fileReceipt,oa,createHash("sha256").update(file.raw).digest("hex"),customer,conversation,fileEvent]);
+    assert.equal((await send(file)).statusCode,200,"duplicate quarantine replay repairs the queue gap");
+    assert.equal((await send(file)).statusCode,200,"repaired file replay remains acknowledged");
+    const reviewRows=await pool.query(
+      "SELECT quarantine_id::text,kind,status,media_state FROM core_inbound_review_items WHERE shop_id=$1 ORDER BY kind",
+      [shop]);
+    assert.equal(reviewRows.rows.length,2,"image and replayed file each have one queue item");
+    assert.deepEqual(reviewRows.rows.map(r=>r.kind),["file","image"]);
+    assert.equal(reviewRows.rows[0].quarantine_id,fileReceipt);
+    assert.ok(reviewRows.rows.every(r=>r.status==="NEEDS_HUMAN"&&r.media_state==="AWAITING_MEDIA"));
+
+    const visibleQueue=await app.inject({method:"GET",url:"/api/v1/inbound-review-items",
+      headers:{authorization:"Bearer "+session.token}});
+    assert.equal(visibleQueue.statusCode,200,visibleQueue.body);
+    const visibleItems=visibleQueue.json().items;
+    assert.equal(visibleItems.length,2);
+    assert.ok(visibleItems.every(item=>item.status==="NEEDS_HUMAN"&&item.media_state==="AWAITING_MEDIA"));
+    assert.ok(visibleItems.every(item=>Object.keys(item).sort().join(",")===
+      ["id","kind","mapped_customer","media_state","raw_event_sha256","received_at","status"].sort().join(",")),
+      "staff queue returns safe metadata without raw payload, URL, filename, or media bytes");
 
     const rejected=await app.inject({method:"POST",url:"/webhooks/zalo",
       headers:{"content-type":"application/json","x-zevent-signature":"mac="+"0".repeat(64)},
@@ -153,6 +194,8 @@ test("AI0 CODE-402 runtime: default OFF, signed synthetic quarantine blocks prop
       await pool.query("DELETE FROM zalo_inbound_events WHERE oa_id=$1",[oa]);
       await pool.query("DELETE FROM zalo_official_quarantine WHERE oa_id=$1",[oa]);
       await pool.query("DELETE FROM zalo_official_quarantine_scopes WHERE oa_id=$1",[oa]);
+      await pool.query("DELETE FROM core_inbound_review_audit_events WHERE shop_id=$1",[shop]);
+      await pool.query("DELETE FROM core_inbound_review_items WHERE shop_id=$1",[shop]);
       await pool.query("DELETE FROM core_shop_zalo_oa_registry WHERE shop_id=$1",[shop]);
       await pool.query("DELETE FROM core_print_jobs WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)",[shop]);
       await pool.query("DELETE FROM core_approvals WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)",[shop]);

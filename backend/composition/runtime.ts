@@ -326,7 +326,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
     app.register(createSyntheticVerifiedButtonPlugin(
       options.pool,options.syntheticVerifiedButton,trustedPrintEvidence));
   if (options.officialZaloSimulation)
-    app.register(createOfficialZaloSimulationWebhook(options.pool, options.officialZaloSimulation));
+    app.register(createOfficialZaloSimulationWebhook(options.pool, options.officialZaloSimulation, core.store));
   else if (options.zaloWebhook) app.register(options.zaloWebhook);
   else app.post('/webhooks/zalo', async (_request, reply) => reply.code(503).send({ error: {
     code: 'FEATURE_UNAVAILABLE', message: 'Verified pipeline wiring pending', retryable: false } }));
