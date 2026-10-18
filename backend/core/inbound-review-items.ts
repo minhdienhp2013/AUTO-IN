@@ -4,7 +4,7 @@ import type {PgStore,SqlConnection} from '../storage/database.js';
 
 export interface TrustedOfficialInboundScope {readonly shop_id:string;readonly oa_id:string}
 export interface InboundReviewItem {
- id:string;quarantine_id:string;oa_id:string;raw_event_sha256:string;
+ id:string;raw_event_sha256:string;
  kind:'image'|'file';mapped_customer:boolean;status:'NEEDS_HUMAN';
  media_state:'AWAITING_MEDIA';received_at:Date|string;
 }
@@ -84,16 +84,24 @@ export function createOfficialInboundReviewItems(options:{store:PgStore;trusted:
   });
  }
 
+ return {enqueue_quarantined_event};
+}
+
+/** Read-only staff queue reader: independent from OA-scoped event ingestion. */
+export function createInboundReviewReader(options:{store:PgStore}){
+ const {store}=options;
+ if(!store?.pool||typeof store.pool.query!=='function')
+  throw new DomainError('INBOUND_REVIEW_NOT_CONFIGURED','Thiếu PostgreSQL cho hàng chờ nhân viên',503);
  async function list_for_staff(actor:Principal):Promise<InboundReviewItem[]>{
   assertStaff(actor);
   try{
    const result=await store.pool.query<InboundReviewItem>(
-    "SELECT id::text,item.quarantine_id::text,item.oa_id,item.raw_event_sha256,item.kind, "+
+    "SELECT id::text,item.raw_event_sha256,item.kind, "+
     "(item.customer_id IS NOT NULL) AS mapped_customer,item.status,item.media_state,item.received_at "+
     'FROM core_inbound_review_items item WHERE item.shop_id=$1 '+
     'ORDER BY item.received_at,item.id LIMIT 100',[actor.shop_id]);
    return result.rows;
   }catch{throw unavailable();}
  }
- return {enqueue_quarantined_event,list_for_staff};
+ return {list_for_staff};
 }

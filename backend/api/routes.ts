@@ -2,6 +2,7 @@ import { DomainError, type Principal } from '../core/model.js';
 import type { ShopScheduleService } from '../core/shop-schedule.js';
 import type { OrderService } from '../core/service.js';
 import type { AuthService } from '../core/auth.js';
+import type { InboundReviewItem } from '../core/inbound-review-items.js';
 
 type HttpRequest={headers:Record<string,string|undefined>;body?:unknown;params?:Record<string,string>;query?:Record<string,string>};
 type HttpReply={code(status:number):HttpReply;send(value:unknown):unknown;header?(name:string,value:string):HttpReply};
@@ -10,6 +11,7 @@ type Handler=(request:HttpRequest,reply:HttpReply)=>Promise<unknown>;
 export interface RouteRegistrar { get(path:string,handler:Handler):void; post(path:string,handler:Handler):void; patch?(path:string,handler:Handler):void; }
 export interface CoreRouteDependencies {
  service:OrderService;auth:AuthService;schedule:ShopScheduleService;
+ inboundReviewReader?:{list_for_staff:(actor:Principal)=>Promise<InboundReviewItem[]>};
  // MUST validate Zalo OA signature/server credential, never accept customer role from browser request.
  resolveVerifiedCustomer:(r:HttpRequest)=>Promise<Principal>;
  // MUST authenticate scoped service/agent credentials, not a client-provided role header.
@@ -46,6 +48,11 @@ export function registerCoreRoutes(app:RouteRegistrar,d:CoreRouteDependencies):v
  app.post('/api/v1/auth/login',wrap(async(r)=>{const c=loginCredentials(r);return d.auth.login(c.shop_id,c.username,c.password);}));
  app.post('/api/v1/auth/logout',wrap(async(r)=>{await d.auth.logout(token(r));return {ok:true};}));
  app.get('/api/v1/auth/me',wrap(async(r)=>({principal:await staff(r)})));
+ app.get('/api/v1/inbound-review-items',wrap(async(r,reply)=>{
+  reply.header?.('Cache-Control','no-store');
+  if(!d.inboundReviewReader)throw new DomainError('INBOUND_REVIEW_UNAVAILABLE','Hàng chờ nhân viên chưa được cấu hình',503,true);
+  return {items:await d.inboundReviewReader.list_for_staff(await staff(r))};
+ }));
  app.get('/api/v1/settings/schedule',wrap(async(r,reply)=>{ const value=await d.schedule.get(await staff(r)); reply.header?.('Cache-Control','no-store'); return value; }));
  // Composition adapter on AI0 side must register PATCH. Existing GET/POST-only callers still compile.
  app.patch?.('/api/v1/settings/schedule',wrap(async(r,reply)=>{ const value=await d.schedule.patch(await staff(r),bodyOf<Record<string,unknown>>(r)); reply.header?.('Cache-Control','no-store'); return value; }));

@@ -1,6 +1,7 @@
 import { AuthService } from './auth.js';
 import { OrderService } from './service.js';
 import { ShopScheduleService } from './shop-schedule.js';
+import { createInboundReviewReader } from './inbound-review-items.js';
 import { DomainError, type Principal } from './model.js';
 import { PgStore, type SqlPool } from '../storage/database.js';
 import { registerCoreRoutes, type RouteRegistrar, type CoreRouteDependencies } from '../api/routes.js';
@@ -17,6 +18,7 @@ export interface CoreModule {
   auth: AuthService;
   service: OrderService;
   schedule: ShopScheduleService;
+  inboundReviewReader: ReturnType<typeof createInboundReviewReader>;
   registerRoutes: (app: RouteRegistrar, identities: VerifiedIdentityPorts) => void;
 }
 
@@ -60,15 +62,16 @@ export function createCoreModule(options: CoreModuleOptions): CoreModule {
   const service = new OrderService(store, options.now ?? (() => new Date()),
     options.mode === 'v1' ? options.evidence : undefined);
   const schedule = new ShopScheduleService(store);
+  const inboundReviewReader = createInboundReviewReader({store});
   return {
-    store, auth, service, schedule,
+    store, auth, service, schedule, inboundReviewReader,
     registerRoutes(app, identities) {
       if (typeof identities?.resolveVerifiedCustomer !== 'function' ||
           typeof identities?.resolvePrintAgent !== 'function')
         throw new DomainError('VERIFIED_IDENTITY_PORTS_REQUIRED','Thiếu adapter xác thực kênh khách/agent',503);
       // The staff resolver uses bearer sessions in AuthService; never fabricate roles.
       registerCoreRoutes(app, {
-        auth, service, schedule,
+        auth, service, schedule, inboundReviewReader,
         async resolveVerifiedCustomer(request) {
           const principal = await identities.resolveVerifiedCustomer(request);
           if (!validCustomer(principal))

@@ -5,7 +5,7 @@ const path=require('node:path');
 const {randomUUID,createHash}=require('node:crypto');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../../dist/backend');
 const {PgStore}=require(path.join(root,'storage/database.js'));
-const {createOfficialInboundReviewItems}=require(path.join(root,'core/inbound-review-items.js'));
+const {createOfficialInboundReviewItems,createInboundReviewReader}=require(path.join(root,'core/inbound-review-items.js'));
 let pg;try{pg=require('pg')}catch{}
 const url=process.env.TEST_DATABASE_URL,uid=()=>randomUUID();
 const sha=x=>createHash('sha256').update(x).digest('hex');
@@ -34,6 +34,7 @@ test('V1-CORE-05 REAL PG two pools: official media event is held once for staff,
   const A=createOfficialInboundReviewItems({store:new PgStore(a),trusted:{shop_id:shopA,oa_id:oaA}});
   const A2=createOfficialInboundReviewItems({store:new PgStore(b),trusted:{shop_id:shopA,oa_id:oaA}});
   const B=createOfficialInboundReviewItems({store:new PgStore(b),trusted:{shop_id:shopB,oa_id:oaB}});
+  const readA=createInboundReviewReader({store:new PgStore(a)}),readB=createInboundReviewReader({store:new PgStore(b)});
   const staffA={id:uid(),shop_id:shopA,role:'staff',verified:true};
   const staffB={id:uid(),shop_id:shopB,role:'staff',verified:true};
   const [first,replay]=await Promise.all([A.enqueue_quarantined_event(qA),A2.enqueue_quarantined_event(qA)]);
@@ -42,11 +43,12 @@ test('V1-CORE-05 REAL PG two pools: official media event is held once for staff,
   const other=await B.enqueue_quarantined_event(qB);
   assert.equal(other.status,'created');
   await assert.rejects(A.enqueue_quarantined_event(qB),e=>e.code==='QUARANTINE_SOURCE_NOT_PENDING');
-  const listA=await A.list_for_staff(staffA),listB=await B.list_for_staff(staffB);
-  assert.equal(listA.length,1);assert.equal(listA[0].quarantine_id,qA);
+  const listA=await readA.list_for_staff(staffA),listB=await readB.list_for_staff(staffB);
+  assert.equal(listA.length,1);assert.equal(listA[0].id,first.item_id);
   assert.equal(listA[0].raw_event_sha256,rawA);assert.equal(listA[0].media_state,'AWAITING_MEDIA');
-  assert.equal(listB.length,1);assert.equal(listB[0].quarantine_id,qB);
-  assert.ok(listB.every(item=>item.quarantine_id!==qA));
+  assert.equal(listB.length,1);assert.equal(listB[0].id,other.item_id);
+  assert.notEqual(listB[0].id,first.item_id);
+  assert.deepEqual(Object.keys(listA[0]).sort(),['id','kind','mapped_customer','media_state','raw_event_sha256','received_at','status'].sort());
   const rows=await a.query('SELECT quarantine_id::text,kind,status,media_state,raw_event_sha256 FROM core_inbound_review_items WHERE shop_id=ANY($1::text[]) ORDER BY shop_id',[[shopA,shopB]]);
   assert.equal(rows.rows.length,2);assert.ok(rows.rows.every(row=>row.status==='NEEDS_HUMAN'&&row.media_state==='AWAITING_MEDIA'));
   assert.equal((await a.query("SELECT count(*)::int n FROM core_inbound_review_audit_events WHERE action='inbound.file_held_for_staff' AND shop_id=ANY($1::text[])",[[shopA,shopB]])).rows[0].n,2);
