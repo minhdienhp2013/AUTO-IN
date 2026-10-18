@@ -346,13 +346,13 @@
       "key": "inbound_queue_principal_shop_scope",
       "format": "metadata",
       "kind": "tenant_scope",
-      "goal": "Rows are scoped from authenticated principal.shop_id; spoofed shop query never exposes another shop",
+      "goal": "Rows use authenticated principal.shop_id; ignore or reject spoofed shop query and return only principal-shop IDs with zero foreign IDs",
       "tier": "product",
       "expected": "PASS",
       "observed": "NOT_RUN",
       "required_checks": [
-        "principal_shop_a_only", "spoof_shop_query_ignored_or_denied",
-        "cross_shop_403", "foreign_ids_absent"
+        "principal_shop_scope_used", "spoofed_shop_query_ignored_or_rejected",
+        "returned_ids_subset_principal_shop", "zero_foreign_ids_returned"
       ]
     },
     {

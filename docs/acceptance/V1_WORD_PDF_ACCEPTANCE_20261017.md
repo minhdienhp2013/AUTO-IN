@@ -58,7 +58,7 @@ Acceptance overlays do not increase the synthetic file fixture count.
 | V1-030 | Cached ticket belongs to another lease | Change each claimed identity field (`job_id`, `order_id`, `revision`, `request_hash`, `approval_id`, `printer_id`, `lease_token`) after preflight; cached Core ticket cannot authorize mark or driver |
 | V1-031 | HTTPS ticket gate precedes durable/print effects | On malformed integrated Core HTTPS ticket, agent stops after claim/preflight; journal count unchanged, no mark-sending request and no driver call |
 | V1-032 | Staff inbound queue bearer and cache policy | Missing bearer is 401, non-staff is 403, authorized staff uses Bearer and receives `Cache-Control: no-store`; endpoint has no caller-selected shop query and returns bounded metadata only |
-| V1-033 | Principal-derived shop scope | Queue is scoped to authenticated `principal.shop_id`; spoofed shop query cannot reveal foreign rows and cross-shop access is denied |
+| V1-033 | Principal-derived shop scope | Queue is scoped to authenticated `principal.shop_id`; a spoofed shop query is ignored or rejected, and returned IDs remain a subset of that principal's rows with zero foreign IDs. The endpoint has no caller-selected shop route. |
 | V1-034 | Truthful inbound status and file readiness | Show `NEEDS_HUMAN` / `AWAITING_MEDIA`; tell staff the original file is not saved or ready and cannot be previewed, confirmed, approved or printed yet |
 | V1-035 | Failed refresh hides old queue data | Network, 401 and 503 failures clear prior rows and show an error/unverified state; stale rows are not shown as current |
 | V1-036 | Inbound queue stays read-only | Queue only calls its GET endpoint; no preview fetch, customer confirmation, approval or print-job mutation occurs |

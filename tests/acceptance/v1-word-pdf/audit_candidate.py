@@ -212,14 +212,17 @@ def inbound_queue_evidence_issues(case_id, details):
             returned=scope.get("returned_item_ids")
             own=scope.get("principal_shop_item_ids")
             foreign=scope.get("foreign_shop_item_ids")
+            spoof_effect=scope.get("spoof_query_effect")
             if (scope.get("scope_source")!="authenticated_principal.shop_id" or
                     not isinstance(returned,list) or not isinstance(own,list) or
                     not isinstance(foreign,list) or not set(returned).issubset(set(own)) or
                     set(returned).intersection(set(foreign)) or
-                    scope.get("spoof_query_status") not in (200,400)):
+                    scope.get("spoof_query_status") not in (200,400) or
+                    spoof_effect not in ("ignored","rejected") or
+                    (scope.get("spoof_query_status")==200 and spoof_effect!="ignored") or
+                    (scope.get("spoof_query_status")==400 and
+                     (spoof_effect!="rejected" or returned))):
                 issues.append(case_id+": principal shop scope/spoof query not proven")
-            if scope.get("cross_shop_status")!=403:
-                issues.append(case_id+": cross-shop request not denied")
     elif case_id=="V1-034":
         if set(queue.get("displayed_statuses",[]))!={"NEEDS_HUMAN"}:
             issues.append(case_id+": displayed NEEDS_HUMAN status missing")

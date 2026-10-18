@@ -55,7 +55,10 @@ def test_inbound_queue_matrix_is_product_only_and_shop_scoped():
     by_id = {row["id"]: row for row in cases}
     assert set(by_id["V1-032"]["required_checks"]) >= {
         "missing_bearer_401", "nonstaff_403", "staff_bearer_no_store", "no_shop_query"}
-    assert "spoof_query_ignored_or_denied" in by_id["V1-033"]["required_checks"]
+    assert set(by_id["V1-033"]["required_checks"]) == {
+        "principal_shop_scope_used", "spoofed_shop_query_ignored_or_rejected",
+        "returned_ids_subset_principal_shop", "zero_foreign_ids_returned"}
+    assert "cross_shop_403" not in by_id["V1-033"]["required_checks"]
     assert "source_not_ready_disclaimer" in by_id["V1-034"]["required_checks"]
     assert "network_error_clears_old_rows" in by_id["V1-035"]["required_checks"]
     assert "print_job_writes_zero" in by_id["V1-036"]["required_checks"]
@@ -129,7 +132,8 @@ def test_inbound_queue_auditor_requires_auth_scope_ui_and_read_only_proof():
                 "raw_event_sha256","received_at","status"]},
         "V1-033": {"tenant_scope":{"scope_source":"authenticated_principal.shop_id",
             "principal_shop_item_ids":["a"],"returned_item_ids":["a"],
-            "foreign_shop_item_ids":["b"],"spoof_query_status":200,"cross_shop_status":403}},
+            "foreign_shop_item_ids":["b"],"spoof_query_status":200,
+            "spoof_query_effect":"ignored"}},
         "V1-034": {"displayed_statuses":["NEEDS_HUMAN"],
             "displayed_media_states":["AWAITING_MEDIA"],
             "source_not_ready_copy":"tệp gốc chưa được lưu hoặc chưa sẵn sàng.",
@@ -144,6 +148,20 @@ def test_inbound_queue_auditor_requires_auth_scope_ui_and_read_only_proof():
     for case in cases:
         assert verifier.inbound_queue_evidence_issues(
             case["id"], {"inbound_queue":{**common,**evidence[case["id"]]}}) == []
+    for status,effect in ((200,"ignored"),(400,"rejected")):
+        details={"inbound_queue":{**common,"tenant_scope":{
+            "scope_source":"authenticated_principal.shop_id",
+            "principal_shop_item_ids":["a"],
+            "returned_item_ids":["a"] if status==200 else [],
+            "foreign_shop_item_ids":["b"],"spoof_query_status":status,
+            "spoof_query_effect":effect}}}
+        assert verifier.inbound_queue_evidence_issues("V1-033",details)==[]
+    foreign={"inbound_queue":{**common,"tenant_scope":{
+        "scope_source":"authenticated_principal.shop_id",
+        "principal_shop_item_ids":["a"],"returned_item_ids":["a","b"],
+        "foreign_shop_item_ids":["b"],"spoof_query_status":200,
+        "spoof_query_effect":"ignored"}}}
+    assert verifier.inbound_queue_evidence_issues("V1-033",foreign)
     bad = {"inbound_queue":{**common,**evidence["V1-034"],
         "displayed_media_states":["SAVED"]}}
     assert any("AWAITING_MEDIA" in issue for issue in
