@@ -76,3 +76,59 @@ Preview phải được một nhân viên xác thực kiểm tra trước khi Co
 - AI5 kiểm tra exact integrated candidate SHA: thiếu receipt, receipt sai actor/shop/revision/hash, drift từng digest, replay/cùng key khác payload, và PDF/DOCX luồng review → customer confirmation → staff approval; các ca chưa chạy phải giữ `NOT_RUN`.
 
 Thay đổi này chỉ bổ sung biên nhận review, không thay TN, không đổi định dạng của nguồn in và không mở vận hành thật. Evidence bytes tiếp tục do Port đọc lại; bảng receipt chỉ lưu hành động nhân viên đã xem đúng snapshot. Base điều phối hiện tại là candidate cô lập `a5dad6591fa739b46701538b9d93afab4c6eb608`; phần code đang chờ AI1/AI3/AI4 và AI0 composition phải được nghiệm thu lại trên một SHA tích hợp mới.
+
+## 8. DTO nguồn Word và manifest — quyết định AI0, 18/10/2026
+
+Để tránh mỗi module định nghĩa một manifest khác nhau, mọi nhánh mới dùng đúng các kiểu sau. Đây là contract nội bộ; không phải API Zalo/OA hay quyền xác nhận/in.
+
+### AI1 → AI3: snapshot trong tiến trình máy chủ
+
+```ts
+WordReviewSourceV1 {
+  schema: "ai0.word_review_source.v1";
+  shop_id: string;
+  order_id: string;
+  active_revision: number;
+  request_hash: string;       // SHA-256 canonical UTF-8 request_data
+  request_data: unknown;      // giữ nguyên dữ liệu DB; không chuẩn hóa lại
+  source: {
+    format: "DOCX";
+    artifact_ref: string;
+    sha256: string;           // SHA-256 byte DOCX gốc
+    size_bytes: number;
+  };
+  manifest: { ref: string; sha256: string };
+  private_bytes: { source: Uint8Array; manifest: Uint8Array };
+}
+```
+
+`private_bytes` chỉ tồn tại server-to-worker trong bộ nhớ; tuyệt đối không serialize ra JSON/browser/log. `artifact_ref` và `manifest.ref` là locator opaque tương đối trong private storage (ví dụ `bundle-id/source.docx`, `bundle-id/manifest.json`), cùng bundle ID; không phải URL, đường dẫn tuyệt đối, tên do khách gửi hay đường dẫn có `..`.
+
+Byte manifest được hash đúng nguyên trạng và parse theo UTF-8 JSON không có khóa lặp. Schema chính xác:
+
+```json
+{
+  "schema": "ai0.word_review_manifest.v1",
+  "manifest_ref": "bundle-id/manifest.json",
+  "shop_id": "...",
+  "order_id": "...",
+  "active_revision": 1,
+  "request_hash": "<64 lowercase hex>",
+  "source": {
+    "format": "DOCX",
+    "artifact_ref": "bundle-id/source.docx",
+    "sha256": "<64 lowercase hex>",
+    "size_bytes": 1
+  }
+}
+```
+
+AI1/Core chỉ dựng snapshot từ shop/order/revision/request hiện hành của DB và registry tin cậy, xác minh hash/size/tenant/ref/manifest, rồi đọc lại scope sau I/O để phát hiện revision đổi giữa chừng. Reader chỉ đọc; lỗi hoặc thiếu registry giữ đơn. `request_data` được giữ nguyên; worker chỉ kiểm tra canonical hash và kiểm tra đúng loại DOCX theo facts đã xác minh, không tự đổi request schema hoặc lấy locator từ request.
+
+### AI3 → AI0/UI: kết quả preview native Word
+
+Worker dùng metadata trên và bytes riêng tư để tạo bundle preview có manifest riêng. Kết quả nội bộ phải là `schema: "ai3.native_word_preview.v1"`, lặp lại chính xác shop/order/active_revision/request_hash/source SHA/source size/source ref/manifest SHA làm input anchors, kèm preview page digest/counts/settings/renderer facts đã kiểm chứng. Trạng thái thành công chỉ là `REVIEW_REQUIRED`; luôn `ready:false`, `allowed_to_print:false`, `requires_staff_review:true`, `physical_print_verified:false`. Lỗi, DOCX/font/layout không chắc chắn, hash hoặc scope lệch trả `NEEDS_HUMAN` và không phát hành bundle như hiện hành. DOCX byte gốc vẫn là nguồn in; PDF Word tạm chỉ phục vụ dựng preview rồi xóa.
+
+AI0 composition chịu trách nhiệm nối Core snapshot → AI3 worker → private preview/evidence registry. AI3 không tự truy cập DB/API, không tự suy diễn `request_data` thành một schema mới và không gửi lệnh in. UI chỉ dùng API có xác thực và read model hiện có/được AI0 cấp; không tạo endpoint giả, không nhận `private_bytes`, không hiển thị preview nếu revision/hash không khớp. Thiếu endpoint/dữ liệu thì giữ trạng thái chờ nhân viên.
+
+AI5 dùng cùng hai manifest schema và anchors này trong ma trận acceptance. Fixture/unit PASS chỉ kiểm tra contract; chỉ bằng chứng sản phẩm trên exact integrated SHA mới được tính là nghiệm thu. Contract này không bật Word native trên host Windows, OA thật hoặc Ricoh thật.
