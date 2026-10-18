@@ -1,4 +1,5 @@
 """Pure fixture contract tests; do not claim any API/DB/agent or OA exercised."""
+import copy
 import importlib.util
 import io
 import pathlib
@@ -218,6 +219,43 @@ def test_word_review_auditor_rejects_fake_native_success_and_requires_docx_revie
                     "source_artifact_ref":"private/source.docx"}]}}}
     assert verifier.word_review_evidence_issues(
         "V1-042",{"word_review":proof}) == []
+
+    # Missing or malformed anchors must not pass through None == None checks.
+    for field in ("expected_source_sha256", "expected_request_hash", "active_revision"):
+        missing_anchor = copy.deepcopy(proof)
+        missing_anchor.pop(field)
+        assert verifier.word_review_evidence_issues(
+            "V1-042",{"word_review":missing_anchor})
+    for field, value in (("expected_source_sha256", "bad-sha"),
+                         ("expected_request_hash", "bad-request-hash"),
+                         ("active_revision", True)):
+        invalid_anchor = copy.deepcopy(proof)
+        invalid_anchor[field] = value
+        assert verifier.word_review_evidence_issues(
+            "V1-042",{"word_review":invalid_anchor})
+
+    # The bundle itself and its manifest must carry the same trusted anchors.
+    for field, value in (("source_sha256", "f"*64),
+                         ("revision", 8),
+                         ("request_hash", "f"*64)):
+        mismatched_bundle = copy.deepcopy(proof)
+        mismatched_bundle["bundle"][field] = value
+        assert verifier.word_review_evidence_issues(
+            "V1-042",{"word_review":mismatched_bundle})
+    for field, value in (("revision", 8), ("request_hash", "f"*64)):
+        mismatched_manifest = copy.deepcopy(proof)
+        mismatched_manifest["bundle"]["manifest"][field] = value
+        assert verifier.word_review_evidence_issues(
+            "V1-042",{"word_review":mismatched_manifest})
+    malformed_file_hash = copy.deepcopy(proof)
+    malformed_file_hash["bundle"]["manifest"]["files"][0]["file_sha256"] = "bad-sha"
+    assert verifier.word_review_evidence_issues(
+        "V1-042",{"word_review":malformed_file_hash})
+    mismatched_file_hash = copy.deepcopy(proof)
+    mismatched_file_hash["bundle"]["manifest"]["files"][0]["file_sha256"] = "f"*64
+    assert verifier.word_review_evidence_issues(
+        "V1-042",{"word_review":mismatched_file_hash})
+
     fake = {**proof,"result":"NEEDS_HUMAN","bundle_created":False,
         "reason_code":"WORD_NATIVE_EVIDENCE_UNVERIFIED",
         "fake_observation":{"evidence_kind":"injected_fake",

@@ -322,6 +322,13 @@ def word_review_evidence_issues(case_id, details):
                     if isinstance(row,dict))):
             issues.append(case_id+": timeout/malformed response did not fail closed")
     elif case_id=="V1-042":
+        expected_source_sha=proof.get("expected_source_sha256")
+        expected_request_hash=proof.get("expected_request_hash")
+        active_revision=proof.get("active_revision")
+        if (not HEX64.fullmatch(str(expected_source_sha or "")) or
+                not HEX64.fullmatch(str(expected_request_hash or "")) or
+                type(active_revision) is not int or active_revision < 1):
+            issues.append(case_id+": missing/invalid source, request, or active-revision anchor")
         bundle=proof.get("bundle")
         if (not isinstance(bundle,dict) or bundle.get("status")!="REVIEW_REQUIRED" or
                 bundle.get("ready") is not False or
@@ -329,7 +336,11 @@ def word_review_evidence_issues(case_id, details):
                 bundle.get("requires_staff_review") is not True or
                 bundle.get("source_format")!="DOCX" or
                 bundle.get("print_source_format")!="DOCX" or
-                bundle.get("source_sha256")!=proof.get("expected_source_sha256") or
+                not HEX64.fullmatch(str(bundle.get("source_sha256") or "")) or
+                bundle.get("source_sha256")!=expected_source_sha or
+                type(bundle.get("revision")) is not int or
+                bundle.get("revision")!=active_revision or
+                bundle.get("request_hash")!=expected_request_hash or
                 bundle.get("preview_pdf_used_as_print_source") is not False):
             issues.append(case_id+": DOCX native review bundle not safely bound/review-only")
         manifest=bundle.get("manifest") if isinstance(bundle,dict) else None
@@ -338,9 +349,11 @@ def word_review_evidence_issues(case_id, details):
         if (not isinstance(manifest,dict) or manifest.get("ready") is not False or
                 manifest.get("allowed_to_print") is not False or
                 manifest.get("requires_staff_review") is not True or
-                manifest.get("revision")!=proof.get("active_revision") or
-                manifest.get("request_hash")!=proof.get("expected_request_hash") or
+                type(manifest.get("revision")) is not int or
+                manifest.get("revision")!=active_revision or
+                manifest.get("request_hash")!=expected_request_hash or
                 not isinstance(file_row,dict) or
+                not HEX64.fullmatch(str(file_row.get("file_sha256") or "")) or
                 file_row.get("file_sha256")!=proof.get("expected_source_sha256") or
                 not str(file_row.get("source_artifact_ref","" )).lower().endswith(".docx")):
             issues.append(case_id+": review manifest is missing required DOCX/no-print flags")
