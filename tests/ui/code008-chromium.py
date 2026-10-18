@@ -6,6 +6,7 @@ Usage from checkout with web/dist built using VITE_DEMO_MODE=false:
 This never connects to external networks, customer accounts, Zalo or a printer.
 No claim of actual customer consent, staff approval, or Fastify/PostgreSQL
 behavior is made by this test. The backend integration acceptance is separate.
+`detail_unverified` is a UI-only simulated response sequence, not backend evidence.
 """
 from __future__ import annotations
 
@@ -15,11 +16,13 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import time
 from urllib.error import URLError
 from urllib.request import urlopen
+import zlib
 
 from playwright.sync_api import sync_playwright
 
@@ -33,6 +36,18 @@ STAMP = '2026-10-14T06:00:00.000Z'
 TOKEN = 'synthetic-only-ai4-browser-token'
 ROLE = {'id': 'ai4-browser-fixture-owner', 'shop_id': 'ai4-browser-fixture-shop',
         'role': 'owner', 'verified': True}
+
+
+def png_chunk(name: bytes, payload: bytes) -> bytes:
+    chunk = name + payload
+    return (struct.pack('>I', len(payload)) + chunk +
+            struct.pack('>I', zlib.crc32(chunk) & 0xffffffff))
+
+
+PREVIEW_PNG = (b'\x89PNG\r\n\x1a\n' +
+               png_chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 6, 0, 0, 0)) +
+               png_chunk(b'IDAT', zlib.compress(b'\x00\x00\x00\x00\xff')) +
+               png_chunk(b'IEND', b''))
 
 
 def executable() -> str:
@@ -49,7 +64,7 @@ def inbound(state: str, *, count: int = 0, items: list[dict] | None = None) -> d
 
 
 def details(name: str) -> dict:
-    if name in ('clear', 'offline', 'api401', 'api409', 'api503'):
+    if name in ('clear', 'detail_unverified', 'offline', 'api401', 'api409', 'api503'):
         pending = inbound('clear')
     elif name == 'processing0':
         pending = inbound('processing')
@@ -101,7 +116,7 @@ def details(name: str) -> dict:
     }
 
 
-CASES = ('clear', 'processing0', 'needs_human0', 'processing2', 'needs_human1',
+CASES = ('clear', 'detail_unverified', 'processing0', 'needs_human0', 'processing2', 'needs_human1',
          'stale_order', 'stale_revision', 'stale_hash', 'missing', 'bad_count',
          'api401', 'api409', 'api503', 'offline')
 
@@ -112,9 +127,28 @@ def run_case(browser, viewport: tuple[int, int], case: str) -> None:
     context = browser.new_context(viewport={'width': width, 'height': height},
                                   is_mobile=mobile, has_touch=mobile, locale='vi-VN')
     page = context.new_page()
-    calls = {'login': 0, 'detail': 0, 'mutation': 0, 'unauthorized': 0}
+    calls = {'login': 0, 'detail': 0, 'preview_catalog': 0, 'preview_png': 0,
+             'mutation': 0, 'unauthorized': 0}
+    detail_snapshots: list[tuple[str, int, str, bool]] = []
     crashes: list[str] = []
     page.on('pageerror', lambda e: crashes.append(str(e)))
+    if case == 'detail_unverified':
+        page.add_init_script('''
+          (() => {
+            const state = window.__autoinPreviewBlobLifecycle = {created: [], revoked: []};
+            const create = URL.createObjectURL.bind(URL);
+            const revoke = URL.revokeObjectURL.bind(URL);
+            URL.createObjectURL = blob => {
+              const url = create(blob);
+              state.created.push(url);
+              return url;
+            };
+            URL.revokeObjectURL = url => {
+              state.revoked.push(url);
+              return revoke(url);
+            };
+          })();
+        ''')
 
     def mocked_api(route) -> None:
         req = route.request
@@ -153,7 +187,33 @@ def run_case(browser, viewport: tuple[int, int], case: str) -> None:
             elif case == 'api503':
                 error(503)
             else:
-                reply(deepcopy(details(case)))
+                payload = deepcopy(details('clear' if case == 'detail_unverified' else case))
+                if case == 'detail_unverified' and calls['detail'] > 1:
+                    payload.pop('current', None)
+                if case == 'detail_unverified':
+                    detail_snapshots.append((payload['order']['id'],
+                                             payload['order']['active_revision'],
+                                             payload['revisions'][0]['request_hash'],
+                                             'current' in payload))
+                reply(payload)
+        elif path == f'orders/{ORDER}/revisions/2/previews' and method == 'GET':
+            calls['preview_catalog'] += 1
+            if case != 'detail_unverified':
+                error(503)
+            else:
+                reply({'order_id': ORDER, 'revision': 2, 'request_hash': HASH,
+                       'preview_verified': True, 'preview_count': 1,
+                       'previews': [{'index': 0,
+                                     'url': f'/api/v1/orders/{ORDER}/revisions/2/previews/0',
+                                     'content_type': 'image/png'}]})
+        elif path == f'orders/{ORDER}/revisions/2/previews/0' and method == 'GET':
+            calls['preview_png'] += 1
+            if case != 'detail_unverified':
+                error(503)
+            else:
+                route.fulfill(status=200, body=PREVIEW_PNG, content_type='image/png',
+                              headers={'Cache-Control': 'no-store',
+                                       'X-Content-Type-Options': 'nosniff'})
         elif method != 'GET':
             calls['mutation'] += 1
             error(409)  # Even a browser regression can never mint an approval.
@@ -185,6 +245,36 @@ def run_case(browser, viewport: tuple[int, int], case: str) -> None:
             if mobile:
                 card.click()  # mobile detail is intentionally hidden until selected
             detail.locator('.detail-head h2').filter(has_text=ORDER).wait_for(timeout=15000)
+            if case == 'detail_unverified':
+                gallery = detail.locator('[data-testid="verified-preview-gallery"]')
+                image = gallery.locator('[data-testid="verified-preview-image"]').first
+                image.wait_for(state='visible', timeout=15000)
+                assert image.evaluate('(element) => element.complete && element.naturalWidth == 1'), (
+                    'initial synthetic PNG should render before refresh')
+                blobs = page.evaluate('() => window.__autoinPreviewBlobLifecycle')
+                assert len(blobs['created']) == 1 and blobs['revoked'] == [], (
+                    'initial snapshot should own one live preview Blob URL')
+                with page.expect_response(
+                        lambda response: response.request.method == 'GET' and
+                        response.url.split('/api/v1/', 1)[-1].split('?', 1)[0] ==
+                        f'orders/{ORDER}' and response.status == 200,
+                        timeout=15000):
+                    page.get_by_role('button', name='Làm mới dữ liệu').click()
+                gallery.locator('[data-testid="preview-unavailable"]').wait_for(
+                    state='visible', timeout=15000)
+                assert gallery.locator('[data-testid="verified-preview-image"]').count() == 0, (
+                    'same-identity detail validation loss must hide the previous image')
+                assert page.locator('[data-testid="api-lock-banner"]').count() == 0, (
+                    'a successful HTTP detail response keeps API health true')
+                assert calls['detail'] == 2 and detail_snapshots == [
+                    (ORDER, 2, HASH, True), (ORDER, 2, HASH, False)], (
+                    'fixture must preserve order/revision/hash while current disappears')
+                blobs = page.evaluate('() => window.__autoinPreviewBlobLifecycle')
+                assert len(blobs['created']) == 1 and blobs['revoked'] == blobs['created'], (
+                    'detail validation loss must revoke the previous Blob URL')
+                assert calls['preview_catalog'] == calls['preview_png'] == 1, (
+                    'unverified detail must not request another preview')
+
             if case in ('offline', 'api409', 'api503'):
                 # The specific API error and the independent fail-closed guard
                 # are BOTH required. Distinct test ids make this contract
@@ -229,8 +319,10 @@ def run_case(browser, viewport: tuple[int, int], case: str) -> None:
         assert calls['login'] == 1, 'unexpected login replay'
         assert calls['mutation'] == 0, 'UI automatically created a mutation/approval/print job'
         assert not crashes, f'uncaught browser exception: {crashes[:1]}'
+        detail_gate = (' same_snapshot=true preview_hidden=true blob_revoked=true'
+                       if case == 'detail_unverified' else '')
         print(f'PASS CODE008 SYNTHETIC Chromium {width}x{height} scenario={case} '
-              f'GET_detail={calls["detail"]} mutation=0', flush=True)
+              f'GET_detail={calls["detail"]} mutation=0{detail_gate}', flush=True)
     finally:
         context.close()
 
@@ -267,8 +359,8 @@ def main() -> int:
                 for viewport in ((1440, 900), (390, 844)):
                     for case in CASES:
                         run_case(browser, viewport, case)
-                # Additional CODE501 synthetic UI tests. The original 28 CODE008
-                # test cases and their assertions remain untouched.
+                # Additional CODE501 synthetic UI tests. Existing CODE008
+                # assertions remain; detail_unverified adds a focused regression.
                 from shop_schedule_browser import CASES as SHOP_CASES, run_schedule_case
                 for viewport in ((1440, 900), (390, 844)):
                     for case in SHOP_CASES:
