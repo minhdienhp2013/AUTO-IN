@@ -11,18 +11,26 @@ function fixture() {
   request_confirmation: null, price_confirmation: null, preview_ref: null, approval: null
  }, print_progress: {planned_sheets: 180,verified_sheets:0,missing_sheets:180,delivered_sheets:0,fully_verified:false,requires_manual_reconciliation:false}};
 }
+const evidenceSha='a'.repeat(64);
+function withCurrentEvidence(d:ReturnType<typeof fixture>) {
+ d.current.print_evidence={schema:'ai0.print_evidence.v1',order_id:'order-ai1',
+  revision:3,request_hash:'req-hash',evidence_sha256:evidenceSha} as never;
+ d.current.preview_review={status:'matching',order_id:'order-ai1',
+  revision:3,request_hash:'req-hash',evidence_sha256:evidenceSha} as never;
+ return d;
+}
 test('CODE-404: no customer confirmation means waiting customer, not staff approval',()=>{
  const view=mapCoreOrderDetail(fixture());
  assert.deepEqual(confirmationReadiness(view),{request:'missing',price:'missing',staff:'waiting_customer'});
 });
 test('CODE-404: matching active revision/hash confirmation still needs price >150 sheets',()=>{
- const d=fixture();d.current.request_confirmation={revision:3,request_hash:'req-hash',kind:'request'} as never;
+ const d=withCurrentEvidence(fixture());d.current.request_confirmation={revision:3,request_hash:'req-hash',kind:'request',evidence_sha256:evidenceSha} as never;
  const v=mapCoreOrderDetail(d);
  assert.deepEqual(confirmationReadiness(v),{request:'confirmed',price:'missing',staff:'waiting_price'});
  assert.equal(v.order_state,'confirmed');
 });
 test('CODE-404: quote confirmed but no per-file verified preview remains waiting',()=>{
- const d=fixture();d.current.request_confirmation={revision:3,request_hash:'req-hash',kind:'request'} as never;
+ const d=withCurrentEvidence(fixture());d.current.request_confirmation={revision:3,request_hash:'req-hash',kind:'request',evidence_sha256:evidenceSha} as never;
  d.current.price_confirmation={revision:3,request_hash:'req-hash',quote_revision:2,kind:'quote'} as never;
  assert.deepEqual(confirmationReadiness(mapCoreOrderDetail(d)),{request:'confirmed',price:'confirmed',staff:'waiting_preview'});
 });
@@ -35,6 +43,16 @@ test('CODE-404: stale request, stale price and already approved never invent sta
  d.current.approval={id:'a1',revision:3,request_hash:'req-hash',quote_revision:2} as never;
  view=mapCoreOrderDetail(d);
  assert.equal(confirmationReadiness(view).staff,'already_approved');
+});
+test('V1 evidence binding: same-revision confirmation with stale evidence is not shown as current',()=>{
+ const d=withCurrentEvidence(fixture());
+ d.current.request_confirmation={revision:3,request_hash:'req-hash',kind:'request',evidence_sha256:'b'.repeat(64)} as never;
+ const view=mapCoreOrderDetail(d);
+ assert.equal(view.confirmed_revision,null);
+ assert.equal(view.order_state,'draft');
+ assert.equal(confirmationReadiness(view).request,'missing');
+ assert.match(view.warnings.join(' '),/Xác nhận khách không khớp evidence hiện hành/);
+ assert.match(view.warnings.join(' '),/Chưa có xác nhận yêu cầu đúng phiên bản\/hash/);
 });
 import { demoOrders } from '../../web/src/fixtures.ts';
 

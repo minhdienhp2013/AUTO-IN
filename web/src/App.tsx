@@ -17,7 +17,7 @@ import { notificationCapability, orderFromNavigation, requestLocalNotifications 
 import { canEditShopSchedule, draftFromSchedule, saveShopScheduleAndRead, scheduleErrorText, type ShopSchedule, type ScheduleDraft } from './shop-schedule.ts';
 import { canApproveAfterInboundReview, canEditPrintRequest, groupOpenOrdersByChat, hasClearPendingInbound,
   requiresCustomerReconfirmation } from './code008.ts';
-import { manualRouteLabel, pendingStaffQueue, routeVerifiedDocument } from './v1-routing.ts';
+import { manualQueueRowsForDisplay, pendingStaffQueue, routeVerifiedDocument } from './v1-routing.ts';
 import { previewReviewBlock, previewReviewBlockMessage, previewReviewErrorMessage,
   previewReviewSequence } from './preview-review.ts';
 
@@ -233,6 +233,7 @@ function App() {
   const canEditRequest = Boolean(selectedOrder && canEditPrintRequest(selectedOrder));
   const printAttention = selectedOrder ? isPrintUncertain(selectedOrder.print_state) : false;
   const confirmation = selectedOrder ? confirmationReadiness(selectedOrder) : null;
+  const manualQueueRows = selectedOrder ? manualQueueRowsForDisplay(selectedOrder) : null;
 
   return <div className="shell">
     <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
@@ -335,10 +336,10 @@ function App() {
                   <p data-testid="v1-manual-categories">Nhóm chuyển nhân viên khi có phân loại server: Ảnh · CCCD · TEMhoa · Yêu cầu in màu · Định dạng chưa hỗ trợ.</p>
                   {!apiHealthy || selectedOrder.detail_loaded!==true
                     ? <p className="inbound-warning" data-testid="v1-queue-unknown">CHƯA XÁC MINH — không báo đã nhận, đã xử lý hoặc đã in khi thiếu dữ liệu hiện hành.</p>
-                    : selectedOrder.v1_manual_queue
+                    : manualQueueRows
                       ? <div data-testid="v1-server-manual-queue">
-                          <p>Máy chủ xác minh hàng chờ theo revision {selectedOrder.v1_manual_queue.revision} và hash hiện hành.</p>
-                          {selectedOrder.v1_manual_queue.items.map((item,index)=><p data-testid="v1-manual-queued-item" key={index}><b>{manualRouteLabel(item.category)}</b> · đã nhận — chờ nhân viên; chưa xác nhận xử lý hay in.</p>)}
+                          <p>Máy chủ xác minh hàng chờ theo revision {selectedOrder.revision} và hash hiện hành.</p>
+                          {manualQueueRows.map((row,index)=><p data-testid="v1-manual-queued-item" key={index}><b>{row.label}</b> · {row.status}</p>)}
                         </div>
                       : pendingStaffQueue(selectedOrder)
                         ? <div data-testid="v1-generic-manual-queue">
@@ -537,6 +538,8 @@ function VerifiedPreviewGallery({port,order,session,apiHealthy,busy,onFreshOrder
         </li>
         <li data-testid="preview-review-step-customer"><b>2. Khách xác nhận đúng phiên bản</b><span>{sequence.customer_confirmation==='complete'
           ?'Máy chủ đã ghi nhận khách xác nhận đúng revision/hash hiện hành.'
+          :sequence.customer_confirmation==='stale'
+            ?'Xác nhận cũ không còn được coi là hiện hành vì receipt/evidence preview không khớp; giữ đơn và yêu cầu xác nhận lại sau khi kiểm tra preview mới.'
           :sequence.customer_confirmation==='next'
             ?'Bước tiếp theo: yêu cầu khách xác nhận qua luồng hiện có. Màn hình này không tự gửi tin Zalo/OA.'
             :'Chỉ yêu cầu khách xác nhận sau khi nhân viên đã kiểm tra đúng preview hiện hành.'}</span></li>

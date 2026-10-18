@@ -29,6 +29,18 @@ const obj=(x:unknown):Record<string,unknown> =>
 const categories=Object.keys(catLabels) as ManualRouteCategory[];
 export const manualRouteLabel=(category:ManualRouteCategory):ManualRouteLabel=>catLabels[category];
 
+/** User-facing copy for an authenticated, revision-bound manual queue row. */
+export function manualQueueRowsForDisplay(order:OrderView):Array<{label:ManualRouteLabel;status:string}>|null {
+  const queue=order.v1_manual_queue;
+  if(order.detail_loaded!==true||!queue||queue.order_id!==order.order_id||
+     queue.revision!==order.revision||queue.request_hash!==order.request_hash||
+     queue.state!=='received_waiting_staff')return null;
+  return queue.items.map(item=>({
+    label:manualRouteLabel(item.category),
+    status:'Đã nhận — chờ nhân viên; chưa xác nhận xử lý hay in.',
+  }));
+}
+
 /**
  * Future AI0/AI1 read-only wire: current.v1_manual_queue.
  * Missing, malformed or stale classification is NOT "received".

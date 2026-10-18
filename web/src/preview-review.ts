@@ -127,7 +127,7 @@ export function previewReviewBlockMessage(reason: PreviewReviewBlock): string {
   return labels[reason];
 }
 
-export type PreviewFlowStep = 'blocked'|'next'|'complete'|'ready'|'separate';
+export type PreviewFlowStep = 'blocked'|'stale'|'next'|'complete'|'ready'|'separate';
 export function previewReviewSequence(order: OrderView): {
   staff_preview: PreviewFlowStep;
   customer_confirmation: PreviewFlowStep;
@@ -135,11 +135,12 @@ export function previewReviewSequence(order: OrderView): {
 } {
   const reviewed = hasCurrentPreviewReceipt(order);
   const confirmed = order.confirmed_revision === order.revision;
+  const confirmationCurrent = confirmed && reviewed;
   const approved = order.order_state === 'approved';
   const reviewStateKnown = ['missing', 'matching', 'stale'].includes(String(order.preview_review?.status));
   return {
     staff_preview: reviewed ? 'complete' : order.print_evidence && reviewStateKnown ? 'next' : 'blocked',
-    customer_confirmation: confirmed ? 'complete' : reviewed ? 'next' : 'blocked',
+    customer_confirmation: confirmationCurrent ? 'complete' : confirmed ? 'stale' : reviewed ? 'next' : 'blocked',
     staff_approval: approved ? 'complete' : canApproveAfterInboundReview(order) ? 'ready' : 'separate',
   };
 }

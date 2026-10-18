@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseServerManualQueue,manualRouteLabel,routeVerifiedDocument,
+import {parseServerManualQueue,manualQueueRowsForDisplay,manualRouteLabel,routeVerifiedDocument,
   pendingStaffQueue,v1HasManualRoutingHold} from '../../web/src/v1-routing.ts';
 import {canApproveAfterInboundReview} from '../../web/src/code008.ts';
 import {mapCoreOrderDetail,mapOrder} from '../../web/src/api.ts';
@@ -28,6 +28,18 @@ test('staff queue labels cover image, CCCD, TEMhoa, color and unsupported',()=>{
  assert.deepEqual(['image','cccd','temhoa','color','unsupported'].map(c=>
   manualRouteLabel(c as Parameters<typeof manualRouteLabel>[0])),
   ['Ảnh','CCCD','TEMhoa','Yêu cầu in màu','Định dạng chưa hỗ trợ']);
+});
+test('V1 queue presentation keeps image and unsupported requests visible as waiting staff',()=>{
+ const manual={...mkOrder(),detail_loaded:true,v1_manual_queue:parseServerManualQueue(wire({...queue(),items:[
+  {kind:'file',category:'image',received_at:null},
+  {kind:'file',category:'unsupported',received_at:null},
+ ]}),scope)??undefined};
+ assert.deepEqual(manualQueueRowsForDisplay(manual),[
+  {label:'Ảnh',status:'Đã nhận — chờ nhân viên; chưa xác nhận xử lý hay in.'},
+  {label:'Định dạng chưa hỗ trợ',status:'Đã nhận — chờ nhân viên; chưa xác nhận xử lý hay in.'},
+ ]);
+ assert.equal(manualQueueRowsForDisplay({...manual,revision:3}),null,
+  'a queue from an older revision is not presented as current');
 });
 test('server-specific categories require exact bound order, revision and hash',()=>{
  const parsed=parseServerManualQueue(wire(queue('temhoa')),scope);

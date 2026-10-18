@@ -116,8 +116,20 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
   const count = trustedPlan ? asNum(candidate.physical_sheets) : null;
   const requestConfirmation = asObject(current.request_confirmation);
   const priceConfirmation = asObject(current.price_confirmation);
-  const confirmedRevision = nested && requestConfirmation.revision === revision &&
-    requestConfirmation.request_hash === rev.request_hash && requestConfirmation.kind === 'request'
+  // Once the read model exposes V1 evidence, revision/hash alone is not enough:
+  // Core also binds the customer's confirmation to the exact evidence digest.
+  // Treat missing or stale evidence as an unconfirmed request in the UI.
+  const hasEvidenceBinding = Object.prototype.hasOwnProperty.call(current, 'print_evidence') ||
+    Object.prototype.hasOwnProperty.call(current, 'preview_review');
+  const currentEvidence = asObject(current.print_evidence);
+  const currentEvidenceSha = typeof currentEvidence.evidence_sha256 === 'string' &&
+    /^[0-9a-f]{64}$/.test(currentEvidence.evidence_sha256) ? currentEvidence.evidence_sha256 : null;
+  const confirmationEvidenceMatches = !hasEvidenceBinding || Boolean(currentEvidenceSha &&
+    requestConfirmation.evidence_sha256 === currentEvidenceSha);
+  const requestConfirmationScopeMatches = requestConfirmation.revision === revision &&
+    requestConfirmation.request_hash === rev.request_hash && requestConfirmation.kind === 'request';
+  const confirmedRevision = nested && requestConfirmationScopeMatches &&
+    confirmationEvidenceMatches
     ? revision : null;
   const quoteRevision = asNum(quote.quote_revision);
   const confirmedQuoteRevision = nested && quoteRevision !== null &&
@@ -181,6 +193,8 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
   ];
   if (!trustedPlan) warnings.push('Kế hoạch in chưa có bằng chứng processor đáng tin.');
   if (nested && current.preview_ref && !candidate.preview_verified) warnings.push('Preview chưa được processor xác minh.');
+  if(nested&&requestConfirmationScopeMatches&&!confirmationEvidenceMatches)
+    warnings.push('Xác nhận khách không khớp evidence hiện hành; không được dùng cho bản này.');
   if (nested && !confirmedRevision) warnings.push('Chưa có xác nhận yêu cầu đúng phiên bản/hash.');
   if (nested && needsPrice && !confirmedQuoteRevision) warnings.push('Đơn lớn/chi phí đáng kể chưa có xác nhận giá đúng phiên bản.');
   const normalized = mapOrder({

@@ -100,6 +100,15 @@ test('ordering requires staff preview receipt, then customer confirmation, then 
   order.preview_review={...matching,request_hash:'old-hash'};
   assert.equal(canApproveAfterInboundReview(order),false);
 });
+test('V1 stale preview evidence makes same-revision confirmation visibly stale and blocks approval',()=>{
+ const order=baseOrder();order.order_state='confirmed';order.confirmed_revision=2;
+ order.preview_review={...matching,evidence_sha256:'b'.repeat(64)};
+ const flow=previewReviewSequence(order);
+ assert.equal(flow.staff_preview,'next');
+ assert.equal(flow.customer_confirmation,'stale');
+ assert.equal(flow.staff_approval,'separate');
+ assert.equal(canApproveAfterInboundReview(order),false);
+});
 
 test('POST records only the expected snapshot preconditions and trusts matching GET readback',async()=>{
   const calls:Array<{url:string;options:RequestInit}> = [];
