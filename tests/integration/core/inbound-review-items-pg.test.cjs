@@ -44,10 +44,10 @@ test('V1-CORE-05 REAL PG two pools: official media event is held once for staff,
   await assert.rejects(A.enqueue_quarantined_event(qB),e=>e.code==='QUARANTINE_SOURCE_NOT_PENDING');
   const listA=await A.list_for_staff(staffA),listB=await B.list_for_staff(staffB);
   assert.equal(listA.length,1);assert.equal(listA[0].quarantine_id,qA);
-  assert.equal(listA[0].signed_event_sha256,rawA);assert.equal(listA[0].media_state,'AWAITING_MEDIA');
+  assert.equal(listA[0].raw_event_sha256,rawA);assert.equal(listA[0].media_state,'AWAITING_MEDIA');
   assert.equal(listB.length,1);assert.equal(listB[0].quarantine_id,qB);
   assert.ok(listB.every(item=>item.quarantine_id!==qA));
-  const rows=await a.query('SELECT quarantine_id::text,kind,status,media_state,signed_event_sha256 FROM core_inbound_review_items WHERE shop_id=ANY($1::text[]) ORDER BY shop_id',[[shopA,shopB]]);
+  const rows=await a.query('SELECT quarantine_id::text,kind,status,media_state,raw_event_sha256 FROM core_inbound_review_items WHERE shop_id=ANY($1::text[]) ORDER BY shop_id',[[shopA,shopB]]);
   assert.equal(rows.rows.length,2);assert.ok(rows.rows.every(row=>row.status==='NEEDS_HUMAN'&&row.media_state==='AWAITING_MEDIA'));
   assert.equal((await a.query("SELECT count(*)::int n FROM core_inbound_review_audit_events WHERE action='inbound.file_held_for_staff' AND shop_id=ANY($1::text[])",[[shopA,shopB]])).rows[0].n,2);
   const custody=await a.query('SELECT id::text,status,raw_sha256 FROM zalo_official_quarantine WHERE id=ANY($1::uuid[]) ORDER BY id',[ [qA,qB] ]);
@@ -56,6 +56,7 @@ test('V1-CORE-05 REAL PG two pools: official media event is held once for staff,
   assert.equal((await a.query("SELECT count(*)::int n FROM core_print_jobs WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=ANY($1::text[]))",[[shopA,shopB]])).rows[0].n,0);
   assert.equal((await a.query('SELECT count(*)::int n FROM core_orders WHERE shop_id=ANY($1::text[])',[[shopA,shopB]])).rows[0].n,0);
  }finally{
+  await a.query('DELETE FROM core_inbound_review_audit_events WHERE shop_id=ANY($1::text[])',[ [shopA,shopB] ]).catch(()=>{});
   await a.query('DELETE FROM core_inbound_review_items WHERE shop_id=ANY($1::text[])',[ [shopA,shopB] ]).catch(()=>{});
   await a.query('DELETE FROM zalo_official_quarantine WHERE id=ANY($1::uuid[])',[[qA,qB]]).catch(()=>{});
   await a.query('DELETE FROM zalo_official_quarantine_scopes WHERE oa_id=ANY($1::text[])',[[oaA,oaB]]).catch(()=>{});

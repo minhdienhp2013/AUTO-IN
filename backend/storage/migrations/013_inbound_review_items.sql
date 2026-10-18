@@ -6,8 +6,8 @@ CREATE TABLE IF NOT EXISTS core_inbound_review_items (
   shop_id text NOT NULL REFERENCES core_shop_settings(shop_id),
   oa_id text NOT NULL,
   quarantine_id uuid NOT NULL,
-  signed_event_sha256 char(64) NOT NULL
-    CHECK(signed_event_sha256 ~ '^[0-9a-f]{64}$'),
+  raw_event_sha256 char(64) NOT NULL
+    CHECK(raw_event_sha256 ~ '^[0-9a-f]{64}$'),
   kind text NOT NULL CHECK(kind IN ('image','file')),
   customer_id text NULL,
   conversation_id text NULL,
@@ -27,7 +27,7 @@ CREATE INDEX IF NOT EXISTS core_inbound_review_items_staff_queue_idx
 -- inventing an order identifier.
 CREATE TABLE IF NOT EXISTS core_inbound_review_audit_events (
   id uuid PRIMARY KEY,
-  item_id uuid NOT NULL REFERENCES core_inbound_review_items(id) ON DELETE CASCADE,
+  item_id uuid NOT NULL REFERENCES core_inbound_review_items(id),
   shop_id text NOT NULL REFERENCES core_shop_settings(shop_id),
   actor_id text NOT NULL,
   action text NOT NULL CHECK(action='inbound.file_held_for_staff'),

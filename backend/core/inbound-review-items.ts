@@ -4,7 +4,7 @@ import type {PgStore,SqlConnection} from '../storage/database.js';
 
 export interface TrustedOfficialInboundScope {readonly shop_id:string;readonly oa_id:string}
 export interface InboundReviewItem {
- id:string;quarantine_id:string;oa_id:string;signed_event_sha256:string;
+ id:string;quarantine_id:string;oa_id:string;raw_event_sha256:string;
  kind:'image'|'file';mapped_customer:boolean;status:'NEEDS_HUMAN';
  media_state:'AWAITING_MEDIA';received_at:Date|string;
 }
@@ -56,23 +56,23 @@ export function createOfficialInboundReviewItems(options:{store:PgStore;trusted:
     const itemId=randomUUID();
     const inserted=await db.query<{id:string}>(
      'INSERT INTO core_inbound_review_items '+
-     '(id,shop_id,oa_id,quarantine_id,signed_event_sha256,kind,customer_id,conversation_id,received_at) '+
+     '(id,shop_id,oa_id,quarantine_id,raw_event_sha256,kind,customer_id,conversation_id,received_at) '+
      'VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(shop_id,oa_id,quarantine_id) DO NOTHING RETURNING id',
      [itemId,shopId,oaId,quarantineId,row.raw_sha256.trim(),row.kind,row.customer_id,row.conversation_id,row.received_at]);
     if(inserted.rowCount===1){
      await db.query('INSERT INTO core_inbound_review_audit_events(id,item_id,shop_id,actor_id,action,details) '+
       "VALUES($1,$2,$3,$4,'inbound.file_held_for_staff',$5::jsonb)",
       [randomUUID(),itemId,shopId,'zalo:quarantine:'+oaId,JSON.stringify({item_id:itemId,
-       quarantine_id:quarantineId,signed_event_sha256:row.raw_sha256.trim(),kind:row.kind,
+       quarantine_id:quarantineId,raw_event_sha256:row.raw_sha256.trim(),kind:row.kind,
        media_state:'AWAITING_MEDIA'})]);
      return {status:'created',item_id:itemId,media_state:'AWAITING_MEDIA'};
     }
-    const old=(await db.query<{id:string;signed_event_sha256:string;kind:string;
+    const old=(await db.query<{id:string;raw_event_sha256:string;kind:string;
       customer_id:string|null;conversation_id:string|null;status:string;media_state:string}>(
-     'SELECT id::text,signed_event_sha256,kind,customer_id,conversation_id,status,media_state '+
+     'SELECT id::text,raw_event_sha256,kind,customer_id,conversation_id,status,media_state '+
      'FROM core_inbound_review_items WHERE shop_id=$1 AND oa_id=$2 AND quarantine_id=$3 FOR UPDATE',
      [shopId,oaId,quarantineId])).rows[0];
-    if(!old||old.signed_event_sha256.trim()!==row.raw_sha256.trim()||old.kind!==row.kind||
+    if(!old||old.raw_event_sha256.trim()!==row.raw_sha256.trim()||old.kind!==row.kind||
        old.customer_id!==row.customer_id||old.conversation_id!==row.conversation_id||
        old.status!=='NEEDS_HUMAN'||old.media_state!=='AWAITING_MEDIA')
      throw new DomainError('INBOUND_REVIEW_REPLAY_CONFLICT','Nguồn đã lưu có provenance khác',409);
@@ -88,7 +88,7 @@ export function createOfficialInboundReviewItems(options:{store:PgStore;trusted:
   assertStaff(actor);
   try{
    const result=await store.pool.query<InboundReviewItem>(
-    "SELECT id::text,item.quarantine_id::text,item.oa_id,item.signed_event_sha256,item.kind, "+
+    "SELECT id::text,item.quarantine_id::text,item.oa_id,item.raw_event_sha256,item.kind, "+
     "(item.customer_id IS NOT NULL) AS mapped_customer,item.status,item.media_state,item.received_at "+
     'FROM core_inbound_review_items item WHERE item.shop_id=$1 '+
     'ORDER BY item.received_at,item.id LIMIT 100',[actor.shop_id]);

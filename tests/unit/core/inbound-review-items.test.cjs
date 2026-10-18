@@ -18,15 +18,15 @@ function fakeStore({known=true,fail=false,trustedScope=trusted}={}){
   if(sql.startsWith('SELECT oa_id FROM public.zalo_official_quarantine_scopes'))return {rows:[{oa_id:trustedScope.oa_id}],rowCount:1};
   if(sql.includes('FROM public.zalo_official_quarantine q'))return {rows:known&&args[0]===state.quarantine.shop_id&&args[1]===state.quarantine.oa_id&&args[2]===qid?[state.quarantine]:[],rowCount:known?1:0};
   if(sql.startsWith('INSERT INTO core_inbound_review_items')){
-   const [id,shop_id,oa_id,quarantine_id,signed_event_sha256,kind,customer_id,conversation_id,received_at]=args;
+   const [id,shop_id,oa_id,quarantine_id,raw_event_sha256,kind,customer_id,conversation_id,received_at]=args;
    const key=[shop_id,oa_id,quarantine_id].join(':');
    if(state.items.has(key))return {rows:[],rowCount:0};
-   state.items.set(key,{id,shop_id,oa_id,quarantine_id,signed_event_sha256,kind,customer_id,conversation_id,
+   state.items.set(key,{id,shop_id,oa_id,quarantine_id,raw_event_sha256,kind,customer_id,conversation_id,
     status:'NEEDS_HUMAN',media_state:'AWAITING_MEDIA',received_at});
    return {rows:[{id}],rowCount:1};
   }
   if(sql.startsWith('INSERT INTO core_inbound_review_audit_events')){state.audits.push(JSON.parse(args[4]));return {rows:[],rowCount:1};}
-  if(sql.startsWith('SELECT id::text,signed_event_sha256')){
+  if(sql.startsWith('SELECT id::text,raw_event_sha256')){
    const row=[...state.items.values()].find(x=>x.shop_id===args[0]&&x.oa_id===args[1]&&x.quarantine_id===args[2]);
    return {rows:row?[row]:[],rowCount:row?1:0};
   }
@@ -34,7 +34,7 @@ function fakeStore({known=true,fail=false,trustedScope=trusted}={}){
  },release(){}};
  const store={async tx(fn){return fn(db)},pool:{async query(sql,args){
   const rows=[...state.items.values()].filter(x=>x.shop_id===args[0]).map(x=>({id:x.id,quarantine_id:x.quarantine_id,
-   oa_id:x.oa_id,signed_event_sha256:x.signed_event_sha256,kind:x.kind,mapped_customer:x.customer_id!==null,
+   oa_id:x.oa_id,raw_event_sha256:x.raw_event_sha256,kind:x.kind,mapped_customer:x.customer_id!==null,
    status:x.status,media_state:x.media_state,received_at:x.received_at}));
   return {rows,rowCount:rows.length};
  }}};
@@ -47,7 +47,7 @@ test('official file/image quarantine becomes one auditable staff item; replay ne
  const replay=await port.enqueue_quarantined_event(qid);
  assert.equal(first.status,'created');assert.equal(replay.status,'existing');
  assert.equal(replay.item_id,first.item_id);assert.equal(state.items.size,1);assert.equal(state.audits.length,1);
- assert.equal([...state.items.values()][0].signed_event_sha256,sha);
+ assert.equal([...state.items.values()][0].raw_event_sha256,sha);
  assert.equal([...state.items.values()][0].media_state,'AWAITING_MEDIA');
  assert.equal(state.quarantine.status,'NEEDS_HUMAN');
  const queued=await port.list_for_staff(staff);
