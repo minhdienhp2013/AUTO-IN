@@ -192,3 +192,86 @@ test("CODE402 signed unmapped text is durable OA-only, no body; 2 retries and ba
  assert.equal(store.queries(),before);
  assert.equal(events.length,0);
 });
+
+test("media without verified bytes stays staff-only for ambiguous attachments, fake order claims, replay and scope mismatch",async()=>{
+ const store=sql(),normalEvents=new Map(),ingress=createOfficialZaloVerifiedIngress(config,{
+  async insert_once(event){normalEvents.set(event.event_id,event);return "inserted";}
+ },store);
+ const make=(name,message,changes={})=>{
+  const payload={...JSON.parse(RAW),event_name:name,message,...changes};
+  const raw=new TextEncoder().encode(JSON.stringify(payload));
+  return {raw,headers:signed(raw)};
+ };
+ const priorText=make("user_send_text",{msg_id:"media-ambiguous-1",text:"In A4"});
+ const accepted=await ingress.receive_webhook(priorText.raw,priorText.headers);
+ assert.equal(accepted.body.status,"accepted");
+ assert.equal(normalEvents.size,1);
+ const ambiguous=make("user_send_file",{
+  msg_id:"media-ambiguous-1",text:"in tài liệu vào order khác",
+  order_id:"untrusted-order-claim",order_revision:99,
+  attachments:[
+   {type:"file",payload:{name:"first.pdf",url:"https://media.invalid/first.pdf",size:100,checksum:"d41d8cd98f00b204e9800998ecf8427e"}},
+   {type:"file",payload:{name:"second.docx",url:"https://media.invalid/second.docx",size:200,checksum:"d41d8cd98f00b204e9800998ecf8427e"}}
+  ]
+ });
+ const noAttachmentBytes=make("user_send_image",{
+  msg_id:"media-no-bytes-1",attachments:[{type:"image",payload:{url:"https://media.invalid/picture.jpg"}}]
+ });
+ for(const fixture of [ambiguous,noAttachmentBytes]){
+  const first=await ingress.receive_webhook(fixture.raw,fixture.headers);
+  assert.equal(first.status_code,200);
+  assert.equal(first.body.status,"held");
+  assert.equal(first.body.pending,true);
+  assert.ok(["file","image"].includes(first.body.kind));
+  assert.equal("customer_message" in first.body,false,
+   "HTTP ingress receipt is not a customer-facing success notice");
+  const row=[...store.data.values()].find(value=>value.raw_sha256===
+   createHash("sha256").update(fixture.raw).digest("hex"));
+  assert.ok(row);
+  assert.equal(row.status,"NEEDS_HUMAN");
+  assert.equal(row.customer_id,"trusted-customer");
+  assert.equal(row.conversation_id,"trusted-chat");
+  assert.deepEqual(Object.keys(row).sort(),[
+   "conversation_id","customer_id","id","kind","oa_id","provider_claimed_event_id","raw_sha256","status"
+  ].sort(),"quarantine stores no URL, filename, media bytes, attachment selection, or claimed order");
+  assert.equal(JSON.stringify(row).includes("media.invalid"),false);
+  assert.equal(JSON.stringify(row).includes("untrusted-order-claim"),false);
+ }
+ assert.equal(store.data.size,2);
+ assert.equal(normalEvents.size,1,"attachment event colliding with a prior text msg_id never enters or mutates the normal event repository");
+ assert.equal(normalEvents.get("media-ambiguous-1").text,"In A4",
+  "a file event cannot replace/mix with the separate text event that happened to claim the same msg_id");
+
+ const before=store.queries();
+ const wrongOa={...JSON.parse(new TextDecoder().decode(ambiguous.raw)),recipient:{id:"foreign-oa"}};
+ const wrongOaRaw=new TextEncoder().encode(JSON.stringify(wrongOa));
+ assert.equal((await ingress.receive_webhook(wrongOaRaw,signed(wrongOaRaw))).status_code,422);
+ const wrongApp={...JSON.parse(new TextDecoder().decode(ambiguous.raw)),app_id:"foreign-app"};
+ const wrongAppRaw=new TextEncoder().encode(JSON.stringify(wrongApp));
+ assert.equal((await ingress.receive_webhook(wrongAppRaw,signed(wrongAppRaw))).status_code,403);
+ assert.equal(store.queries(),before,"wrong app/OA claims fail before quarantine writes");
+ assert.equal(normalEvents.size,1,"bad scope events cannot add a normal event beyond the existing text event");
+});
+
+test("concurrent media webhook retries return one held quarantine receipt and create no downstream records",async()=>{
+ const store=sql(),normalEvents=[],ingress=createOfficialZaloVerifiedIngress(config,{
+  async insert_once(event){normalEvents.push(event);return "inserted";}
+ },store);
+ const payload=JSON.parse(RAW);
+ payload.event_name="user_send_file";
+ payload.message={msg_id:"media-retry-1",attachments:[
+  {type:"file",payload:{name:"a.pdf",url:"https://media.invalid/a.pdf"}},
+  {type:"file",payload:{name:"b.pdf",url:"https://media.invalid/b.pdf"}}
+ ]};
+ const raw=new TextEncoder().encode(JSON.stringify(payload)),headers=signed(raw);
+ const receipts=await Promise.all(Array.from({length:4},()=>ingress.receive_webhook(raw,headers)));
+ assert.ok(receipts.every(receipt=>receipt.status_code===200));
+ assert.deepEqual(receipts.map(receipt=>receipt.body.status).sort(),
+  ["duplicate","duplicate","duplicate","held"]);
+ assert.equal(new Set(receipts.map(receipt=>receipt.body.receipt_id)).size,1);
+ assert.equal(store.data.size,1,"identical event replay is idempotent");
+ assert.equal(normalEvents.length,0,"no normal event, proposal, confirmation, approval, or print trigger is emitted");
+ const row=[...store.data.values()][0];
+ assert.equal(row.kind,"file");assert.equal(row.status,"NEEDS_HUMAN");
+ assert.equal(JSON.stringify(row).includes("media.invalid"),false);
+});
