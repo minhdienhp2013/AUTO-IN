@@ -1,6 +1,6 @@
 # Phạm vi V1 ưu tiên Word/PDF và Phase 2
 
-**Ngày điều phối ban đầu:** 17/10/2026. **Cập nhật:** 18/10/2026. Candidate tích hợp cục bộ mới nhất tại lúc cập nhật: `cdf3d42` trên nhánh `ai0/v1-word-pdf-integration-20261018`; không thay đổi `main`.
+**Ngày điều phối ban đầu:** 17/10/2026. **Cập nhật:** 18/10/2026. Candidate tích hợp cục bộ mới nhất tại lúc cập nhật: `e7d85b8797344cc69e9b35cd694356f1f8d31502` trên nhánh `ai0/v1-word-pdf-integration-20261018`; không thay đổi `main`.
 
 Tài liệu này ghi nhận hướng ưu tiên mới của chủ dự án. Nó không sửa hay thay thế các quyết định TN đã chốt. Mục tiêu tuần tới là hoàn thành **ứng viên mã V1 Word/PDF** để chủ xem xét; tài liệu này không tuyên bố phần mềm đã sẵn sàng mở vận hành thật. Nguồn TN gốc vẫn là [đặc tả TN-001–TN-037 và TN-005A](../spec/DAC_TA_TN001-TN037.md).
 
@@ -9,9 +9,10 @@ Tài liệu này ghi nhận hướng ưu tiên mới của chủ dự án. Nó k
 - AI1 đã thêm read API `GET /api/v1/inbound-review-items`: bearer session bắt buộc, shop lấy từ principal, `Cache-Control: no-store`, response chỉ có metadata được duyệt. AI1 cũng thêm test tích hợp Fastify/PostgreSQL; test đó chưa chạy vì thiếu PostgreSQL cô lập.
 - AI4 đã thêm màn hình hàng chờ nhân viên cho `NEEDS_HUMAN/AWAITING_MEDIA`. Màn hình nói rõ tệp gốc chưa được lưu/sẵn sàng và không cung cấp preview, xác nhận, duyệt hoặc in. 109/109 UI tests PASS.
 - AI2 đã nối event ảnh/tệp đã quarantine vào Core queue trong **simulation**; replay có thể khôi phục mục hàng chờ bị thiếu mà không nhân đôi. Đây chỉ là metadata pointer: chưa lưu byte ảnh/tệp và chưa gắn file gốc vào order. Hợp đồng lấy media từ OA thật vẫn chưa được nhà cung cấp xác minh; route live tiếp tục OFF.
-- Word watchdog đã có như module cách ly riêng; đường intake hiện vẫn chưa nối đủ native Word preview → manifest/hash → receipt → xác nhận/duyệt. AI3 đang làm adapter review-only. Không có Windows COM, font thật, Ricoh hoặc giấy thật được kiểm thử.
-- Tại candidate `cdf3d42`, backend build/typecheck PASS; Core 46 PASS/0 FAIL/17 PostgreSQL SKIP; Zalo 160 PASS/0 FAIL/6 PostgreSQL SKIP; composition 20 PASS/0 FAIL/18 PostgreSQL SKIP; UI 109 PASS/0 FAIL. Web typecheck chưa chạy được vì thiếu `vite/client`; browser Safari/iPhone chưa chạy.
-- **Trạng thái V1: BLOCKED.** Ảnh chưa đáp ứng yêu cầu giữ file gốc trong TN nếu chưa có artifact custody; Word end-to-end và kiểm chứng OA/Windows/Ricoh thật còn thiếu. TN không được tự sửa để che các khoảng trống này.
+- AI3 đã thêm adapter review-only `workers/documents/native_word_review.py`: kiểm source SHA, request hash và revision, gọi watchdog theo cấu hình nội bộ, kết quả luôn cần nhân viên và không được in. Adapter chưa được nối vào runtime/Core order flow; Windows Word/COM và font thật chưa được kiểm thử.
+- AI5 đã sửa acceptance cross-shop để kiểm tra principal shop, bỏ yêu cầu route riêng 403 vốn không có trong API. Fixture gate chạy đúng candidate `e7d85b8797344cc69e9b35cd694356f1f8d31502`: `FIXTURE_PASS_PRODUCT_NOT_RUN`, 27 fixture giả lập và 9 overlay; mọi product case vẫn `NOT_RUN`. `compileall` và `git diff --check` PASS.
+- Các lệnh backend/UI chạy trên candidate trước `e7d85b8`: backend typecheck/build PASS; Core 46 PASS/0 FAIL/17 PostgreSQL SKIP; Zalo 160 PASS/0 FAIL/6 PostgreSQL SKIP; composition 20 PASS/0 FAIL/18 PostgreSQL SKIP; UI 109 PASS/0 FAIL. Web typecheck chưa chạy được vì thiếu `vite/client`; browser Safari/iPhone chưa chạy. Chưa chạy lại toàn bộ suite sau thay đổi Python/acceptance này.
+- **Trạng thái V1: BLOCKED.** Ảnh chưa có byte custody; Word review adapter chưa nối vào runtime/Core order flow; customer confirmation/approval/dispatch end-to-end, PostgreSQL integration và kiểm chứng OA/Windows/Ricoh thật còn thiếu. TN không được tự sửa để che các khoảng trống này.
 
 ## 1. Mục tiêu và ranh giới V1
 
@@ -103,12 +104,12 @@ Base chung: PR #144 HEAD `0673460af71205986b901a21fc7724dbea23c991`, nhánh `ai0
 
 | AI | Việc trên candidate mới | Trạng thái |
 | --- | --- | --- |
-| AI0 | Tích hợp candidate cục bộ, chạy kiểm tra và cập nhật tài liệu; không merge/deploy/live. | Đang làm; HEAD khi viết `cdf3d42`. |
-| AI1 | V1-CORE-06 read API và V1-CORE-07 test HTTP/PostgreSQL cho hàng chờ inbound. | Code/API và test đã tích hợp; test PG **NOT RUN** do thiếu DB cô lập. |
-| AI2 | V1-ZALO-04: nối event ảnh/tệp đã quarantine vào Core queue simulation; giữ live OFF, không giả lập lưu byte. | Đã tích hợp; test PostgreSQL composition **NOT RUN** do thiếu `TEST_DATABASE_URL`. Provider media contract và storage bytes còn BLOCKED. |
-| AI3 | V1-NATIVE-07: adapter Word review-only gọi watchdog và tạo bundle có hash/revision. | Đang làm; Windows Word/COM thật **NOT RUN**. |
-| AI4 | V1-QUEUE-04: UI hàng chờ metadata, lỗi và AWAITING_MEDIA. | Đã tích hợp; 109/109 UI tests PASS; web typecheck và Safari/iPhone **NOT RUN**. |
-| AI5 | V1-ACCEPTANCE-04: bổ sung acceptance độc lập cho API/UI hàng chờ, chạy candidate SHA. | Đang làm; product acceptance chưa có PASS. |
+| AI0 | Tích hợp candidate cục bộ, chạy fixture gate và cập nhật tài liệu; không merge/deploy/live. | Candidate `e7d85b8797344cc69e9b35cd694356f1f8d31502`; fixture gate PASS, product NOT RUN. |
+| AI1 | V1-CORE-06/07 đã xong; tiếp theo V1-CORE-08 rà soát và khóa source/manifest/preview/settings với revision qua confirmation → approval → dispatch. | V1-CORE-08 đang làm trên base `e7d85b8`; PostgreSQL integration vẫn chưa chạy. |
+| AI2 | V1-ZALO-04 đã xong; tiếp theo V1-ZALO-05 private media custody, replay idempotent và fail-closed khi thiếu provider bytes/contract. | V1-ZALO-05 đang làm trên base `e7d85b8`; OA thật và byte media thật NOT RUN. |
+| AI3 | V1-NATIVE-07 adapter Word review-only đã tích hợp; V1-NATIVE-08 tiếp tục nối đường worker/agent nội bộ an toàn. | Adapter đã tích hợp; Windows Word/COM, runtime Core wiring và Ricoh thật NOT RUN. |
+| AI4 | V1-QUEUE-04 UI hàng chờ metadata, lỗi và AWAITING_MEDIA. | Đã tích hợp; 109/109 UI tests PASS trên candidate trước; typecheck web và Safari/iPhone NOT RUN. Chờ API review-only để giao phần UI kế tiếp, tránh tạo nút hành động khi chưa có file. |
+| AI5 | V1-ACCEPTANCE-04 đã sửa cross-shop acceptance; tiếp theo V1-ACCEPTANCE-05 cho Word review-only/fail-closed. | Acceptance correction đã tích hợp; overlay vẫn NOT RUN trên sản phẩm. V1-ACCEPTANCE-05 đang làm trên base `e7d85b8`. |
 
 Các lệnh trên là lệnh repo hiện có tại base candidate. AI phải bổ sung ca kiểm thử mới theo hợp đồng đã được AI0 chốt; không báo PASS chỉ từ unit test không chạy trên candidate tích hợp.
 
