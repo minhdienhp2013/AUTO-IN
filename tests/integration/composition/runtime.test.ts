@@ -40,6 +40,32 @@ test('V1 Core evidence is opt-in and synthetic-only in the simulation runtime', 
     assert.equal(health.live_enabled, false);
   } finally { await app.close(); }
 });
+test('Word review endpoints expose configuration truthfully and set no-store on errors', async () => {
+  const root = '/tmp/autoin-word-review-route-probe';
+  const app = buildIntegratedApp({ pool: unavailable,
+    trustedPrintEvidence: { artifactRoot: root, printerCapabilities: {
+      simulation_only: true, printer_id: 'RMP7000', queue_name: 'RMP7000'
+    } },
+    syntheticArtifactIngest: { artifactRoot: root, scope: { shop_id: 'shop-word', oa_id: 'oa-word' } },
+    wordReviewArtifactRoot: root
+  });
+  try {
+    await app.ready();
+    assert.equal(app.hasRoute({ method: 'POST', url: '/api/v1/orders/:order_id/revisions/:revision/word-review-previews' }), true);
+    assert.equal(app.hasRoute({ method: 'GET', url: '/api/v1/orders/:order_id/word-preview/pages/:index' }), true);
+    const status = (await app.inject('/health')).json();
+    assert.equal(status.word_review_source_configured, true);
+    assert.equal(status.word_review_preview_configured, true);
+    const post = await app.inject({ method: 'POST',
+      url: '/api/v1/orders/00000000-0000-4000-8000-000000000011/revisions/1/word-review-previews', payload: {} });
+    assert.equal(post.statusCode, 401);
+    assert.equal(post.headers['cache-control'], 'no-store');
+    const page = await app.inject({ method: 'GET',
+      url: '/api/v1/orders/00000000-0000-4000-8000-000000000011/word-preview/pages/1' });
+    assert.equal(page.statusCode, 401);
+    assert.equal(page.headers['cache-control'], 'no-store');
+  } finally { await app.close(); }
+});
 test('configured agent cannot send against production shop settings', async () => {
   const pool: SqlPool = { ...unavailable, query: async <T>() => ({ rows: [{ mode: 'production' }] as T[], rowCount: 1 }) };
   const app=buildIntegratedApp({pool,identities:[{token:'x'.repeat(32),principal:{id:'agent',shop_id:'test',role:'print_agent',printer_ids:['RMP7000'],verified:true}}]});

@@ -20,6 +20,8 @@ import { assertApprovedPrintJobEvidence, type ApprovedDocumentEvidenceOptions } 
 import { createTrustedPrintEvidencePort, type TrustedPrintEvidenceOptions } from './trusted-print-evidence.js';
 import { createSyntheticPdfReviewSourceReader } from './pdf-review-source.js';
 import { createPdfReviewPreviewService } from './pdf-review-preview.js';
+import { createSyntheticWordReviewSourceReader } from './word-review-source.js';
+import { createWordReviewPreviewService } from './word-review-preview.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
 export interface RuntimeOptions {
@@ -47,6 +49,12 @@ export interface RuntimeOptions {
   pdfReviewArtifactRoot?: string;
   /** Optional interpreter override for the bounded native PDF review CLI. */
   nativePdfReviewPython?: string;
+  /** Private simulation-only root for native Word review bundles/pages. Must be owner-only (0700). */
+  wordReviewArtifactRoot?: string;
+  /** Optional interpreter override for the bounded native Word review CLI. */
+  nativeWordReviewPython?: string;
+  /** Explicit operator opt-in to launch Word for review only; never authorizes print. */
+  allowNativeWordLaunch?: boolean;
   /** Opt-in V1 Core gate. This simulation runtime accepts synthetic capability
    * snapshots only; it cannot authorize a real Windows/Ricoh print operation.
    */
@@ -89,6 +97,10 @@ function queuedQuestionId(value:unknown,outboundId:string):boolean {
     (value as {outbound_id?:unknown}).outbound_id===outboundId;
 }
 
+function staleWordPreview(): DomainError {
+  return new DomainError('STALE_WORD_PREVIEW', 'Đơn hoặc file Word đã đổi; cần tạo preview mới', 409);
+}
+
 /** Simulation-only composition. Uses AI1 routes exactly once, not CODE-000 routes. */
 export function buildIntegratedApp(options: RuntimeOptions) {
   if (options.zaloWebhook && options.officialZaloSimulation)
@@ -99,13 +111,21 @@ export function buildIntegratedApp(options: RuntimeOptions) {
   const pdfSource = trustedPrintEvidence && options.syntheticArtifactIngest
     ? createSyntheticPdfReviewSourceReader(options.syntheticArtifactIngest.artifactRoot,
       options.syntheticArtifactIngest.scope) : undefined;
+  const wordSource = trustedPrintEvidence && options.syntheticArtifactIngest
+    ? createSyntheticWordReviewSourceReader(options.syntheticArtifactIngest.artifactRoot,
+      options.syntheticArtifactIngest.scope) : undefined;
   const core = trustedPrintEvidence
     ? createCoreModule({ pool: corePool, mode: 'v1', evidence: trustedPrintEvidence,
-      ...(pdfSource ? { pdfSource } : {}) })
+      ...(pdfSource ? { pdfSource } : {}), ...(wordSource ? { wordSource } : {}) })
     : createCoreModule({ pool: corePool });
   const pdfReviewPreview = pdfSource && options.pdfReviewArtifactRoot
     ? createPdfReviewPreviewService({ artifactRoot: options.pdfReviewArtifactRoot,
       ...(options.nativePdfReviewPython ? { pythonExecutable: options.nativePdfReviewPython } : {}) }) : undefined;
+  const wordReviewPreview = wordSource && options.wordReviewArtifactRoot
+    ? createWordReviewPreviewService({ artifactRoot: options.wordReviewArtifactRoot,
+      ...(options.nativeWordReviewPython ? { pythonExecutable: options.nativeWordReviewPython } : {}),
+      allowWordLaunch: options.allowNativeWordLaunch === true }) : undefined;
+  const activeWordPreviewRequests = new Set<string>();
   const resolve = identityResolver(options.identities ?? []);
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024,
     ...(options.tls ? { https: options.tls } : {}) });
@@ -120,7 +140,8 @@ export function buildIntegratedApp(options: RuntimeOptions) {
   const registered: string[] = [];
   app.addHook('onSend', async (request, reply, payload) => {
     const path = request.url.split('?')[0] ?? '';
-    if (path.endsWith('/pdf-review-previews') || /\/previews\/[^/]+$/.test(path))
+    if (path.endsWith('/pdf-review-previews') || path.endsWith('/word-review-previews') ||
+        /\/previews\/[^/]+$/.test(path) || /\/word-preview\/pages\/[^/]+$/.test(path))
       reply.header('Cache-Control', 'no-store');
     return payload;
   });
@@ -192,6 +213,8 @@ export function buildIntegratedApp(options: RuntimeOptions) {
     zalo_worker_configured: options.zaloWorkerConfigured === true,
     processor_configured: false, preview_configured: !!options.previewArtifactRoot,
     pdf_review_preview_configured: !!pdfReviewPreview,
+    word_review_preview_configured: !!wordReviewPreview,
+    word_review_source_configured: !!wordSource,
     synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
     trusted_print_evidence_v1_configured: !!trustedPrintEvidence,
     integration_stage: 'core-http' }));
@@ -217,6 +240,8 @@ export function buildIntegratedApp(options: RuntimeOptions) {
         manual_lock: settings.rows[0].manual_lock,
         preview_configured: !!options.previewArtifactRoot,
         pdf_review_preview_configured: !!pdfReviewPreview,
+        word_review_preview_configured: !!wordReviewPreview,
+        word_review_source_configured: !!wordSource,
         synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
         trusted_print_evidence_v1_configured: !!trustedPrintEvidence
       });
@@ -369,6 +394,75 @@ export function buildIntegratedApp(options: RuntimeOptions) {
       .header('X-Content-Type-Options', 'nosniff')
       .header('Content-Security-Policy', "default-src 'none'")
       .send(preview);
+  });
+  app.post('/api/v1/orders/:order_id/revisions/:revision/word-review-previews', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store')
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Content-Security-Policy', "default-src 'none'");
+    const token = request.headers.authorization?.startsWith('Bearer ')
+      ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    assertStaff(actor);
+    if (!wordReviewPreview) throw new DomainError('FEATURE_UNAVAILABLE',
+      'Word review preview chưa được cấu hình ở runtime mô phỏng', 503);
+    const params = request.params as { order_id: string; revision: string };
+    if (!/^[1-9]\d*$/.test(params.revision) || !Number.isSafeInteger(Number(params.revision)))
+      throw new DomainError('INVALID_REVISION', 'Revision không hợp lệ', 422);
+    if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body) ||
+        Object.keys(request.body as object).length !== 0)
+      throw new DomainError('INVALID_INPUT', 'Word review chỉ nhận JSON object rỗng', 422);
+    const requestKey = `${actor.shop_id}\0${params.order_id}`;
+    if (activeWordPreviewRequests.has(requestKey))
+      throw new DomainError('WORD_PREVIEW_IN_PROGRESS', 'Preview Word đã được yêu cầu; chờ phản hồi hiện tại', 409, true);
+    activeWordPreviewRequests.add(requestKey);
+    try {
+      await wordReviewPreview.clearOrder(actor.shop_id, params.order_id);
+      const snapshot = await core.service.readWordReviewSource(actor, params.order_id);
+      if (snapshot.active_revision !== Number(params.revision)) throw staleWordPreview();
+      const prepared = await wordReviewPreview.prepare(snapshot);
+      try {
+        const current = await core.service.readWordReviewSource(actor, params.order_id);
+        if (current.active_revision !== snapshot.active_revision || current.request_hash !== snapshot.request_hash ||
+            current.source.sha256 !== snapshot.source.sha256 || current.source.artifact_ref !== snapshot.source.artifact_ref ||
+            current.manifest.sha256 !== snapshot.manifest.sha256) throw staleWordPreview();
+        if (prepared.projection.status === 'REVIEW_REQUIRED') await wordReviewPreview.remember(prepared);
+        return reply.code(200).send(prepared.projection);
+      } catch (error) {
+        await wordReviewPreview.discard(prepared);
+        throw error;
+      }
+    } finally { activeWordPreviewRequests.delete(requestKey); }
+  });
+  app.get('/api/v1/orders/:order_id/word-preview/pages/:index', async (request, reply) => {
+    const token = request.headers.authorization?.startsWith('Bearer ')
+      ? request.headers.authorization.slice(7) : '';
+    const actor = await core.auth.principal(token);
+    assertStaff(actor);
+    if (!wordReviewPreview) throw new DomainError('FEATURE_UNAVAILABLE',
+      'Word review preview chưa được cấu hình ở runtime mô phỏng', 503);
+    const params = request.params as { order_id: string; index: string };
+    if (!/^[1-9]\d*$/.test(params.index) || !Number.isSafeInteger(Number(params.index)))
+      throw new DomainError('INVALID_PREVIEW_INDEX', 'Trang preview không hợp lệ', 422);
+    const current = await core.service.readWordReviewSource(actor, params.order_id);
+    const cached = await wordReviewPreview.find(actor.shop_id, params.order_id, current.active_revision);
+    if (!cached) throw new DomainError('NOT_FOUND', 'Preview Word hiện hành chưa được tạo', 404);
+    try {
+      if (cached.revision !== current.active_revision || cached.request_hash !== current.request_hash ||
+          cached.source_sha256 !== current.source.sha256 || cached.source_manifest_sha256 !== current.manifest.sha256)
+        throw staleWordPreview();
+      const bytes = await wordReviewPreview.readPage(cached, Number(params.index));
+      const after = await core.service.readWordReviewSource(actor, params.order_id);
+      if (after.active_revision !== cached.revision || after.request_hash !== cached.request_hash ||
+          after.source.sha256 !== cached.source_sha256 || after.manifest.sha256 !== cached.source_manifest_sha256)
+        throw staleWordPreview();
+      return reply.header('Content-Type', 'image/png')
+        .header('X-Content-Type-Options', 'nosniff')
+        .header('Content-Security-Policy', "default-src 'none'")
+        .send(bytes);
+    } catch (error) {
+      await wordReviewPreview.clearOrder(actor.shop_id, params.order_id);
+      throw error;
+    }
   });
   app.post('/api/v1/orders/:order_id/revisions/:revision/pdf-review-previews', async (request, reply) => {
     reply.header('Cache-Control', 'no-store')

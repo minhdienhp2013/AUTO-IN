@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { readFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile } from 'node:fs/promises';
 import { buildIntegratedApp, type ServiceIdentity } from './composition/runtime.js';
 import { asSqlPool, assertIsolatedSimulationDatabase } from './composition/postgres.js';
 import { createCoreModule } from './core/factory.js';
@@ -29,6 +29,28 @@ const zaloRuntime = registry === undefined ? undefined : createSyntheticZaloRunt
     ? { artifactRoot: process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT } : {})
 });
 const documentArtifactRoot = process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT;
+const reviewMode = process.env.AUTOIN_SIMULATION_REVIEW_ENABLED ?? '0';
+if (reviewMode !== '0' && reviewMode !== '1') throw new Error('AUTOIN_SIMULATION_REVIEW_ENABLED must be 0 or 1');
+const simulationReviewEnabled = reviewMode === '1';
+const reviewArtifactRoot = process.env.AUTOIN_SIMULATION_REVIEW_ROOT;
+const allowWordLaunchValue = process.env.AUTOIN_WORD_REVIEW_ALLOW_LAUNCH ?? '0';
+if (allowWordLaunchValue !== '0' && allowWordLaunchValue !== '1')
+  throw new Error('AUTOIN_WORD_REVIEW_ALLOW_LAUNCH must be 0 or 1');
+const allowWordLaunch = allowWordLaunchValue === '1';
+if (allowWordLaunch && !simulationReviewEnabled)
+  throw new Error('Word launch requires explicitly enabled simulation review mode');
+if (simulationReviewEnabled) {
+  if (!zaloRuntime || !documentArtifactRoot || !reviewArtifactRoot)
+    throw new Error('Simulation review requires synthetic Zalo registry and source/output artifact roots');
+  await mkdir(documentArtifactRoot, { recursive: true, mode: 0o700 });
+  const sourceRootStat = await lstat(documentArtifactRoot).catch(() => null);
+  if (!sourceRootStat?.isDirectory() || sourceRootStat.isSymbolicLink() || (sourceRootStat.mode & 0o077))
+    throw new Error('Simulation source artifact root must be an owner-only 0700 directory');
+  await mkdir(reviewArtifactRoot, { recursive: true, mode: 0o700 });
+  const reviewRootStat = await lstat(reviewArtifactRoot).catch(() => null);
+  if (!reviewRootStat?.isDirectory() || reviewRootStat.isSymbolicLink() || (reviewRootStat.mode & 0o077))
+    throw new Error('Simulation review output root must be an owner-only 0700 directory');
+}
 const configuredTick = process.env.AUTOIN_ZALO_SYNTHETIC_TICK_MS;
 const tickMs = configuredTick === undefined ? 0 : Number(configuredTick);
 if (configuredTick !== undefined && (!zaloRuntime || !Number.isInteger(tickMs) || tickMs < 1000 || tickMs > 60000))
@@ -45,6 +67,16 @@ const app = buildIntegratedApp({ pool: asSqlPool(pool), identities,
       scope: zaloRuntime.trustedScope
     },
     firstPageQuestionQueue: input => zaloRuntime.queue_first_page_suggested_question(input)
+  } : {}),
+  ...(simulationReviewEnabled ? {
+    trustedPrintEvidence: {
+      artifactRoot: documentArtifactRoot!,
+      printerCapabilities: { simulation_only: true as const, printer_id: 'RMP7000' as const,
+        queue_name: 'RMP7000' as const }
+    },
+    pdfReviewArtifactRoot: reviewArtifactRoot!,
+    wordReviewArtifactRoot: reviewArtifactRoot!,
+    allowNativeWordLaunch: allowWordLaunch
   } : {}) });
 app.addHook('onClose', async () => { if (timer) clearInterval(timer); await pool.end(); });
 try {
