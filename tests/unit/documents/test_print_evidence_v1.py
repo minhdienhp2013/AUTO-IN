@@ -92,9 +92,10 @@ def _native_pdf_inputs(tmp_path):
         page = document.new_page()
         page.draw_rect(fitz.Rect(20, 20, 100, 120))
         original = document.tobytes()
-    # Exact request_data fixture from AI1's V1-CORE-12 source-contract test.
-    request_data = {"documents": [{"format": "PDF", "copies": 1}],
-                    "settings": {"paper": "A4"}}
+    # Exact current Core PDF request shape; artifact_name is a scope anchor,
+    # not a path to read. The native worker receives the already-private bytes.
+    request_data = {"documents": [{"artifact_name": "bundle-1/source.pdf",
+                                    "copies": 1, "duplex": False, "paper": "A4"}]}
     request_hash = sha(_canonical(request_data).encode("utf-8"))
     source_anchor = {"format": "PDF", "artifact_ref": "bundle-1/source.pdf",
                      "sha256": sha(original), "size_bytes": len(original)}
@@ -119,7 +120,7 @@ def _native_pdf_inputs(tmp_path):
     manifest = json.loads(manifest_bytes)
     source_bytes = (artifact_root / manifest["files"][0]["source_artifact_ref"]).read_bytes()
     previews = tuple((artifact_root / p["ref"]).read_bytes() for p in manifest["previews"])
-    settings = ({"paper": "A4", "copies": 1},)
+    settings = ({"paper": "A4", "copies": 1, "duplex": False},)
     context = {"shop_id": snapshot["shop_id"], "order_id": snapshot["order_id"],
         "revision": snapshot["active_revision"], "request_hash": snapshot["request_hash"],
         "manifest_ref": preview_result["artifact_ref"], "printer_id": "RMP7000"}
@@ -130,6 +131,32 @@ def _native_pdf_inputs(tmp_path):
         "printer_capabilities": CAPS, "input_manifest_bytes": input_manifest_bytes,
         "request_data": snapshot["request_data"]}
     return args, snapshot, input_manifest_bytes
+
+
+def _reanchor_native_pdf_request(args, request_data):
+    """Build a self-consistent synthetic candidate with a new Core request hash."""
+    request_hash = sha(_canonical(request_data).encode("utf-8"))
+    updated = dict(args)
+    updated["request_data"] = request_data
+    updated["context"] = {**args["context"], "request_hash": request_hash}
+    updated["trusted_core_plan"] = {
+        **args["trusted_core_plan"], "request_hash": request_hash}
+
+    input_manifest = json.loads(args["input_manifest_bytes"].decode("utf-8"))
+    input_manifest["request_hash"] = request_hash
+    input_manifest_bytes = json.dumps(
+        input_manifest, sort_keys=True, ensure_ascii=False,
+        separators=(",", ":")).encode("utf-8")
+    updated["input_manifest_bytes"] = input_manifest_bytes
+
+    preview_manifest = json.loads(args["manifest_bytes"].decode("utf-8"))
+    preview_manifest["request_hash"] = request_hash
+    preview_manifest["input_manifest"] = {
+        **preview_manifest["input_manifest"], "sha256": sha(input_manifest_bytes)}
+    updated["manifest_bytes"] = json.dumps(
+        preview_manifest, sort_keys=True, ensure_ascii=False,
+        separators=(",", ":")).encode("utf-8")
+    return updated
 
 
 def _approved_snapshot(tmp_path):
@@ -210,6 +237,7 @@ def test_native_pdf_review_manifest_binds_original_source_input_manifest_and_cor
         active_revision=source_snapshot["active_revision"], **args)
     assert verified["status"] == "EVIDENCE_VERIFIED", verified
     assert verified["allowed_to_print"] is False
+    assert verified["allowed_to_simulate"] is False
     assert verified["physical_print_verified"] is False
     assert sha(input_manifest_bytes) == json.loads(args["manifest_bytes"])["input_manifest"]["sha256"]
 
@@ -238,17 +266,39 @@ def test_native_pdf_evidence_rejects_missing_drifted_or_wrong_input_manifest(tmp
 
 def test_native_pdf_evidence_binds_core_request_hash_to_native_plan_settings(tmp_path):
     args, _, _ = _native_pdf_inputs(tmp_path)
-    changed_settings = {**args, "settings": ({"paper": "A4", "copies": 2},)}
+    changed_settings = {**args, "settings": (
+        {"paper": "A4", "copies": 2, "duplex": False},)}
     result = create_print_evidence_v1(**changed_settings)
     assert result["status"] == "NEEDS_HUMAN"
     assert result["reason_code"] == "PDF_REQUEST_SETTINGS_MISMATCH"
     assert result["allowed_to_print"] is False
 
+    # The artifact locator is validated against the private source anchor after
+    # a valid canonical hash has been re-established across the synthetic tuple.
+    wrong_source = _reanchor_native_pdf_request(args, {
+        "documents": [{"artifact_name": "bundle-1/other.pdf", "copies": 1,
+                       "duplex": False, "paper": "A4"}]})
+    result = create_print_evidence_v1(**wrong_source)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "PDF_REQUEST_SOURCE_MISMATCH"
+    assert result["allowed_to_print"] is False
+
+    # Hashing is checked before any internal settings mapping. A modified
+    # request cannot become valid merely because its settings still look sane.
     changed_request = {**args, "request_data": {
-        "documents": [{"format": "PDF", "copies": 2}], "settings": {"paper": "A4"}}}
+        "documents": [{"artifact_name": "bundle-1/source.pdf", "copies": 2,
+                       "duplex": False, "paper": "A4"}]}}
     result = create_print_evidence_v1(**changed_request)
     assert result["status"] == "NEEDS_HUMAN"
     assert result["reason_code"] == "PDF_REQUEST_HASH_UNVERIFIED"
+    assert result["allowed_to_print"] is False
+
+    unsupported = _reanchor_native_pdf_request(args, {
+        "documents": [{"artifact_name": "bundle-1/source.pdf", "copies": 1,
+                       "duplex": False, "paper": "A4", "unexpected": True}]})
+    result = create_print_evidence_v1(**unsupported)
+    assert result["status"] == "NEEDS_HUMAN"
+    assert result["reason_code"] == "PDF_REQUEST_SHAPE_UNSUPPORTED"
     assert result["allowed_to_print"] is False
 
 

@@ -101,8 +101,8 @@ def _safe_pdf_input_ref(value: Any) -> bool:
 
 
 def _verify_native_pdf_request(*, request_data: Any, context: dict[str, Any],
-                               settings: Any) -> None:
-    """Bind the provided plan setup to AI1's exact canonical request data."""
+                               settings: Any, verified_source_ref: str) -> None:
+    """Bind plan settings to unchanged Core request data and verified source."""
     from .native_pdf_artifacts import _request_settings
 
     try:
@@ -110,8 +110,13 @@ def _verify_native_pdf_request(*, request_data: Any, context: dict[str, Any],
     except Exception as exc:
         raise _Invalid("PDF_REQUEST_HASH_UNVERIFIED") from exc
     _check(request_hash == context["request_hash"], "PDF_REQUEST_HASH_UNVERIFIED")
-    expected_settings = _request_settings(request_data)
-    _check(expected_settings is not None and type(settings) is tuple and len(settings) == 1
+    # Do not normalize/hash a rewritten request. Only after the exact stored
+    # request hash matches may settings be derived from Core's actual shape.
+    expected_settings, request_error = _request_settings(
+        request_data, verified_source_ref)
+    _check(request_error is None and type(expected_settings) is dict,
+           request_error or "PDF_REQUEST_SETTINGS_MISMATCH")
+    _check(type(settings) is tuple and len(settings) == 1
            and type(settings[0]) is dict
            and _canonical_hash(settings[0]) == _canonical_hash(expected_settings),
            "PDF_REQUEST_SETTINGS_MISMATCH")
@@ -239,11 +244,12 @@ def create_print_evidence_v1(*, context: dict[str, Any],
                    "PDF_RENDERER_CHANGED")
             _check(len(manifest.get("files", [])) == 1,
                    "PDF_SINGLE_SOURCE_REQUIRED")
-            _verify_native_pdf_request(request_data=request_data, context=context,
-                                       settings=settings)
             _verify_native_pdf_input_manifest(manifest=manifest, context=context,
                                               source_bytes=originals[0] if type(originals) is tuple and originals else b"",
                                               input_manifest_bytes=input_manifest_bytes)
+            _verify_native_pdf_request(
+                request_data=request_data, context=context, settings=settings,
+                verified_source_ref=manifest["source"]["artifact_ref"])
         _check(type(originals) is tuple and 1 <= len(originals) <= processor.MAX_DOCS and
                type(previews) is tuple and 1 <= len(previews) <= 3*len(originals) and
                type(settings) is tuple and len(settings) == len(originals) and
