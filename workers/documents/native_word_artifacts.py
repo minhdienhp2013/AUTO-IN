@@ -24,9 +24,8 @@ def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str, Any],
-                               expected_request_hash: str, revision: int,
-                               observation: dict[str, Any],
+def make_word_review_artifacts(*, source: bytes, request_data: Any,
+                               anchors: dict[str, Any], observation: dict[str, Any],
                                artifact_root: str | Path) -> dict[str, Any]:
     """Create private immutable DOCX+PNG bundle; human review always required.
 
@@ -42,19 +41,27 @@ def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str,
 
     folder: Path | None = None
     try:
-        if type(revision) is not int or revision < 1:
+        if (type(anchors) is not dict or set(anchors) != {
+                "shop_id", "order_id", "active_revision", "request_hash", "source", "input_manifest"}):
+            return hold("SOURCE_ANCHORS_UNVERIFIED")
+        revision = anchors["active_revision"]
+        expected_request_hash = anchors["request_hash"]
+        source_anchor = anchors["source"]
+        if (type(revision) is not int or revision < 1 or type(source_anchor) is not dict or
+                source_anchor.get("format") != "DOCX" or source_anchor.get("sha256") != _sha(source) or
+                source_anchor.get("size_bytes") != len(source)):
             return hold("REVISION_UNVERIFIED")
         if type(source) is not bytes or not 0 < len(source) <= processor.MAX_FILE:
             return hold("SOURCE_UNVERIFIED")
-        if (not isinstance(trusted_request_data, dict) or
-                set(trusted_request_data) != {"documents"} or
-                type(trusted_request_data.get("documents")) is not list or
-                len(trusted_request_data["documents"]) != 1):
+        if (not isinstance(request_data, dict) or
+                set(request_data) != {"documents"} or
+                type(request_data.get("documents")) is not list or
+                len(request_data["documents"]) != 1):
             return hold("REQUEST_UNVERIFIED")
-        request_hash = _sha(_canonical(trusted_request_data).encode("utf-8"))
-        if request_hash != expected_request_hash:
+        request_hash = _sha(_canonical(request_data).encode("utf-8"))
+        if request_hash != expected_request_hash or source_anchor.get("artifact_ref") is None:
             return hold("REQUEST_HASH_MISMATCH")
-        doc = trusted_request_data["documents"][0]
+        doc = request_data["documents"][0]
         if not isinstance(doc, dict) or set(doc) - {
             "artifact_name", "copies", "duplex", "paper",
             "orientation", "binding", "page_range"} or "artifact_name" not in doc:
@@ -128,13 +135,16 @@ def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str,
             "physical_sheets": counted["physical_sheets"],
         }
         manifest = {
-            "schema": SCHEMA, "revision": revision,
+            "schema": SCHEMA, "shop_id": anchors["shop_id"],
+            "order_id": anchors["order_id"], "active_revision": revision,
             "request_hash": request_hash, "files": [file_row],
+            "source": source_anchor, "input_manifest": anchors["input_manifest"],
             "previews": entries, "paper_plan": counted["files"],
             "counts": {k: counted[k] for k in ("document_pages", "printed_faces",
                                                "physical_sheets", "requires_price_confirmation")},
             "evidence_kind": "windows_word_com_preview_only",
             "renderer_identity": observation["renderer_identity"],
+            "settings_sha256": file_row["settings_sha256"],
             "ready": False, "allowed_to_print": False,
             "requires_staff_review": True,
             "physical_print_verified": False,
@@ -146,17 +156,21 @@ def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str,
             os.fsync(f.fileno())
         return {
             "schema": SCHEMA, "status": "REVIEW_REQUIRED",
+            "shop_id": anchors["shop_id"], "order_id": anchors["order_id"],
+            "active_revision": revision, "request_hash": request_hash,
             "reason_code": "WORD_FONT_AND_RICOH_LAYOUT_UNVERIFIED",
             "ready": False, "allowed_to_print": False,
             "requires_staff_review": True, "physical_print_verified": False,
             "source_format": "DOCX", "print_source_format": "DOCX",
             "artifact_ref": f"{folder.name}/manifest.json",
             "manifest_sha256": _sha(manifest_file.read_bytes()),
+            "source": source_anchor, "input_manifest": anchors["input_manifest"],
             "source_sha256": source_hash,
             "settings_sha256": file_row["settings_sha256"],
             "preview_artifacts": entries,
             "document_pages": pages, "printed_faces": counted["printed_faces"],
             "physical_sheets": counted["physical_sheets"],
+            "renderer_identity": observation["renderer_identity"],
             "requires_price_confirmation": counted["requires_price_confirmation"],
         }
     except Exception:
