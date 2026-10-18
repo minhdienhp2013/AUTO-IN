@@ -64,6 +64,26 @@ test('V1 images stay staff-only and NEVER reach OCR/facts, AI, order or print',a
   assert.equal(h.inspections(),0);assert.equal(h.writes.length,0);
  }
 });
+test('V1 photo routing is bound to the durable event and makes no automatic-processing claim',async()=>{
+ for(const [id,kind,attrs] of [
+  ['photo-text','image',{filename:'photo-text.jpg',mime_type:'image/jpeg'}],
+  ['cccd','file',{filename:'cccd-front.png',mime_type:'image/png'}],
+  ['temhoa','file',{filename:'temhoa-request.webp',mime_type:'image/webp'}],
+  // A misleading document suffix must not let an image enter Word/PDF preflight.
+  ['photo-disguised','file',{filename:'photo.docx',mime_type:'image/jpeg'}],
+ ]){
+  const h=harness(async()=>{assert.fail('manual image routing must bypass document preflight')});
+  const file=ev(id,kind,{...attrs,file_ref:'sealed:'+id});
+  assert.equal(await h.processor.consume(batch(file)),'human');
+  assert.deepEqual(h.routes.map(route=>route.reason),['IMAGE_V1']);
+  // Bind handover to the source event; do not synthesize a draft/order,
+  // confirmation, preview, or outbound message from an image.
+  assert.deepEqual(h.routes[0].event_ids,[id]);
+  assert.equal(h.inspections(),0);
+  assert.equal(h.writes.length,0);
+  assert.equal(h.replies.length,0);
+ }
+});
 test('V1 unknown/Excel/ZIP unsupported or ambiguous always route staff',async()=>{
  for(const [fact,reason] of [
   [{kind:'excel',preview_trusted:true},'EXCEL'],
