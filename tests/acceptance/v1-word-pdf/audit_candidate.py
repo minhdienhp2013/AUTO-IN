@@ -24,6 +24,7 @@ from collections import Counter
 
 ROOT=pathlib.Path(__file__).resolve().parents[3]
 MANIFEST=ROOT/"tests/fixtures/public/v1-word-pdf/matrix.json"
+TICKET_GATE_MATRIX=pathlib.Path(__file__).with_name("ticket_gate_matrix.json")
 HEX40=re.compile(r"[a-f0-9]{40}\Z")
 HEX64=re.compile(r"[a-f0-9]{64}\Z")
 GATES=("source_sha256","settings_sha256","request_hash","revision","manifest_sha256",
@@ -114,6 +115,66 @@ def stale_digest_evidence_issues(case_id, details):
     return issues
 
 
+def ticket_gate_evidence_issues(case_id, details):
+    """Require explicit product observations for the integrated HTTPS gate."""
+    matrix=json.loads(TICKET_GATE_MATRIX.read_text(encoding="utf-8"))
+    spec=next(case for case in matrix["cases"] if case["id"]==case_id)
+    gate=details.get("ticket_gate")
+    if not isinstance(gate,dict):
+        return [case_id+": ticket gate evidence missing"]
+    issues=[]
+    for field in ("https_trace_sha256","agent_trace_sha256","core_guard_trace_sha256"):
+        if not HEX64.fullmatch(str(gate.get(field,""))):
+            issues.append(case_id+": invalid/missing "+field)
+    if gate.get("authenticated_https") is not True:
+        issues.append(case_id+": authenticated HTTPS not verified")
+    if gate.get("physical_print") is not False:
+        issues.append(case_id+": physical print must remain disabled")
+
+    def side_effects_free(row, label):
+        if not isinstance(row,dict):
+            issues.append(case_id+": missing observation "+label)
+            return
+        if row.get("result")!="NEEDS_HUMAN":
+            issues.append(case_id+": "+label+" did not fail closed")
+        if (row.get("journal_rows_before")!=row.get("journal_rows_after") or
+                type(row.get("journal_rows_before")) is not int):
+            issues.append(case_id+": "+label+" journal changed/unverified")
+        for field in ("mark_sending_calls","driver_send_calls"):
+            if row.get(field)!=0:
+                issues.append(case_id+": "+label+" "+field+" not zero")
+
+    if case_id in ("V1-028","V1-029"):
+        rows=gate.get("mutation_results")
+        expected=set(spec["required_checks"])
+        if (not isinstance(rows,list) or
+                {row.get("check") for row in rows if isinstance(row,dict) and
+                 isinstance(row.get("check"),str)}!=expected or
+                len(rows)!=len(expected)):
+            issues.append(case_id+": contract mutation coverage incomplete/duplicate")
+        else:
+            for row in rows:
+                side_effects_free(row,row.get("check","mutation"))
+    elif case_id=="V1-030":
+        rows=gate.get("lease_identity_mismatches")
+        expected=set(spec["required_checks"])
+        if (not isinstance(rows,list) or
+                {row.get("field") for row in rows if isinstance(row,dict) and
+                 isinstance(row.get("field"),str)}!=expected or
+                len(rows)!=len(expected)):
+            issues.append(case_id+": exact lease identity coverage incomplete/duplicate")
+        else:
+            for row in rows:
+                side_effects_free(row,row.get("field","lease mismatch"))
+    elif case_id=="V1-031":
+        if gate.get("ticket_source")!="core_authenticated_https":
+            issues.append(case_id+": ticket was not sourced from authenticated Core HTTPS")
+        if gate.get("events")!=["claim","preflight"]:
+            issues.append(case_id+": unexpected event after rejected preflight")
+        side_effects_free(gate.get("end_to_end"),"malformed ticket end-to-end")
+    return issues
+
+
 def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
     if not HEX40.fullmatch(expected_sha):
         raise AssertionError("INVALID_CANDIDATE_SHA")
@@ -139,7 +200,8 @@ def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
                if line.startswith("V1_ACCEPT_JSON ")]
     assert len(sentinels)==1 and json.loads(sentinels[0])==report, "TAP_JSON_MISMATCH"
     matrix=json.loads(MANIFEST.read_text(encoding="utf-8"))
-    expected={c["id"]:c for c in matrix["cases"]}
+    ticket_matrix=json.loads(TICKET_GATE_MATRIX.read_text(encoding="utf-8"))
+    expected={c["id"]:c for c in [*matrix["cases"],*ticket_matrix["cases"]]}
     tests=report.get("cases")
     assert isinstance(tests,list) and len(tests)==len(expected)
     assert len({row.get("id") for row in tests})==len(expected)
@@ -180,6 +242,8 @@ def evaluate(artifact, expected_sha, zip_sha256, job_log, checkout_sha):
                 issues.append(f'{row["id"]}: unauthorized print job mutation')
         if row["id"] in ("V1-025","V1-026","V1-027"):
             issues.extend(stale_digest_evidence_issues(row["id"],details))
+        if row["id"] in {case["id"] for case in ticket_matrix["cases"]}:
+            issues.extend(ticket_gate_evidence_issues(row["id"],details))
     assert report.get("status")=="PASS" and not issues, "BLOCKED_CASES: "+", ".join(issues[:24])
     assert "ok 1 - V1 Word/PDF exact candidate product acceptance" in tap
     return {"status":"PASS_CANDIDATE_ARTIFACT_CONSISTENCY_ONLY",
@@ -200,7 +264,8 @@ def main():
         result=evaluate(args.artifact,args.candidate_sha,args.zip_sha256,args.job_log,git)
         print("V1_AUDIT_JSON "+json.dumps(result,sort_keys=True))
         return 0
-    except (AssertionError,ValueError,OSError,subprocess.SubprocessError,zipfile.BadZipFile) as exc:
+    except (AssertionError,KeyError,TypeError,ValueError,OSError,
+            subprocess.SubprocessError,zipfile.BadZipFile) as exc:
         print("V1_AUDIT_BLOCKED "+type(exc).__name__,file=sys.stderr)
         return 2
 

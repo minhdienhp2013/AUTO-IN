@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import pathlib
+import re
 import struct
 import sys
 import zipfile
@@ -18,8 +19,7 @@ SPEC.loader.exec_module(gate)
 def test_manifest_is_27_unique_labeled_not_run_cases():
     data = gate.manifest()
     assert data["phase"] == "pre-integration"
-    assert data["source_candidate_sha"] == (
-        "0673460af71205986b901a21fc7724dbea23c991")
+    assert re.fullmatch(r"[a-f0-9]{40}", gate.current_candidate_sha())
     assert len(data["cases"]) == 27
     assert all(row["observed"] == "NOT_RUN" for row in data["cases"])
 
@@ -29,6 +29,73 @@ def test_27_synthetic_bytes_have_distinct_sha_and_correct_formats():
     assert (result["count"], result["distinct_sha256"]) == (27, 27)
     assert result["status"] == "FIXTURE_PASS_PRODUCT_NOT_RUN"
     assert all(row["product_status"] == "NOT_RUN" for row in result["cases"])
+    assert result["source_candidate_sha"] == gate.current_candidate_sha()
+    assert [row["id"] for row in result["product_acceptance_cases"]] == [
+        f"V1-{number:03d}" for number in range(28, 32)]
+    assert all(row["observed"] == "NOT_RUN"
+               for row in result["product_acceptance_cases"])
+
+
+def test_ticket_gate_matrix_covers_core_contract_and_exact_lease():
+    cases = gate.ticket_gate_cases()["cases"]
+    by_id = {row["id"]: row for row in cases}
+    assert len(cases) == 4
+    assert len(by_id["V1-028"]["required_checks"]) == 18
+    assert len(by_id["V1-029"]["required_checks"]) >= 8
+    assert set(by_id["V1-030"]["required_checks"]) == {
+        "job_id", "order_id", "revision", "request_hash", "approval_id",
+        "printer_id", "lease_token"}
+    assert all(row["expected"] == "HOLD" and row["observed"] == "NOT_RUN"
+               for row in cases)
+
+
+def test_ticket_gate_auditor_requires_all_mutations_and_no_side_effects():
+    spec = importlib.util.spec_from_file_location(
+        "v1_candidate_auditor", MODULE.with_name("audit_candidate.py"))
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    matrix = gate.ticket_gate_cases()["cases"]
+    base_gate = {
+        "https_trace_sha256": "a" * 64,
+        "agent_trace_sha256": "b" * 64,
+        "core_guard_trace_sha256": "c" * 64,
+        "authenticated_https": True,
+        "physical_print": False,
+    }
+
+    def denied(check_key, field="check"):
+        return {field: check_key, "result": "NEEDS_HUMAN",
+                "journal_rows_before": 0, "journal_rows_after": 0,
+                "mark_sending_calls": 0, "driver_send_calls": 0}
+
+    for case in matrix:
+        gate_row = dict(base_gate)
+        if case["id"] in ("V1-028", "V1-029"):
+            gate_row["mutation_results"] = [
+                denied(check) for check in case["required_checks"]]
+        elif case["id"] == "V1-030":
+            gate_row["lease_identity_mismatches"] = [
+                denied(field, "field") for field in case["required_checks"]]
+        else:
+            gate_row.update(ticket_source="core_authenticated_https",
+                            events=["claim", "preflight"],
+                            end_to_end=denied("malformed_core_ticket_end_to_end"))
+        assert verifier.ticket_gate_evidence_issues(
+            case["id"], {"ticket_gate": gate_row}) == []
+
+    incomplete = {"ticket_gate": {**base_gate, "mutation_results": []}}
+    issues = verifier.ticket_gate_evidence_issues("V1-028", incomplete)
+    assert any("coverage incomplete" in issue for issue in issues)
+
+    unsafe = {"ticket_gate": {
+        **base_gate,
+        "ticket_source": "core_authenticated_https",
+        "events": ["claim", "preflight", "mark-sending"],
+        "end_to_end": {**denied("case"), "driver_send_calls": 1},
+    }}
+    issues = verifier.ticket_gate_evidence_issues("V1-031", unsafe)
+    assert any("unexpected event" in issue for issue in issues)
+    assert any("driver_send_calls not zero" in issue for issue in issues)
 
 
 @pytest.mark.parametrize("kind", ["pdf", "docx", "png", "xlsx", "zip"])
@@ -103,7 +170,7 @@ def test_exact_head_auditor_rejects_fixture_only_evidence(tmp_path):
         "v1_candidate_auditor", MODULE.with_name("audit_candidate.py"))
     verifier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(verifier)
-    candidate = gate.manifest()["source_candidate_sha"]
+    candidate = gate.current_candidate_sha()
     fake_report = gate.fixture_result()  # Intentionally NOT a product run.
     payload = tmp_path / "fixture-only.zip"
     with zipfile.ZipFile(payload, "w") as out:
@@ -123,7 +190,7 @@ def test_auditor_rejects_wrong_checkout_even_when_zip_digest_matches(tmp_path):
         "v1_candidate_auditor", MODULE.with_name("audit_candidate.py"))
     verifier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(verifier)
-    candidate = gate.manifest()["source_candidate_sha"]
+    candidate = gate.current_candidate_sha()
     artifact = tmp_path / "no-product.zip"
     with zipfile.ZipFile(artifact, "w") as z:
         z.writestr("v1-word-pdf.json", json.dumps({}))

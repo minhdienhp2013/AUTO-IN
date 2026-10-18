@@ -1,0 +1,53 @@
+{
+  "schema": "autoin.v1.word_pdf.ticket_gate.matrix.v1",
+  "source_contract": "agents/windows/native_simulation_review.py + agents/windows/backend_http.py",
+  "cases": [
+    {
+      "id": "V1-028",
+      "key": "core_ticket_top_level_contract",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "missing:allowed", "invalid:allowed",
+        "missing:job_id", "invalid:job_id",
+        "missing:revision", "invalid:revision",
+        "missing:mode", "invalid:mode",
+        "missing:approval_id", "invalid:approval_id",
+        "missing:document_evidence_verified", "invalid:document_evidence_verified",
+        "missing:review_receipt", "invalid:review_receipt",
+        "missing:trusted_evidence", "invalid:trusted_evidence",
+        "missing:trusted_job", "invalid:trusted_job"
+      ]
+    },
+    {
+      "id": "V1-029",
+      "key": "core_document_evidence_and_receipt",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "missing:review_receipt", "missing:review_receipt.receipt_id",
+        "invalid:review_receipt.decision", "invalid:review_receipt.evidence_sha256",
+        "missing:trusted_evidence", "missing:trusted_evidence.renderer_sha256",
+        "invalid:trusted_evidence.renderer_sha256", "invalid:trusted_evidence.preview_sha256",
+        "invalid:document_evidence_verified"
+      ]
+    },
+    {
+      "id": "V1-030",
+      "key": "preflight_ticket_bound_to_exact_lease",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": [
+        "job_id", "order_id", "revision", "request_hash",
+        "approval_id", "printer_id", "lease_token"
+      ]
+    },
+    {
+      "id": "V1-031",
+      "key": "ticket_gate_before_journal_mark_and_driver",
+      "expected": "HOLD",
+      "observed": "NOT_RUN",
+      "required_checks": ["malformed_core_ticket_end_to_end"]
+    }
+  ]
+}

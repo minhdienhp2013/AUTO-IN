@@ -1,6 +1,6 @@
 # AUTO-IN — V1-ACCEPTANCE-01 | Word/PDF-first acceptance gate
 
-**Status: MATRIX/HARNESS UPDATED (27 cases); all product results NOT RUN.** This is a test-first AI5 plan and
+**Status: MATRIX/HARNESS UPDATED (27 synthetic fixtures + 4 ticket-gate cases); all 31 product results NOT RUN.** This is a test-first AI5 plan and
 independent verification harness, **not V1 release authorization**.
 
 ## Immutable source and ownership
@@ -24,8 +24,11 @@ independent verification harness, **not V1 release authorization**.
 
 ## 1. Locked V1 scenario matrix
 
-\`tests/fixtures/public/v1-word-pdf/matrix.json\` is the machine-readable
-27-case manifest. All rows start with \`observed=NOT_RUN\` deliberately.
+\`tests/fixtures/public/v1-word-pdf/matrix.json\` remains the machine-readable
+27-case source/document manifest. \`tests/acceptance/v1-word-pdf/ticket_gate_matrix.json\`
+adds four product acceptance cases; together the exact-candidate product report
+must contain 31 unique case IDs. All rows start with \`observed=NOT_RUN\`
+deliberately. Ticket-gate cases do not increase the synthetic file fixture count.
 
 | Case IDs | Gate | Mandatory observation for final integrated candidate |
 | --- | --- | --- |
@@ -45,6 +48,10 @@ independent verification harness, **not V1 release authorization**.
 | V1-025 | Manifest hash changed at **same manifest_ref** | Keep source byte/path, order, revision and settings fixed; change manifest bytes at same path → new manifest_sha256 and evidence_sha256. Reject previous consent/approval/claim/preflight/send; 0 new print/driver calls |
 | V1-026 | Preview hash changed at **same preview path** | Keep native DOCX byte/path and preview index/path/byte length fixed; change preview bytes/hash → new evidence_sha256. Reject old consent/approval/ticket with 0 print |
 | V1-027 | Renderer hash changed at **same executable path** | Same source, manifest/preview paths, settings, revision; trusted renderer identity/version digest changes → new evidence_sha256, force stale/NEEDS_HUMAN and no resend |
+| V1-028 | Missing/invalid top-level Core ticket fields | Exercise missing and invalid values for all nine fields (`allowed`, `job_id`, `revision`, `mode`, `approval_id`, `document_evidence_verified`, `review_receipt`, `trusted_evidence`, `trusted_job`); each returns NEEDS_HUMAN with no journal row, mark-sending or driver call |
+| V1-029 | Missing/invalid trusted receipt/evidence | Missing or corrupt receipt fields and trusted document evidence/digests/previews fail closed; preserve the order and prove no journal/mark/driver side effect |
+| V1-030 | Cached ticket belongs to another lease | Change each claimed identity field (`job_id`, `order_id`, `revision`, `request_hash`, `approval_id`, `printer_id`, `lease_token`) after preflight; cached Core ticket cannot authorize mark or driver |
+| V1-031 | HTTPS ticket gate precedes durable/print effects | On malformed integrated Core HTTPS ticket, agent stops after claim/preflight; journal count unchanged, no mark-sending request and no driver call |
 
 
 ### Required evidence tuple and authority
@@ -106,6 +113,15 @@ gates cannot PASS from an in-memory plan or synthetic principal.
   A synthetically fabricated report or generic green CI is **not enough**:
   AI5 independently checks authoritative PG/HTTP/agent traces before declaring
   any candidate PASS. The instrument cannot attest raw device results alone.
+- \`ticket_gate_matrix.json\` defines V1-028–031 separately from file fixtures.
+  Each candidate report must include \`evidence.ticket_gate\` for these cases:
+  SHA-256 references for authenticated HTTPS, agent and Core guard traces;
+  all required mutation outcomes; and zero journal/mark/driver side effects for
+  every rejected variation. V1-030 covers all seven cached-lease identity
+  fields. V1-031 records \`claim\`, \`preflight\` only. These fields define the
+  evidence shape, not proof by themselves; AI5 must inspect original traces.
+  Synthetic fixture output remains \`FIXTURE_PASS_PRODUCT_NOT_RUN\` and cannot
+  satisfy the product auditor.
 
 ### Commands to run in the exact integrated checkout (after AI0 hands off)
 
@@ -118,7 +134,7 @@ python -m pytest -q tests/unit/documents tests/unit/printing tests/acceptance/v1
 (cd web && npm ci && npm test && npm run typecheck && VITE_DEMO_MODE=false npm run build && npm run test:chromium:code008)
 python tests/acceptance/v1-word-pdf/fixture_gate.py --check-fixture --json-out /tmp/v1-fixture.json
 
-# Core baseline, NOT all 27 V1 product acceptance cases:
+# Core baseline, NOT all 31 V1 product acceptance cases:
 export AUTOIN_OPERATION_MODE=simulation
 export AUTOIN_ALLOW_PG_ACCEPTANCE=YES_ISOLATED_TEST_DB
 export TEST_DATABASE_URL='postgresql://auto_in:CI_ONLY@127.0.0.1:5432/autoin_test_v1wp'
@@ -128,8 +144,8 @@ node --import tsx --test tests/acceptance/v1-word-pdf/core_baseline_pg.mjs
 \`\`\`
 
 Do NOT execute on a production DB, production Zalo OA, Windows queue or Ricoh.
-For final V1 product evidence AI0 must bind a new exact candidate SHA, run all
-27 scenarios against **the actual integrated product** (not just the Core
+For final V1 product evidence AI0 must bind the exact SHA observed at runner
+start, run all 31 scenarios against **the actual integrated product** (not just the Core
 baseline), archive artifact \`v1-word-pdf.json\` and \`v1-word-pdf.tap\`
 with original HTTP/SQL logs, job ID, exact checked-out SHA and SHA256 ZIP digest.
 AI5 then runs:
@@ -146,8 +162,8 @@ A **PASS audit consistency** does not alone prove the underlying business
 outcomes; AI5 must inspect the original, scope-bound evidence. Missing tests
 are explicitly **NOT RUN**, not silent PASS/SKIP.
 
-**Change control (18/10/2026):** Matrix now includes V1-025–027;
-their \`observed=NOT_RUN\` and **all 27 product scenarios remain NOT RUN**.
+**Change control (18/10/2026):** File/evidence matrix includes V1-025–027;
+ticket-gate overlay adds V1-028–031. All 31 product scenarios remain NOT RUN.
 No exact integrated candidate SHA or product JSON/TAP/ZIP exists yet for these
 new contract scenarios. Prior PR144/PR153 general CI is not acceptance evidence
 for the Core↔AI3↔agent manifest/preview/renderer hash contract.
@@ -156,12 +172,12 @@ for the Core↔AI3↔agent manifest/preview/renderer hash contract.
 
 | Layer | Status | Limits |
 | --- | --- | --- |
-| Manifest/harness creation | **DONE** | Test-first, 27 expected cases, all product observed NOT RUN |
-| Fixture pytest / Python compile | **NOT RUN on exact Git checkout** | Local session lacks complete AUTO-IN repo backing; exact branch CI/test environment required |
-| npm run check | **BLOCKED in local session** | No repository package.json locally; local Node 22, repo requires Node ≥24.19; do not confuse ENOENT with product failure |
-| UI Chromium | **NOT RUN on this candidate** | Chromium binary present locally, but no compiled AUTO-IN web/dist checkout; older PR144 green CI does not test V1 changes |
-| Core PostgreSQL isolated | **NOT RUN** | No local PostgreSQL 18.3 test instance/fully installed repo; tester fails closed without TEST_DATABASE_URL |
-| 27-case integrated V1 acceptance | **NOT RUN / BLOCKED on AI0 integration** | Source/settings/plan/agent contract pending; existing synthetic PR144 PASS is not this result |
+| Manifest/harness creation | **DONE** | 27 synthetic file fixtures + 4 ticket-gate cases; all 31 product results NOT RUN |
+| Fixture gate / Python compile | **FIXTURE PASS; pytest BLOCKED** | Fixture runner passed on this branch; `python -m pytest` unavailable (`No module named pytest`); product rows still NOT RUN |
+| npm run check | **NOT RUN for this docs/acceptance-only branch** | AI0's base-candidate check is separate and does not include this AI5 change |
+| UI Chromium | **NOT RUN for this acceptance-only branch** | Not exercised by ticket-gate acceptance changes |
+| Core PostgreSQL isolated | **NOT RUN** | No isolated PostgreSQL evidence was produced for this task |
+| 31-case integrated V1 acceptance | **NOT RUN / BLOCKED on AI0 integration** | Product runner/traces for V1-028–031 pending; fixture output is not product evidence |
 | Word COM, Windows Ricoh, OA/DeepSeek, Safari/iPhone | **NOT RUN** | Physical account/host/device tests need explicit owner approval |
 | TN037 ≥210 real accepted jobs over ≥7 clean days | **NOT RUN** | Not replaced by synthetic batch or benchmark |
 

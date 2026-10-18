@@ -12,6 +12,7 @@ import io
 import json
 import pathlib
 import re
+import subprocess
 import struct
 import sys
 import xml.etree.ElementTree as ET
@@ -20,6 +21,7 @@ import zlib
 
 ROOT=pathlib.Path(__file__).resolve().parents[3]
 MANIFEST=ROOT/"tests/fixtures/public/v1-word-pdf/matrix.json"
+TICKET_GATE_MATRIX=pathlib.Path(__file__).with_name("ticket_gate_matrix.json")
 FORMATS={"pdf","docx","png","jpg","xlsx","zip"}
 STATUS={"PASS","STALE","ALLOW","DENY","ONE","CONFLICT","HOLD","MANUAL"}
 VERSION="autoin.v1.word_pdf.acceptance.matrix.v1"
@@ -39,6 +41,26 @@ def manifest():
     assert any(c["key"]=="word_native" for c in cases)
     assert all(c["tier"] in {"product","windows","agent"} for c in cases)
     return data
+
+
+def ticket_gate_cases():
+    """Additional product cases; separate from the 27 synthetic file fixtures."""
+    data=json.loads(TICKET_GATE_MATRIX.read_text(encoding="utf-8"))
+    assert data["schema"]=="autoin.v1.word_pdf.ticket_gate.matrix.v1"
+    cases=data["cases"]
+    assert [case["id"] for case in cases]==[f"V1-{i:03d}" for i in range(28,32)]
+    assert all(case["expected"]=="HOLD" and case["observed"]=="NOT_RUN"
+               for case in cases)
+    assert len({case["key"] for case in cases})==4
+    return data
+
+
+def current_candidate_sha():
+    """Bind fixture output to the checkout that actually ran the gate."""
+    value=subprocess.run(["git","rev-parse","HEAD"],cwd=ROOT,
+        capture_output=True,text=True,timeout=5,check=True).stdout.strip()
+    assert re.fullmatch(r"[a-f0-9]{40}",value)
+    return value
 
 
 def _png(label):
@@ -232,7 +254,8 @@ def fixture_result():
     assert len(pairs)==3 and all(x["product_status"]=="NOT_RUN" for x in pairs)
     return {"schema":"autoin.v1.word_pdf.fixture.v1","mode":"fixture_only",
             "status":"FIXTURE_PASS_PRODUCT_NOT_RUN","count":27,"distinct_sha256":27,
-            "source_candidate_sha":data["source_candidate_sha"],"cases":rows,
+            "source_candidate_sha":current_candidate_sha(),"cases":rows,
+            "product_acceptance_cases":ticket_gate_cases()["cases"],
             "same_path_digest_controls":pairs}
 
 
