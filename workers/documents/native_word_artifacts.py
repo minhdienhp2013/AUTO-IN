@@ -27,7 +27,8 @@ def _sha(raw: bytes) -> str:
 def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str, Any],
                                expected_request_hash: str, revision: int,
                                observation: dict[str, Any],
-                               artifact_root: str | Path) -> dict[str, Any]:
+                               artifact_root: str | Path,
+                               source_snapshot_anchors: dict[str, Any] | None = None) -> dict[str, Any]:
     """Create private immutable DOCX+PNG bundle; human review always required.
 
     No COM, PDF conversion, printer or Core mutation here. Fake observations,
@@ -52,6 +53,31 @@ def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str,
         request_hash = _sha(_canonical(trusted_request_data).encode("utf-8"))
         if request_hash != expected_request_hash:
             return hold("REQUEST_HASH_MISMATCH")
+        anchors = source_snapshot_anchors
+        if anchors is not None:
+            if (type(anchors) is not dict or set(anchors) != {
+                    "shop_id", "order_id", "active_revision", "request_hash",
+                    "source", "input_manifest"} or
+                    type(anchors.get("shop_id")) is not str or not anchors["shop_id"].strip() or
+                    type(anchors.get("order_id")) is not str or not anchors["order_id"].strip() or
+                    anchors.get("active_revision") != revision or
+                    type(anchors.get("active_revision")) is not int or
+                    anchors.get("request_hash") != expected_request_hash):
+                return hold("SOURCE_SCOPE_UNVERIFIED")
+            source_anchor = anchors.get("source")
+            manifest_anchor = anchors.get("input_manifest")
+            if (type(source_anchor) is not dict or set(source_anchor) != {
+                    "format", "artifact_ref", "sha256", "size_bytes"} or
+                    source_anchor.get("format") != "DOCX" or
+                    source_anchor.get("sha256") != _sha(source) or
+                    source_anchor.get("size_bytes") != len(source) or
+                    type(source_anchor.get("artifact_ref")) is not str or
+                    type(manifest_anchor) is not dict or set(manifest_anchor) != {"ref", "sha256"} or
+                    type(manifest_anchor.get("ref")) is not str or
+                    type(manifest_anchor.get("sha256")) is not str or
+                    len(manifest_anchor["sha256"]) != 64 or
+                    any(c not in "0123456789abcdef" for c in manifest_anchor["sha256"])):
+                return hold("SOURCE_SNAPSHOT_ANCHOR_UNVERIFIED")
         doc = trusted_request_data["documents"][0]
         if not isinstance(doc, dict) or set(doc) - {
             "artifact_name", "copies", "duplex", "paper",
@@ -136,12 +162,22 @@ def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str,
             "ready": False, "requires_staff_review": True,
             "physical_print_verified": False,
         }
+        if anchors is not None:
+            # These are anchors from the Core-verified input snapshot. The
+            # preview bundle's own DOCX copy still remains the print source.
+            manifest.update({
+                "shop_id": anchors["shop_id"],
+                "order_id": anchors["order_id"],
+                "active_revision": anchors["active_revision"],
+                "source": anchors["source"],
+                "input_manifest": anchors["input_manifest"],
+            })
         manifest_file = folder / "manifest.json"
         with manifest_file.open("x", encoding="utf-8") as f:
             json.dump(manifest, f, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
             f.flush()
             os.fsync(f.fileno())
-        return {
+        result = {
             "schema": SCHEMA, "status": "REVIEW_REQUIRED",
             "reason_code": "WORD_FONT_AND_RICOH_LAYOUT_UNVERIFIED",
             "ready": False, "allowed_to_print": False,
@@ -154,6 +190,18 @@ def make_word_review_artifacts(*, source: bytes, trusted_request_data: dict[str,
             "physical_sheets": counted["physical_sheets"],
             "requires_price_confirmation": counted["requires_price_confirmation"],
         }
+        if anchors is not None:
+            result.update({
+                "shop_id": anchors["shop_id"],
+                "order_id": anchors["order_id"],
+                "active_revision": anchors["active_revision"],
+                "request_hash": anchors["request_hash"],
+                "source": anchors["source"],
+                "input_manifest": anchors["input_manifest"],
+                "requires_staff_review": True,
+                "physical_print_verified": False,
+            })
+        return result
     except Exception:
         if folder is not None:
             try:
