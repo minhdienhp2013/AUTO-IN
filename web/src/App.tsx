@@ -541,7 +541,7 @@ function WordReviewClient({port,order,session,apiHealthy,onUnauthorized}:{
     return()=>{cancelled=true;owned.forEach(url=>URL.revokeObjectURL(url));};
   },[apiHealthy,authenticatedStaff,identity.shopId,order.detail_loaded,order.order_id,order.request_hash,
     order.revision,onUnauthorized,port,requestKey,session.actor_id,session.role]);
-  const current=loadedKey===requestKey&&apiHealthy;
+  const current=loadedKey===requestKey&&apiHealthy&&order.detail_loaded===true;
   return <WordReviewPanel identity={identity} state={current?state:{status:'LOADING'}} receipt="unavailable"
     verifiedPageObjectUrls={current?pageObjectUrls:[]}/>;
 }
@@ -601,7 +601,7 @@ function PdfReviewClient({port,order,session,apiHealthy,onUnauthorized}:{
     return()=>{cancelled=true;owned.forEach(url=>URL.revokeObjectURL(url));};
   },[apiHealthy,authenticatedStaff,identity.shopId,order.detail_loaded,order.order_id,order.request_hash,
     order.revision,onUnauthorized,port,requestKey,session.actor_id,session.role]);
-  const current=loadedKey===requestKey&&apiHealthy;
+  const current=loadedKey===requestKey&&apiHealthy&&order.detail_loaded===true;
   return <PdfReviewPanel identity={identity} state={current?state:{status:'LOADING'}}
     verifiedPageObjectUrls={current?pageObjectUrls:[]}/>;
 }
@@ -658,8 +658,8 @@ function VerifiedPreviewGallery({port,order,session,apiHealthy,busy,onFreshOrder
     };
   },[apiHealthy,authenticatedStaff,actorId,actorRole,shopId,port,order.detail_loaded,order.order_id,order.revision,order.request_hash,requestKey,session?.actor_id,session?.role]);
   const identityCurrent=loadedKey===requestKey;
-  const current=identityCurrent&&authenticatedStaff&&apiHealthy;
-  const visibleStatus:typeof status=!identityCurrent?'loading':!authenticatedStaff||!apiHealthy?'unavailable':status;
+  const current=identityCurrent&&authenticatedStaff&&apiHealthy&&order.detail_loaded===true;
+  const visibleStatus:typeof status=!identityCurrent?'loading':!authenticatedStaff||!apiHealthy||order.detail_loaded!==true?'unavailable':status;
   const visibleUrls=current?urls:[];
   const visibleFacts=current?facts:[];
   const evidenceSha=order.print_evidence?.evidence_sha256??'';

@@ -22,6 +22,16 @@ test('AI1 detail maps quote, active revision and plan without inventing preview/
  assert.equal(view.print_state,'NOT_SENT'); assert.equal(view.order_state,'draft');
  assert.equal(view.documents.length,0); assert.equal(view.confirmed_revision,null); assert.equal(hasValidApprovalInputs(view),false);
 });
+test('successful detail reads can lose detail validation without changing preview identity',()=>{
+ const currentRead={...coreDetail(),current:{revision:3,request_hash:'req-hash'}};
+ const validated=mapCoreOrderDetail(currentRead);
+ const missingCurrent=mapCoreOrderDetail(coreDetail());
+ assert.equal(validated.detail_loaded,true);
+ assert.equal(missingCurrent.detail_loaded,false);
+ assert.deepEqual(
+  [missingCurrent.order_id,missingCurrent.revision,missingCurrent.request_hash],
+  [validated.order_id,validated.revision,validated.request_hash]);
+});
 test('AI1 multiple jobs containing UNKNOWN never become verified by optimistic mapping',()=>{
  const d=coreDetail();d.jobs=[{id:'job-1',revision:3,state:'VERIFIED_DONE',printer_id:'RMP7000'},
   {id:'job-2',revision:3,state:'UNKNOWN',printer_id:'RMP7000'}] as typeof d.jobs;
