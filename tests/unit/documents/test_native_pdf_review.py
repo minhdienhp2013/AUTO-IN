@@ -34,10 +34,8 @@ def _snapshot(*, source: bytes | None = None, request: dict | None = None,
               source_ref: str = "bundle-123/source.pdf",
               manifest_ref: str = "bundle-123/manifest.json") -> dict:
     source = source if source is not None else _pdf()
-    request = request if request is not None else {
-        "documents": [{"format": "PDF", "copies": 2}],
-        "settings": {"duplex": True, "paper": "A4", "orientation": "portrait"},
-    }
+    request = request if request is not None else {"documents": [{
+        "artifact_name": source_ref, "copies": 2, "duplex": True, "paper": "A4"}]}
     request_hash = _sha(_canonical(request).encode("utf-8"))
     source_facts = {"format": "PDF", "artifact_ref": source_ref,
                     "sha256": _sha(source), "size_bytes": len(source)}
@@ -71,6 +69,8 @@ class NativePdfReviewTests(unittest.TestCase):
 
     def test_verified_snapshot_returns_anchored_review_only_bundle(self):
         snapshot = _snapshot()
+        request_data_before = json.loads(json.dumps(snapshot["request_data"]))
+        request_hash_before = _sha(_canonical(snapshot["request_data"]).encode("utf-8"))
         source = snapshot["private_bytes"]["source"]
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -80,6 +80,8 @@ class NativePdfReviewTests(unittest.TestCase):
             self.assertEqual((result["shop_id"], result["order_id"]), ("shop-1", "order-1"))
             self.assertEqual(result["active_revision"], 7)
             self.assertEqual(result["request_hash"], snapshot["request_hash"])
+            self.assertEqual(snapshot["request_data"], request_data_before)
+            self.assertEqual(snapshot["request_hash"], request_hash_before)
             self.assertEqual(result["source"], snapshot["source"])
             self.assertEqual(result["input_manifest"], snapshot["manifest"])
             self.assertEqual(result["source_sha256"], _sha(source))
@@ -98,6 +100,11 @@ class NativePdfReviewTests(unittest.TestCase):
             manifest = json.loads(raw_manifest)
             self.assertEqual(manifest["schema"], "ai3.native_pdf_preview.v1")
             self.assertEqual(manifest["status"], "REVIEW_REQUIRED")
+            self.assertEqual(manifest["settings_sha256"], _sha(_canonical({
+                "copies": 2, "duplex": True, "paper": "A4"}).encode("utf-8")))
+            plan = manifest["paper_plan"][0]
+            self.assertEqual((plan["copies"], plan["duplex"], plan["paper"]),
+                             (2, True, "A4"))
             self.assertEqual(manifest["source"], snapshot["source"])
             self.assertEqual(manifest["input_manifest"], snapshot["manifest"])
             self.assertEqual(manifest["active_revision"], 7)
@@ -149,14 +156,61 @@ class NativePdfReviewTests(unittest.TestCase):
 
     def test_unsupported_multiple_or_non_pdf_request_is_held(self):
         requests = [
-            {"documents": [{"format": "PDF", "copies": 1},
-                           {"format": "PDF", "copies": 1}], "settings": {"paper": "A4"}},
-            {"documents": [{"format": "DOCX", "copies": 1}], "settings": {"paper": "A4"}},
+            {"documents": [
+                {"artifact_name": "bundle-123/source.pdf", "copies": 1, "duplex": False, "paper": "A4"},
+                {"artifact_name": "bundle-123/source.pdf", "copies": 1, "duplex": False, "paper": "A4"}]},
+            {"documents": [{"artifact_name": "bundle-123/source.docx", "copies": 1,
+                            "duplex": False, "paper": "A4"}]},
             {"files": [{"artifact_name": "source.pdf"}]},
         ]
         for request in requests:
             with self.subTest(request=request):
                 self.assert_held_without_artifacts(_snapshot(request=request))
+
+    def test_request_source_and_settings_must_match_verified_core_contract(self):
+        wrong_source = {"documents": [{
+            "artifact_name": "bundle-123/other.pdf", "copies": 2,
+            "duplex": True, "paper": "A4"}]}
+        snapshot = _snapshot(request=wrong_source)
+        with tempfile.TemporaryDirectory() as temp:
+            result = self.run_snapshot(snapshot, Path(temp))
+            self.assertEqual(result["status"], "NEEDS_HUMAN", result)
+            self.assertEqual(result["reason_code"], "PDF_REQUEST_SOURCE_MISMATCH")
+            self.assertIs(result["ready"], False)
+            self.assertIs(result["allowed_to_print"], False)
+            self.assertIs(result["requires_staff_review"], True)
+            self.assertIs(result["physical_print_verified"], False)
+            self.assertEqual(list(Path(temp).iterdir()), [])
+
+        invalid_requests = [
+            ({"documents": [{"artifact_name": "bundle-123/source.pdf", "copies": True,
+                             "duplex": True, "paper": "A4"}]}, "PDF_REQUEST_SETTINGS_INVALID"),
+            ({"documents": [{"artifact_name": "bundle-123/source.pdf", "copies": 0,
+                             "duplex": True, "paper": "A4"}]}, "PDF_REQUEST_SETTINGS_INVALID"),
+            ({"documents": [{"artifact_name": "bundle-123/source.pdf", "copies": 2,
+                             "duplex": 1, "paper": "A4"}]}, "PDF_REQUEST_SETTINGS_INVALID"),
+            ({"documents": [{"artifact_name": "bundle-123/source.pdf", "copies": 2,
+                             "duplex": True, "paper": "Letter"}]}, "PDF_REQUEST_SETTINGS_INVALID"),
+            ({"documents": [{"artifact_name": "bundle-123/source.pdf", "copies": 2,
+                             "duplex": True, "paper": "A4", "unknown": "value"}]},
+             "PDF_REQUEST_SHAPE_UNSUPPORTED"),
+            ({"documents": [{"artifact_name": "bundle-123/source.pdf", "copies": 2,
+                             "duplex": True}]}, "PDF_REQUEST_SHAPE_UNSUPPORTED"),
+            ({"documents": [{"artifact_name": "bundle-123/source.pdf", "copies": 2,
+                             "duplex": True, "paper": "A4"}], "settings": {"paper": "A3"}},
+             "PDF_REQUEST_SHAPE_UNSUPPORTED"),
+        ]
+        for request, expected_reason in invalid_requests:
+            with self.subTest(request=request):
+                with tempfile.TemporaryDirectory() as temp:
+                    result = self.run_snapshot(_snapshot(request=request), Path(temp))
+                    self.assertEqual(result["status"], "NEEDS_HUMAN", result)
+                    self.assertEqual(result["reason_code"], expected_reason)
+                    self.assertIs(result["ready"], False)
+                    self.assertIs(result["allowed_to_print"], False)
+                    self.assertIs(result["requires_staff_review"], True)
+                    self.assertIs(result["physical_print_verified"], False)
+                    self.assertEqual(list(Path(temp).iterdir()), [])
 
     def test_encrypted_pdf_and_uncertain_fonts_are_routed_to_staff(self):
         self.assert_held_without_artifacts(_snapshot(source=_pdf(encrypted=True)))

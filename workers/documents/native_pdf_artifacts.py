@@ -42,25 +42,32 @@ def _safe_ref(value: Any) -> bool:
             and parts[1] not in (".", ".."))
 
 
-def _request_settings(request_data: Any) -> dict[str, Any] | None:
-    """Map only AI1's current single-PDF revision request shape to plan settings."""
-    if type(request_data) is not dict or set(request_data) != {"documents", "settings"}:
-        return None
-    documents, settings = request_data["documents"], request_data["settings"]
-    if type(documents) is not list or len(documents) != 1 or type(settings) is not dict:
-        return None
+def _request_settings(request_data: Any, verified_source_ref: str
+                      ) -> tuple[dict[str, Any] | None, str | None]:
+    """Map Core's unchanged single-source request to native preview settings.
+
+    Core hashes and stores ``documents[].artifact_name`` as part of the request.
+    It must equal the already-verified private source ref; it is never used to
+    locate or open a file here.
+    """
+    if type(request_data) is not dict or set(request_data) != {"documents"}:
+        return None, "PDF_REQUEST_SHAPE_UNSUPPORTED"
+    documents = request_data["documents"]
+    if type(documents) is not list or len(documents) != 1:
+        return None, "PDF_REQUEST_SHAPE_UNSUPPORTED"
     document = documents[0]
-    if (type(document) is not dict or set(document) - {"format", "copies"}
-            or document.get("format") != "PDF"):
-        return None
-    if set(settings) - {"paper", "orientation", "duplex", "binding", "page_range"}:
-        return None
-    if "copies" in settings:
-        return None
-    if "copies" in document and (type(document["copies"]) is not int
-                                  or not 1 <= document["copies"] <= 999):
-        return None
-    return {**settings, **({"copies": document["copies"]} if "copies" in document else {})}
+    if (type(document) is not dict or
+            set(document) != {"artifact_name", "copies", "duplex", "paper"} or
+            type(document.get("artifact_name")) is not str):
+        return None, "PDF_REQUEST_SHAPE_UNSUPPORTED"
+    if document["artifact_name"] != verified_source_ref:
+        return None, "PDF_REQUEST_SOURCE_MISMATCH"
+    if (type(document.get("copies")) is not int or not 1 <= document["copies"] <= 999 or
+            type(document.get("duplex")) is not bool or
+            type(document.get("paper")) is not str or document["paper"] not in ("A4", "A3")):
+        return None, "PDF_REQUEST_SETTINGS_INVALID"
+    return ({"copies": document["copies"], "duplex": document["duplex"],
+             "paper": document["paper"]}, None)
 
 
 def make_pdf_review_artifacts(*, source: bytes, request_data: Any,
@@ -106,13 +113,15 @@ def make_pdf_review_artifacts(*, source: bytes, request_data: Any,
                 or source_anchor["sha256"] != _sha(source)
                 or not source.startswith(b"%PDF-")):
             return _hold("SOURCE_BYTES_UNVERIFIED", anchors)
-        settings = _request_settings(request_data)
-        if settings is None:
-            return _hold("PDF_REQUEST_SHAPE_UNSUPPORTED", anchors)
-        if not source_anchor["artifact_ref"].lower().endswith(".pdf"):
-            return _hold("SOURCE_FORMAT_UNVERIFIED", anchors)
+        # Preserve and verify the exact Core request before deriving settings.
+        # Never rewrite request_data to fit the worker's internal plan shape.
         if _sha(_canonical(request_data).encode("utf-8")) != request_hash:
             return _hold("REQUEST_HASH_MISMATCH", anchors)
+        settings, request_error = _request_settings(request_data, source_anchor["artifact_ref"])
+        if request_error is not None or settings is None:
+            return _hold(request_error or "PDF_REQUEST_SHAPE_UNSUPPORTED", anchors)
+        if not source_anchor["artifact_ref"].lower().endswith(".pdf"):
+            return _hold("SOURCE_FORMAT_UNVERIFIED", anchors)
 
         # Unembedded/unverified fonts and encrypted PDFs require manual review.
         if not _pdf_font_reliable(source):
