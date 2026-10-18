@@ -30,6 +30,9 @@ export interface WordReviewSnapshot extends WordReviewSourceV1 {
 const digest=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 const hex=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f]{64}$/.test(v);
 const deny=()=>new DomainError('WORD_SOURCE_NOT_VERIFIED','Nguồn Word/manifest không hợp lệ; giữ đơn để nhân viên xử lý',409);
+const MAX_SOURCE_BYTES=25*1024*1024;
+const MAX_MANIFEST_BYTES=256*1024;
+const supportedDocumentFields=new Set(['artifact_name','copies','duplex','paper','orientation','binding','page_range']);
 /** Locator syntax is deliberately narrower than a general URL/path. It is a
  * two-segment private bundle key, never a filesystem path or network address. */
 const boundedRef=(v:unknown):v is string=>typeof v==='string'&&v.length>0&&v.length<=512&&
@@ -65,6 +68,7 @@ function rejectDuplicateJsonKeys(text:string){
 type Manifest={schema:'ai0.word_review_manifest.v1';manifest_ref:string;shop_id:string;order_id:string;
  active_revision:number;request_hash:string;source:{format:'DOCX';artifact_ref:string;sha256:string;size_bytes:number}};
 function parseManifest(bytes:Uint8Array):Manifest{
+ if(bytes.byteLength<2||bytes.byteLength>MAX_MANIFEST_BYTES)throw deny();
  let value:unknown;
  try{const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);rejectDuplicateJsonKeys(text);value=JSON.parse(text);}catch{throw deny();}
  if(!value||typeof value!=='object'||Array.isArray(value))throw deny();
@@ -73,31 +77,78 @@ function parseManifest(bytes:Uint8Array):Manifest{
     !s||typeof s!=='object'||Array.isArray(s))throw deny();
  const source=s as Record<string,unknown>;
  if(Object.keys(source).sort().join(',')!=='artifact_ref,format,sha256,size_bytes'||
-    m.schema!=='ai0.word_review_manifest.v1'||!boundedRef(m.manifest_ref)||typeof m.shop_id!=='string'||
-    typeof m.order_id!=='string'||!Number.isSafeInteger(m.active_revision)||
+    m.schema!=='ai0.word_review_manifest.v1'||!boundedRef(m.manifest_ref)||typeof m.shop_id!=='string'||!m.shop_id||
+    typeof m.order_id!=='string'||!m.order_id||!Number.isSafeInteger(m.active_revision)||Number(m.active_revision)<1||
     !hex(m.request_hash)||source.format!=='DOCX'||!boundedRef(source.artifact_ref)||
-    !hex(source.sha256)||!Number.isSafeInteger(source.size_bytes)||Number(source.size_bytes)<1||
+    !source.artifact_ref.toLowerCase().endsWith('.docx')||!hex(source.sha256)||
+    !Number.isSafeInteger(source.size_bytes)||Number(source.size_bytes)<1||Number(source.size_bytes)>MAX_SOURCE_BYTES||
     m.manifest_ref.split('/')[0]!==source.artifact_ref.split('/')[0])throw deny();
  return m as unknown as Manifest;
 }
 function sameBytes(a:Uint8Array,b:Uint8Array){return digest(a)===digest(b)&&a.byteLength===b.byteLength;}
+function requestDataHash(data:unknown):string{
+ try{const serialized=canonical(data);if(typeof serialized!=='string')throw deny();return sha(serialized);}catch{throw deny();}
+}
+function cloneData(data:unknown):unknown{try{return structuredClone(data);}catch{throw deny();}}
+function freezeDeep<T>(value:T):T{
+ if(value&&typeof value==='object'&&!Object.isFrozen(value)){
+  for(const child of Object.values(value as Record<string,unknown>))freezeDeep(child);
+  Object.freeze(value);
+ }
+ return value;
+}
+/** Core only hands the worker a raw, single-DOCX request shape it explicitly supports. */
+function validateWordRequestData(data:unknown,artifactRef?:string):void{
+ if(!data||typeof data!=='object'||Array.isArray(data))throw deny();
+ const request=data as Record<string,unknown>;
+ if(Object.keys(request).sort().join(',')!=='documents'||!Array.isArray(request.documents)||request.documents.length!==1)
+  throw deny();
+ const document=request.documents[0];
+ if(!document||typeof document!=='object'||Array.isArray(document))throw deny();
+ const fields=document as Record<string,unknown>;
+ if(Object.keys(fields).some(key=>!supportedDocumentFields.has(key))||typeof fields.artifact_name!=='string'||
+    !fields.artifact_name.toLowerCase().endsWith('.docx'))throw deny();
+ if(artifactRef!==undefined){
+  if(!boundedRef(artifactRef)||!artifactRef.toLowerCase().endsWith('.docx'))throw deny();
+  const basename=artifactRef.split('/').pop();
+  if(fields.artifact_name!==artifactRef&&fields.artifact_name!==basename)throw deny();
+ }
+ if(('copies' in fields)&&(typeof fields.copies!=='number'||!Number.isSafeInteger(fields.copies)||fields.copies<1||fields.copies>999))
+  throw deny();
+ if(('duplex' in fields)&&typeof fields.duplex!=='boolean')throw deny();
+ if(('paper' in fields)&&fields.paper!=='A3'&&fields.paper!=='A4')throw deny();
+ if(('orientation' in fields)&&fields.orientation!=='portrait'&&fields.orientation!=='landscape')throw deny();
+ if(('binding' in fields)&&fields.binding!=='long_edge'&&fields.binding!=='short_edge')throw deny();
+ if(('page_range' in fields)&&(typeof fields.page_range!=='string'||fields.page_range.length>256||
+    !/^(?:all|\s*\d+(?:\s*-\s*\d+)?(?:\s*,\s*\d+(?:\s*-\s*\d+)?)*)$/i.test(fields.page_range)))throw deny();
+}
+function checkedScope(scope:WordReviewSourceScope):Readonly<WordReviewSourceScope>{
+ if(!scope||typeof scope.shop_id!=='string'||!scope.shop_id||typeof scope.order_id!=='string'||!scope.order_id||
+    !Number.isSafeInteger(scope.active_revision)||scope.active_revision<1||!hex(scope.request_hash))throw deny();
+ const requestData=cloneData(scope.request_data);
+ validateWordRequestData(requestData);
+ if(requestDataHash(requestData)!==scope.request_hash)throw deny();
+ return Object.freeze({...scope,request_data:freezeDeep(requestData)});
+}
 
 /** Pure fail-closed validation; also called after a second registry read to
  * catch a source/manifest replacement while the first read was in flight. */
 export function checkedWordReviewSnapshot(scope:WordReviewSourceScope,raw:TrustedWordReviewBytes|null):WordReviewSnapshot{
+ const current=checkedScope(scope);
  if(!raw||!raw.source||!raw.manifest||!(raw.source.bytes instanceof Uint8Array)||
     !(raw.manifest.bytes instanceof Uint8Array)||raw.source.bytes.byteLength<1||
-    !boundedRef(raw.source.artifact_ref)||!boundedRef(raw.manifest.ref))throw deny();
+    raw.source.bytes.byteLength>MAX_SOURCE_BYTES||raw.manifest.bytes.byteLength<2||
+    raw.manifest.bytes.byteLength>MAX_MANIFEST_BYTES||!boundedRef(raw.source.artifact_ref)||
+    !raw.source.artifact_ref.toLowerCase().endsWith('.docx')||!boundedRef(raw.manifest.ref))throw deny();
+ validateWordRequestData(current.request_data,raw.source.artifact_ref);
  const sha256=digest(raw.source.bytes),manifestSha=digest(raw.manifest.bytes);
  const manifest=parseManifest(raw.manifest.bytes);
- if(manifest.manifest_ref!==raw.manifest.ref||manifest.shop_id!==scope.shop_id||manifest.order_id!==scope.order_id||
-    manifest.active_revision!==scope.active_revision||manifest.request_hash!==scope.request_hash||
+ if(manifest.manifest_ref!==raw.manifest.ref||manifest.shop_id!==current.shop_id||manifest.order_id!==current.order_id||
+    manifest.active_revision!==current.active_revision||manifest.request_hash!==current.request_hash||
     manifest.source.format!=='DOCX'||manifest.source.artifact_ref!==raw.source.artifact_ref||
-    manifest.source.sha256!==sha256||manifest.source.size_bytes!==raw.source.bytes.byteLength||
-    raw.manifest.bytes.byteLength<2||!hex(scope.request_hash)||
-    sha(canonical(scope.request_data))!==scope.request_hash)throw deny();
- const snapshot={schema:'ai0.word_review_source.v1' as const,shop_id:scope.shop_id,order_id:scope.order_id,
-  active_revision:scope.active_revision,request_hash:scope.request_hash,request_data:scope.request_data,
+    manifest.source.sha256!==sha256||manifest.source.size_bytes!==raw.source.bytes.byteLength)throw deny();
+ const snapshot={schema:'ai0.word_review_source.v1' as const,shop_id:current.shop_id,order_id:current.order_id,
+  active_revision:current.active_revision,request_hash:current.request_hash,request_data:current.request_data,
   source:{format:'DOCX',artifact_ref:raw.source.artifact_ref,sha256,size_bytes:raw.source.bytes.byteLength},
   manifest:{ref:raw.manifest.ref,sha256:manifestSha}} as WordReviewSnapshot;
  Object.defineProperty(snapshot,'private_bytes',{enumerable:false,configurable:false,writable:false,
@@ -109,12 +160,13 @@ export async function readWordReviewSnapshot(db:SqlConnection,reader:TrustedWord
  scope:WordReviewSourceScope):Promise<WordReviewSnapshot>{
  if(!reader||typeof reader.read_registered!=='function')
   throw new DomainError('WORD_SOURCE_NOT_CONFIGURED','Thiếu registry/private storage reader tin cậy',503);
+ const safeScope=checkedScope(scope);
  let first:TrustedWordReviewBytes|null,second:TrustedWordReviewBytes|null;
  try{
-  first=await reader.read_registered(db,Object.freeze(scope));
-  const checked=checkedWordReviewSnapshot(scope,first);
-  second=await reader.read_registered(db,Object.freeze(scope));
-  const again=checkedWordReviewSnapshot(scope,second);
+  first=await reader.read_registered(db,safeScope);
+  const checked=checkedWordReviewSnapshot(safeScope,first);
+  second=await reader.read_registered(db,safeScope);
+  const again=checkedWordReviewSnapshot(safeScope,second);
   if(first!.source.artifact_ref!==second?.source.artifact_ref||first!.manifest.ref!==second?.manifest.ref||
      !sameBytes(first!.source.bytes,second!.source.bytes)||!sameBytes(first!.manifest.bytes,second!.manifest.bytes)||
      checked.source.sha256!==again.source.sha256||checked.manifest.sha256!==again.manifest.sha256)throw deny();
