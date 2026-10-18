@@ -1,0 +1,62 @@
+{
+  "schema": "ai3.print_evidence_v1_core_vector.v1",
+  "source": "Core canonical()/sha() and checkedEvidence contract in backend/core/model.ts and backend/core/print-evidence.ts",
+  "synthetic_only": true,
+  "scope": {
+    "shop_id": "synthetic-shop",
+    "order_id": "synthetic-order",
+    "revision": 7,
+    "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "plan": {
+      "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "physical_sheets": 1,
+      "document_pages": 2,
+      "printed_faces": 2,
+      "ready": true,
+      "printer_id": "RMP7000",
+      "artifact_ref": "doc-xlang01/manifest.json",
+      "verified_by": "ai3.processor.v1"
+    }
+  },
+  "processor_counts": {
+    "document_pages": 2,
+    "printed_faces": 2,
+    "physical_sheets": 1
+  },
+  "proof": {
+    "schema": "ai0.print_evidence.v1",
+    "shop_id": "synthetic-shop",
+    "order_id": "synthetic-order",
+    "revision": 7,
+    "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sources": [
+      {
+        "source_artifact_ref": "doc-xlang01/source-000-1111111111111111111111111111111111111111111111111111111111111111.pdf",
+        "format": "PDF",
+        "size_bytes": 12,
+        "source_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    ],
+    "source_set_sha256": "7bbfa007fb06844c77893ef4fd52b08803433bbfc4583a0660ed225d481a0de3",
+    "settings_sha256": "2b470da5683910bd02aa939c2359246ea03f478f9d2c648220b70fc0275e3fa6",
+    "manifest_ref": "doc-xlang01/manifest.json",
+    "manifest_sha256": "043467a3cb0388b9ba52b462a3bd3f052c011d1ff4867bc57be6f867b7358f1a",
+    "previews": [
+      {
+        "index": 0,
+        "bytes": 8,
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    ],
+    "renderer_sha256": "55fbfb3fcc764dfb9ab6d52c2f039166442712ae17ae320ad52ebe7ff07640b2",
+    "plan_sha256": "72e532a61fac3d3a0b4020a665f72aa0f215e0b2b63bb16a3d1955802b20e46c",
+    "printer_id": "RMP7000",
+    "printer_capability_sha256": "b9029d6906cac69a962c943cfb411997e14457c9219a5287bbe11a55e133e55a",
+    "evidence_sha256": "a11e80e03d41dc69fb73d5ad689c541935811e07ebb2f69abc3f249bca5d92c6"
+  },
+  "expected_sha256": {
+    "plan_sha256": "72e532a61fac3d3a0b4020a665f72aa0f215e0b2b63bb16a3d1955802b20e46c",
+    "source_set_sha256": "7bbfa007fb06844c77893ef4fd52b08803433bbfc4583a0660ed225d481a0de3",
+    "evidence_sha256": "a11e80e03d41dc69fb73d5ad689c541935811e07ebb2f69abc3f249bca5d92c6"
+  }
+}

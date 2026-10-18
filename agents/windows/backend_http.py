@@ -49,6 +49,8 @@ class HttpBackendClient:
         # In-memory only: never serialize a preflight proof or trust any client
         # supplied document_evidence_verified field on a claimed job.
         self._verified_identity: tuple[Any, ...] | None = None
+        self._native_ticket_identity: tuple[Any, ...] | None = None
+        self._native_preflight_ticket: dict[str, Any] | None = None
 
     def _post(self, suffix: str, body: dict[str, Any]) -> dict[str, Any]:
         request = Request(self.base_url + suffix,
@@ -86,9 +88,50 @@ class HttpBackendClient:
         # Include the entire claimed job/lease identity. A cached preflight for
         # an old lease, order, hash or approval is NEVER sufficient for sending.
         return tuple(job.get(name) for name in (
-            'job_id', 'order_id', 'revision', 'request_hash',
-            'approval_id', 'lease_token'
+            'shop_id', 'job_id', 'order_id', 'revision', 'request_hash',
+            'approval_id', 'printer_id', 'mode', 'lease_token'
         ))
+
+    def preflight_native(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Validate Core's exact evidence/review/job projection for AI3.
+
+        This intentionally rejects the older ``document_evidence_verified``
+        client-visible flag. The native path requires the exact Core-backed
+        receipt, current evidence projection, and job projection. A successful
+        result only means PREPARED_NOT_SENT; it never marks a job SENDING.
+        """
+        from workers.documents.native_job_binding import (
+            is_safe_core_preflight_result,
+            validate_core_preflight_ticket,
+        )
+
+        self._verified_identity = None
+        self._native_ticket_identity = None
+        self._native_preflight_ticket = None
+        value = self._post(self._job_path(job, 'preflight'),
+                           self._lease_payload(job))
+        result = validate_core_preflight_ticket(
+            preflight_ticket=value, claimed_job=job)
+        if (result.get('status') == 'PREPARED_NOT_SENT' and
+                is_safe_core_preflight_result(result, preflight_ticket=value)):
+            # Keep a private copy scoped to this exact lease identity. The
+            # verifier still rechecks its complete contents before use.
+            import copy
+            self._native_ticket_identity = self._identity(job)
+            self._native_preflight_ticket = copy.deepcopy(value)
+        return result
+
+    def native_preflight_ticket(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        """Return a one-use HTTPS ticket for its exact current lease."""
+        if (self._native_ticket_identity is None or
+                self._native_ticket_identity != self._identity(job) or
+                self._native_preflight_ticket is None):
+            return None
+        import copy
+        ticket = copy.deepcopy(self._native_preflight_ticket)
+        self._native_ticket_identity = None
+        self._native_preflight_ticket = None
+        return ticket
 
     def evidence_verified(self, job: dict[str, Any]) -> bool:
         return (self._verified_identity is not None and
@@ -97,6 +140,8 @@ class HttpBackendClient:
     def claim(self) -> dict[str, Any] | None:
         # Any new claim invalidates preflight proof, even if HTTP fails.
         self._verified_identity = None
+        self._native_ticket_identity = None
+        self._native_preflight_ticket = None
         # New idempotency key on each independent poll. Never retry an ambiguous
         # POST without reconciling it with server and local journal first.
         data = self._post('/internal/v1/print-jobs/claim',
@@ -109,6 +154,8 @@ class HttpBackendClient:
     def preflight(self, job: dict[str, Any]) -> dict[str, Any]:
         # Never carry preflight evidence across independent attempts.
         self._verified_identity = None
+        self._native_ticket_identity = None
+        self._native_preflight_ticket = None
         try:
             value = self._post(self._job_path(job, 'preflight'),
                                self._lease_payload(job))
@@ -144,6 +191,8 @@ class HttpBackendClient:
         if not self.evidence_verified(job):
             raise RuntimeError('Preflight document proof stale or missing')
         self._verified_identity = None
+        self._native_ticket_identity = None
+        self._native_preflight_ticket = None
         return self._post(self._job_path(job, 'mark-sending'),
                           {**self._lease_payload(job),
                            'idempotency_key': self._idempotency(job, 'mark-sending')})
