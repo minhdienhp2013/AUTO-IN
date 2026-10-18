@@ -5,7 +5,7 @@ const fromWeb=createRequire(new URL('../../web/package.json',import.meta.url));
 const React=fromWeb('react');
 const {renderToStaticMarkup}=fromWeb('react-dom/server');
 import { currentPdfReviewProjection, parsePdfReviewPreview, PdfReviewPanel,
-  type PdfReviewIdentity, type PdfReviewPanelState, type PdfReviewPreviewV1 } from '../../web/src/pdf-review-panel.ts';
+  type PdfReviewIdentity, type PdfReviewPanelState, type PdfReviewPageObjectUrl, type PdfReviewPreviewV1 } from '../../web/src/pdf-review-panel.ts';
 
 const identity:PdfReviewIdentity={shopId:'shop-01',orderId:'order-01',revision:7,requestHash:'a'.repeat(64),
   sourceSha256:'b'.repeat(64),manifestSha256:'c'.repeat(64),authenticatedStaff:true};
@@ -16,8 +16,9 @@ const good:PdfReviewPreviewV1={schema:'ai0.pdf_review_preview.v1',shop_id:identi
     sha256:'d'.repeat(64),bytes:256}],document_pages:1,printed_faces:2,physical_sheets:1,
   settings:{copies:1,paper:'A4',duplex:true,orientation:'portrait',flip_edge:'long'},
   ready:false,allowed_to_print:false,requires_staff_review:true,physical_print_verified:false};
-const html=(state:PdfReviewPanelState,who:PdfReviewIdentity=identity)=>
-  renderToStaticMarkup(React.createElement(PdfReviewPanel,{identity:who,state}));
+const verifiedPageObjectUrls:PdfReviewPageObjectUrl[]=[{index:0,sha256:'d'.repeat(64),url:'blob:https://staff.invalid/pdf-page-1'}];
+const html=(state:PdfReviewPanelState,who:PdfReviewIdentity=identity,urls?:readonly PdfReviewPageObjectUrl[])=>
+  renderToStaticMarkup(React.createElement(PdfReviewPanel,{identity:who,state,verifiedPageObjectUrls:urls}));
 
 test('exact staff-scoped PDF projection renders review-only pages and verified metadata',()=>{
   const parsed=parsePdfReviewPreview(good,identity);
@@ -25,10 +26,11 @@ test('exact staff-scoped PDF projection renders review-only pages and verified m
   assert.equal(parsed.schema,'ai0.pdf_review_preview.v1');
   assert.equal(parsed.source_format,'PDF');
   assert.equal(parsed.pages[0]?.url,good.pages[0]?.url);
-  const markup=html({status:'CURRENT',projection:good});
+  const markup=html({status:'CURRENT',projection:good},identity,verifiedPageObjectUrls);
   assert.match(markup,/data-status="CURRENT"/);
   assert.match(markup,/data-testid="pdf-review-pages"/);
-  assert.match(markup,/src="\/api\/v1\/orders\/order-01\/revisions\/7\/previews\/0"/);
+  assert.match(markup,/src="blob:https:\/\/staff\.invalid\/pdf-page-1"/);
+  assert.doesNotMatch(markup,/src="\/api\/v1\/orders\/order-01\/revisions\/7\/previews\/0"/);
   assert.match(markup,/Định dạng gốc/);
   assert.match(markup,/Số trang \/ mặt in \/ tờ/);
   assert.match(markup,/A4/);
@@ -123,4 +125,17 @@ test('NEEDS_HUMAN has no pages and remains held',()=>{
   assert.match(markup,/PDF_LAYOUT_UNCERTAIN/);
   assert.doesNotMatch(markup,/pdf-review-pages|src="\/api\/v1/);
   assert.equal(parsePdfReviewPreview({...needs,pages:[...good.pages]},identity),null);
+});
+
+test('current page projections never render a route directly; only matching ephemeral Blob URLs can appear',()=>{
+  for(const urls of [undefined,[],[{index:0,sha256:'e'.repeat(64),url:verifiedPageObjectUrls[0]!.url}],
+    [{index:1,sha256:'d'.repeat(64),url:verifiedPageObjectUrls[0]!.url}],
+    [{index:0,sha256:'d'.repeat(64),url:'/api/v1/orders/order-01/revisions/7/previews/0'}]]){
+    const markup=html({status:'CURRENT',projection:good},identity,urls as readonly PdfReviewPageObjectUrl[]|undefined);
+    assert.match(markup,/data-status="STALE"/);
+    assert.doesNotMatch(markup,/pdf-review-pages|previews\/0|staff\.invalid/);
+  }
+  const markup=html({status:'CURRENT',projection:good},identity,verifiedPageObjectUrls);
+  assert.match(markup,/src="blob:https:\/\/staff\.invalid\/pdf-page-1"/);
+  assert.doesNotMatch(markup,/src="\/api\/v1\//);
 });

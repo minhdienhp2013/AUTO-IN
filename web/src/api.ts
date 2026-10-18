@@ -5,6 +5,7 @@ import { parseServerManualQueue } from './v1-routing.ts';
 import { parsePreviewReviewReadModel } from './preview-review.ts';
 import { parseShopSchedule, type ShopSchedule, type SchedulePatch, type SchedulePort } from './shop-schedule.ts';
 import { parseInboundReviewItems, type InboundReviewItem } from './inbound-review.ts';
+import { parsePdfReviewPreview, type PdfReviewIdentity, type PdfReviewPreviewV1 } from './pdf-review-panel.ts';
 
 export class ApiFault extends Error {
   readonly status: number; readonly code: string; readonly currentRevision?: number;
@@ -14,11 +15,14 @@ export interface PrintPort extends SchedulePort {
   login(shopId: string, username: string, password: string): Promise<StaffSession>;
   logout(): Promise<void>;
   me(): Promise<StaffSession>;
+  authenticatedShopId(): string|null;
   listOrders(): Promise<OrderView[]>;
   listInboundReviewItems(): Promise<InboundReviewItem[]>;
   getOrder(id: string): Promise<OrderView>;
   /** Verified *raster* bytes only; NOT customer confirmation or approval. */
   loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{pages:Blob[];files:VerifiedFileFact[]}>;
+  /** Staff API client for the current PDF review projection and verified PNG bytes. */
+  loadPdfReviewPreview(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{projection:PdfReviewPreviewV1;pages:Blob[]}>;
   /** Authenticated staff receipt; the evidence digest is only an expected-version precondition. */
   reviewPreview(order: OrderView, expectedEvidenceSha256: string, key: string): Promise<OrderView>;
   mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView>;
@@ -239,6 +243,7 @@ export class HttpPrintPort implements PrintPort {
   // Backend AI1 has bearer sessions, NOT browser cookie sessions. No persistence,
   // no localStorage and no token in URL: refreshing requires a fresh login.
   private token: string | null = null;
+  private shopId: string|null = null;
   constructor(baseUrl = '', fetcher: typeof fetch = globalThis.fetch.bind(globalThis)) { this.baseUrl = baseUrl; this.fetcher = fetcher; }
   private async call(path: string, options: RequestInit = {}): Promise<unknown> {
     let response: Response;
@@ -254,7 +259,7 @@ export class HttpPrintPort implements PrintPort {
     if (!response.ok) {
       const e = asObject(asObject(json).error);
       const defaults: Record<number, string> = { 401: 'Hết phiên đăng nhập. Vui lòng đăng nhập lại.', 403: 'Tài khoản không có quyền thực hiện.', 409: 'Phiên bản đã thay đổi. Tải lại đơn trước khi thao tác.', 422: 'Dữ liệu nghiệp vụ chưa hợp lệ.', 503: 'Chức năng chưa sẵn sàng.' };
-      if (response.status === 401) this.token = null;
+      if (response.status === 401) { this.token = null; this.shopId = null; }
       throw new ApiFault(response.status, asString(e.code, `HTTP_${response.status}`), asString(e.message, defaults[response.status] ?? 'API không xử lý được yêu cầu.'), asNum(e.current_revision) ?? undefined);
     }
     return json;
@@ -264,17 +269,19 @@ export class HttpPrintPort implements PrintPort {
     if (!asString(o.id) || !asString(o.shop_id) || o.verified !== true || !['staff', 'owner'].includes(String(o.role))) {
       throw new ApiFault(503, 'INVALID_SESSION', 'API chưa trả tài khoản nhân viên/chủ đã xác minh.');
     }
+    this.shopId=asString(o.shop_id);
     return { actor_id: asString(o.id), display_name: `${o.role === 'owner' ? 'Chủ' : 'Nhân viên'} · ${asString(o.id).slice(0,8)}`,
       role: o.role as StaffSession['role'], can_approve: true, can_manage_schedule: o.role === 'owner' };
   }
+  authenticatedShopId(): string|null { return this.shopId; }
   async login(shopId: string, username: string, password: string): Promise<StaffSession> {
-    this.token = null;
+    this.token = null; this.shopId=null;
     const result = asObject(await this.call('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ shop_id: shopId, username, password }) }));
     if (typeof result.token !== 'string' || !result.token || !result.principal) throw new ApiFault(503,'INVALID_LOGIN','API chưa cấp phiên xác minh.');
     this.token = result.token;
-    try { return await this.me(); } catch(e) { this.token = null; throw e; }
+    try { return await this.me(); } catch(e) { this.token = null; this.shopId=null; throw e; }
   }
-  async logout() { try { if(this.token) await this.call('/api/v1/auth/logout', { method: 'POST' }); } finally { this.token = null; } }
+  async logout() { try { if(this.token) await this.call('/api/v1/auth/logout', { method: 'POST' }); } finally { this.token = null; this.shopId=null; } }
   async me(): Promise<StaffSession> {
     if (!this.token) throw new ApiFault(401, 'UNAUTHENTICATED', 'Vui lòng đăng nhập để xem đơn.');
     return this.session(asObject(await this.call('/api/v1/auth/me')).principal);
@@ -387,6 +394,89 @@ export class HttpPrintPort implements PrintPort {
       throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
     return {pages,files};
   }
+  async loadPdfReviewPreview(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{projection:PdfReviewPreviewV1;pages:Blob[]}> {
+    const {order_id,revision,request_hash}=order;
+    if(!this.token||!this.shopId)
+      throw new ApiFault(401,'UNAUTHENTICATED','Vui lòng đăng nhập bằng tài khoản nhân viên để xem preview PDF.');
+    if(!/^[0-9a-f-]{36}$/i.test(order_id)||!Number.isSafeInteger(revision)||revision<1||! /^[0-9a-f]{64}$/.test(request_hash))
+      throw new ApiFault(409,'PDF_PREVIEW_SCOPE_INVALID','Đơn, revision hoặc request hash hiện hành chưa hợp lệ.');
+
+    const token=this.token,shopId=this.shopId;
+    const identity:PdfReviewIdentity={shopId,orderId:order_id,revision,requestHash:request_hash,authenticatedStaff:true};
+    const path=`/api/v1/orders/${encodeURIComponent(order_id)}/revisions/${revision}/pdf-review-previews`;
+    const raw=await this.call(path,{method:'POST',redirect:'error'});
+    if(this.token!==token||this.shopId!==shopId)
+      throw new ApiFault(401,'PDF_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng phản hồi preview cũ.');
+    const projection=parsePdfReviewPreview(raw,identity);
+    if(!projection)
+      throw new ApiFault(409,'PDF_PREVIEW_STALE','Preview không khớp shop/order/revision/request hash hiện hành.');
+
+    const pages:Blob[]=[];
+    const signature=[137,80,78,71,13,10,26,10];
+    for(const page of projection.pages){
+      if(this.token!==token||this.shopId!==shopId)
+        throw new ApiFault(401,'PDF_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng ảnh preview cũ.');
+      let response:Response;
+      try{
+        response=await this.fetcher(`${this.baseUrl}${page.url}`,{
+          method:'GET',credentials:'same-origin',cache:'no-store',redirect:'error',
+          headers:{Authorization:`Bearer ${token}`,Accept:'image/png'}
+        });
+      }catch{
+        throw new ApiFault(0,'PDF_PREVIEW_NETWORK','Không tải được trang preview PDF; giữ đơn để nhân viên xử lý.');
+      }
+      if(response.status===401){if(this.token===token){this.token=null;this.shopId=null;}
+        throw new ApiFault(401,'PDF_PREVIEW_UNAUTHENTICATED','Phiên nhân viên hết hạn khi tải preview PDF.');}
+      if(!response.ok)
+        throw new ApiFault(response.status||503,'PDF_PREVIEW_PAGE_UNAVAILABLE','Trang preview PDF không hợp lệ hoặc chưa sẵn sàng.');
+      if(response.headers.get('content-type')?.split(';')[0]?.trim()!=='image/png')
+        throw new ApiFault(409,'PDF_PREVIEW_PAGE_CONTENT_TYPE','Trang preview PDF không có kiểu PNG được phép.');
+      const contentLength=response.headers.get('content-length');
+      if(contentLength!==null&&(!/^(0|[1-9][0-9]*)$/.test(contentLength)||Number(contentLength)!==page.bytes))
+        throw new ApiFault(409,'PDF_PREVIEW_PAGE_SIZE_MISMATCH','Kích thước trang preview PDF không khớp biên nhận.');
+      const reader=response.body?.getReader();
+      if(!reader)throw new ApiFault(503,'PDF_PREVIEW_BODY_UNAVAILABLE','Phản hồi trang preview không có luồng dữ liệu.');
+      const chunks:Uint8Array[]=[];
+      let total=0;
+      try{
+        while(true){
+          const part=await reader.read();
+          if(part.done)break;
+          total+=part.value.byteLength;
+          if(total>page.bytes||total>20_000_000){
+            try{await reader.cancel();}catch{}
+            throw new ApiFault(409,'PDF_PREVIEW_PAGE_SIZE_MISMATCH','Trang preview PDF vượt kích thước trong biên nhận.');
+          }
+          chunks.push(part.value);
+        }
+      }catch(error){
+        if(error instanceof ApiFault)throw error;
+        throw new ApiFault(0,'PDF_PREVIEW_NETWORK','Không đọc hết trang preview PDF; giữ đơn để nhân viên xử lý.');
+      }finally{reader.releaseLock();}
+      if(total!==page.bytes)throw new ApiFault(409,'PDF_PREVIEW_PAGE_SIZE_MISMATCH','Kích thước trang preview PDF không khớp biên nhận.');
+      const bytes=new Uint8Array(total);
+      let offset=0;
+      for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}
+      if(this.token!==token||this.shopId!==shopId)
+        throw new ApiFault(401,'PDF_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng ảnh preview cũ.');
+      if(bytes.byteLength!==page.bytes||bytes.byteLength>20_000_000||bytes.length<signature.length||
+          !signature.every((value,index)=>bytes[index]===value))
+        throw new ApiFault(409,'PDF_PREVIEW_PNG_INVALID','Nội dung trang preview PDF không khớp PNG đã xác minh.');
+      if(!globalThis.crypto?.subtle)
+        throw new ApiFault(503,'PDF_PREVIEW_HASH_UNAVAILABLE','Không thể xác minh SHA-256 trang preview PDF.');
+      let digestBuffer:ArrayBuffer;
+      try{digestBuffer=await globalThis.crypto.subtle.digest('SHA-256',bytes);}
+      catch{throw new ApiFault(503,'PDF_PREVIEW_HASH_UNAVAILABLE','Không thể xác minh SHA-256 trang preview PDF.');}
+      const digest=new Uint8Array(digestBuffer);
+      const actualSha=[...digest].map(value=>value.toString(16).padStart(2,'0')).join('');
+      if(actualSha!==page.sha256)
+        throw new ApiFault(409,'PDF_PREVIEW_HASH_MISMATCH','SHA-256 trang preview PDF không khớp biên nhận.');
+      pages.push(new Blob([bytes],{type:'image/png'}));
+    }
+    if(this.token!==token||this.shopId!==shopId)
+      throw new ApiFault(401,'PDF_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng phản hồi preview cũ.');
+    return {projection,pages};
+  }
   async reviewPreview(order: OrderView, expectedEvidenceSha256: string, key: string): Promise<OrderView> {
     if (!this.token) throw new ApiFault(401,'UNAUTHENTICATED','Vui lòng đăng nhập bằng tài khoản nhân viên để kiểm tra preview.');
     const evidence=order.print_evidence;
@@ -476,6 +566,7 @@ export class DemoPrintPort implements PrintPort {
   }
   async logout() { this.checkNetwork(); }
   async me() { this.checkNetwork(); return structuredClone(this.session); }
+  authenticatedShopId(): string|null { return null; }
   async listOrders() { this.checkNetwork(); return structuredClone(this.orders); }
   async listInboundReviewItems():Promise<InboundReviewItem[]> { this.checkNetwork(); return []; }
   async getOrder(id: string) {
@@ -492,6 +583,9 @@ export class DemoPrintPort implements PrintPort {
   async loadVerifiedPreviewPages(): Promise<{pages:Blob[];files:VerifiedFileFact[]}> {
     // Demo images cannot be used as verified processor proof.
     return {pages:[],files:[]};
+  }
+  async loadPdfReviewPreview(): Promise<{projection:PdfReviewPreviewV1;pages:Blob[]}> {
+    throw new ApiFault(503,'SIMULATION_ONLY','Demo không tạo preview PDF đã xác minh.');
   }
   async reviewPreview(): Promise<OrderView> {
     throw new ApiFault(503,'SIMULATION_ONLY','Demo chỉ mô phỏng; không tạo biên nhận nhân viên hoặc bằng chứng in thật.');

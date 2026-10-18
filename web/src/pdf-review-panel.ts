@@ -6,10 +6,12 @@ export interface PdfReviewIdentity {
   orderId: string;
   revision: number;
   requestHash: string;
-  sourceSha256: string;
-  manifestSha256: string;
+  sourceSha256?: string;
+  manifestSha256?: string;
   authenticatedStaff: boolean;
 }
+/** Ephemeral page URLs created only from staff-authenticated, hash-checked Blobs. */
+export interface PdfReviewPageObjectUrl { index:number; sha256:string; url:string }
 export interface PdfReviewPageV1 {
   index: number;
   url: string;
@@ -101,7 +103,8 @@ function expectedPagePath(orderId: string, revision: number, index: number): str
 export function parsePdfReviewPreview(value: unknown, expected: PdfReviewIdentity): PdfReviewPreviewV1 | null {
   if (!expected.authenticatedStaff || !safeId(expected.shopId) || !safeId(expected.orderId) ||
       !positiveInteger(expected.revision, Number.MAX_SAFE_INTEGER) || !hash(expected.requestHash) ||
-      !hash(expected.sourceSha256) || !hash(expected.manifestSha256) || !isRecord(value)) return null;
+      (expected.sourceSha256 !== undefined && !hash(expected.sourceSha256)) ||
+      (expected.manifestSha256 !== undefined && !hash(expected.manifestSha256)) || !isRecord(value)) return null;
 
   const required = ['schema','shop_id','order_id','revision','request_hash','source_sha256','manifest_sha256',
     'source_format','status','pages','ready','allowed_to_print','requires_staff_review','physical_print_verified'];
@@ -109,8 +112,8 @@ export function parsePdfReviewPreview(value: unknown, expected: PdfReviewIdentit
   if (!exactKeys(value,required,optional) || value.schema !== 'ai0.pdf_review_preview.v1' ||
       value.shop_id !== expected.shopId || value.order_id !== expected.orderId || value.revision !== expected.revision ||
       value.request_hash !== expected.requestHash || !hash(value.request_hash) ||
-      value.source_sha256 !== expected.sourceSha256 || !hash(value.source_sha256) ||
-      value.manifest_sha256 !== expected.manifestSha256 || !hash(value.manifest_sha256) ||
+      !hash(value.source_sha256) || (expected.sourceSha256 !== undefined && value.source_sha256 !== expected.sourceSha256) ||
+      !hash(value.manifest_sha256) || (expected.manifestSha256 !== undefined && value.manifest_sha256 !== expected.manifestSha256) ||
       value.source_format !== 'PDF' || (value.status !== 'REVIEW_REQUIRED' && value.status !== 'NEEDS_HUMAN') ||
       value.ready !== false || value.allowed_to_print !== false || value.requires_staff_review !== true ||
       value.physical_print_verified !== false || !Array.isArray(value.pages) || value.pages.length > 15) return null;
@@ -142,9 +145,9 @@ export function parsePdfReviewPreview(value: unknown, expected: PdfReviewIdentit
   if (value.status === 'REVIEW_REQUIRED' ? pages.length < 1 : pages.length !== 0) return null;
 
   const projection: PdfReviewPreviewV1 = {
-    schema:'ai0.pdf_review_preview.v1', shop_id:expected.shopId, order_id:expected.orderId,
-    revision:expected.revision, request_hash:expected.requestHash, source_sha256:expected.sourceSha256,
-    manifest_sha256:expected.manifestSha256, source_format:'PDF', status:value.status,
+    schema:'ai0.pdf_review_preview.v1', shop_id:value.shop_id as string, order_id:expected.orderId,
+    revision:expected.revision, request_hash:expected.requestHash, source_sha256:value.source_sha256 as string,
+    manifest_sha256:value.manifest_sha256 as string, source_format:'PDF', status:value.status,
     pages, ready:false, allowed_to_print:false, requires_staff_review:true, physical_print_verified:false,
   };
   if (Object.hasOwn(value,'reason_code')) projection.reason_code = value.reason_code as string;
@@ -159,10 +162,22 @@ export function currentPdfReviewProjection(state: PdfReviewPanelState, expected:
   return state.status === 'CURRENT' ? parsePdfReviewPreview(state.projection,expected) : null;
 }
 
-export function PdfReviewPanel({identity,state}: {identity:PdfReviewIdentity;state:PdfReviewPanelState}) {
+function validObjectUrls(projection:PdfReviewPreviewV1, urls:readonly PdfReviewPageObjectUrl[]|undefined): urls is readonly PdfReviewPageObjectUrl[] {
+  if (projection.status === 'NEEDS_HUMAN') return !urls || urls.length === 0;
+  if (!urls || urls.length !== projection.pages.length) return false;
+  return projection.pages.every((page,index)=>{
+    const loaded=urls[index];
+    if (!loaded || loaded.index!==page.index || loaded.sha256!==page.sha256 || typeof loaded.url!=='string') return false;
+    try { return new URL(loaded.url).protocol==='blob:'; } catch { return false; }
+  });
+}
+
+export function PdfReviewPanel({identity,state,verifiedPageObjectUrls}: {
+  identity:PdfReviewIdentity;state:PdfReviewPanelState;verifiedPageObjectUrls?:readonly PdfReviewPageObjectUrl[]
+}) {
   if (!identity.authenticatedStaff) return null;
   const projection = currentPdfReviewProjection(state,identity);
-  const stale = state.status === 'CURRENT' && !projection;
+  const stale = state.status === 'CURRENT' && (!projection || !validObjectUrls(projection,verifiedPageObjectUrls));
   const status = stale ? 'STALE' : state.status;
   const e = React.createElement;
   const titles: Record<PdfReviewStatus,string> = {
@@ -176,8 +191,8 @@ export function PdfReviewPanel({identity,state}: {identity:PdfReviewIdentity;sta
       : 'Chưa có preview được xác minh';
   const body = status === 'NOT_WIRED' ? 'API preview PDF chưa được nối. Giữ đơn; không dùng preview cũ.'
     : status === 'LOADING' ? 'Đang chờ phản hồi API có staff bearer; preview cũ bị ẩn.'
-      : status === 'MISSING' ? 'Máy chủ chưa cấp preview cho order/revision hiện hành. Giữ đơn và chuyển nhân viên.'
-        : status === 'FAILED' ? 'Lỗi xác thực hoặc mạng (401/409/503). Preview cũ đã bị ẩn; giữ đơn và chuyển nhân viên.'
+      : status === 'MISSING' ? 'Máy chủ chưa cấp preview cho order/revision hiện hành hoặc endpoint chưa sẵn sàng. Giữ đơn và chuyển nhân viên.'
+        : status === 'FAILED' ? 'Không tải hoặc xác minh được preview PDF. Preview cũ đã bị ẩn; giữ đơn và chuyển nhân viên.'
           : status === 'STALE' ? 'Shop, order, revision, request hash hoặc digest không khớp. Preview cũ đã bị ẩn; giữ đơn và chuyển nhân viên.'
             : projection?.status === 'NEEDS_HUMAN'
               ? `Worker yêu cầu nhân viên xử lý (${projection.reason_code ?? 'NEEDS_HUMAN'}). Giữ đơn; không hiển thị trang preview.`
@@ -193,10 +208,10 @@ export function PdfReviewPanel({identity,state}: {identity:PdfReviewIdentity;sta
     e('div',null,e('dt',null,'ready / allowed_to_print'),e('dd',null,'false / false')),
     projection.settings && e('div',null,e('dt',null,'Thông số preflight'),e('dd',null,
       Object.entries(projection.settings).map(([key,value])=>`${key}: ${String(value)}`).join(' · ')))) : null;
-  const showPages = projection?.status === 'REVIEW_REQUIRED' && status === 'CURRENT';
-  const pages = showPages ? e('div',{className:'word-review-pages pdf-review-pages','data-testid':'pdf-review-pages'},
-    ...projection.pages.map(page=>e('figure',{key:`${page.index}:${page.sha256}`},
-      e('img',{src:page.url,alt:`Preview PDF, trang ${page.index+1}`}),
+  const pages = projection && projection.status === 'REVIEW_REQUIRED' && status === 'CURRENT' && validObjectUrls(projection,verifiedPageObjectUrls)
+    ? e('div',{className:'word-review-pages pdf-review-pages','data-testid':'pdf-review-pages'},
+    ...projection.pages.map((page,index)=>e('figure',{key:`${page.index}:${page.sha256}`},
+      e('img',{src:verifiedPageObjectUrls[index]?.url,alt:`Preview PDF, trang ${page.index+1}`}),
       e('figcaption',null,`Trang ${page.index+1} · ${page.bytes} byte · chỉ để nhân viên kiểm tra`)))) : null;
   return e('section',{className:'word-review-panel pdf-review-panel','data-testid':'pdf-review-panel',
     'data-status':status,'aria-label':'Preview PDF cho nhân viên'},
@@ -204,5 +219,5 @@ export function PdfReviewPanel({identity,state}: {identity:PdfReviewIdentity;sta
       e('span',{className:'word-review-required'},statusBadge)),
     e('p',null,body),facts,pages,
     e('p',{className:'word-review-disclaimer'},
-      'Preview không xác nhận yêu cầu của khách, không thay thao tác duyệt nhân viên và không chứng minh giấy đã in. Khi endpoint PDF chưa được nối, đơn vẫn cần nhân viên xử lý.'));
+      'Preview không xác nhận yêu cầu của khách, không thay thao tác duyệt nhân viên và không chứng minh giấy đã in.'));
 }

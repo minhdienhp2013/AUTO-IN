@@ -7,17 +7,22 @@ const documentRowsStart = appSource.indexOf('{selectedOrder.documents.map(d=>{')
 const documentRowsEnd = appSource.indexOf('{selectedOrder.documents.length===0', documentRowsStart);
 const documentRows = appSource.slice(documentRowsStart, documentRowsEnd);
 
-test('live PDF document rows mount only a NOT_WIRED staff review panel for the current order snapshot', () => {
+test('PDF document rows mount the staff client for the current order snapshot only', () => {
   assert.notEqual(documentRowsStart, -1);
   assert.notEqual(documentRowsEnd, -1);
-  assert.match(appSource, /import \{ PdfReviewPanel \} from '\.\/pdf-review-panel\.ts';/);
+  assert.match(appSource, /import \{ parsePdfReviewPreview, PdfReviewPanel,/);
   assert.match(documentRows, /const format=d\.format\.trim\(\)\.toUpperCase\(\);[\s\S]*?const isPdf=format==='PDF';/);
   assert.match(documentRows, /const authenticatedStaff=Boolean\(session&&\['staff','owner'\]\.includes\(session\.role\)\);/);
-  assert.match(documentRows, /!useDemo && authenticatedStaff && isPdf && <PdfReviewPanel/);
-  assert.match(documentRows, /identity=\{\{shopId:'',orderId:selectedOrder\.order_id,revision:selectedOrder\.revision,requestHash:selectedOrder\.request_hash,/);
-  assert.match(documentRows, /sourceSha256:'',manifestSha256:'',authenticatedStaff/);
-  assert.match(documentRows, /state=\{\{status:'NOT_WIRED'\}\}/);
-  assert.doesNotMatch(documentRows, /projection\s*:/);
+  assert.match(documentRows, /!useDemo && session && authenticatedStaff && isPdf && <PdfReviewClient/);
+  assert.match(documentRows, /port=\{port\} order=\{selectedOrder\} session=\{session\} apiHealthy=\{apiHealthy\}/);
+  assert.match(documentRows, /onUnauthorized=\{clearExpiredStaffSession\}/);
+  assert.match(appSource, /port\.authenticatedShopId\(\)\?\?''/);
+  assert.match(appSource, /order\.detail_loaded!==true/);
+  assert.match(appSource, /port\.loadPdfReviewPreview\(order\)/);
+  assert.match(appSource, /URL\.createObjectURL\(blob\)/);
+  assert.match(appSource, /URL\.revokeObjectURL\(url\)/);
+  assert.match(appSource, /state=\{current\?state:\{status:'LOADING'\}\}/);
+  assert.doesNotMatch(documentRows, /state=\{\{status:'CURRENT'/);
 });
 
 test('PDF rows suppress legacy per-document preview URLs while retaining the verified gallery', () => {

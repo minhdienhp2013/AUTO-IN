@@ -22,7 +22,8 @@ import { previewReviewBlock, previewReviewBlockMessage, previewReviewErrorMessag
   previewReviewSequence } from './preview-review.ts';
 import { inboundReviewErrorMessage, inboundReviewItemCopy, type InboundReviewItem } from './inbound-review.ts';
 import { WordReviewPanel } from './word-review-panel.ts';
-import { PdfReviewPanel } from './pdf-review-panel.ts';
+import { parsePdfReviewPreview, PdfReviewPanel,
+  type PdfReviewIdentity, type PdfReviewPanelState, type PdfReviewPageObjectUrl } from './pdf-review-panel.ts';
 
 type View = 'orders' | 'overview' | 'settings' | 'inbound-review';
 type DetailTab = 'document' | 'activity';
@@ -65,6 +66,9 @@ function App() {
   const [significantCost, setSignificantCost] = useState(false);
   const [manualReason, setManualReason] = useState('');
   const [apiHealthy, setApiHealthy] = useState(true);
+  const clearExpiredStaffSession = useCallback(() => {
+    setSession(null);setOrders([]);setSelected(null);setInboundItems(null);setApiHealthy(false);
+  },[]);
   const [deliveryValue, setDeliveryValue] = useState('');
   const [verifiedValue, setVerifiedValue] = useState('');
   const [paperNote, setPaperNote] = useState('');
@@ -414,10 +418,10 @@ function App() {
                           sourceSha256:'',manifestSha256:'',authenticatedStaff}}
                         receipt="unavailable"
                         state={{status:'NOT_WIRED'}}/>}
-                      {!useDemo && authenticatedStaff && isPdf && <PdfReviewPanel
-                        identity={{shopId:'',orderId:selectedOrder.order_id,revision:selectedOrder.revision,requestHash:selectedOrder.request_hash,
-                          sourceSha256:'',manifestSha256:'',authenticatedStaff}}
-                        state={{status:'NOT_WIRED'}}/>}
+                      {!useDemo && session && authenticatedStaff && isPdf && <PdfReviewClient
+                        key={`${selectedOrder.order_id}:${selectedOrder.revision}:${selectedOrder.request_hash}:${d.document_id}`}
+                        port={port} order={selectedOrder} session={session} apiHealthy={apiHealthy}
+                        onUnauthorized={clearExpiredStaffSession}/>}
                     </div>;
                   })}
                   {selectedOrder.documents.length===0 && <div className="empty-panel">API chưa cấp dữ liệu phân tách theo từng file; ảnh raster xác minh (nếu có) không phải bằng chứng khách đã xác nhận. Kế hoạch in tổng hợp: {selectedOrder.total_sheets??'chưa xác minh'} tờ; không dùng số này thay preview để duyệt.</div>}
@@ -480,6 +484,66 @@ function Stat({ icon,label,value,note,color,onClick }: { icon: ReactNode; label:
   return <button className="stat-card" onClick={onClick}><div className={`stat-icon ${color}`}>{icon}</div><span>{label}</span><strong>{value.toString().padStart(2,'0')}</strong><small>{note}</small></button>;
 }
 function Axis({title,label,warn=false}:{title:string;label:string;warn?:boolean}) {return <div className="axis-item"><span>{title}</span><strong className={warn?'warn-text':''}>{label}</strong></div>}
+function PdfReviewClient({port,order,session,apiHealthy,onUnauthorized}:{
+  port:PrintPort;order:OrderView;session:StaffSession;apiHealthy:boolean;onUnauthorized:()=>void
+}) {
+  const authenticatedStaff=['staff','owner'].includes(session.role);
+  const identity:PdfReviewIdentity={shopId:port.authenticatedShopId()??'',orderId:order.order_id,
+    revision:order.revision,requestHash:order.request_hash,authenticatedStaff};
+  const requestKey=[identity.shopId,session.actor_id,session.role,order.order_id,order.revision,order.request_hash].join('|');
+  const [loadedKey,setLoadedKey]=useState('');
+  const [state,setState]=useState<PdfReviewPanelState>({status:'LOADING'});
+  const [pageObjectUrls,setPageObjectUrls]=useState<PdfReviewPageObjectUrl[]>([]);
+  useEffect(()=>{
+    let cancelled=false;
+    const owned:string[]=[];
+    setLoadedKey(requestKey);
+    setState({status:'LOADING'});
+    setPageObjectUrls([]);
+    const expected={...identity};
+    if(!authenticatedStaff){setState({status:'NOT_WIRED'});return()=>{cancelled=true;};}
+    if(!apiHealthy){setState({status:'FAILED'});return()=>{cancelled=true;};}
+    if(!identity.shopId||order.detail_loaded!==true||!Number.isSafeInteger(order.revision)||order.revision<1||
+        !/^[0-9a-f]{64}$/.test(order.request_hash)){
+      setState({status:'STALE'});return()=>{cancelled=true;};
+    }
+    void port.loadPdfReviewPreview(order).then(({projection:rawProjection,pages:blobs})=>{
+      if(cancelled)return;
+      const projection=parsePdfReviewPreview(rawProjection,expected);
+      if(!projection)throw new ApiFault(409,'PDF_PREVIEW_STALE','Preview PDF không khớp order/revision/hash hiện hành.');
+      if(projection.status==='NEEDS_HUMAN'){
+        if(blobs.length!==0)throw new ApiFault(409,'PDF_PREVIEW_PAGE_MISMATCH','Trạng thái NEEDS_HUMAN không được có trang preview.');
+        setState({status:'CURRENT',projection});
+        return;
+      }
+      if(blobs.length!==projection.pages.length)
+        throw new ApiFault(409,'PDF_PREVIEW_PAGE_MISMATCH','Số trang tải về không khớp projection.');
+      const verified=projection.pages.map((page,index)=>{
+        const blob=blobs[index];
+        if(!blob||blob.type!=='image/png'||blob.size!==page.bytes)
+          throw new ApiFault(409,'PDF_PREVIEW_PAGE_MISMATCH','Trang PNG tải về không khớp projection.');
+        const url=URL.createObjectURL(blob);
+        owned.push(url);
+        return {index:page.index,sha256:page.sha256,url};
+      });
+      if(cancelled){owned.forEach(url=>URL.revokeObjectURL(url));owned.length=0;return;}
+      setPageObjectUrls(verified);
+      setState({status:'CURRENT',projection});
+    }).catch(error=>{
+      owned.forEach(url=>URL.revokeObjectURL(url));owned.length=0;
+      if(cancelled)return;
+      setPageObjectUrls([]);
+      const status=error instanceof ApiFault?error.status:503;
+      setState({status:status===404?'MISSING':status===409?'STALE':'FAILED'});
+      if(status===401)onUnauthorized();
+    });
+    return()=>{cancelled=true;owned.forEach(url=>URL.revokeObjectURL(url));};
+  },[apiHealthy,authenticatedStaff,identity.shopId,order.detail_loaded,order.order_id,order.request_hash,
+    order.revision,onUnauthorized,port,requestKey,session.actor_id,session.role]);
+  const current=loadedKey===requestKey&&apiHealthy;
+  return <PdfReviewPanel identity={identity} state={current?state:{status:'LOADING'}}
+    verifiedPageObjectUrls={current?pageObjectUrls:[]}/>;
+}
 /** Preview is *only* a read-only staff aid. This never sets DocumentView.preview_trusted
  * and never changes hasValidApprovalInputs/confirmed_revision/order approval.
  * Object URLs are ephemeral, never persisted or placed in a request URL. */
