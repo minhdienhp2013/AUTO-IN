@@ -4,8 +4,8 @@ import { createRequire } from 'node:module';
 const fromWeb=createRequire(new URL('../../web/package.json',import.meta.url));
 const React=fromWeb('react');
 const {renderToStaticMarkup}=fromWeb('react-dom/server');
-import { currentWordReviewProjection, WordReviewPanel,
-  type WordReviewIdentity, type WordReviewPanelState, type WordReviewPreviewV1 } from '../../web/src/word-review-panel.ts';
+import { currentWordReviewProjection, parseWordReviewPreview, WordReviewPanel,
+  type WordReviewIdentity, type WordReviewPanelState, type WordReviewPageObjectUrl, type WordReviewPreviewV1 } from '../../web/src/word-review-panel.ts';
 
 const identity:WordReviewIdentity={shopId:'shop-01',orderId:'order-01',revision:7,requestHash:'a'.repeat(64),
   sourceSha256:'b'.repeat(64),manifestSha256:'c'.repeat(64),authenticatedStaff:true};
@@ -14,15 +14,19 @@ const good:WordReviewPreviewV1={schema:'ai0.word_review_preview.v1',shop_id:iden
   status:'REVIEW_REQUIRED',pages:[{index:1,url:'/api/v1/orders/order-01/word-preview/pages/1',content_type:'image/png',sha256:'d'.repeat(64),bytes:256}],
   document_pages:1,printed_faces:1,physical_sheets:1,settings:{copies:1,duplex:false},ready:false,allowed_to_print:false,
   requires_staff_review:true,physical_print_verified:false};
-const html=(state:WordReviewPanelState, receipt:'unavailable'|'missing'|'matching'|'stale'='missing')=>
-  renderToStaticMarkup(React.createElement(WordReviewPanel,{identity,state,receipt}));
+const verifiedPageObjectUrls:WordReviewPageObjectUrl[]=[{index:1,sha256:'d'.repeat(64),url:'blob:https://staff.invalid/word-page-1'}];
+const html=(state:WordReviewPanelState, receipt:'unavailable'|'missing'|'matching'|'stale'='missing',urls?:readonly WordReviewPageObjectUrl[]|null)=>
+  renderToStaticMarkup(React.createElement(WordReviewPanel,{identity,state,receipt,
+    verifiedPageObjectUrls:urls===undefined?verifiedPageObjectUrls:urls??undefined}));
 
 test('exact authenticated ai0.word_review_preview.v1 projection renders review-only with separate receipt',()=>{
   const state:WordReviewPanelState={status:'CURRENT',projection:good};
-  assert.equal(currentWordReviewProjection(state,identity),good);
+  assert.deepEqual(currentWordReviewProjection(state,identity),good);
   const markup=html(state,'matching');
   assert.match(markup,/data-status="CURRENT"/);
   assert.match(markup,/word-review-pages/);
+  assert.match(markup,/src="blob:https:\/\/staff\.invalid\/word-page-1"/);
+  assert.doesNotMatch(markup,/src="\/api\/v1\/orders\/order-01\/word-preview\/pages\/1"/);
   assert.match(markup,/data-receipt-status="matching"/);
   assert.match(markup,/Biên nhận xem preview/);
   assert.match(markup,/Duyệt lệnh in/);
@@ -68,7 +72,10 @@ test('missing endpoint, network/auth/stale errors, and unauthenticated state nev
 
 test('malformed projection objects and private source fields fail closed without crashing',()=>{
   const malformed:unknown[]=[null, {...good,pages:[null]}, {...good,pages:[{}]},
-    {...good,private_bytes:{source:new Uint8Array([1])}}, {...good,source:{artifact_ref:'/private/source.docx'}}];
+    {...good,private_bytes:{source:new Uint8Array([1])}}, {...good,source:{artifact_ref:'/private/source.docx'}},
+    {...good,storage_ref:'private/bundle'}, {...good,pages:[{...good.pages[0],url:'/api/v1/orders/other/word-preview/pages/1'}]},
+    {...good,pages:[{...good.pages[0],index:0}]}, {...good,pages:[{...good.pages[0],bytes:10*1024*1024+1}]},
+    {...good,pages:[...good.pages,...good.pages,...good.pages]}, {...good,reason_code:'<img src=x>'}];
   for(const value of malformed){
     const markup=html({status:'CURRENT',projection:value as WordReviewPreviewV1});
     assert.match(markup,/data-status="STALE"/);
@@ -78,8 +85,29 @@ test('malformed projection objects and private source fields fail closed without
 
 test('NEEDS_HUMAN has no pages and remains held, all authority flags stay false',()=>{
   const needs={...good,status:'NEEDS_HUMAN' as const,reason_code:'FONT_UNCERTAIN',pages:[]};
-  const markup=html({status:'CURRENT',projection:needs});
+  const markup=html({status:'CURRENT',projection:needs},'missing',[]);
   assert.match(markup,/FONT_UNCERTAIN/);
   assert.doesNotMatch(markup,/word-review-pages/);
   assert.equal(currentWordReviewProjection({status:'CURRENT',projection:{...needs,ready:true}},identity),null);
+});
+
+test('only exact order/revision page routes and matching ephemeral Blob URLs are renderable',()=>{
+  const malformed=[
+    {...good,pages:[{...good.pages[0],url:'https://outside.invalid/page.png'}]},
+    {...good,pages:[{...good.pages[0],url:'/api/v1/orders/order-01/word-preview/pages/1?token=secret'}]},
+    {...good,pages:[{...good.pages[0],url:'/api/v1/orders/order-01/word-preview/pages/2'}]},
+    {...good,pages:[{...good.pages[0],url:'/api/v1/orders/order-01/word-preview/pages/../1'}]},
+  ];
+  for(const projection of malformed){
+    assert.equal(parseWordReviewPreview(projection,identity),null);
+    const markup=html({status:'CURRENT',projection});
+    assert.match(markup,/data-status="STALE"/);
+    assert.doesNotMatch(markup,/word-review-pages|outside\.invalid|token=secret/);
+  }
+  for(const urls of [null,[],[{index:1,sha256:'e'.repeat(64),url:verifiedPageObjectUrls[0]!.url}],
+    [{index:1,sha256:'d'.repeat(64),url:'/api/v1/orders/order-01/word-preview/pages/1'}]]){
+    const markup=html({status:'CURRENT',projection:good},'missing',urls as readonly WordReviewPageObjectUrl[]|null);
+    assert.match(markup,/data-status="STALE"/);
+    assert.doesNotMatch(markup,/word-review-pages|word-preview\/pages\/1|staff\.invalid/);
+  }
 });

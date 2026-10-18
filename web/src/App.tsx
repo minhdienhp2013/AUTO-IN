@@ -21,7 +21,8 @@ import { manualQueueRowsForDisplay, pendingStaffQueue, routeVerifiedDocument } f
 import { previewReviewBlock, previewReviewBlockMessage, previewReviewErrorMessage,
   previewReviewSequence } from './preview-review.ts';
 import { inboundReviewErrorMessage, inboundReviewItemCopy, type InboundReviewItem } from './inbound-review.ts';
-import { WordReviewPanel } from './word-review-panel.ts';
+import { parseWordReviewPreview, WordReviewPanel,
+  type WordReviewIdentity, type WordReviewPanelState, type WordReviewPageObjectUrl } from './word-review-panel.ts';
 import { parsePdfReviewPreview, PdfReviewPanel,
   type PdfReviewIdentity, type PdfReviewPanelState, type PdfReviewPageObjectUrl } from './pdf-review-panel.ts';
 
@@ -78,6 +79,7 @@ function App() {
   const selectedIdRef = useRef<string | null>(null);
 
   const selectedOrder = orders.find(o => o.order_id === selected) ?? null;
+  const firstWordDocument=selectedOrder?.documents.find(d=>['DOC','DOCX','WORD'].includes(d.format.trim().toUpperCase()))??null;
   useEffect(() => { selectedIdRef.current = selected; }, [selected]);
   const load = useCallback(async (onlyOrders = false) => {
     requestEpoch.current++;
@@ -413,11 +415,10 @@ function App() {
                           ? <p className="inline-warning" data-testid="pdf-preview-source-gated">Preview PDF riêng chưa được nối; không dùng URL preview cũ theo file. Ảnh đã xác minh (nếu có) chỉ hiển thị trong gallery bên trên.</p>
                           : <Preview url={d.preview_url} trusted={d.preview_trusted}/>}
                       {d.warnings.map((w,i)=><p className="inline-warning" key={i}><AlertCircle size={15}/> {w}</p>)}
-                      {!useDemo && authenticatedStaff && isWord && <WordReviewPanel
-                        identity={{shopId:'',orderId:selectedOrder.order_id,revision:selectedOrder.revision,requestHash:selectedOrder.request_hash,
-                          sourceSha256:'',manifestSha256:'',authenticatedStaff}}
-                        receipt="unavailable"
-                        state={{status:'NOT_WIRED'}}/>}
+                      {!useDemo && session && authenticatedStaff && isWord && d===firstWordDocument && <WordReviewClient
+                        key={`${selectedOrder.order_id}:${selectedOrder.revision}:${selectedOrder.request_hash}:${session.actor_id}:${session.role}`}
+                        port={port} order={selectedOrder} session={session} apiHealthy={apiHealthy}
+                        onUnauthorized={clearExpiredStaffSession}/>}
                       {!useDemo && session && authenticatedStaff && isPdf && <PdfReviewClient
                         key={`${selectedOrder.order_id}:${selectedOrder.revision}:${selectedOrder.request_hash}:${d.document_id}`}
                         port={port} order={selectedOrder} session={session} apiHealthy={apiHealthy}
@@ -484,6 +485,66 @@ function Stat({ icon,label,value,note,color,onClick }: { icon: ReactNode; label:
   return <button className="stat-card" onClick={onClick}><div className={`stat-icon ${color}`}>{icon}</div><span>{label}</span><strong>{value.toString().padStart(2,'0')}</strong><small>{note}</small></button>;
 }
 function Axis({title,label,warn=false}:{title:string;label:string;warn?:boolean}) {return <div className="axis-item"><span>{title}</span><strong className={warn?'warn-text':''}>{label}</strong></div>}
+function WordReviewClient({port,order,session,apiHealthy,onUnauthorized}:{
+  port:PrintPort;order:OrderView;session:StaffSession;apiHealthy:boolean;onUnauthorized:()=>void
+}) {
+  const authenticatedStaff=['staff','owner'].includes(session.role);
+  const identity:WordReviewIdentity={shopId:port.authenticatedShopId()??'',orderId:order.order_id,
+    revision:order.revision,requestHash:order.request_hash,authenticatedStaff};
+  const requestKey=[identity.shopId,session.actor_id,session.role,order.order_id,order.revision,order.request_hash].join('|');
+  const [loadedKey,setLoadedKey]=useState('');
+  const [state,setState]=useState<WordReviewPanelState>({status:'LOADING'});
+  const [pageObjectUrls,setPageObjectUrls]=useState<WordReviewPageObjectUrl[]>([]);
+  useEffect(()=>{
+    let cancelled=false;
+    const owned:string[]=[];
+    setLoadedKey(requestKey);
+    setState({status:'LOADING'});
+    setPageObjectUrls([]);
+    const expected={...identity};
+    if(!authenticatedStaff){setState({status:'NOT_WIRED'});return()=>{cancelled=true;};}
+    if(!apiHealthy){setState({status:'FAILED'});return()=>{cancelled=true;};}
+    if(!identity.shopId||order.detail_loaded!==true||!Number.isSafeInteger(order.revision)||order.revision<1||
+        !/^[0-9a-f]{64}$/.test(order.request_hash)){
+      setState({status:'STALE'});return()=>{cancelled=true;};
+    }
+    void port.loadWordReviewPreview(order).then(({projection:rawProjection,pages:blobs})=>{
+      if(cancelled)return;
+      const projection=parseWordReviewPreview(rawProjection,expected);
+      if(!projection)throw new ApiFault(409,'WORD_PREVIEW_STALE','Preview Word không khớp order/revision/hash hiện hành.');
+      if(projection.status==='NEEDS_HUMAN'){
+        if(blobs.length!==0)throw new ApiFault(409,'WORD_PREVIEW_PAGE_MISMATCH','Trạng thái NEEDS_HUMAN không được có trang preview.');
+        setState({status:'CURRENT',projection});
+        return;
+      }
+      if(blobs.length!==projection.pages.length)
+        throw new ApiFault(409,'WORD_PREVIEW_PAGE_MISMATCH','Số trang tải về không khớp projection.');
+      const verified=projection.pages.map((page,index)=>{
+        const blob=blobs[index];
+        if(!blob||blob.type!=='image/png'||blob.size!==page.bytes)
+          throw new ApiFault(409,'WORD_PREVIEW_PAGE_MISMATCH','Trang PNG tải về không khớp projection.');
+        const url=URL.createObjectURL(blob);
+        owned.push(url);
+        return {index:page.index,sha256:page.sha256,url};
+      });
+      if(cancelled){owned.forEach(url=>URL.revokeObjectURL(url));owned.length=0;return;}
+      setPageObjectUrls(verified);
+      setState({status:'CURRENT',projection});
+    }).catch(error=>{
+      owned.forEach(url=>URL.revokeObjectURL(url));owned.length=0;
+      if(cancelled)return;
+      setPageObjectUrls([]);
+      const status=error instanceof ApiFault?error.status:503;
+      setState({status:status===404?'MISSING':status===409?'STALE':'FAILED'});
+      if(status===401)onUnauthorized();
+    });
+    return()=>{cancelled=true;owned.forEach(url=>URL.revokeObjectURL(url));};
+  },[apiHealthy,authenticatedStaff,identity.shopId,order.detail_loaded,order.order_id,order.request_hash,
+    order.revision,onUnauthorized,port,requestKey,session.actor_id,session.role]);
+  const current=loadedKey===requestKey&&apiHealthy;
+  return <WordReviewPanel identity={identity} state={current?state:{status:'LOADING'}} receipt="unavailable"
+    verifiedPageObjectUrls={current?pageObjectUrls:[]}/>;
+}
 function PdfReviewClient({port,order,session,apiHealthy,onUnauthorized}:{
   port:PrintPort;order:OrderView;session:StaffSession;apiHealthy:boolean;onUnauthorized:()=>void
 }) {

@@ -27,17 +27,29 @@ export interface WordReviewIdentity {
   orderId: string;
   revision: number;
   requestHash: string;
-  sourceSha256: string;
-  manifestSha256: string;
+  sourceSha256?: string;
+  manifestSha256?: string;
   authenticatedStaff: boolean;
 }
+/** Ephemeral URLs created from staff-authenticated, verified PNG bytes only. */
+export interface WordReviewPageObjectUrl { index:number; sha256:string; url:string }
 export type WordReviewStatus = 'NOT_WIRED' | 'LOADING' | 'MISSING' | 'FAILED' | 'STALE' | 'CURRENT';
-export interface WordReviewPanelState { status: WordReviewStatus; projection?: WordReviewPreviewV1; message?: string }
+export interface WordReviewPanelState { status: WordReviewStatus; projection?: unknown; message?: string }
 export type PreviewReceiptStatus = 'unavailable' | 'missing' | 'matching' | 'stale';
 
 const digest = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
+const safeId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+const positiveInt = (value: unknown, max: number): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= max;
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  if(value===null||typeof value!=='object'||Array.isArray(value))return false;
+  const prototype=Object.getPrototypeOf(value);
+  return prototype===Object.prototype||prototype===null;
+};
+const exactKeys=(value:Record<string,unknown>,required:readonly string[],optional:readonly string[]=[]):boolean=>{
+  const allowed=new Set([...required,...optional]);
+  return required.every(key=>Object.hasOwn(value,key))&&Object.keys(value).every(key=>allowed.has(key));
+};
 
 function appRelativeUrl(value: unknown): value is string {
   if (typeof value !== 'string') return false;
@@ -52,27 +64,83 @@ function appRelativeUrl(value: unknown): value is string {
   catch { return false; }
 }
 
+function expectedPagePath(orderId:string,index:number):string {
+  return `/api/v1/orders/${encodeURIComponent(orderId)}/word-preview/pages/${index}`;
+}
+
+function parseSettings(value:unknown):Readonly<Record<string,string|number|boolean>>|null {
+  if(!isRecord(value)||!exactKeys(value,[],['copies','paper','duplex','orientation','flip_edge','binding','page_range']))return null;
+  const out:Record<string,string|number|boolean>={};
+  if(Object.hasOwn(value,'copies')){if(!positiveInt(value.copies,999))return null;out.copies=value.copies;}
+  if(Object.hasOwn(value,'paper')){if(value.paper!=='A4'&&value.paper!=='A3')return null;out.paper=value.paper;}
+  if(Object.hasOwn(value,'duplex')){if(typeof value.duplex!=='boolean')return null;out.duplex=value.duplex;}
+  if(Object.hasOwn(value,'orientation')){if(value.orientation!=='portrait'&&value.orientation!=='landscape')return null;out.orientation=value.orientation;}
+  if(Object.hasOwn(value,'flip_edge')){if(value.flip_edge!=='long'&&value.flip_edge!=='short')return null;out.flip_edge=value.flip_edge;}
+  if(Object.hasOwn(value,'binding')){if(typeof value.binding!=='string'||value.binding.length>40||/[\u0000-\u001f\u007f]/.test(value.binding))return null;out.binding=value.binding;}
+  if(Object.hasOwn(value,'page_range')){if(typeof value.page_range!=='string'||value.page_range.length>64||/[\u0000-\u001f\u007f]/.test(value.page_range))return null;out.page_range=value.page_range;}
+  return out;
+}
+
+/** Parse only a bounded current staff projection; server-provided page URLs are never rendered or fetched unvalidated. */
+export function parseWordReviewPreview(value:unknown,expected:WordReviewIdentity):WordReviewPreviewV1|null {
+  if(!expected.authenticatedStaff||!safeId(expected.shopId)||!safeId(expected.orderId)||
+      !positiveInt(expected.revision,Number.MAX_SAFE_INTEGER)||!digest(expected.requestHash)||
+      (expected.sourceSha256!==undefined&&!digest(expected.sourceSha256))||
+      (expected.manifestSha256!==undefined&&!digest(expected.manifestSha256))||!isRecord(value))return null;
+  const required=['schema','shop_id','order_id','revision','request_hash','source_sha256','manifest_sha256','status','pages',
+    'ready','allowed_to_print','requires_staff_review','physical_print_verified'];
+  const optional=['reason_code','document_pages','printed_faces','physical_sheets','settings'];
+  if(!exactKeys(value,required,optional)||value.schema!=='ai0.word_review_preview.v1'||
+      value.shop_id!==expected.shopId||value.order_id!==expected.orderId||value.revision!==expected.revision||
+      value.request_hash!==expected.requestHash||!digest(value.request_hash)||!digest(value.source_sha256)||
+      !digest(value.manifest_sha256)||(expected.sourceSha256!==undefined&&value.source_sha256!==expected.sourceSha256)||
+      (expected.manifestSha256!==undefined&&value.manifest_sha256!==expected.manifestSha256)||
+      (value.status!=='REVIEW_REQUIRED'&&value.status!=='NEEDS_HUMAN')||value.ready!==false||
+      value.allowed_to_print!==false||value.requires_staff_review!==true||value.physical_print_verified!==false||
+      !Array.isArray(value.pages)||value.pages.length>3)return null;
+  if(Object.hasOwn(value,'reason_code')&&(typeof value.reason_code!=='string'||! /^[A-Z][A-Z0-9_]{0,79}$/.test(value.reason_code)))return null;
+  if(Object.hasOwn(value,'document_pages')&&!positiveInt(value.document_pages,500))return null;
+  if(Object.hasOwn(value,'printed_faces')&&!positiveInt(value.printed_faces,5000))return null;
+  if(Object.hasOwn(value,'physical_sheets')&&!positiveInt(value.physical_sheets,5000))return null;
+  if(typeof value.printed_faces==='number'&&typeof value.physical_sheets==='number'&&value.physical_sheets>value.printed_faces)return null;
+  let settings:Readonly<Record<string,string|number|boolean>>|undefined;
+  if(Object.hasOwn(value,'settings')){const parsed=parseSettings(value.settings);if(!parsed)return null;settings=parsed;}
+  const pages:WordReviewPreviewV1['pages'][number][]=[];
+  let previousIndex=0;
+  for(const raw of value.pages){
+    if(!isRecord(raw)||!exactKeys(raw,['index','url','content_type','sha256','bytes'])||
+        !positiveInt(raw.index,500)||raw.index<=previousIndex||!appRelativeUrl(raw.url)||
+        raw.url!==expectedPagePath(expected.orderId,raw.index)||raw.content_type!=='image/png'||
+        !digest(raw.sha256)||!positiveInt(raw.bytes,10*1024*1024)||
+        (typeof value.document_pages==='number'&&raw.index>value.document_pages))return null;
+    previousIndex=raw.index;
+    pages.push({index:raw.index,url:raw.url,content_type:'image/png',sha256:raw.sha256,bytes:raw.bytes});
+  }
+  if(value.status==='REVIEW_REQUIRED'?pages.length<1:pages.length!==0)return null;
+  const parsed:WordReviewPreviewV1={schema:'ai0.word_review_preview.v1',shop_id:expected.shopId,order_id:expected.orderId,
+    revision:expected.revision,request_hash:expected.requestHash,source_sha256:value.source_sha256,manifest_sha256:value.manifest_sha256,
+    status:value.status,pages,ready:false,allowed_to_print:false,requires_staff_review:true,physical_print_verified:false};
+  if(Object.hasOwn(value,'reason_code'))parsed.reason_code=value.reason_code as string;
+  if(Object.hasOwn(value,'document_pages'))parsed.document_pages=value.document_pages as number;
+  if(Object.hasOwn(value,'printed_faces'))parsed.printed_faces=value.printed_faces as number;
+  if(Object.hasOwn(value,'physical_sheets'))parsed.physical_sheets=value.physical_sheets as number;
+  if(settings)parsed.settings=settings;
+  return parsed;
+}
+
 /** Fail closed unless the authenticated projection matches all active scope and hashes. */
 export function currentWordReviewProjection(state: WordReviewPanelState, expected: WordReviewIdentity): WordReviewPreviewV1 | null {
-  if (!expected.authenticatedStaff || state.status !== 'CURRENT' || !state.projection) return null;
-  const p: unknown = state.projection;
-  if (!isRecord(p)) return null;
-  const allowedProjectionKeys = new Set(['schema','shop_id','order_id','revision','request_hash','source_sha256',
-    'manifest_sha256','status','reason_code','pages','document_pages','printed_faces','physical_sheets','settings',
-    'ready','allowed_to_print','requires_staff_review','physical_print_verified']);
-  if (p.schema !== 'ai0.word_review_preview.v1' || p.shop_id !== expected.shopId || p.order_id !== expected.orderId ||
-      p.revision !== expected.revision || p.request_hash !== expected.requestHash ||
-      !digest(p.request_hash) || !digest(expected.sourceSha256) || p.source_sha256 !== expected.sourceSha256 ||
-      !digest(expected.manifestSha256) || p.manifest_sha256 !== expected.manifestSha256 ||
-      Object.keys(p).some(key => !allowedProjectionKeys.has(key)) ||
-      (p.status !== 'REVIEW_REQUIRED' && p.status !== 'NEEDS_HUMAN') || p.ready !== false || p.allowed_to_print !== false ||
-      p.requires_staff_review !== true || p.physical_print_verified !== false || !Array.isArray(p.pages)) return null;
-  const pageKeys = new Set(['index','url','content_type','sha256','bytes']);
-  if (p.pages.some((page: unknown) => !isRecord(page) || Object.keys(page).some(key => !pageKeys.has(key)) ||
-      !Number.isSafeInteger(page.index) || (page.index as number) < 1 || !appRelativeUrl(page.url) ||
-      page.content_type !== 'image/png' || !digest(page.sha256) || !Number.isSafeInteger(page.bytes) || (page.bytes as number) <= 0)) return null;
-  if (p.status === 'NEEDS_HUMAN' && p.pages.length !== 0) return null;
-  return p as unknown as WordReviewPreviewV1;
+  return state.status==='CURRENT'?parseWordReviewPreview(state.projection,expected):null;
+}
+
+function validObjectUrls(projection:WordReviewPreviewV1,urls:readonly WordReviewPageObjectUrl[]|undefined):urls is readonly WordReviewPageObjectUrl[]{
+  if(projection.status==='NEEDS_HUMAN')return !urls||urls.length===0;
+  if(!urls||urls.length!==projection.pages.length)return false;
+  return projection.pages.every((page,index)=>{
+    const loaded=urls[index];
+    if(!loaded||loaded.index!==page.index||loaded.sha256!==page.sha256||typeof loaded.url!=='string')return false;
+    try{return new URL(loaded.url).protocol==='blob:';}catch{return false;}
+  });
 }
 
 const receiptText: Record<PreviewReceiptStatus, string> = {
@@ -82,12 +150,13 @@ const receiptText: Record<PreviewReceiptStatus, string> = {
   stale: 'Biên nhận cũ; cần kiểm tra lại snapshot hiện hành.',
 };
 
-export function WordReviewPanel({ identity, state, receipt = 'unavailable' }: {
+export function WordReviewPanel({ identity, state, receipt = 'unavailable', verifiedPageObjectUrls }: {
   identity: WordReviewIdentity; state: WordReviewPanelState; receipt?: PreviewReceiptStatus;
+  verifiedPageObjectUrls?:readonly WordReviewPageObjectUrl[];
 }) {
   if (!identity.authenticatedStaff) return null;
   const projection = currentWordReviewProjection(state, identity);
-  const stale = state.status === 'CURRENT' && !projection;
+  const stale = state.status === 'CURRENT' && (!projection||!validObjectUrls(projection,verifiedPageObjectUrls));
   const status = stale ? 'STALE' : state.status;
   const waiting = status !== 'CURRENT' || projection?.status !== 'REVIEW_REQUIRED';
   const e = React.createElement;
@@ -99,8 +168,8 @@ export function WordReviewPanel({ identity, state, receipt = 'unavailable' }: {
     e('strong', null, 'Biên nhận xem preview'), e('p', null, receiptText[receipt]),
     e('small', null, 'Biên nhận này tách biệt với thao tác “Duyệt lệnh in”.'));
   const pages = projection && !waiting ? e('div', { className: 'word-review-pages', 'data-testid': 'word-review-pages' },
-    ...projection.pages.map(page => e('figure', { key: `${page.index}:${page.sha256}` },
-      e('img', { src: page.url, alt: `Preview Word, trang ${page.index}` }),
+    ...projection.pages.map((page,index) => e('figure', { key: `${page.index}:${page.sha256}` },
+      e('img', { src: verifiedPageObjectUrls?.[index]?.url, alt: `Preview Word, trang ${page.index}` }),
       e('figcaption', null, `Trang ${page.index} · ${page.bytes} byte · chỉ để nhân viên kiểm tra`)))) : null;
   const statusBadge = status === 'CURRENT' && projection?.status === 'REVIEW_REQUIRED' ? 'REVIEW_REQUIRED · Không phải quyền in'
     : status === 'CURRENT' && projection?.status === 'NEEDS_HUMAN' ? 'NEEDS_HUMAN · Giữ đơn'
@@ -109,7 +178,7 @@ export function WordReviewPanel({ identity, state, receipt = 'unavailable' }: {
     : status === 'LOADING' ? 'Đang chờ phản hồi API có staff bearer; preview cũ bị ẩn.'
     : status === 'MISSING' ? 'Máy chủ chưa cấp snapshot của order/revision hiện hành. Giữ đơn và chuyển nhân viên.'
     : status === 'STALE' ? 'Shop, order, revision, request hash hoặc digest không khớp. Preview cũ đã bị ẩn; giữ đơn và chuyển nhân viên.'
-    : status === 'FAILED' ? `${state.message ?? 'Lỗi xác thực hoặc mạng (401/409/503).'} Preview cũ đã bị ẩn; giữ đơn và chuyển nhân viên.`
+    : status === 'FAILED' ? 'Không tải hoặc xác minh được preview Word. Preview cũ đã bị ẩn; giữ đơn và chuyển nhân viên.'
     : projection?.status === 'NEEDS_HUMAN' ? `Worker yêu cầu nhân viên xử lý (${projection.reason_code ?? 'NEEDS_HUMAN'}). Giữ đơn; không có preview được xác minh.`
     : 'Preview chỉ dùng để kiểm tra. Word/DOCX gốc vẫn là nguồn in theo TN-034.';
   return e('section', { className: 'word-review-panel', 'data-testid': 'word-review-panel', 'data-status': status, 'aria-label': 'Preview Word và receipt nhân viên' },

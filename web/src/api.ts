@@ -6,6 +6,7 @@ import { parsePreviewReviewReadModel } from './preview-review.ts';
 import { parseShopSchedule, type ShopSchedule, type SchedulePatch, type SchedulePort } from './shop-schedule.ts';
 import { parseInboundReviewItems, type InboundReviewItem } from './inbound-review.ts';
 import { parsePdfReviewPreview, type PdfReviewIdentity, type PdfReviewPreviewV1 } from './pdf-review-panel.ts';
+import { parseWordReviewPreview, type WordReviewIdentity, type WordReviewPreviewV1 } from './word-review-panel.ts';
 
 export class ApiFault extends Error {
   readonly status: number; readonly code: string; readonly currentRevision?: number;
@@ -23,6 +24,8 @@ export interface PrintPort extends SchedulePort {
   loadVerifiedPreviewPages(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{pages:Blob[];files:VerifiedFileFact[]}>;
   /** Staff API client for the current PDF review projection and verified PNG bytes. */
   loadPdfReviewPreview(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{projection:PdfReviewPreviewV1;pages:Blob[]}>;
+  /** Staff API client for the current Word review projection and verified PNG bytes. */
+  loadWordReviewPreview(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{projection:WordReviewPreviewV1;pages:Blob[]}>;
   /** Authenticated staff receipt; the evidence digest is only an expected-version precondition. */
   reviewPreview(order: OrderView, expectedEvidenceSha256: string, key: string): Promise<OrderView>;
   mutate(order: OrderView, kind: ActionKind, payload: Record<string, string | number | boolean | null>, key: string): Promise<OrderView>;
@@ -477,6 +480,90 @@ export class HttpPrintPort implements PrintPort {
       throw new ApiFault(401,'PDF_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng phản hồi preview cũ.');
     return {projection,pages};
   }
+  async loadWordReviewPreview(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{projection:WordReviewPreviewV1;pages:Blob[]}> {
+    const {order_id,revision,request_hash}=order;
+    if(!this.token||!this.shopId)
+      throw new ApiFault(401,'UNAUTHENTICATED','Vui lòng đăng nhập bằng tài khoản nhân viên để xem preview Word.');
+    if(!/^[0-9a-f-]{36}$/i.test(order_id)||!Number.isSafeInteger(revision)||revision<1||! /^[0-9a-f]{64}$/.test(request_hash))
+      throw new ApiFault(409,'WORD_PREVIEW_SCOPE_INVALID','Đơn, revision hoặc request hash hiện hành chưa hợp lệ.');
+
+    const token=this.token,shopId=this.shopId;
+    const identity:WordReviewIdentity={shopId,orderId:order_id,revision,requestHash:request_hash,authenticatedStaff:true};
+    const path=`/api/v1/orders/${encodeURIComponent(order_id)}/revisions/${revision}/word-review-previews`;
+    const raw=await this.call(path,{method:'POST',body:JSON.stringify({}),redirect:'error'});
+    if(this.token!==token||this.shopId!==shopId)
+      throw new ApiFault(401,'WORD_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng phản hồi preview cũ.');
+    const projection=parseWordReviewPreview(raw,identity);
+    if(!projection)
+      throw new ApiFault(409,'WORD_PREVIEW_STALE','Preview Word không khớp shop/order/revision/request hash hiện hành.');
+    if(projection.status==='NEEDS_HUMAN')return {projection,pages:[]};
+
+    const pages:Blob[]=[];
+    const signature=[137,80,78,71,13,10,26,10];
+    for(const page of projection.pages){
+      if(this.token!==token||this.shopId!==shopId)
+        throw new ApiFault(401,'WORD_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng ảnh preview cũ.');
+      let response:Response;
+      try{
+        response=await this.fetcher(`${this.baseUrl}${page.url}`,{
+          method:'GET',credentials:'same-origin',cache:'no-store',redirect:'error',
+          headers:{Authorization:`Bearer ${token}`,Accept:'image/png'}
+        });
+      }catch{
+        throw new ApiFault(0,'WORD_PREVIEW_NETWORK','Không tải được trang preview Word; giữ đơn để nhân viên xử lý.');
+      }
+      if(response.status===401){if(this.token===token){this.token=null;this.shopId=null;}
+        throw new ApiFault(401,'WORD_PREVIEW_UNAUTHENTICATED','Phiên nhân viên hết hạn khi tải preview Word.');}
+      if(!response.ok)
+        throw new ApiFault(response.status||503,'WORD_PREVIEW_PAGE_UNAVAILABLE','Trang preview Word không hợp lệ hoặc chưa sẵn sàng.');
+      if(response.headers.get('content-type')?.split(';')[0]?.trim()!=='image/png')
+        throw new ApiFault(409,'WORD_PREVIEW_PAGE_CONTENT_TYPE','Trang preview Word không có kiểu PNG được phép.');
+      const contentLength=response.headers.get('content-length');
+      if(contentLength!==null&&(!/^(0|[1-9][0-9]*)$/.test(contentLength)||Number(contentLength)!==page.bytes))
+        throw new ApiFault(409,'WORD_PREVIEW_PAGE_SIZE_MISMATCH','Kích thước trang preview Word không khớp biên nhận.');
+      const reader=response.body?.getReader();
+      if(!reader)throw new ApiFault(503,'WORD_PREVIEW_BODY_UNAVAILABLE','Phản hồi trang preview không có luồng dữ liệu.');
+      const chunks:Uint8Array[]=[];
+      let total=0;
+      try{
+        while(true){
+          const part=await reader.read();
+          if(part.done)break;
+          total+=part.value.byteLength;
+          if(total>page.bytes||total>10*1024*1024){
+            try{await reader.cancel();}catch{}
+            throw new ApiFault(409,'WORD_PREVIEW_PAGE_SIZE_MISMATCH','Trang preview Word vượt kích thước trong biên nhận.');
+          }
+          chunks.push(part.value);
+        }
+      }catch(error){
+        if(error instanceof ApiFault)throw error;
+        throw new ApiFault(0,'WORD_PREVIEW_NETWORK','Không đọc hết trang preview Word; giữ đơn để nhân viên xử lý.');
+      }finally{reader.releaseLock();}
+      if(total!==page.bytes)throw new ApiFault(409,'WORD_PREVIEW_PAGE_SIZE_MISMATCH','Kích thước trang preview Word không khớp biên nhận.');
+      const bytes=new Uint8Array(total);
+      let offset=0;
+      for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}
+      if(this.token!==token||this.shopId!==shopId)
+        throw new ApiFault(401,'WORD_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng ảnh preview cũ.');
+      if(bytes.byteLength!==page.bytes||bytes.byteLength>10*1024*1024||bytes.length<signature.length||
+          !signature.every((value,index)=>bytes[index]===value))
+        throw new ApiFault(409,'WORD_PREVIEW_PNG_INVALID','Nội dung trang preview Word không khớp PNG được phép.');
+      if(!globalThis.crypto?.subtle)
+        throw new ApiFault(503,'WORD_PREVIEW_HASH_UNAVAILABLE','Không thể xác minh SHA-256 trang preview Word.');
+      let digestBuffer:ArrayBuffer;
+      try{digestBuffer=await globalThis.crypto.subtle.digest('SHA-256',bytes);}
+      catch{throw new ApiFault(503,'WORD_PREVIEW_HASH_UNAVAILABLE','Không thể xác minh SHA-256 trang preview Word.');}
+      const digest=new Uint8Array(digestBuffer);
+      const actualSha=[...digest].map(value=>value.toString(16).padStart(2,'0')).join('');
+      if(actualSha!==page.sha256)
+        throw new ApiFault(409,'WORD_PREVIEW_HASH_MISMATCH','SHA-256 trang preview Word không khớp biên nhận.');
+      pages.push(new Blob([bytes],{type:'image/png'}));
+    }
+    if(this.token!==token||this.shopId!==shopId)
+      throw new ApiFault(401,'WORD_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng phản hồi preview cũ.');
+    return {projection,pages};
+  }
   async reviewPreview(order: OrderView, expectedEvidenceSha256: string, key: string): Promise<OrderView> {
     if (!this.token) throw new ApiFault(401,'UNAUTHENTICATED','Vui lòng đăng nhập bằng tài khoản nhân viên để kiểm tra preview.');
     const evidence=order.print_evidence;
@@ -586,6 +673,9 @@ export class DemoPrintPort implements PrintPort {
   }
   async loadPdfReviewPreview(): Promise<{projection:PdfReviewPreviewV1;pages:Blob[]}> {
     throw new ApiFault(503,'SIMULATION_ONLY','Demo không tạo preview PDF đã xác minh.');
+  }
+  async loadWordReviewPreview(): Promise<{projection:WordReviewPreviewV1;pages:Blob[]}> {
+    throw new ApiFault(503,'SIMULATION_ONLY','Demo không tạo preview Word đã xác minh.');
   }
   async reviewPreview(): Promise<OrderView> {
     throw new ApiFault(503,'SIMULATION_ONLY','Demo chỉ mô phỏng; không tạo biên nhận nhân viên hoặc bằng chứng in thật.');
