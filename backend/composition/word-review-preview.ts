@@ -18,6 +18,11 @@ const MAX_PAGE_BYTES = 10 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 16 * 1024;
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 32;
+const MANIFEST_KEYS = new Set([
+  'schema', 'shop_id', 'order_id', 'active_revision', 'request_hash', 'files', 'source',
+  'input_manifest', 'previews', 'paper_plan', 'counts', 'evidence_kind', 'renderer_identity',
+  'settings_sha256', 'ready', 'allowed_to_print', 'requires_staff_review', 'physical_print_verified'
+]);
 const OUTPUT_KEYS = [
   'schema', 'preview_schema', 'status', 'reason_code', 'source_format', 'print_source_format',
   'shop_id', 'order_id', 'active_revision', 'request_hash', 'source_sha256', 'source_size_bytes',
@@ -333,11 +338,11 @@ export function createWordReviewPreviewService(options: {
         if (sha(manifestBytes) !== result.manifest_sha256) throw invalid();
         const manifest = parseJsonNoDuplicateKeys(new TextDecoder('utf-8', { fatal: true }).decode(manifestBytes));
         const expectedSettingsSha = sha(canonical(settings));
-        if (!isRecord(manifest) || Object.keys(manifest).sort().join(',') !==
-            'active_revision,allowed_to_print,counts,evidence_kind,files,input_manifest,order_id,paper_plan,physical_print_verified,previews,renderer_identity,request_hash,requires_staff_review,revision,ready,settings_sha256,schema,shop_id,source' ||
+        if (!isRecord(manifest) || Object.keys(manifest).length !== MANIFEST_KEYS.size ||
+            Object.keys(manifest).some(field => !MANIFEST_KEYS.has(field)) ||
             manifest.schema !== PREVIEW_SCHEMA || manifest.shop_id !== snapshot.shop_id ||
             manifest.order_id !== snapshot.order_id || manifest.active_revision !== snapshot.active_revision ||
-            manifest.revision !== snapshot.active_revision || manifest.request_hash !== snapshot.request_hash ||
+            manifest.request_hash !== snapshot.request_hash ||
             canonical(manifest.source) !== canonical(snapshot.source) ||
             canonical(manifest.input_manifest) !== canonical(snapshot.manifest) ||
             manifest.ready !== false || manifest.allowed_to_print !== false ||
@@ -417,11 +422,11 @@ export function createWordReviewPreviewService(options: {
     },
 
     async clearOrder(shopId: string, orderId: string): Promise<void> {
-      for (const [entryKey, entry] of cache) {
-        if (entry.shop_id === shopId && entry.order_id === orderId) {
-          cache.delete(entryKey); await evict(entry);
-        }
-      }
+      const matches = [...cache.entries()].filter(([, entry]) =>
+        entry.shop_id === shopId && entry.order_id === orderId);
+      for (const [entryKey, entry] of matches)
+        if (cache.get(entryKey) === entry) cache.delete(entryKey);
+      await Promise.all(matches.map(([, entry]) => evict(entry)));
     },
 
     async discard(prepared: PreparedWordReviewPreview): Promise<void> {

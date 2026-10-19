@@ -460,7 +460,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
         .header('Content-Security-Policy', "default-src 'none'")
         .send(bytes);
     } catch (error) {
-      await wordReviewPreview.clearOrder(actor.shop_id, params.order_id);
+      await wordReviewPreview.discard(cached);
       throw error;
     }
   });
