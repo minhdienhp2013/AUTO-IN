@@ -4,13 +4,15 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { PgStore } from '../../../backend/storage/database.ts';
 import { buildIntegratedApp } from '../../../backend/composition/runtime.ts';
-import { asSqlPool } from '../../../backend/composition/postgres.ts';
+import { asSqlPool, assertIsolatedSimulationDatabase } from '../../../backend/composition/postgres.ts';
 import { createSyntheticZaloRuntime } from '../../../backend/composition/zalo-simulation.ts';
 
+const url = process.env.TEST_DATABASE_URL;
 test('AI0 synthetic Fastify → PG worker → AI1 draft; unregistered file routes HUMAN', {
-  skip: !process.env.TEST_DATABASE_URL ? 'TEST_DATABASE_URL unset: worker/PG not verified' : false
+  skip: !url ? 'TEST_DATABASE_URL unset: worker/PG not verified' : false
 }, async () => {
-  const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 5 });
+  assertIsolatedSimulationDatabase(url);
+  const pool = new pg.Pool({ connectionString: url, max: 5 });
   const id = randomUUID(), shop = `ai0-worker-${id}`, oa = `oa-${id}`;
   const customer = `customer-${id}`, conversation = `conversation-${id}`;
   const key = randomUUID() + randomUUID();

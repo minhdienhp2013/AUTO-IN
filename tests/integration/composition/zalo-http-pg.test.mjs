@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { buildIntegratedApp } from '../../../backend/composition/runtime.ts';
-import { asSqlPool } from '../../../backend/composition/postgres.ts';
+import { asSqlPool, assertIsolatedSimulationDatabase } from '../../../backend/composition/postgres.ts';
 import { createSyntheticZaloIngress } from '../../../backend/composition/zalo-simulation.ts';
 
 test('synthetic Zalo ingress requires a server-owned OA, shop and long fixture key', () => {
@@ -17,6 +17,7 @@ const url = process.env.TEST_DATABASE_URL;
 test('Fastify raw Zalo fixture verifies signature then commits/deduplicates in PostgreSQL', {
   skip: !url ? 'TEST_DATABASE_URL unset: HTTP/PG webhook composition NOT VERIFIED' : false
 }, async () => {
+  assertIsolatedSimulationDatabase(url);
   const pool = new pg.Pool({ connectionString: url, max: 4 });
   const oa = `synthetic-oa-${randomUUID()}`;
   const shop = `synthetic-shop-${randomUUID()}`;

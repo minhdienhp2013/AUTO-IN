@@ -7,13 +7,12 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import pg from 'pg';
 import {canonical} from '../../../backend/core/model.ts';
+import {assertIsolatedSimulationDatabase} from '../../../backend/composition/postgres.ts';
 const url=process.env.TEST_DATABASE_URL;
 test('REAL PostgreSQL: AI3 processor CLI publishes frozen source to AI1 revision',{
   skip:!url?'TEST_DATABASE_URL unset: product processor PG NOT VERIFIED':false
 },async()=>{
- const parsed=new URL(url);
- assert.ok(['localhost','127.0.0.1','[::1]'].includes(parsed.hostname));
- assert.match(parsed.pathname,/\/(auto_in_test|autoin_test)/);
+ assertIsolatedSimulationDatabase(url);
  const root=await mkdtemp(join(tmpdir(),'autoin-integration-'));
  const input=join(root,'input'),artifacts=join(root,'artifacts');
  const pool=new pg.Pool({connectionString:url});
