@@ -77,7 +77,9 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
         customer_id:customer,role:'customer',verified:true}},
       {token:agentToken,principal:{id:'agent-local',shop_id:shop,
         printer_ids:['RMP7000'],role:'print_agent',verified:true}}
-    ],approvedDocumentEvidence:{artifactRoot,python:'python3',timeoutMs:20000}});
+    ],approvedDocumentEvidence:{artifactRoot,python:'python3',timeoutMs:20000},
+      trustedPrintEvidence:{artifactRoot,printerCapabilities:{simulation_only:true,
+        printer_id:'RMP7000',queue_name:'RMP7000'}}});
     await app.listen({host:'127.0.0.1',port:0});
     const address=app.server.address();
     assert.ok(address && typeof address!=='string');
@@ -105,6 +107,21 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
       const published=JSON.parse(stdout);
       assert.equal(published.revision,2);
       assert.equal(published.requires_reconfirmation,true);
+      const preview=await app.inject({method:'GET',url:'/api/v1/orders/'+id,
+        headers:secureHeaders(login.token)});
+      assert.equal(preview.statusCode,200,JSON.stringify(preview.json()));
+      const evidence=preview.json().current?.print_evidence;
+      assert.ok(evidence && /^[a-f0-9]{64}$/.test(evidence.evidence_sha256),
+        'The server must verify the current PDF manifest and source before staff review');
+      const review=await post('/api/v1/orders/'+id+'/preview-reviews',{
+        expected_revision:2,expected_request_hash:newOrder.json().request_hash,
+        expected_evidence_sha256:evidence.evidence_sha256,decision:'checked',
+        idempotency_key:'preview-review-'+label
+      },login.token);
+      assert.equal(review.statusCode,200,JSON.stringify(review.json()));
+      assert.equal(review.json().revision,2);
+      assert.equal(review.json().request_hash,newOrder.json().request_hash);
+      assert.equal(review.json().evidence_sha256,evidence.evidence_sha256);
       const badApprove=await post('/api/v1/orders/'+id+'/approvals',{
         expected_revision:2,acknowledge_deposit_shortage:false,idempotency_key:'bad-'+label
       },login.token);
