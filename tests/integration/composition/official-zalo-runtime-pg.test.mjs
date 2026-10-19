@@ -168,8 +168,10 @@ test("AI0 CODE-402 runtime: default OFF, signed synthetic quarantine blocks prop
         event_name:"user_send_image",sender:{id:sender},recipient:{id:oa},
         message:{msg_id:"bad-"+suffix}}))});
     assert.equal(rejected.statusCode,403);
-    assert.equal((await pool.query(
-      "SELECT count(*)::int AS n FROM zalo_official_quarantine WHERE oa_id=$1",[oa])).rows[0].n,1);
+    const rejectedSignatureCount=(await pool.query(
+      "SELECT count(*)::int AS n FROM zalo_official_quarantine WHERE oa_id=$1",[oa])).rows[0].n;
+    assert.equal(rejectedSignatureCount,2,
+      "the synthetic image and file receipts remain quarantined; invalid signature adds no row");
 
     const approval=await app.inject({method:"POST",
       url:"/api/v1/orders/"+orderId+"/approvals",

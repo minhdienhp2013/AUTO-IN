@@ -90,6 +90,8 @@ test('AI5 PDF review route: scoped staff POST, private source binding, page byte
     const staff=await core.auth.login(shop,'owner',ownerPassword);
     const foreignStaff=await core.auth.login(foreignShop,'owner',ownerPassword);
     const scope={shop_id:shop,oa_id:oa};
+    await pool.query('INSERT INTO core_shop_zalo_oa_registry(shop_id,oa_id,app_id) VALUES($1,$2,$3)',
+      [shop,oa,'pdf-review-app-'+id]);
     app=buildIntegratedApp({pool:asSqlPool(pool),
       syntheticArtifactIngest:{artifactRoot:sourceRoot,scope},
       previewArtifactRoot:previewRoot,

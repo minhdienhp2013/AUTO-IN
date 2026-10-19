@@ -447,6 +447,7 @@ test('AI0 REAL PG: ONE Zalo PDF -> AI2 suggestion -> staff-scoped AI3 preview ->
       await query('DELETE FROM core_audit WHERE shop_id=$1',[shop]);
       await query('DELETE FROM core_sessions WHERE user_id IN (SELECT id FROM core_users WHERE shop_id=$1)',[shop]);
       await query('DELETE FROM core_idempotency WHERE shop_id=$1',[shop]);
+      await query('DELETE FROM core_preview_review_receipts WHERE shop_id=$1',[shop]);
       await query('DELETE FROM core_revisions WHERE order_id IN (SELECT id FROM core_orders WHERE shop_id=$1)',[shop]);
       await query('DELETE FROM core_orders WHERE shop_id=$1',[shop]);
       await query('DELETE FROM core_conversation_controls WHERE shop_id=$1',[shop]);

@@ -39,7 +39,9 @@ test('REAL PostgreSQL: authenticated mode truth is shop-scoped, simulation-only 
     assert.deepEqual(initial.json(),{
       server_verified:true,mode:'simulation',live_enabled:false,
       physical_print_enabled:false,manual_lock:false,preview_configured:false,
-      synthetic_artifact_ingest_configured:false
+      pdf_review_preview_configured:false,word_review_preview_configured:false,
+      word_review_source_configured:false,synthetic_artifact_ingest_configured:false,
+      trusted_print_evidence_v1_configured:false
     });
     await pool.query('UPDATE core_shop_settings SET manual_lock=true, printing_enabled=true WHERE shop_id=$1',
       [shop]);

@@ -57,8 +57,8 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
       '-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1',
       '-keyout',key,'-out',cert]);
     await run('python3',['-c',
-      'from PIL import Image;import sys;Image.new("RGB",(120,160),"white").save(sys.argv[1])',
-      join(inputRoot,'fixture.png')]);
+      'import fitz,sys;d=fitz.open();p=d.new_page(width=120,height=160);p.draw_rect(fitz.Rect(10,10,70,70));d.save(sys.argv[1]);d.close()',
+      join(inputRoot,'fixture.pdf')]);
     pool=new pg.Pool({connectionString:databaseUrl,connectionTimeoutMillis:5000});
     const core=createCoreModule({pool:asSqlPool(pool)});
     const shop='autoin-test-https-'+randomUUID();
@@ -91,7 +91,7 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     async function orderReadyToDryRun(label){
       const newOrder=await post('/api/v1/orders',{
         customer_id:customer,request_data:{documents:[{
-          artifact_name:'fixture.png',copies:2,duplex:false,paper:'A4'
+          artifact_name:'fixture.pdf',copies:2,duplex:false,paper:'A4'
         }]},idempotency_key:'create-'+label
       },login.token);
       assert.equal(newOrder.statusCode,200,JSON.stringify(newOrder.json()));
@@ -238,7 +238,7 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     assert.ok(staleJob && staleJob.job_id===staleRevision.jobId);
     const revised=await post('/api/v1/orders/'+staleRevision.id+'/revisions',{
       expected_revision:2,
-      request_data:{documents:[{artifact_name:'fixture.png',copies:3,duplex:false,paper:'A4'}]},
+      request_data:{documents:[{artifact_name:'fixture.pdf',copies:3,duplex:false,paper:'A4'}]},
       idempotency_key:'revise-after-claim'
     },login.token);
     assert.equal(revised.statusCode,200,JSON.stringify(revised.json()));
