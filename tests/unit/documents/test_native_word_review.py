@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import stat
 import tempfile
 import zipfile
 
@@ -100,6 +102,41 @@ def test_verified_mock_bundle_repeats_all_scope_and_source_anchors():
             assert manifest["ready"] is False and manifest["allowed_to_print"] is False
     finally:
         review.preview_word_native = original
+
+
+def test_word_artifacts_pass_composition_private_mode_rule_with_umask_022(tmp_path):
+    snapshot = _snapshot()
+    source = snapshot["private_bytes"]["source"]
+    original = review.preview_word_native
+    review.preview_word_native = lambda *_args, **_kwargs: _trusted_observation(source)
+    previous_umask = os.umask(0o022)
+    try:
+        result = review.prepare_native_word_review_from_snapshot(snapshot=snapshot,
+            artifact_root=tmp_path,
+            config=review.NativeWordReviewConfig(allow_word_launch=True))
+    finally:
+        os.umask(previous_umask)
+        review.preview_word_native = original
+
+    assert result["status"] == "REVIEW_REQUIRED"
+    assert result["ready"] is False and result["allowed_to_print"] is False
+    bundle_dir = tmp_path / result["artifact_ref"].split("/", 1)[0]
+    manifest_path = tmp_path / result["artifact_ref"]
+    manifest = json.loads(manifest_path.read_bytes())
+    artifact_paths = [
+        manifest_path,
+        tmp_path / manifest["files"][0]["source_artifact_ref"],
+        *(tmp_path / preview["ref"] for preview in manifest["previews"]),
+    ]
+
+    # This mirrors composition's root/directory/file mode predicate exactly.
+    assert stat.S_IMODE(tmp_path.stat().st_mode) & 0o077 == 0
+    assert stat.S_IMODE(bundle_dir.stat().st_mode) & 0o077 == 0
+    for path in artifact_paths:
+        assert stat.S_IMODE(path.stat().st_mode) & 0o077 == 0, path.name
+    assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o600
+    for preview in manifest["previews"]:
+        assert stat.S_IMODE((tmp_path / preview["ref"]).stat().st_mode) == 0o600
 
 
 def test_hash_binding_and_scope_mutations_fail_closed_before_word_launch():

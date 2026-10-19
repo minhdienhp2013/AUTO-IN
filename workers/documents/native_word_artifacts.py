@@ -119,7 +119,11 @@ def make_word_review_artifacts(*, source: bytes, request_data: Any,
         entries: list[dict[str, Any]] = []
         for index, blob in zip(indices, raw_previews):
             name = f"{source_hash[:16]}-0-p{index + 1}.png"
-            with (folder / name).open("xb") as f:
+            preview_file = folder / name
+            with preview_file.open("xb") as f:
+                # Match composition's private-artifact check even when the
+                # process umask would otherwise create 0644 files.
+                os.chmod(preview_file, 0o600)
                 f.write(blob)
                 f.flush()
                 os.fsync(f.fileno())
@@ -151,6 +155,7 @@ def make_word_review_artifacts(*, source: bytes, request_data: Any,
         }
         manifest_file = folder / "manifest.json"
         with manifest_file.open("x", encoding="utf-8") as f:
+            os.chmod(manifest_file, 0o600)
             json.dump(manifest, f, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
             f.flush()
             os.fsync(f.fileno())
