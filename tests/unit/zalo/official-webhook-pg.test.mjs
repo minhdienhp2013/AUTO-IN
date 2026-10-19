@@ -4,8 +4,10 @@ import {randomUUID,createHash} from "node:crypto";
 import {createOfficialZaloIngress} from "../../../backend/integrations/zalo/official-webhook.ts";
 import {PostgresInboundEventRepository} from "../../../backend/integrations/zalo/postgres-events.ts";
 import {createZaloTransactions} from "../../../backend/integrations/zalo/transaction-runner.ts";
+import {assertIsolatedSimulationDatabase} from "../../../backend/composition/postgres.ts";
 
 const url=process.env.TEST_DATABASE_URL??process.env.AUTOIN_TEST_DATABASE_URL;
+if(url)assertIsolatedSimulationDatabase(url);
 let pg;
 if(url)try{pg=await import("pg")}catch{/* recorded by explicit test SKIP */}
 test("Official documented MAC -> durable PostgreSQL ingress: 2 independent pools, duplicate/invalid sig safe",{

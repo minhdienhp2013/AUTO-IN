@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import {randomUUID,randomBytes} from "node:crypto";
 import {readFile} from "node:fs/promises";
 import {fileURLToPath} from "node:url";
+import {assertIsolatedSimulationDatabase} from "../../../backend/composition/postgres.ts";
 import {createZaloPipeline} from "../../../backend/integrations/zalo/pipeline.ts";
 import {SyntheticFixtureNormalizer,SyntheticTestVerifier} from "../../../backend/integrations/zalo/protocol.ts";
 import {createZaloTransactions} from "../../../backend/integrations/zalo/transaction-runner.ts";
 
 const databaseUrl=process.env.AUTOIN_TEST_DATABASE_URL??process.env.TEST_DATABASE_URL;
+if(databaseUrl)assertIsolatedSimulationDatabase(databaseUrl);
 let pg;
 if(databaseUrl)try{pg=await import("pg")}catch{/* report actual blocker */}
 test("CODE-402 REAL PostgreSQL: credential-bound candidates, dual workers, restart, replay and stale generation",{

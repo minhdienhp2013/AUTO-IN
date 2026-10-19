@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
+import {assertIsolatedSimulationDatabase} from '../../../backend/composition/postgres.ts';
 import {createZaloPipeline} from '../../../backend/integrations/zalo/pipeline.ts';
 import {createZaloTransactions} from '../../../backend/integrations/zalo/transaction-runner.ts';
 import {SyntheticFixtureNormalizer,SyntheticTestVerifier} from '../../../backend/integrations/zalo/protocol.ts';
 
 const databaseUrl=process.env.TEST_DATABASE_URL ?? process.env.AUTOIN_TEST_DATABASE_URL;
+if(databaseUrl)assertIsolatedSimulationDatabase(databaseUrl);
 let pg,ai1,core;
 if(databaseUrl) {
   try {

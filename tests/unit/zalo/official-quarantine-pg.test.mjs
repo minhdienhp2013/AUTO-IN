@@ -2,10 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash,randomUUID} from "node:crypto";
 import {readFile} from "node:fs/promises";
+import {assertIsolatedSimulationDatabase} from "../../../backend/composition/postgres.ts";
 import {createOfficialZaloQuarantineReceiver} from "../../../backend/integrations/zalo/official-quarantine.ts";
 import {createZaloTransactions} from "../../../backend/integrations/zalo/transaction-runner.ts";
 
 const url=process.env.TEST_DATABASE_URL??process.env.AUTOIN_TEST_DATABASE_URL;
+if(url)assertIsolatedSimulationDatabase(url);
 let pg;
 if(url)try{pg=await import("pg")}catch{/* explicit PG SKIP in no-PG mode */}
 test("REAL PostgreSQL AI2 signed unsupported OA quarantine: two workers, replay, ACK loss, reviewed gate and wrong MAC",{

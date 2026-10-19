@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {randomBytes} from "node:crypto";
 import {readFile} from "node:fs/promises";
 import {fileURLToPath} from "node:url";
+import {assertIsolatedSimulationDatabase} from "../../../backend/composition/postgres.ts";
 import {PostgresInboundEventRepository} from "../../../backend/integrations/zalo/postgres-events.ts";
 import {PostgresConversationQueue,PostgresOutboundRepository} from "../../../backend/integrations/zalo/postgres-durable.ts";
 import {OutboundDispatcher} from "../../../backend/conversation/gate.ts";
@@ -11,6 +12,7 @@ import {createZaloPipeline} from "../../../backend/integrations/zalo/pipeline.ts
 import {SyntheticFixtureNormalizer,SyntheticTestVerifier} from "../../../backend/integrations/zalo/protocol.ts";
 
 const databaseUrl=process.env.AUTOIN_TEST_DATABASE_URL;
+if(databaseUrl)assertIsolatedSimulationDatabase(databaseUrl);
 let pg;
 if(databaseUrl)try{pg=await import("pg")}catch{ /* clearly SKIP if dependency absent */ }
 test("CODE-202 PostgreSQL real transaction/restart/concurrency",{

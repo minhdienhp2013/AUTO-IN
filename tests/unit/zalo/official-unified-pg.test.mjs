@@ -5,8 +5,10 @@ import {readFile} from "node:fs/promises";
 import {createOfficialZaloVerifiedIngress} from "../../../backend/integrations/zalo/official-quarantine.ts";
 import {PostgresInboundEventRepository} from "../../../backend/integrations/zalo/postgres-events.ts";
 import {createZaloTransactions} from "../../../backend/integrations/zalo/transaction-runner.ts";
+import {assertIsolatedSimulationDatabase} from "../../../backend/composition/postgres.ts";
 
 const url=process.env.TEST_DATABASE_URL??process.env.AUTOIN_TEST_DATABASE_URL;
+if(url)assertIsolatedSimulationDatabase(url);
 let pg;
 if(url)try{pg=await import("pg")}catch{/* explicit PG SKIP */}
 test("REAL PostgreSQL AI2 unified verified official ingress: text/held image-file-button, 2 pools, replay, no false consent",{
