@@ -96,7 +96,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/autoin-chromium-bin"
           ln -sfn "$playwright_chrome" "$RUNNER_TEMP/autoin-chromium-bin/chromium"
           echo "$RUNNER_TEMP/autoin-chromium-bin" >> "$GITHUB_PATH"
-      - name: AI4 Chromium 28 synthetic desktop/mobile cases
+      - name: AI4 Chromium 30 synthetic desktop/mobile scenario-viewport cases
         if: hashFiles('tests/ui/code008-chromium.py') != ''
         working-directory: web
         run: npm run test:chromium:code008
