@@ -8,12 +8,23 @@ export function assertIsolatedSimulationDatabase(connectionString: string): void
   let url: URL;
   try { url = new URL(connectionString); }
   catch { throw new Error('DATABASE_URL must be a valid PostgreSQL URL'); }
-  const localHosts = new Set(['localhost', '127.0.0.1', '[::1]']);
-  const database = decodeURIComponent(url.pathname.slice(1));
+  const refusal = () => new Error(
+    'Simulation server requires an isolated autoin_test database on numeric loopback at explicit port 5432 without URL overrides'
+  );
+  const authorityHost = url.hostname.replace(/^\[(.+)\]$/, '$1').toLowerCase();
+  const numericLoopbackHosts = new Set(['127.0.0.1', '::1']);
   if (!['postgres:', 'postgresql:'].includes(url.protocol) ||
-      !localHosts.has(url.hostname) ||
-      !/^(?:autoin_test|auto_in_test)(?:_[a-z0-9]+)?$/i.test(database)) {
-    throw new Error('Simulation server requires an isolated autoin_test database on localhost');
+      !numericLoopbackHosts.has(authorityHost) || url.port !== '5432' || url.search || url.hash) {
+    throw refusal();
+  }
+  let database: string;
+  try { database = decodeURIComponent(url.pathname.slice(1)); }
+  catch { throw refusal(); }
+  // Requiring explicit numeric host + port and rejecting URL parameters keeps
+  // PGHOST/PGPORT and pg-connection-string query overrides from redirecting
+  // the pool constructed after this guard.
+  if (!/^(?:autoin_test|auto_in_test)(?:_[a-z0-9]+)?$/i.test(database)) {
+    throw refusal();
   }
 }
 

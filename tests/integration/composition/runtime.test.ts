@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import pg from 'pg';
 import { buildIntegratedApp, identityResolver } from '../../../backend/composition/runtime.js';
 import { assertIsolatedSimulationDatabase } from '../../../backend/composition/postgres.js';
 import { createZaloRawWebhook } from '../../../backend/composition/zalo-http.js';
@@ -80,18 +81,51 @@ test('identity requires server configuration', async () => {
   await assert.rejects(identityResolver([])({headers:{authorization:'Bearer forged'}}));
 });
 
-test('simulation server accepts only isolated localhost PostgreSQL databases', () => {
+test('simulation server accepts only isolated numeric-loopback PostgreSQL targets', () => {
   for (const url of [
     'postgresql://test:test@127.0.0.1:5432/autoin_test_305',
-    'postgres://test:test@localhost:5432/auto_in_test',
     'postgresql://test:test@[::1]:5432/autoin_test_ci',
   ]) assert.doesNotThrow(() => assertIsolatedSimulationDatabase(url));
   for (const url of [
     'postgresql://test:test@db.example.com:5432/autoin_test_305',
+    'postgresql://test:test@localhost:5432/autoin_test_305',
+    'postgresql://test:test@127.0.0.1/autoin_test_305',
+    'postgresql://test:test@127.0.0.1:6543/autoin_test_305',
     'postgresql://test:test@127.0.0.1:5432/production',
     'postgresql://test:test@127.0.0.1:5432/my_autoin_test',
+    'postgresql://test:test@127.0.0.1:5432/autoin_test_305?host=remote.example',
+    'postgresql://test:test@127.0.0.1:5432/autoin_test_305?host=127.0.0.1',
+    'postgresql://test:test@127.0.0.1:5432/autoin_test_305?hostaddr=192.0.2.10',
     'mysql://test:test@localhost:3306/autoin_test',
-  ]) assert.throws(() => assertIsolatedSimulationDatabase(url));
+  ]) assert.throws(() => assertIsolatedSimulationDatabase(url),
+    /isolated autoin_test database on numeric loopback at explicit port 5432/);
+});
+
+test('simulation database guard checks pg effective target without connecting', () => {
+  const previousPgPort = process.env.PGPORT;
+  const previousPgHost = process.env.PGHOST;
+  try {
+    process.env.PGPORT = '6543';
+    process.env.PGHOST = 'remote.example';
+    const safeUrl = 'postgresql://test:test@127.0.0.1:5432/autoin_test_ci';
+    const safeClient = new pg.Client({ connectionString: safeUrl });
+    const safeTarget = (safeClient as unknown as {connectionParameters:{host:string;port:number;database:string}}).connectionParameters;
+    assert.equal(safeTarget.host, '127.0.0.1');
+    assert.equal(safeTarget.port, 5432);
+    assert.equal(safeTarget.database, 'autoin_test_ci');
+    assert.doesNotThrow(() => assertIsolatedSimulationDatabase(safeUrl));
+
+    const portlessUrl = 'postgresql://test:test@127.0.0.1/autoin_test_ci';
+    const portlessClient = new pg.Client({ connectionString: portlessUrl });
+    const portlessTarget = (portlessClient as unknown as {connectionParameters:{port:number}}).connectionParameters;
+    assert.equal(portlessTarget.port, 6543);
+    assert.throws(() => assertIsolatedSimulationDatabase(portlessUrl), /explicit port 5432/);
+  } finally {
+    if (previousPgPort === undefined) delete process.env.PGPORT;
+    else process.env.PGPORT = previousPgPort;
+    if (previousPgHost === undefined) delete process.env.PGHOST;
+    else process.env.PGHOST = previousPgHost;
+  }
 });
 
 test('Zalo Fastify adapter passes exact raw bytes and signature headers to AI2', async () => {
