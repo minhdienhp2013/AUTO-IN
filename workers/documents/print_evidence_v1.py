@@ -224,9 +224,35 @@ def create_print_evidence_v1(*, context: dict[str, Any],
         native_word = manifest["schema"] == "ai3.native_word_preview.v1"
         native_pdf = manifest["schema"] == "ai3.native_pdf_preview.v1"
         if native_word:
-            _check(manifest.get("revision") == context["revision"] and
+            source_anchor = manifest.get("source")
+            input_manifest_anchor = manifest.get("input_manifest")
+            _check(type(manifest.get("active_revision")) is int and
+                   manifest.get("shop_id") == context["shop_id"] and
+                   manifest.get("order_id") == context["order_id"] and
+                   manifest.get("active_revision") == context["revision"] and
                    manifest.get("ready") is False and
-                   manifest.get("requires_staff_review") is True,
+                   manifest.get("allowed_to_print") is False and
+                   manifest.get("requires_staff_review") is True and
+                   manifest.get("physical_print_verified") is False and
+                   manifest.get("evidence_kind") == "windows_word_com_preview_only" and
+                   type(source_anchor) is dict and set(source_anchor) == {
+                       "format", "artifact_ref", "sha256", "size_bytes"} and
+                   source_anchor.get("format") == "DOCX" and
+                   type(source_anchor.get("artifact_ref")) is str and
+                   source_anchor["artifact_ref"].lower().endswith(".docx") and
+                   type(source_anchor.get("sha256")) is str and
+                   HEX.fullmatch(source_anchor["sha256"]) is not None and
+                   type(source_anchor.get("size_bytes")) is int and
+                   source_anchor["size_bytes"] > 0 and
+                   type(input_manifest_anchor) is dict and
+                   set(input_manifest_anchor) == {"ref", "sha256"} and
+                   type(input_manifest_anchor.get("ref")) is str and
+                   input_manifest_anchor["ref"].endswith("/manifest.json") and
+                   input_manifest_anchor["ref"].split("/", 1)[0] ==
+                       source_anchor["artifact_ref"].split("/", 1)[0] and
+                   type(input_manifest_anchor.get("sha256")) is str and
+                   HEX.fullmatch(input_manifest_anchor["sha256"]) is not None and
+                   type(manifest.get("files")) is list and len(manifest["files"]) == 1,
                    "WORD_REVIEW_PENDING")
         if native_pdf:
             import fitz
@@ -276,6 +302,11 @@ def create_print_evidence_v1(*, context: dict[str, Any],
                    "SOURCE_REF_UNVERIFIED")
             extension = SOURCE.fullmatch(ref).group(1)
             digest = _sha(raw)
+            if native_word:
+                source_anchor = manifest["source"]
+                _check(source_anchor["sha256"] == digest and
+                       source_anchor["size_bytes"] == len(raw),
+                       "WORD_SOURCE_ANCHOR_UNVERIFIED")
             _check(entry.get("file_sha256") == digest and
                    entry.get("size_bytes") == len(raw) and
                    entry.get("settings_sha256") == _canonical_hash(setup) and

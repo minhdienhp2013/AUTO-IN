@@ -20,6 +20,37 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def _word_review_anchors(source, request_data, revision, *, shop_id="test-shop",
+                         order_id="word-order"):
+    """Build the current trusted snapshot anchors for direct artifact tests."""
+    request_hash = sha(_canonical(request_data).encode())
+    artifact_name = request_data["documents"][0]["artifact_name"]
+    bundle_ref = f"word-input/{artifact_name}"
+    input_manifest_ref = "word-input/manifest.json"
+    source_anchor = {"format": "DOCX", "artifact_ref": bundle_ref,
+                     "sha256": sha(source), "size_bytes": len(source)}
+    input_manifest = {
+        "schema": "ai0.word_review_manifest.v1",
+        "manifest_ref": input_manifest_ref,
+        "shop_id": shop_id,
+        "order_id": order_id,
+        "active_revision": revision,
+        "request_hash": request_hash,
+        "source": source_anchor,
+    }
+    return {
+        "shop_id": shop_id,
+        "order_id": order_id,
+        "active_revision": revision,
+        "request_hash": request_hash,
+        "source": source_anchor,
+        "input_manifest": {
+            "ref": input_manifest_ref,
+            "sha256": sha(_canonical(input_manifest).encode()),
+        },
+    }
+
+
 def _pdf():
     with fitz.open() as f:
         for n in range(3):
@@ -176,8 +207,8 @@ def test_word_fake_com_cannot_produce_verified_bundle(tmp_path):
     data = {"documents": [{"artifact_name": "source.docx", "copies": 2,
                            "paper": "A4", "duplex": True}]}
     result = make_word_review_artifacts(
-        source=source, trusted_request_data=data, revision=2,
-        expected_request_hash=sha(_canonical(data).encode()), observation=observation,
+        source=source, request_data=data,
+        anchors=_word_review_anchors(source, data, 2), observation=observation,
         artifact_root=tmp_path)
     assert result["status"] == "NEEDS_HUMAN"
     assert result["reason_code"] == "WORD_NATIVE_EVIDENCE_UNVERIFIED"
@@ -206,8 +237,8 @@ def test_synthetic_native_word_preview_bundle_still_requires_staff(tmp_path):
     data = {"documents": [{"artifact_name": "source.docx", "copies": 2,
                            "paper": "A4", "duplex": True}]}
     result = make_word_review_artifacts(
-        source=source, trusted_request_data=data, revision=2,
-        expected_request_hash=sha(_canonical(data).encode()),
+        source=source, request_data=data,
+        anchors=_word_review_anchors(source, data, 2),
         observation=fake, artifact_root=tmp_path)
     assert result["status"] == "REVIEW_REQUIRED", result
     assert result["ready"] is False and result["allowed_to_print"] is False
@@ -215,6 +246,6 @@ def test_synthetic_native_word_preview_bundle_still_requires_staff(tmp_path):
     manifest = json.loads((tmp_path / result["artifact_ref"]).read_bytes())
     assert manifest["schema"] == "ai3.native_word_preview.v1"
     assert manifest["ready"] is False
-    assert manifest["revision"] == 2
+    assert manifest["active_revision"] == 2
     assert manifest["files"][0]["file_sha256"] == sha(source)
     assert (tmp_path / manifest["files"][0]["source_artifact_ref"]).read_bytes() == source

@@ -14,7 +14,7 @@ from agents.windows.native_simulation_review import (
     review_simulation_only,
 )
 from tests.unit.documents.test_native_word_pdf_v1 import (
-    _ready_pdf, _docx, FakeWordSession, sha,
+    _ready_pdf, _docx, _word_review_anchors, FakeWordSession, sha,
 )
 from agents.windows.native_word_document import preview_word_native
 from workers.documents.native_word_artifacts import make_word_review_artifacts
@@ -502,15 +502,22 @@ def test_word_original_docx_and_renderer_version_bind_and_review_only(tmp_path):
                                          "version": "SYNTHETIC-NOT-REAL"}}
     request = {"documents": [{"artifact_name": "synthetic.docx", "copies": 2,
                               "paper": "A4", "duplex": True}]}
+    anchors = _word_review_anchors(data, request, 3,
+                                   shop_id="synthetic-shop", order_id="word-order")
     result = make_word_review_artifacts(
-        source=data, trusted_request_data=request,
-        expected_request_hash=sha(_canonical(request).encode()),
-        revision=3, observation=observation, artifact_root=tmp_path)
+        source=data, request_data=request, anchors=anchors,
+        observation=observation, artifact_root=tmp_path)
     assert result["status"] == "REVIEW_REQUIRED", result
     assert result["allowed_to_print"] is False
     manifest_bytes = (tmp_path / result["artifact_ref"]).read_bytes()
     manifest = json.loads(manifest_bytes)
     assert manifest["ready"] is False
+    assert manifest["shop_id"] == anchors["shop_id"]
+    assert manifest["order_id"] == anchors["order_id"]
+    assert manifest["active_revision"] == anchors["active_revision"]
+    assert manifest["request_hash"] == anchors["request_hash"]
+    assert manifest["source"] == anchors["source"]
+    assert manifest["input_manifest"] == anchors["input_manifest"]
     assert manifest["renderer_identity"] == observation["renderer_identity"]
     source = (tmp_path / manifest["files"][0]["source_artifact_ref"]).read_bytes()
     assert source == data  # NEVER substitute Word-exported preview PDF
