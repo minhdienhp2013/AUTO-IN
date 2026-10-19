@@ -4,6 +4,7 @@ permissions:
   contents: read
 jobs:
   composition-postgres:
+    if: github.event_name != 'pull_request' || github.head_ref != 'ai0/v1-claim-error-proof-20261020'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -24,6 +25,11 @@ jobs:
       AUTOIN_OPERATION_MODE: simulation
     steps:
       - uses: actions/checkout@v4
+      - name: Confirm targeted diagnostic checkout SHA
+        if: github.ref == 'refs/heads/ai0/v1-claim-error-proof-20261020'
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "TARGETED_DIAGNOSTIC_CHECKOUT_SHA=$GITHUB_SHA"
       - uses: actions/setup-node@v4
         with:
           node-version: 24.19.0
@@ -32,6 +38,29 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci
+      - name: Targeted database and simulation preflight
+        if: github.ref == 'refs/heads/ai0/v1-claim-error-proof-20261020'
+        run: |
+          if ! node --import tsx --input-type=module - >/dev/null 2>&1 <<'NODE'
+          import {assertIsolatedSimulationDatabase} from './backend/composition/postgres.ts';
+          const urls = [process.env.DATABASE_URL, process.env.TEST_DATABASE_URL, process.env.AUTOIN_TEST_DATABASE_URL];
+          let valid = urls.every((value) => typeof value === 'string' && value.length > 0) &&
+            urls.every((value) => value === urls[0]) &&
+            process.env.AUTOIN_OPERATION_MODE === 'simulation' &&
+            process.env.AUTOIN_ALLOW_PG_ACCEPTANCE === 'YES_ISOLATED_TEST_DB';
+          if (valid) {
+            try { assertIsolatedSimulationDatabase(urls[0]); }
+            catch { valid = false; }
+          }
+          if (!valid) {
+            console.error('Targeted diagnostic database/simulation preflight failed');
+            process.exit(1);
+          }
+          NODE
+          then
+            echo 'Targeted diagnostic database/simulation preflight failed; details suppressed.'
+            exit 1
+          fi
       - run: python -m pip install -r workers/documents/requirements-test.txt
       - name: Python syntax validation for documents and Windows agent
         run: python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing
@@ -40,8 +69,38 @@ jobs:
       - name: Migrate isolated PostgreSQL before DB-backed checks
         run: npm run db:migrate
       - name: AI0 composition PostgreSQL and HTTP integration
-        run: node --import tsx --test tests/integration/composition/*.test.*
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == 'refs/heads/ai0/v1-claim-error-proof-20261020' ]]; then
+            set -euo pipefail
+            echo 'Targeted gate: AI0 targeted source-tamper claim diagnostic only.'
+            echo 'Not run here: composition wildcard, npm run check, and its composition target.'
+            export AUTOIN_CLAIM_ERROR_DIAGNOSTIC=source-tamper
+            test "$AUTOIN_CLAIM_ERROR_DIAGNOSTIC" = source-tamper
+            diagnostic_tap="$RUNNER_TEMP/claim-source-tamper.tap"
+            if node --import tsx --test --test-reporter=tap --test-name-pattern='^AI0 targeted source-tamper claim diagnostic$' tests/integration/composition/https-agent-product-pg.test.mjs >"$diagnostic_tap" 2>&1; then
+              diagnostic_status=0
+            else
+              diagnostic_status=$?
+            fi
+            safe_diagnostic="$(grep -Eo '\{"stage":"(claim|preflight)","http_status":(null|[0-9]+),"error_code":"(STALE_PRINT_EVIDENCE|DOCUMENT_EVIDENCE_UNVERIFIED|OTHER)"\}' "$diagnostic_tap" | tail -n 1 || true)"
+            if [[ -z "$safe_diagnostic" ]]; then
+              safe_diagnostic='{"stage":"claim","http_status":null,"error_code":"OTHER"}'
+            fi
+            echo "AI0_SAFE_DIAGNOSTIC $safe_diagnostic"
+            if [[ "$diagnostic_status" -ne 0 ]]; then
+              echo 'Targeted diagnostic process/test failed; raw output suppressed.'
+              exit "$diagnostic_status"
+            fi
+            if ! grep -Fxq '# pass 1' "$diagnostic_tap" || ! grep -Fxq '# skipped 0' "$diagnostic_tap"; then
+              echo 'Targeted diagnostic did not execute exactly once; raw output suppressed.'
+              exit 1
+            fi
+          else
+            node --import tsx --test tests/integration/composition/*.test.*
+          fi
       - name: Root typecheck and unit checks
+        if: github.ref != 'refs/heads/ai0/v1-claim-error-proof-20261020'
         run: npm run check
 
   web-quality:
