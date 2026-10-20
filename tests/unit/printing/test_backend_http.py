@@ -215,6 +215,21 @@ def test_claim_ordinary_json_error_remains_unknown_without_driver(monkeypatch):
     assert driver.calls == 0
 
 
+def test_claim_truncated_json_error_remains_unknown_without_driver(monkeypatch):
+    body = b'{"error":{"code":"STALE_PRINT_EVIDENCE"'
+    try:
+        json.loads(body)
+    except json.JSONDecodeError:
+        pass
+    else:
+        raise AssertionError('test body must be malformed/truncated JSON')
+
+    result, driver = _run_agent_with_claim_error(monkeypatch, _claim_http_error(409, body))
+
+    assert result == {'status': 'UNKNOWN', 'reason': 'CLAIM_AMBIGUOUS'}
+    assert driver.calls == 0
+
+
 def test_claim_error_body_over_limit_remains_unknown_without_driver(monkeypatch):
     body = (b'{"error":{"code":"STALE_PRINT_EVIDENCE"},"padding":"' +
             b'x' * 4096 + b'"}')
