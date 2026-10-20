@@ -197,22 +197,33 @@ jobs:
           const fields=['stage','http_status','error_code'];
           const stages=new Set(['claim','preflight']);
           const codes=new Set(['STALE_PRINT_EVIDENCE','DOCUMENT_EVIDENCE_UNVERIFIED','OTHER']);
-          let record;
+          let record,evidenceAvailable=true;
           try{record=JSON.parse(await readFile(process.env.AUTOIN_SAFE_DIAGNOSTIC_FILE,'utf8'));}
-          catch{console.log('diagnostic evidence unavailable');process.exit(1);}
-          const valid=record&&typeof record==='object'&&!Array.isArray(record)&&
-            Object.keys(record).length===fields.length&&fields.every(key=>Object.hasOwn(record,key))&&
-            stages.has(record.stage)&&(record.http_status===null||Number.isInteger(record.http_status))&&
-            codes.has(record.error_code);
-          if(!valid){console.log('diagnostic evidence unavailable');process.exit(1);}
-          const safe={stage:record.stage,http_status:record.http_status,error_code:record.error_code};
-          console.log(`Observed diagnostic ${JSON.stringify(safe)}`);
-          const exact=safe.stage==='claim'&&safe.http_status===409&&safe.error_code==='STALE_PRINT_EVIDENCE';
-          if(!exact||process.env.TARGET_TEST_PASSED!=='1'){
-            console.log('diagnostic unresolved');
-            process.exit(1);
+          catch{
+            console.log('diagnostic evidence unavailable');
+            evidenceAvailable=false;
+            process.exitCode=1;
           }
-          console.log('Targeted diagnostic verified.');
+          if(evidenceAvailable){
+            const valid=record&&typeof record==='object'&&!Array.isArray(record)&&
+              Object.keys(record).length===fields.length&&fields.every(key=>Object.hasOwn(record,key))&&
+              stages.has(record.stage)&&(record.http_status===null||Number.isInteger(record.http_status))&&
+              codes.has(record.error_code);
+            if(!valid){
+              console.log('diagnostic evidence unavailable');
+              process.exitCode=1;
+            }else{
+              const safe={stage:record.stage,http_status:record.http_status,error_code:record.error_code};
+              console.log(`Observed diagnostic ${JSON.stringify(safe)}`);
+              const exact=safe.stage==='claim'&&safe.http_status===409&&safe.error_code==='STALE_PRINT_EVIDENCE';
+              if(!exact||process.env.TARGET_TEST_PASSED!=='1'){
+                console.log('diagnostic unresolved');
+                process.exitCode=1;
+              }else{
+                console.log('Targeted diagnostic verified.');
+              }
+            }
+          }
           NODE
           then
             :
