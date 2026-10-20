@@ -61,45 +61,56 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
       join(inputRoot,'fixture.pdf')]);
     pool=new pg.Pool({connectionString:databaseUrl,connectionTimeoutMillis:5000});
     const core=createCoreModule({pool:asSqlPool(pool)});
-    const shop='autoin-test-https-'+randomUUID();
-    const password='private-synthetic-'+randomUUID();
-    const customer='synthetic-customer';
-    const agentToken=randomUUID()+randomUUID();
-    const customerToken=randomUUID()+randomUUID();
-    await pool.query('INSERT INTO core_shop_settings(shop_id,open_at,close_at) VALUES($1,$2,$3)',
-      [shop,'00:00','24:00']);
-    await core.auth.bootstrapOwner({shop_id:shop,username:'owner',password,bootstrap_enabled:true});
-    const login=await core.auth.login(shop,'owner',password);
+    // Claim is shop/printer queue scoped, not order scoped. Keep every scenario
+    // in its own synthetic shop so a fail-closed tamper job remains visible in
+    // its own queue without intercepting a later scenario's claim.
+    const scenarioLabels=['normal','tampered','tampered-source','tampered-preview',
+      'request-hash-mismatch','stale-revision','lost-mark-ack','crash'];
+    const scopes=new Map();
+    for(const label of scenarioLabels){
+      const shop='autoin-test-https-'+randomUUID();
+      const password='private-synthetic-'+randomUUID();
+      const scope={shop,customer:'synthetic-customer-'+randomUUID(),
+        customerPrincipalId:'verified-customer-'+randomUUID(),agentPrincipalId:'agent-local-'+randomUUID(),
+        agentToken:randomUUID()+randomUUID(),customerToken:randomUUID()+randomUUID()};
+      await pool.query('INSERT INTO core_shop_settings(shop_id,open_at,close_at) VALUES($1,$2,$3)',
+        [shop,'00:00','24:00']);
+      await core.auth.bootstrapOwner({shop_id:shop,username:'owner',password,bootstrap_enabled:true});
+      scope.login=await core.auth.login(shop,'owner',password);
+      scopes.set(label,scope);
+    }
     app=buildIntegratedApp({pool:asSqlPool(pool),tls:{
       key:await readFile(key),cert:await readFile(cert)
-    },identities:[
-      {token:customerToken,principal:{id:'verified-customer',shop_id:shop,
-        customer_id:customer,role:'customer',verified:true}},
-      {token:agentToken,principal:{id:'agent-local',shop_id:shop,
+    },identities:[...scopes.values()].flatMap(scope=>[
+      {token:scope.customerToken,principal:{id:scope.customerPrincipalId,shop_id:scope.shop,
+        customer_id:scope.customer,role:'customer',verified:true}},
+      {token:scope.agentToken,principal:{id:scope.agentPrincipalId,shop_id:scope.shop,
         printer_ids:['RMP7000'],role:'print_agent',verified:true}}
-    ],approvedDocumentEvidence:{artifactRoot,python:'python3',timeoutMs:20000},
+    ]),approvedDocumentEvidence:{artifactRoot,python:'python3',timeoutMs:20000},
       trustedPrintEvidence:{artifactRoot,printerCapabilities:{simulation_only:true,
         printer_id:'RMP7000',queue_name:'RMP7000'}}});
     await app.listen({host:'127.0.0.1',port:0});
     const address=app.server.address();
     assert.ok(address && typeof address!=='string');
     const url='https://127.0.0.1:'+address.port;
-    const pythonEnv={...process.env,AUTO_IN_AGENT_TOKEN:agentToken,
-      SSL_CERT_FILE:cert,PYTHONPATH:process.cwd(),PYTHONNOUSERSITE:'1'};
+    const agentEnv=scope=>({...process.env,AUTO_IN_AGENT_TOKEN:scope.agentToken,
+      SSL_CERT_FILE:cert,PYTHONPATH:process.cwd(),PYTHONNOUSERSITE:'1'});
     async function post(path,payload,token){
       return app.inject({method:'POST',url:path,payload,
         headers:secureHeaders(token)});
     }
     async function orderReadyToDryRun(label){
+      const scope=scopes.get(label);
+      assert.ok(scope,`Scenario must have an isolated shop queue: ${label}`);
       const newOrder=await post('/api/v1/orders',{
-        customer_id:customer,request_data:{documents:[{
+        customer_id:scope.customer,request_data:{documents:[{
           artifact_name:'fixture.pdf',copies:2,duplex:false,paper:'A4'
         }]},idempotency_key:'create-'+label
-      },login.token);
+      },scope.login.token);
       assert.equal(newOrder.statusCode,200,JSON.stringify(newOrder.json()));
       const id=newOrder.json().order_id;
       assert.ok(id);
-      const {stdout}=await run(process.execPath,['--import','tsx','scripts/process-order.ts',shop,id],{
+      const {stdout}=await run(process.execPath,['--import','tsx','scripts/process-order.ts',scope.shop,id],{
         env:{...process.env,DATABASE_URL:databaseUrl,AUTOIN_INPUT_ROOT:inputRoot,
           AUTOIN_ARTIFACT_ROOT:artifactRoot,AUTOIN_PROCESSOR_ID:'ai0-verified-fixture',
           AUTOIN_PYTHON:'python3'}
@@ -108,7 +119,7 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
       assert.equal(published.revision,2);
       assert.equal(published.requires_reconfirmation,true);
       const preview=await app.inject({method:'GET',url:'/api/v1/orders/'+id,
-        headers:secureHeaders(login.token)});
+        headers:secureHeaders(scope.login.token)});
       assert.equal(preview.statusCode,200,JSON.stringify(preview.json()));
       const evidence=preview.json().current?.print_evidence;
       assert.ok(evidence && /^[a-f0-9]{64}$/.test(evidence.evidence_sha256),
@@ -117,33 +128,33 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
         expected_revision:2,expected_request_hash:newOrder.json().request_hash,
         expected_evidence_sha256:evidence.evidence_sha256,decision:'checked',
         idempotency_key:'preview-review-'+label
-      },login.token);
+      },scope.login.token);
       assert.equal(review.statusCode,200,JSON.stringify(review.json()));
       assert.equal(review.json().revision,2);
       assert.equal(review.json().request_hash,newOrder.json().request_hash);
       assert.equal(review.json().evidence_sha256,evidence.evidence_sha256);
       const badApprove=await post('/api/v1/orders/'+id+'/approvals',{
         expected_revision:2,acknowledge_deposit_shortage:false,idempotency_key:'bad-'+label
-      },login.token);
+      },scope.login.token);
       assert.notEqual(badApprove.statusCode,200,
         'No approval without verified customer reconfirmation');
       assert.equal(code(badApprove.json()),'CUSTOMER_NOT_CONFIRMED');
       const confirm=await post('/api/v1/orders/'+id+'/confirmations',{
         expected_revision:2,kind:'request',idempotency_key:'confirm-'+label
-      },customerToken);
+      },scope.customerToken);
       assert.equal(confirm.statusCode,200,JSON.stringify(confirm.json()));
       const approve=await post('/api/v1/orders/'+id+'/approvals',{
         expected_revision:2,acknowledge_deposit_shortage:false,idempotency_key:'approve-'+label
-      },login.token);
+      },scope.login.token);
       assert.equal(approve.statusCode,200,JSON.stringify(approve.json()));
-      return {id,jobId:approve.json().job_id};
+      return {...scope,id,jobId:approve.json().job_id};
     }
     const normal=await orderReadyToDryRun('normal');
     // Python's real urllib HTTPS transport uses the private CA; the only driver
     // is DryRunDriver. A real machine cannot be reached by this test.
     const agentArgs=['-m','agents.windows.cli','--api-base-url',url,
       '--journal',join(scratch,'normal.sqlite')];
-    const first=await run('python3',agentArgs,{env:pythonEnv});
+    const first=await run('python3',agentArgs,{env:agentEnv(normal)});
     const outcome=JSON.parse(first.stdout.trim());
     assert.equal(outcome.result.status,'SIMULATED_DONE',JSON.stringify(outcome));
     assert.equal(outcome.result.job_id,normal.jobId);
@@ -152,7 +163,7 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     async function manifestFor(order){
       const anchor=await pool.query(
         'SELECT artifact_ref,manifest_sha256 FROM ai0_verified_plan_manifests WHERE shop_id=$1 AND order_id=$2 AND revision=2',
-        [shop,order.id]);
+        [order.shop,order.id]);
       assert.equal(anchor.rows.length,1);
       const path=join(artifactRoot,anchor.rows[0].artifact_ref);
       const raw=await readFile(path);
@@ -161,7 +172,7 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     async function assertEvidenceRefusalBeforeJournal(order,label){
       const journalPath=join(scratch,label+'.sqlite');
       const attempt=await run('python3',['-m','agents.windows.cli','--api-base-url',url,
-        '--journal',journalPath],{env:pythonEnv}).then(value=>({value}),error=>({error}));
+        '--journal',journalPath],{env:agentEnv(order)}).then(value=>({value}),error=>({error}));
       assert.ok(attempt.error,'Unverified document evidence must stop the agent');
       assert.equal(attempt.error.code,2);
       const output=JSON.parse(attempt.error.stdout.trim());
@@ -184,27 +195,27 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     const refuseFakeEvidence=await post('/api/v1/print-jobs/'+normal.jobId+'/verify-paper',{
       evidence_kind:'staff_inspected',physical_sheets:2,
       note:'test fixture must not count as real paper',idempotency_key:'fake-paper-normal'
-    },login.token);
+    },normal.login.token);
     assert.notEqual(refuseFakeEvidence.statusCode,200);
     assert.equal(code(refuseFakeEvidence.json()),'VERIFY_STATE');
     const refuseDelivery=await post('/api/v1/orders/'+normal.id+'/deliveries',{
       expected_revision:2,physical_sheets:1,idempotency_key:'delivery-normal'
-    },login.token);
+    },normal.login.token);
     assert.notEqual(refuseDelivery.statusCode,200);
     assert.equal(code(refuseDelivery.json()),'PAPER_NOT_VERIFIED');
-    const repeat=await run('python3',agentArgs,{env:pythonEnv});
+    const repeat=await run('python3',agentArgs,{env:agentEnv(normal)});
     assert.equal(JSON.parse(repeat.stdout).result.status,'NO_JOB');
     assert.equal((await state(normal.jobId)).state,'SIMULATED_DONE');
 
     const tampered=await orderReadyToDryRun('tampered');
     const anchor=await pool.query(
       'SELECT artifact_ref FROM ai0_verified_plan_manifests WHERE shop_id=$1 AND order_id=$2 AND revision=2',
-      [shop,tampered.id]);
+      [tampered.shop,tampered.id]);
     assert.equal(anchor.rows.length,1);
     await writeFile(join(artifactRoot,anchor.rows[0].artifact_ref),Buffer.from('tampered manifest'));
     const tamperedJournal=join(scratch,'tampered.sqlite');
     const tamperedRun=await run('python3',['-m','agents.windows.cli','--api-base-url',url,
-      '--journal',tamperedJournal],{env:pythonEnv}).then(value=>({value}),error=>({error}));
+      '--journal',tamperedJournal],{env:agentEnv(tampered)}).then(value=>({value}),error=>({error}));
     assert.ok(tamperedRun.error,'Tampered manifest must block the agent before mark-sending');
     assert.equal(tamperedRun.error.code,2);
     assert.equal((await state(tampered.jobId)).state,'NOT_SENT');
@@ -241,27 +252,28 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     const changedManifestHash=createHash('sha256').update(changedManifest).digest('hex');
     const anchored=await pool.query(
       'UPDATE ai0_verified_plan_manifests SET manifest_sha256=$1 WHERE shop_id=$2 AND order_id=$3 AND revision=2',
-      [changedManifestHash,shop,requestHashMismatch.id]);
+      [changedManifestHash,requestHashMismatch.shop,requestHashMismatch.id]);
     assert.equal(anchored.rowCount,1);
     await assertEvidenceRefusalBeforeJournal(requestHashMismatch,'request-hash-mismatch');
 
     const staleRevision=await orderReadyToDryRun('stale-revision');
     const staleClaim=await post('/internal/v1/print-jobs/claim',{
       printer_id:'RMP7000',idempotency_key:'claim-stale-revision'
-    },agentToken);
+    },staleRevision.agentToken);
     assert.equal(staleClaim.statusCode,200,JSON.stringify(staleClaim.json()));
     const staleJob=staleClaim.json().job;
-    assert.ok(staleJob && staleJob.job_id===staleRevision.jobId);
+    assert.equal(staleJob?.job_id,staleRevision.jobId,
+      'Isolated stale-revision queue must claim its own job');
     const revised=await post('/api/v1/orders/'+staleRevision.id+'/revisions',{
       expected_revision:2,
       request_data:{documents:[{artifact_name:'fixture.pdf',copies:3,duplex:false,paper:'A4'}]},
       idempotency_key:'revise-after-claim'
-    },login.token);
+    },staleRevision.login.token);
     assert.equal(revised.statusCode,200,JSON.stringify(revised.json()));
     assert.equal(revised.json().revision,3);
     const stalePreflight=await post('/internal/v1/print-jobs/'+staleJob.job_id+'/preflight',{
       expected_revision:staleJob.revision,lease_token:staleJob.lease_token
-    },agentToken);
+    },staleRevision.agentToken);
     assert.equal(stalePreflight.statusCode,409,JSON.stringify(stalePreflight.json()));
     assert.equal(code(stalePreflight.json()),'STALE_REVISION');
     assert.equal((await state(staleJob.job_id)).state,'NOT_SENT');
@@ -286,7 +298,7 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
       ' print(json.dumps({"result":result,"driver_calls":d.calls}))',
       'finally:j.close()'
     ].join('\n');
-    const lostAckResult=await run('python3',['-c',lostAckScript,url,lostAckJournal],{env:pythonEnv});
+    const lostAckResult=await run('python3',['-c',lostAckScript,url,lostAckJournal],{env:agentEnv(lostAck)});
     const lostAckOutput=JSON.parse(lostAckResult.stdout.trim());
     assert.equal(lostAckOutput.result.status,'UNKNOWN',JSON.stringify(lostAckOutput));
     assert.equal(lostAckOutput.driver_calls,0,'Lost mark ACK must never reach the driver');
@@ -307,7 +319,7 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
       ' print(json.dumps({"recovered":recovered,"result":result,"driver_calls":d.calls}))',
       'finally:j.close()'
     ].join('\n');
-    const lostAckRestart=await run('python3',['-c',lostAckRestartScript,url,lostAckJournal],{env:pythonEnv});
+    const lostAckRestart=await run('python3',['-c',lostAckRestartScript,url,lostAckJournal],{env:agentEnv(lostAck)});
     const restartOutput=JSON.parse(lostAckRestart.stdout.trim());
     assert.equal(restartOutput.result.status,'NO_JOB',JSON.stringify(restartOutput));
     assert.equal(restartOutput.driver_calls,0,'Restart after lost ACK must not resend');
@@ -328,7 +340,7 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
       ' except SimulatedCrash:print("EXPECTED_CRASH")',
       'finally:j.close()'
     ].join('\n');
-    const before=await run('python3',['-c',crashScript,url,journalPath],{env:pythonEnv});
+    const before=await run('python3',['-c',crashScript,url,journalPath],{env:agentEnv(crash)});
     assert.match(before.stdout,/EXPECTED_CRASH/);
     assert.equal((await state(crash.jobId)).state,'SENDING');
     const recoverScript=[
@@ -342,7 +354,7 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
       ' print(json.dumps({"recovered":recovered,"driver_calls":d.calls}))',
       'finally:j.close()'
     ].join('\n');
-    const recovered=await run('python3',['-c',recoverScript,url,journalPath],{env:pythonEnv});
+    const recovered=await run('python3',['-c',recoverScript,url,journalPath],{env:agentEnv(crash)});
     const recovery=JSON.parse(recovered.stdout.trim());
     assert.deepEqual(recovery.recovered,[crash.jobId]);
     assert.equal(recovery.driver_calls,0);
@@ -351,11 +363,11 @@ test('AI0 PRODUCT PostgreSQL + HTTPS Python DryRun: approval, journal, simulatio
     const refuseUnknownAsPaper=await post('/api/v1/print-jobs/'+crash.jobId+'/verify-paper',{
       evidence_kind:'staff_inspected',physical_sheets:2,
       note:'simulation unknown cannot prove paper',idempotency_key:'fake-paper-unknown'
-    },login.token);
+    },crash.login.token);
     assert.notEqual(refuseUnknownAsPaper.statusCode,200);
     assert.equal(code(refuseUnknownAsPaper.json()),'SIMULATION_NOT_PAPER');
     const noRetry=await run('python3',['-m','agents.windows.cli','--api-base-url',url,
-      '--journal',journalPath],{env:pythonEnv});
+      '--journal',journalPath],{env:agentEnv(crash)});
     assert.equal(JSON.parse(noRetry.stdout.trim()).result.status,'NO_JOB');
     assert.equal((await state(crash.jobId)).state,'UNKNOWN');
     const outstanding=await pool.query(
