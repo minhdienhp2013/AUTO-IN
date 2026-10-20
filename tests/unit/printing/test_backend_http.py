@@ -137,14 +137,21 @@ def test_bad_claim_shape_blocks(monkeypatch):
 
 class ClaimErrorJournal:
     """Any claim failure must stop before a journal boundary is recorded."""
+    def __init__(self):
+        self.calls = 0
+
+    def _unexpected_call(self, message):
+        self.calls += 1
+        raise AssertionError(message)
+
     def get(self, *_args, **_kwargs):
-        raise AssertionError('claim failure must not inspect the journal')
+        self._unexpected_call('claim failure must not inspect the journal')
 
     def begin(self, *_args, **_kwargs):
-        raise AssertionError('claim failure must not create a journal boundary')
+        self._unexpected_call('claim failure must not create a journal boundary')
 
     def state(self, *_args, **_kwargs):
-        raise AssertionError('claim failure must not change journal state')
+        self._unexpected_call('claim failure must not change journal state')
 
 
 def _claim_http_error(status, body):
@@ -161,8 +168,11 @@ def _run_agent_with_claim_error(monkeypatch, error):
     monkeypatch.setattr(backend_http, 'urlopen', fail_request)
     backend = backend_http.HttpBackendClient('https://backend.example', 'T' * 24)
     driver = DryRunDriver()
-    agent = PrintAgent(backend, ClaimErrorJournal(), driver)
-    return agent.run_once(), driver
+    journal = ClaimErrorJournal()
+    agent = PrintAgent(backend, journal, driver)
+    result = agent.run_once()
+    assert journal.calls == 0
+    return result, driver
 
 
 def test_claim_stale_print_evidence_maps_to_blocked_without_driver(monkeypatch):
@@ -190,6 +200,27 @@ def test_other_claim_http_errors_remain_unknown_without_driver(monkeypatch, stat
 
 def test_ambiguous_duplicate_claim_error_code_remains_unknown(monkeypatch):
     body = b'{"error":{"code":"OTHER_CONFLICT","code":"STALE_PRINT_EVIDENCE"}}'
+    result, driver = _run_agent_with_claim_error(monkeypatch, _claim_http_error(409, body))
+
+    assert result == {'status': 'UNKNOWN', 'reason': 'CLAIM_AMBIGUOUS'}
+    assert driver.calls == 0
+
+
+def test_claim_ordinary_json_error_remains_unknown_without_driver(monkeypatch):
+    body = json.dumps({'error': {'code': 'CLAIM_CONFLICT',
+                                 'message': 'Claim is not available'}}).encode()
+    result, driver = _run_agent_with_claim_error(monkeypatch, _claim_http_error(409, body))
+
+    assert result == {'status': 'UNKNOWN', 'reason': 'CLAIM_AMBIGUOUS'}
+    assert driver.calls == 0
+
+
+def test_claim_error_body_over_limit_remains_unknown_without_driver(monkeypatch):
+    body = (b'{"error":{"code":"STALE_PRINT_EVIDENCE"},"padding":"' +
+            b'x' * 4096 + b'"}')
+    assert len(body) > 4096
+    assert json.loads(body)['error']['code'] == 'STALE_PRINT_EVIDENCE'
+
     result, driver = _run_agent_with_claim_error(monkeypatch, _claim_http_error(409, body))
 
     assert result == {'status': 'UNKNOWN', 'reason': 'CLAIM_AMBIGUOUS'}
