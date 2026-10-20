@@ -32,7 +32,7 @@ def urlopen(request, timeout):
 
 
 class DocumentEvidenceDenied(RuntimeError):
-    """Only verified HTTPS preflight HTTP 409 with exact AI0 evidence code."""
+    """Only verified HTTPS HTTP 409 with an exact AI0 evidence denial code."""
 
 
 class HttpBackendClient:
@@ -93,6 +93,32 @@ class HttpBackendClient:
         return {'expected_revision': job['revision'], 'lease_token': job['lease_token']}
 
     @staticmethod
+    def _claim_error_code(error: HTTPError) -> str | None:
+        """Read one bounded, unambiguous claim error code; all ambiguity fails closed."""
+        if error.code != 409:
+            return None
+
+        def unique_object(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError('Duplicate JSON key')
+                value[key] = item
+            return value
+
+        try:
+            raw = error.read(4097)
+            if len(raw) > 4096:
+                return None
+            payload = json.loads(raw, object_pairs_hook=unique_object)
+        except Exception:
+            return None
+        if not isinstance(payload, dict) or not isinstance(payload.get('error'), dict):
+            return None
+        code = payload['error'].get('code')
+        return code if isinstance(code, str) else None
+
+    @staticmethod
     def _identity(job: dict[str, Any]) -> tuple[Any, ...]:
         # Include the entire claimed job/lease identity. A cached preflight for
         # an old lease, order, hash or approval is NEVER sufficient for sending.
@@ -122,8 +148,13 @@ class HttpBackendClient:
         self._clear_preflight_ticket()
         # New idempotency key on each independent poll. Never retry an ambiguous
         # POST without reconciling it with server and local journal first.
-        data = self._post('/internal/v1/print-jobs/claim',
-                          {'printer_id': self.printer_id, 'idempotency_key': uuid.uuid4().hex})
+        try:
+            data = self._post('/internal/v1/print-jobs/claim',
+                              {'printer_id': self.printer_id, 'idempotency_key': uuid.uuid4().hex})
+        except HTTPError as error:
+            if self._claim_error_code(error) == 'STALE_PRINT_EVIDENCE':
+                raise DocumentEvidenceDenied('DOCUMENT_EVIDENCE_UNVERIFIED') from None
+            raise
         job = data.get('job')
         if job is not None and not isinstance(job, dict):
             raise ValueError('Invalid claim response')

@@ -161,7 +161,15 @@ class PrintAgent:
         return pending
 
     def run_once(self, *, fault_at: str | None = None) -> dict[str, Any]:
-        job = self.backend.claim()
+        try:
+            job = self.backend.claim()
+        except DocumentEvidenceDenied:
+            # Exact stale-evidence claim denial is a known block before a job
+            # lease, journal boundary, mark-sending, or any driver effect.
+            return {'status': 'BLOCKED', 'reason': 'DOCUMENT_EVIDENCE_UNVERIFIED'}
+        except Exception:
+            # Claim transport failures remain ambiguous and fail closed.
+            return {'status': 'UNKNOWN', 'reason': 'CLAIM_AMBIGUOUS'}
         if job is None:
             return {'status': 'NO_JOB'}
         self._verify_job(job)

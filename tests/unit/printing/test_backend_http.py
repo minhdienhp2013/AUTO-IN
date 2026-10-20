@@ -1,6 +1,7 @@
 """Verify AI1 contract-shaped requests without real network or print effects."""
 import io
 import json
+from urllib.error import HTTPError, URLError
 import pytest
 from agents.windows import backend_http
 
@@ -132,6 +133,78 @@ def test_bad_claim_shape_blocks(monkeypatch):
     client = backend_http.HttpBackendClient('https://backend.example', 'T' * 24)
     with pytest.raises(ValueError):
         client.claim()
+
+
+class ClaimErrorJournal:
+    """Any claim failure must stop before a journal boundary is recorded."""
+    def get(self, *_args, **_kwargs):
+        raise AssertionError('claim failure must not inspect the journal')
+
+    def begin(self, *_args, **_kwargs):
+        raise AssertionError('claim failure must not create a journal boundary')
+
+    def state(self, *_args, **_kwargs):
+        raise AssertionError('claim failure must not change journal state')
+
+
+def _claim_http_error(status, body):
+    return HTTPError('https://backend.example/internal/v1/print-jobs/claim', status,
+                     'claim rejected', {}, io.BytesIO(body))
+
+
+def _run_agent_with_claim_error(monkeypatch, error):
+    from agents.windows.agent import DryRunDriver, PrintAgent
+
+    def fail_request(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(backend_http, 'urlopen', fail_request)
+    backend = backend_http.HttpBackendClient('https://backend.example', 'T' * 24)
+    driver = DryRunDriver()
+    agent = PrintAgent(backend, ClaimErrorJournal(), driver)
+    return agent.run_once(), driver
+
+
+def test_claim_stale_print_evidence_maps_to_blocked_without_driver(monkeypatch):
+    body = json.dumps({'error': {'code': 'STALE_PRINT_EVIDENCE'}}).encode()
+    result, driver = _run_agent_with_claim_error(monkeypatch, _claim_http_error(409, body))
+
+    assert result == {'status': 'BLOCKED', 'reason': 'DOCUMENT_EVIDENCE_UNVERIFIED'}
+    assert driver.calls == 0
+
+
+@pytest.mark.parametrize('status,body', [
+    (409, {'error': {'code': 'OTHER_CONFLICT'}}),
+    (409, {'error': {'code': 'DOCUMENT_EVIDENCE_UNVERIFIED'}}),
+    (409, {'error': {'code': 'UNKNOWN_ERROR'}}),
+    (503, {'error': {'code': 'STALE_PRINT_EVIDENCE'}}),
+    (500, {'error': {'code': 'STALE_PRINT_EVIDENCE'}}),
+])
+def test_other_claim_http_errors_remain_unknown_without_driver(monkeypatch, status, body):
+    result, driver = _run_agent_with_claim_error(
+        monkeypatch, _claim_http_error(status, json.dumps(body).encode()))
+
+    assert result == {'status': 'UNKNOWN', 'reason': 'CLAIM_AMBIGUOUS'}
+    assert driver.calls == 0
+
+
+def test_ambiguous_duplicate_claim_error_code_remains_unknown(monkeypatch):
+    body = b'{"error":{"code":"OTHER_CONFLICT","code":"STALE_PRINT_EVIDENCE"}}'
+    result, driver = _run_agent_with_claim_error(monkeypatch, _claim_http_error(409, body))
+
+    assert result == {'status': 'UNKNOWN', 'reason': 'CLAIM_AMBIGUOUS'}
+    assert driver.calls == 0
+
+
+@pytest.mark.parametrize('error', [
+    URLError('network unavailable'),
+    TimeoutError('claim timed out'),
+])
+def test_claim_network_and_timeout_remain_unknown_without_driver(monkeypatch, error):
+    result, driver = _run_agent_with_claim_error(monkeypatch, error)
+
+    assert result == {'status': 'UNKNOWN', 'reason': 'CLAIM_AMBIGUOUS'}
+    assert driver.calls == 0
 
 
 def test_bad_report_ack_is_not_marked_confirmed(monkeypatch):
