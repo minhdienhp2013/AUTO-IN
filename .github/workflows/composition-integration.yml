@@ -1,10 +1,19 @@
 name: AI0 composition integration
-on: [push, pull_request]
+on:
+  push:
+    branches-ignore:
+      - ai0/v1-claim-error-proof-20261020
+    tags:
+      - '**'
+  pull_request:
 permissions:
   contents: read
 jobs:
   composition-postgres:
-    if: github.event_name != 'pull_request' || github.head_ref != 'ai0/v1-claim-error-proof-20261020'
+    if: >-
+      (github.event_name != 'pull_request' || github.head_ref != 'ai0/v1-claim-error-proof-20261020') &&
+      (github.event_name != 'push' || (github.ref != 'refs/heads/ai0/v1-claim-error-proof-20261020' &&
+      !startsWith(github.ref, 'refs/tags/v1-claim-diagnostic-')))
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -25,11 +34,6 @@ jobs:
       AUTOIN_OPERATION_MODE: simulation
     steps:
       - uses: actions/checkout@v4
-      - name: Confirm targeted diagnostic checkout SHA
-        if: github.ref == 'refs/heads/ai0/v1-claim-error-proof-20261020'
-        run: |
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          echo "TARGETED_DIAGNOSTIC_CHECKOUT_SHA=$GITHUB_SHA"
       - uses: actions/setup-node@v4
         with:
           node-version: 24.19.0
@@ -38,29 +42,6 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci
-      - name: Targeted database and simulation preflight
-        if: github.ref == 'refs/heads/ai0/v1-claim-error-proof-20261020'
-        run: |
-          if ! node --import tsx --input-type=module - >/dev/null 2>&1 <<'NODE'
-          import {assertIsolatedSimulationDatabase} from './backend/composition/postgres.ts';
-          const urls = [process.env.DATABASE_URL, process.env.TEST_DATABASE_URL, process.env.AUTOIN_TEST_DATABASE_URL];
-          let valid = urls.every((value) => typeof value === 'string' && value.length > 0) &&
-            urls.every((value) => value === urls[0]) &&
-            process.env.AUTOIN_OPERATION_MODE === 'simulation' &&
-            process.env.AUTOIN_ALLOW_PG_ACCEPTANCE === 'YES_ISOLATED_TEST_DB';
-          if (valid) {
-            try { assertIsolatedSimulationDatabase(urls[0]); }
-            catch { valid = false; }
-          }
-          if (!valid) {
-            console.error('Targeted diagnostic database/simulation preflight failed');
-            process.exit(1);
-          }
-          NODE
-          then
-            echo 'Targeted diagnostic database/simulation preflight failed; details suppressed.'
-            exit 1
-          fi
       - run: python -m pip install -r workers/documents/requirements-test.txt
       - name: Python syntax validation for documents and Windows agent
         run: python -m compileall -q workers/documents agents/windows tests/unit/documents tests/unit/printing
@@ -69,41 +50,182 @@ jobs:
       - name: Migrate isolated PostgreSQL before DB-backed checks
         run: npm run db:migrate
       - name: AI0 composition PostgreSQL and HTTP integration
-        shell: bash
-        run: |
-          if [[ "$GITHUB_REF" == 'refs/heads/ai0/v1-claim-error-proof-20261020' ]]; then
-            set -euo pipefail
-            echo 'Targeted gate: AI0 targeted source-tamper claim diagnostic only.'
-            echo 'Not run here: composition wildcard, npm run check, and its composition target.'
-            export AUTOIN_CLAIM_ERROR_DIAGNOSTIC=source-tamper
-            test "$AUTOIN_CLAIM_ERROR_DIAGNOSTIC" = source-tamper
-            diagnostic_tap="$RUNNER_TEMP/claim-source-tamper.tap"
-            if node --import tsx --test --test-reporter=tap --test-name-pattern='^AI0 targeted source-tamper claim diagnostic$' tests/integration/composition/https-agent-product-pg.test.mjs >"$diagnostic_tap" 2>&1; then
-              diagnostic_status=0
-            else
-              diagnostic_status=$?
-            fi
-            safe_diagnostic="$(grep -Eo '\{"stage":"(claim|preflight)","http_status":(null|[0-9]+),"error_code":"(STALE_PRINT_EVIDENCE|DOCUMENT_EVIDENCE_UNVERIFIED|OTHER)"\}' "$diagnostic_tap" | tail -n 1 || true)"
-            if [[ -z "$safe_diagnostic" ]]; then
-              safe_diagnostic='{"stage":"claim","http_status":null,"error_code":"OTHER"}'
-            fi
-            echo "AI0_SAFE_DIAGNOSTIC $safe_diagnostic"
-            if [[ "$diagnostic_status" -ne 0 ]]; then
-              echo 'Targeted diagnostic process/test failed; raw output suppressed.'
-              exit "$diagnostic_status"
-            fi
-            if ! grep -Fxq '# pass 1' "$diagnostic_tap" || ! grep -Fxq '# skipped 0' "$diagnostic_tap"; then
-              echo 'Targeted diagnostic did not execute exactly once; raw output suppressed.'
-              exit 1
-            fi
-          else
-            node --import tsx --test tests/integration/composition/*.test.*
-          fi
+        run: node --import tsx --test tests/integration/composition/*.test.*
       - name: Root typecheck and unit checks
-        if: github.ref != 'refs/heads/ai0/v1-claim-error-proof-20261020'
         run: npm run check
 
+  source-tamper-diagnostic:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v1-claim-diagnostic-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: autoin_test_composition
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_composition"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_composition
+      TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_composition
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in:isolated_ci_only@127.0.0.1:5432/autoin_test_composition
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact handoff SHA, parent, tree, branch and clean checkout
+        shell: bash
+        env:
+          CANDIDATE_BRANCH: ai0/v1-claim-error-proof-20261020
+        run: |
+          set -euo pipefail
+          fail() { echo 'Exact candidate checkout gate failed.'; exit 1; }
+          if [[ "$GITHUB_REF" =~ ^refs/tags/v1-claim-diagnostic-([[:xdigit:]]{40})-([[:xdigit:]]{40})-([[:xdigit:]]{40})$ ]]; then
+            expected_sha="${BASH_REMATCH[1]}"
+            expected_parent="${BASH_REMATCH[2]}"
+            expected_tree="${BASH_REMATCH[3]}"
+          else
+            fail
+          fi
+          actual_head="$(git rev-parse HEAD 2>/dev/null)" || fail
+          actual_tag="$(git rev-parse "$GITHUB_REF^{commit}" 2>/dev/null)" || fail
+          actual_parent="$(git show -s --format=%P HEAD 2>/dev/null)" || fail
+          actual_tree="$(git rev-parse 'HEAD^{tree}' 2>/dev/null)" || fail
+          branch_head="$(git rev-parse "refs/remotes/origin/$CANDIDATE_BRANCH^{commit}" 2>/dev/null)" || fail
+          [[ "$actual_head" == "$expected_sha" && "$actual_tag" == "$expected_sha" &&
+            "$GITHUB_SHA" == "$expected_sha" && "$branch_head" == "$expected_sha" &&
+            "$actual_parent" == "$expected_parent" && "$actual_tree" == "$expected_tree" ]] || fail
+          [[ -z "$(git status --porcelain --untracked-files=all 2>/dev/null)" ]] || fail
+          git diff --quiet --no-ext-diff 2>/dev/null || fail
+          git diff --cached --quiet --no-ext-diff 2>/dev/null || fail
+          echo 'Exact candidate checkout gate passed.'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install locked Node dependencies
+        shell: bash
+        run: |
+          if npm ci >/dev/null 2>&1; then
+            echo 'Node dependencies installed.'
+          else
+            echo 'Node dependency setup failed; details suppressed.'
+            exit 1
+          fi
+      - name: Install locked document and agent dependencies
+        shell: bash
+        run: |
+          if python -m pip install --disable-pip-version-check -r workers/documents/requirements-test.txt >/dev/null 2>&1; then
+            echo 'Python dependencies installed.'
+          else
+            echo 'Python dependency setup failed; details suppressed.'
+            exit 1
+          fi
+      - name: Validate PostgreSQL isolation and simulation mode
+        shell: bash
+        run: |
+          if node --import tsx --input-type=module - >/dev/null 2>&1 <<'NODE'
+          import {assertIsolatedSimulationDatabase} from './backend/composition/postgres.ts';
+          const urls=[process.env.DATABASE_URL,process.env.TEST_DATABASE_URL,process.env.AUTOIN_TEST_DATABASE_URL];
+          const valid=urls.every(value=>typeof value==='string'&&value.length>0) &&
+            urls.every(value=>value===urls[0]) &&
+            process.env.AUTOIN_OPERATION_MODE==='simulation' &&
+            process.env.AUTOIN_ALLOW_PG_ACCEPTANCE==='YES_ISOLATED_TEST_DB';
+          if(!valid)process.exit(1);
+          try{assertIsolatedSimulationDatabase(urls[0]);}catch{process.exit(1);}
+          NODE
+          then
+            echo 'PostgreSQL isolation and simulation gate passed.'
+          else
+            echo 'PostgreSQL isolation and simulation gate failed; details suppressed.'
+            exit 1
+          fi
+      - name: Migrate isolated PostgreSQL
+        shell: bash
+        run: |
+          if npm run db:migrate >/dev/null 2>&1; then
+            echo 'Isolated PostgreSQL migration completed.'
+          else
+            echo 'Isolated PostgreSQL migration failed; details suppressed.'
+            exit 1
+          fi
+      - name: Run only source-tamper diagnostic with sanitized evidence
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo 'NOT RUN: normal composition wildcard, npm run check, Core/Zalo suites, web-quality, full lease/driver/no-resend gates, live OA, real printer.'
+          diagnostic_file="$RUNNER_TEMP/source-tamper-diagnostic.json"
+          if ! rm -f -- "$diagnostic_file" 2>/dev/null; then
+            echo 'diagnostic evidence unavailable'
+            exit 1
+          fi
+          export AUTOIN_SAFE_DIAGNOSTIC_FILE="$diagnostic_file"
+          test_passed=0
+          if node --import tsx --test --test-reporter=tap \
+            --test-name-pattern='^AI0 targeted source-tamper runtime diagnostic$' \
+            tests/integration/composition/https-agent-source-tamper.diagnostic.mjs 2>&1 |
+            awk '
+              /^# tests [0-9]+$/ { tests=substr($0,9) }
+              /^# pass [0-9]+$/ { passed=substr($0,8) }
+              /^# fail [0-9]+$/ { failed=substr($0,8) }
+              /^# cancelled [0-9]+$/ { cancelled=substr($0,13) }
+              /^# skipped [0-9]+$/ { skipped=substr($0,11) }
+              /^# todo [0-9]+$/ { todo=substr($0,8) }
+              END {
+                if(tests=="1"&&passed=="1"&&failed=="0"&&cancelled=="0"&&skipped=="0"&&todo=="0") {
+                  print "TARGET_TEST_EXECUTED";
+                  exit 0;
+                }
+                exit 1;
+              }
+            ' 2>/dev/null; then
+            test_passed=1
+          fi
+          export TARGET_TEST_PASSED="$test_passed"
+          if node --input-type=module - 2>/dev/null <<'NODE'
+          import {readFile} from 'node:fs/promises';
+          const fields=['stage','http_status','error_code'];
+          const stages=new Set(['claim','preflight']);
+          const codes=new Set(['STALE_PRINT_EVIDENCE','DOCUMENT_EVIDENCE_UNVERIFIED','OTHER']);
+          let record;
+          try{record=JSON.parse(await readFile(process.env.AUTOIN_SAFE_DIAGNOSTIC_FILE,'utf8'));}
+          catch{console.log('diagnostic evidence unavailable');process.exit(1);}
+          const valid=record&&typeof record==='object'&&!Array.isArray(record)&&
+            Object.keys(record).length===fields.length&&fields.every(key=>Object.hasOwn(record,key))&&
+            stages.has(record.stage)&&(record.http_status===null||Number.isInteger(record.http_status))&&
+            codes.has(record.error_code);
+          if(!valid){console.log('diagnostic evidence unavailable');process.exit(1);}
+          const safe={stage:record.stage,http_status:record.http_status,error_code:record.error_code};
+          console.log(`Observed diagnostic ${JSON.stringify(safe)}`);
+          const exact=safe.stage==='claim'&&safe.http_status===409&&safe.error_code==='STALE_PRINT_EVIDENCE';
+          if(!exact||process.env.TARGET_TEST_PASSED!=='1'){
+            console.log('diagnostic unresolved');
+            process.exit(1);
+          }
+          console.log('Targeted diagnostic verified.');
+          NODE
+          then
+            :
+          else
+            echo 'Targeted diagnostic validation failed; details suppressed.'
+            exit 1
+          fi
+
   web-quality:
+    if: >-
+      (github.event_name != 'pull_request' || github.head_ref != 'ai0/v1-claim-error-proof-20261020') &&
+      (github.event_name != 'push' || (github.ref != 'refs/heads/ai0/v1-claim-error-proof-20261020' &&
+      !startsWith(github.ref, 'refs/tags/v1-claim-diagnostic-')))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
