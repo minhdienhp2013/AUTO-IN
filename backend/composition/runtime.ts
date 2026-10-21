@@ -5,7 +5,9 @@ import { assertStaff, DomainError, type Principal } from '../core/model.js';
 import type { SqlPool } from '../storage/database.js';
 import { createOfficialZaloSimulationWebhook } from './official-zalo-simulation.js';
 import type { OfficialZaloWebhookConfig } from '../integrations/zalo/official-webhook.js';
-import type { RouteRegistrar } from '../api/routes.js';
+import type { CoreRouteDependencies, RouteRegistrar } from '../api/routes.js';
+import type { TrustedPdfReviewSourceReader } from '../core/pdf-review-source.js';
+import type { TrustedWordReviewSourceReader } from '../core/word-review-source.js';
 import { ingestSyntheticArtifact, type SyntheticArtifactScope } from './synthetic-ingest.js';
 import { loadVerifiedOrderPreview, loadVerifiedOrderPreviewCatalog } from './preview.js';
 import { createSyntheticInboundDraft } from './inbound-draft.js';
@@ -24,6 +26,15 @@ import { createSyntheticWordReviewSourceReader } from './word-review-source.js';
 import { createWordReviewPreviewService } from './word-review-preview.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
+/** Test-only injection points for the shop-code lane. `buildIntegratedApp` is
+ * simulation-only; backend/server.ts does not accept these options. */
+export interface PilotWordPdfSimulationOptions {
+  hmacKey: Uint8Array;
+  pdfSource?: TrustedPdfReviewSourceReader;
+  wordSource?: TrustedWordReviewSourceReader;
+  resolveCandidate: NonNullable<CoreRouteDependencies['resolvePilotCandidate']>;
+  resolveCodeSubmission: NonNullable<CoreRouteDependencies['resolvePilotCodeSubmission']>;
+}
 export interface RuntimeOptions {
   pool: SqlPool;
   identities?: readonly ServiceIdentity[];
@@ -59,6 +70,8 @@ export interface RuntimeOptions {
    * snapshots only; it cannot authorize a real Windows/Ricoh print operation.
    */
   trustedPrintEvidence?: TrustedPrintEvidenceOptions;
+  /** Explicit simulation-only wiring for the V1 Word/PDF pilot. */
+  pilotWordPdf?: PilotWordPdfSimulationOptions;
 }
 export function identityResolver(identities: readonly ServiceIdentity[]) {
   for (const identity of identities) {
@@ -105,6 +118,11 @@ function staleWordPreview(): DomainError {
 export function buildIntegratedApp(options: RuntimeOptions) {
   if (options.zaloWebhook && options.officialZaloSimulation)
     throw new Error('CONFLICTING_ZALO_WEBHOOK_CONFIGURATION');
+  if (options.pilotWordPdf && (!options.trustedPrintEvidence ||
+      options.pilotWordPdf.hmacKey.byteLength < 32 ||
+      typeof options.pilotWordPdf.resolveCandidate !== 'function' ||
+      typeof options.pilotWordPdf.resolveCodeSubmission !== 'function'))
+    throw new Error('PILOT_WORD_PDF_SIMULATION_CONFIGURATION_REQUIRED');
   const corePool = pendingReviewSqlPool(options.pool);
   const trustedPrintEvidence = options.trustedPrintEvidence
     ? createTrustedPrintEvidencePort(options.trustedPrintEvidence) : undefined;
@@ -114,9 +132,13 @@ export function buildIntegratedApp(options: RuntimeOptions) {
   const wordSource = trustedPrintEvidence && options.syntheticArtifactIngest
     ? createSyntheticWordReviewSourceReader(options.syntheticArtifactIngest.artifactRoot,
       options.syntheticArtifactIngest.scope) : undefined;
+  const pilotPdfSource = options.pilotWordPdf?.pdfSource ?? pdfSource;
+  const pilotWordSource = options.pilotWordPdf?.wordSource ?? wordSource;
   const core = trustedPrintEvidence
     ? createCoreModule({ pool: corePool, mode: 'v1', evidence: trustedPrintEvidence,
-      ...(pdfSource ? { pdfSource } : {}), ...(wordSource ? { wordSource } : {}) })
+      ...(pilotPdfSource ? { pdfSource: pilotPdfSource } : {}),
+      ...(pilotWordSource ? { wordSource: pilotWordSource } : {}),
+      ...(options.pilotWordPdf ? { pilotCodeHmacKey: options.pilotWordPdf.hmacKey } : {}) })
     : createCoreModule({ pool: corePool });
   const pdfReviewPreview = pdfSource && options.pdfReviewArtifactRoot
     ? createPdfReviewPreviewService({ artifactRoot: options.pdfReviewArtifactRoot,
@@ -150,7 +172,9 @@ export function buildIntegratedApp(options: RuntimeOptions) {
     registered.push(`${method} ${path}`);
     app.route({ method, url: path, handler: async (request, reply) => {
       // Refuse any real-mode shop at the send boundary, even if DB was changed externally.
-      const agentRoute = path.startsWith('/internal/v1/print-jobs') && !path.endsWith('/reports');
+      const pilotAgentRoute = path.startsWith('/internal/v1/pilot/print-jobs');
+      const agentRoute = pilotAgentRoute ||
+        (path.startsWith('/internal/v1/print-jobs') && !path.endsWith('/reports'));
       const printAgent = agentRoute
         ? await resolve({ headers: { authorization: request.headers.authorization } })
         : undefined;
@@ -204,7 +228,12 @@ export function buildIntegratedApp(options: RuntimeOptions) {
   };
   core.registerRoutes({ get: (p, h) => register('GET', p, h), post: (p, h) => register('POST', p, h),
     patch: (p, h) => register('PATCH', p, h) }, {
-    resolveVerifiedCustomer: resolve, resolvePrintAgent: resolve
+    resolveVerifiedCustomer: resolve,
+    resolvePrintAgent: resolve,
+    ...(options.pilotWordPdf ? {
+      resolvePilotCandidate: options.pilotWordPdf.resolveCandidate,
+      resolvePilotCodeSubmission: options.pilotWordPdf.resolveCodeSubmission
+    } : {})
   });
   app.get('/health', async () => ({ status: 'ok', mode: 'simulation', live_enabled: false,
     auth_configured: true, configured_operations: ['me', 'listOrders', 'approveOrder', 'claimJob', 'markSending', 'reportJob'],
@@ -217,6 +246,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
     word_review_source_configured: !!wordSource,
     synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
     trusted_print_evidence_v1_configured: !!trustedPrintEvidence,
+    pilot_word_pdf_simulation_configured: !!options.pilotWordPdf,
     integration_stage: 'core-http' }));
   // Authenticated server-owned operation truth for the AI4 product adapter.
   // Never infer this from the browser environment or anonymous /health.
