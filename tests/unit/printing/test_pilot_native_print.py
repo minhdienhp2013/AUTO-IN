@@ -2,14 +2,22 @@
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+import sys
 import tempfile
+from types import ModuleType, SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from agents.windows.pilot_native_print import (
-    PilotJournal, PilotPrintAgent, PilotPrintWork,
+    PilotJournal, PilotPrintAgent, PilotPrintBlocked, PilotPrintWork,
+    WindowsNativePrinter, WindowsPrinterProfile, _PreparedNativePrint,
+    _PerUserPrinterSettings, _ExclusivePrinterLock, _wait_native_process,
 )
+from agents.windows.pilot_word_print_worker import execute_word_job
+from agents.windows import pilot_native_print as native_module
 from workers.documents.bridge import _canonical
 from workers.documents.pilot_source_ticket import verify_pilot_source_ticket
 
@@ -28,10 +36,10 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def make_work(file_format: str = "PDF") -> PilotPrintWork:
+def make_work(file_format: str = "PDF", *, duplex: bool = False) -> PilotPrintWork:
     source_bytes = PUBLIC_FILES[file_format].read_bytes()
     source_sha = sha(source_bytes)
-    settings = {"copies": 1, "duplex": False, "paper": "A4", "color": "black_white"}
+    settings = {"copies": 1, "duplex": duplex, "paper": "A4", "color": "black_white"}
     settings_sha = sha(_canonical(settings).encode("utf-8"))
     candidate = {
         "shop_id": "pilot-shop-public-test",
@@ -141,7 +149,33 @@ class FakeNativePrinter:
         self.send_calls.append((verified.source_format, verified.source_sha256))
         if self.fail_send:
             raise TimeoutError("synthetic native driver ACK lost")
-        return {"accepted": True, "spooler_job_id": "synthetic-spooler-1"}
+        result = {"accepted": True, "native_app": "WINWORD"
+                  if verified.source_format == "DOCX" else "SUMATRA_PDF"}
+        result["word_worker_exit_code" if verified.source_format == "DOCX"
+               else "native_app_exit_code"] = 0
+        return result
+
+
+class SimulatedProcessCrash(BaseException):
+    """A hard process stop bypassing the agent's ordinary exception handler."""
+
+
+class CrashAfterDriverBoundaryJournal(PilotJournal):
+    def __init__(self, filename):
+        super().__init__(filename)
+        self.crashed = False
+
+    def state(self, job_id, value, evidence=None):
+        super().state(job_id, value, evidence)
+        if value == "DRIVER_CALLED" and not self.crashed:
+            self.crashed = True
+            raise SimulatedProcessCrash()
+
+
+class CrashAfterNativeCallPrinter(FakeNativePrinter):
+    def send(self, _prepared, _work, verified):
+        self.send_calls.append((verified.source_format, verified.source_sha256))
+        raise SimulatedProcessCrash()
 
 
 class PilotNativePrintTests(unittest.TestCase):
@@ -189,6 +223,42 @@ class PilotNativePrintTests(unittest.TestCase):
                 self.assertEqual(printer.send_calls, [])
                 self.assertIsNone(journal.get("job-public-test"))
                 journal.close()
+
+    def test_missing_or_unreadable_source_blocks_before_native_preparation(self):
+        valid = make_work("DOCX")
+        bad_bytes = b""
+        bad_sha = sha(bad_bytes)
+        candidate = {**valid.candidate, "source": {
+            **valid.candidate["source"], "sha256": bad_sha, "size_bytes": len(bad_bytes)}}
+        authorization = {**valid.authorization, "source_sha256": bad_sha}
+        mutations = (
+            replace(valid, source_bytes=bad_bytes, candidate=candidate,
+                    authorization=authorization),
+            replace(valid, source_bytes=b"not-a-docx", candidate={**candidate, "source": {
+                **candidate["source"], "sha256": sha(b"not-a-docx"),
+                "size_bytes": len(b"not-a-docx")}}, authorization={
+                    **authorization, "source_sha256": sha(b"not-a-docx")}))
+        for index, work in enumerate(mutations):
+            with self.subTest(source=index), tempfile.TemporaryDirectory() as folder:
+                agent, journal, _backend, printer = self.make_agent(folder, work)
+                result = agent.run_once()
+                self.assertEqual(result["status"], "BLOCKED")
+                self.assertEqual(printer.prepare_calls, [])
+                self.assertEqual(printer.send_calls, [])
+                self.assertIsNone(journal.get("job-public-test"))
+                journal.close()
+
+    def test_duplex_without_bound_edge_policy_blocks_before_preparation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = make_work("DOCX", duplex=True)
+            agent, journal, _backend, printer = self.make_agent(folder, work)
+            result = agent.run_once()
+            self.assertEqual(result["status"], "BLOCKED")
+            self.assertEqual(result["reason"], "PILOT_DUPLEX_BINDING_UNVERIFIED")
+            self.assertEqual(printer.prepare_calls, [])
+            self.assertEqual(printer.send_calls, [])
+            self.assertIsNone(journal.get("job-public-test"))
+            journal.close()
 
     def test_preflight_mismatch_never_calls_native_driver(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -245,6 +315,316 @@ class PilotNativePrintTests(unittest.TestCase):
             self.assertTrue(again["reconciled"])
             self.assertEqual(len(printer.send_calls), 1)
             reopened.close()
+
+    def test_crash_after_journal_boundary_recovers_unknown_without_driver_call(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = make_work("PDF")
+            backend = FakeBackend(work)
+            printer = FakeNativePrinter()
+            journal_path = Path(folder) / "pilot.sqlite"
+            journal = CrashAfterDriverBoundaryJournal(journal_path)
+            agent = PilotPrintAgent(backend=backend, journal=journal, printer=printer)
+            with self.assertRaises(SimulatedProcessCrash):
+                agent.run_once()
+            self.assertEqual(printer.send_calls, [])
+            self.assertEqual(journal.get("job-public-test")["state"], "DRIVER_CALLED")
+            journal.close()
+
+            reopened = PilotJournal(journal_path)
+            restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer)
+            self.assertEqual(restarted.run_once()["status"], "UNKNOWN")
+            self.assertEqual(printer.send_calls, [])
+            self.assertEqual(reopened.get("job-public-test")["state"], "UNKNOWN")
+            self.assertEqual(backend.reports[-1][0], "UNKNOWN")
+            reopened.close()
+
+    def test_crash_after_native_call_recovers_unknown_and_never_repeats_call(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = make_work("DOCX")
+            backend = FakeBackend(work)
+            printer = CrashAfterNativeCallPrinter()
+            journal_path = Path(folder) / "pilot.sqlite"
+            journal = PilotJournal(journal_path)
+            agent = PilotPrintAgent(backend=backend, journal=journal, printer=printer)
+            with self.assertRaises(SimulatedProcessCrash):
+                agent.run_once()
+            self.assertEqual(len(printer.send_calls), 1)
+            self.assertEqual(journal.get("job-public-test")["state"], "DRIVER_CALLED")
+            journal.close()
+
+            reopened = PilotJournal(journal_path)
+            restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer)
+            self.assertEqual(restarted.run_once()["status"], "UNKNOWN")
+            self.assertEqual(len(printer.send_calls), 1)
+            self.assertEqual(reopened.get("job-public-test")["state"], "UNKNOWN")
+            self.assertEqual(backend.reports[-1][0], "UNKNOWN")
+            reopened.close()
+
+    def test_word_worker_opens_original_docx_and_checks_pages_before_print(self):
+        source_path = PUBLIC_FILES["DOCX"].resolve()
+        observations = {"open": [], "print": [], "close": 0, "quit": 0, "uninit": 0}
+        section_setup = SimpleNamespace(PaperSize=0, Orientation=1)
+
+        class FakeDocument:
+            Sections = (SimpleNamespace(PageSetup=section_setup),)
+
+            def Repaginate(self):
+                observations["repaginate"] = True
+
+            def ComputeStatistics(self, statistic):
+                observations["statistic"] = statistic
+                return 1
+
+            def PrintOut(self, **kwargs):
+                observations["print"].append(kwargs)
+
+            def Close(self, **kwargs):
+                observations["close"] += 1
+
+        document = FakeDocument()
+
+        class FakeDocuments:
+            def Open(self, **kwargs):
+                observations["open"].append(kwargs)
+                return document
+
+        class FakeApp:
+            def __init__(self):
+                self.Documents = FakeDocuments()
+                self.Options = SimpleNamespace(UpdateLinksAtOpen=True)
+
+            def Quit(self, **kwargs):
+                observations["quit"] += 1
+
+        pythoncom = ModuleType("pythoncom")
+        pythoncom.CoInitialize = lambda: None
+        pythoncom.CoUninitialize = lambda: observations.__setitem__("uninit", 1)
+        client = ModuleType("win32com.client")
+        client.DispatchEx = lambda _name: observations.setdefault("app", FakeApp())
+        win32com = ModuleType("win32com")
+        win32com.__path__ = []
+        with patch.dict(sys.modules, {"pythoncom": pythoncom, "win32com": win32com,
+                                      "win32com.client": client}):
+            result = execute_word_job(
+                source_path=source_path,
+                expected_sha256=EXPECTED_SHA256["DOCX"], mode="print",
+                printer_name="RMP7000 - Ricoh PCL6 V4", copies=1,
+                expected_page_count=1)
+
+            self.assertEqual(result["status"], "SUBMITTED")
+            self.assertEqual(result["source_sha256"], EXPECTED_SHA256["DOCX"])
+            self.assertEqual(observations["open"][0]["FileName"], str(source_path))
+            self.assertIs(observations["open"][0]["ReadOnly"], True)
+            self.assertEqual(observations["print"], [{
+                "Background": False, "Copies": 1, "Collate": True,
+                "PrintToFile": False, "ManualDuplexPrint": False,
+            }])
+            self.assertEqual(observations["app"].ActivePrinter, "RMP7000 - Ricoh PCL6 V4")
+            self.assertEqual(section_setup.PaperSize, 9)
+            self.assertEqual(section_setup.Orientation, 1)
+            self.assertEqual(observations["close"], 1)
+            self.assertEqual(observations["quit"], 1)
+            self.assertEqual(observations["uninit"], 1)
+
+            with self.assertRaisesRegex(ValueError, "WORD_LAYOUT_CHANGED_BEFORE_SEND"):
+                execute_word_job(
+                    source_path=source_path,
+                    expected_sha256=EXPECTED_SHA256["DOCX"], mode="print",
+                    printer_name="RMP7000 - Ricoh PCL6 V4", copies=1,
+                    expected_page_count=2)
+            self.assertEqual(len(observations["print"]), 1)
+
+    def test_pdf_native_adapter_targets_original_public_pdf_and_explicit_queue(self):
+        work = make_work("PDF")
+        verified = verify_pilot_source_ticket(
+            job=work.job, candidate=work.candidate,
+            authorization=work.authorization, source_bytes=work.source_bytes,
+            configured_printer_id="RMP7000")
+        prepared = _PreparedNativePrint(PUBLIC_FILES["PDF"].resolve(), page_count=1)
+        printer = WindowsNativePrinter(
+            private_root=Path("/private/spool"),
+            profile=WindowsPrinterProfile(
+                printer_id="RMP7000", queue_name="RMP7000 - Ricoh PCL6 V4",
+                driver_name="Ricoh PCL6 V4", port_name="IP_192.168.1.195"),
+            sumatra_exe=Path("/private/bin/SumatraPDF.exe"), sumatra_sha256="a" * 64)
+        captured = []
+
+        class NoopContext:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        with patch.object(printer, "_assert_windows"), \
+                patch.object(printer, "_assert_printer"), \
+                patch("agents.windows.pilot_native_print._ExclusivePrinterLock", NoopContext), \
+                patch("agents.windows.pilot_native_print._PerUserPrinterSettings", NoopContext), \
+                patch("agents.windows.pilot_native_print._wait_native_process",
+                      side_effect=lambda command, _timeout: captured.append(command) or 0):
+            result = printer.send(prepared, work, verified)
+
+        self.assertEqual(result, {"accepted": True, "native_app": "SUMATRA_PDF",
+                                  "native_app_exit_code": 0})
+        self.assertEqual(captured, [[
+            "/private/bin/SumatraPDF.exe", "-print-to", "RMP7000 - Ricoh PCL6 V4",
+            "-print-settings", "1x,paper=A4,monochrome,shrink,ignore-pdf-print-settings,simplex",
+            "-silent", str(PUBLIC_FILES["PDF"].resolve()),
+        ]])
+        self.assertEqual(sha(Path(captured[0][-1]).read_bytes()), EXPECTED_SHA256["PDF"])
+
+    def test_wrong_windows_queue_driver_or_port_stops_before_native_process(self):
+        work = make_work("PDF")
+        verified = verify_pilot_source_ticket(
+            job=work.job, candidate=work.candidate,
+            authorization=work.authorization, source_bytes=work.source_bytes,
+            configured_printer_id="RMP7000")
+        printer = WindowsNativePrinter(
+            private_root=Path("/private/spool"),
+            profile=WindowsPrinterProfile(
+                printer_id="RMP7000", queue_name="RMP7000 - Ricoh PCL6 V4",
+                driver_name="Ricoh PCL6 V4", port_name="IP_192.168.1.195"),
+            sumatra_exe=Path("/private/bin/SumatraPDF.exe"), sumatra_sha256="a" * 64)
+        handle = object()
+        calls = []
+        win32print = ModuleType("win32print")
+        win32print.OpenPrinter = lambda queue: calls.append(("open", queue)) or handle
+        win32print.GetPrinter = lambda _handle, level: {
+            "pPrinterName": "RMP7000 - Ricoh PCL6 V4",
+            "pDriverName": "Ricoh PCL6 V4",
+            "pPortName": "IP_192.168.1.196",
+            "pComment": "Ricoh IM7000",
+        }
+        win32print.ClosePrinter = lambda _handle: calls.append(("close",))
+        with patch.object(printer, "_assert_windows"), \
+                patch.dict(sys.modules, {"win32print": win32print}), \
+                patch("agents.windows.pilot_native_print._wait_native_process") as native_call:
+            with self.assertRaisesRegex(PilotPrintBlocked, "PILOT_PRINTER_QUEUE_DRIVER_CHANGED"):
+                printer.send(_PreparedNativePrint(PUBLIC_FILES["PDF"].resolve(), 1),
+                             work, verified)
+        self.assertEqual(calls, [("open", "RMP7000 - Ricoh PCL6 V4"), ("close",)])
+        native_call.assert_not_called()
+
+    def test_printer_settings_are_per_user_verified_and_restored(self):
+        class DevMode:
+            def __init__(self, *, fields=0, paper=1, orientation=2, color=2, duplex=2):
+                self.Fields = fields
+                self.PaperSize = paper
+                self.Orientation = orientation
+                self.Color = color
+                self.Duplex = duplex
+
+        win32con = ModuleType("win32con")
+        win32con.DM_PAPERSIZE = 1
+        win32con.DM_ORIENTATION = 2
+        win32con.DM_COLOR = 4
+        win32con.DM_DUPLEX = 8
+        win32con.DMPAPER_A4 = 9
+        win32con.DMORIENT_PORTRAIT = 1
+        win32con.DMCOLOR_MONOCHROME = 1
+        win32con.DMDUP_VERTICAL = 2
+        win32con.DMDUP_SIMPLEX = 1
+        state = {"devmode": DevMode()}
+        calls = {"get": [], "set": [], "close": 0}
+        handle = object()
+        win32print = ModuleType("win32print")
+        win32print.OpenPrinter = lambda _queue: handle
+
+        def get_printer(_handle, level):
+            calls["get"].append(level)
+            return {"pDevMode": deepcopy(state["devmode"])}
+
+        def set_printer(_handle, level, value, command):
+            calls["set"].append((level, command))
+            state["devmode"] = deepcopy(value["pDevMode"])
+
+        win32print.GetPrinter = get_printer
+        win32print.SetPrinter = set_printer
+        win32print.ClosePrinter = lambda _handle: calls.__setitem__("close", calls["close"] + 1)
+        settings = {"copies": 1, "duplex": False, "paper": "A4", "color": "black_white"}
+        with patch.object(native_module.os, "name", "nt"), \
+                patch.dict(sys.modules, {"win32con": win32con, "win32print": win32print}):
+            with _PerUserPrinterSettings("RMP7000 - Ricoh PCL6 V4", settings):
+                self.assertEqual(state["devmode"].PaperSize, win32con.DMPAPER_A4)
+                self.assertEqual(state["devmode"].Color, win32con.DMCOLOR_MONOCHROME)
+                self.assertEqual(state["devmode"].Duplex, win32con.DMDUP_SIMPLEX)
+            self.assertEqual(state["devmode"].PaperSize, 1)
+            self.assertEqual(state["devmode"].Color, 2)
+            self.assertEqual(state["devmode"].Duplex, 2)
+        self.assertEqual(calls["get"], [9, 9])
+        self.assertEqual(calls["set"], [(9, 0), (9, 0)])
+        self.assertEqual(calls["close"], 1)
+
+    def test_unverified_printer_settings_stop_before_native_process(self):
+        class DevMode:
+            def __init__(self, *, fields=0, paper=1, orientation=2, color=2, duplex=2):
+                self.Fields = fields
+                self.PaperSize = paper
+                self.Orientation = orientation
+                self.Color = color
+                self.Duplex = duplex
+
+        win32con = ModuleType("win32con")
+        win32con.DM_PAPERSIZE = 1
+        win32con.DM_COLOR = 4
+        win32con.DM_DUPLEX = 8
+        win32con.DMPAPER_A4 = 9
+        win32con.DMCOLOR_MONOCHROME = 1
+        win32con.DMDUP_SIMPLEX = 1
+        win32con.DMDUP_VERTICAL = 2
+        original = DevMode()
+        calls = {"settings_reads": 0, "settings_writes": 0, "native": 0}
+        handle = object()
+        win32print = ModuleType("win32print")
+        win32print.OpenPrinter = lambda _queue: handle
+        win32print.ClosePrinter = lambda _handle: None
+
+        def get_printer(_handle, level):
+            if level == 2:
+                return {"pPrinterName": "RMP7000 - Ricoh PCL6 V4",
+                        "pDriverName": "Ricoh PCL6 V4", "pPortName": "IP_192.168.1.195",
+                        "pComment": "Ricoh IM7000"}
+            calls["settings_reads"] += 1
+            if calls["settings_reads"] == 1:
+                return {"pDevMode": deepcopy(original)}
+            return {"pDevMode": DevMode(paper=9, color=2, duplex=1)}
+
+        win32print.GetPrinter = get_printer
+        win32print.SetPrinter = lambda *_args: calls.__setitem__(
+            "settings_writes", calls["settings_writes"] + 1)
+        work = make_work("PDF")
+        verified = verify_pilot_source_ticket(
+            job=work.job, candidate=work.candidate,
+            authorization=work.authorization, source_bytes=work.source_bytes,
+            configured_printer_id="RMP7000")
+        printer = WindowsNativePrinter(
+            private_root=Path("/private/spool"),
+            profile=WindowsPrinterProfile(
+                printer_id="RMP7000", queue_name="RMP7000 - Ricoh PCL6 V4",
+                driver_name="Ricoh PCL6 V4", port_name="IP_192.168.1.195"),
+            sumatra_exe=Path("/private/bin/SumatraPDF.exe"), sumatra_sha256="a" * 64)
+        prepared = _PreparedNativePrint(PUBLIC_FILES["PDF"].resolve(), 1)
+        with patch.object(native_module.os, "name", "nt"), \
+                patch.object(printer, "_assert_windows"), \
+                patch("agents.windows.pilot_native_print._ExclusivePrinterLock",
+                      lambda *_args: type("Lock", (), {"__enter__": lambda self: self,
+                                                        "__exit__": lambda self, *_: False})()), \
+                patch.dict(sys.modules, {"win32con": win32con, "win32print": win32print}), \
+                patch("agents.windows.pilot_native_print._wait_native_process",
+                      side_effect=lambda *_args, **_kwargs: calls.__setitem__("native", 1)) as native_call:
+            with self.assertRaisesRegex(PilotPrintBlocked,
+                                        "PRINTER_DEVMODE_SETTINGS_UNVERIFIED"):
+                printer.send(prepared, work, verified)
+        self.assertEqual(calls["settings_writes"], 2)  # apply, then restore original
+        self.assertEqual(calls["native"], 0)
+        native_call.assert_not_called()
+
+    def test_native_process_timeout_kills_simulated_child(self):
+        with self.assertRaisesRegex(PilotPrintBlocked, "NATIVE_APP_TIMEOUT"):
+            _wait_native_process([sys.executable, "-c", "import time; time.sleep(10)"], 1)
 
     def test_driver_timeout_is_unknown_and_restart_does_not_resend(self):
         with tempfile.TemporaryDirectory() as folder:

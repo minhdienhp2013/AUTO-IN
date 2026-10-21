@@ -12,7 +12,10 @@
 3. AI2 có ingress OA đã xác thực và custody source; AI5/AI6 đã chạy acceptance trên đúng SHA tích hợp. Dùng shop thử riêng. Mã thô, bearer token, tài liệu khách và nội dung file không được ghi vào log.
 4. Windows host có Microsoft Word/COM, pywin32, SumatraPDF đã cài theo nguồn kiểm soát và SHA-256 được pin, thư mục spool/journal local có ACL chỉ cho service account, SYSTEM và Administrators. Không dùng UNC, thư mục chia sẻ, desktop người dùng hay máy in mặc định.
 5. Queue dành riêng cho Agent phải khớp cấu hình `printer_id=RMP7000`, tên queue, driver Ricoh/PCL6 và port đã khảo sát. Người đứng máy xác nhận trực tiếp đúng Ricoh IM7000, khay A4 và chế độ đen trắng. Windows queue/port không chứng minh được số serial hoặc tình trạng giấy; ghi nhận các mục đó bằng quan sát tại máy.
-6. Chốt trước chính sách lật cạnh. Contract #163 hiện chỉ có `duplex: boolean`; adapter tạm ánh xạ duplex sang lật cạnh dài. Không thử duplex thật cho tới khi AI0 xác nhận đây là quy tắc V1 hoặc contract bổ sung trường binding.
+6. Chốt trước chính sách lật cạnh. Contract #163 hiện chỉ có `duplex: boolean`; candidate dừng an toàn khi `duplex=true` vì thiếu binding edge. Không thử duplex thật cho tới khi AI0 xác nhận quy tắc V1 hoặc contract bổ sung trường binding.
+7. DOCX mở trong worker Word riêng, đặt A4 trong bộ nhớ, giữ hướng gốc, đếm lại trang rồi gọi `PrintOut` đúng một lần. Deadline hoặc worker ACK không rõ thành `UNKNOWN`; không gửi lại. Mỗi section được đặt A4 trước khi đếm, nhưng font/Word/driver thật vẫn phải được kiểm thử trên host Windows.
+8. Cho tới khi contract gắn chính sách lật cạnh với hash settings, candidate chặn `duplex=true` trước khi mở tài liệu hoặc gọi driver. Chỉ thử một mặt trong pilot hiện tại.
+9. DEVMODE dùng mặc định theo tài khoản Agent (Win32 level 9), đọc lại A4/đen trắng/một mặt rồi khôi phục cấu hình cũ. Nếu không đọc lại/xác minh/khôi phục được thì dừng; không thay global default của queue.
 
 Thiếu bất kỳ điều kiện nào thì dừng ở `NEEDS_HUMAN`; không dùng ticket mô phỏng để mở lệnh thật. PR #163/#165 còn là Draft và chưa chứng minh OA hoặc Ricoh thật.
 
@@ -33,6 +36,6 @@ Thiếu bất kỳ điều kiện nào thì dừng ở `NEEDS_HUMAN`; không dù
 ## Chưa kiểm chứng
 
 - Windows ACL, Word COM PrintOut, phân trang/font tiếng Việt, cấu hình duplex của Ricoh, Sumatra version/hash, queue/driver/port thật và giấy thật đều NOT RUN.
-- Adapter AI3 hiện có `PilotBackendPort`, chưa có transport HTTP nối Core route pilot trên F7. `WindowsNativePrinter` chưa được gọi trong test; test mới dùng fake printer port.
+- Adapter AI3 hiện có `PilotBackendPort`, chưa có transport HTTP nối Core route pilot trên F7. Test gọi Word worker với COM giả và kiểm tra lệnh Sumatra bằng process giả; `WindowsNativePrinter`/Word/Sumatra thật chưa chạy trên Windows.
 - Windows queue không đọc được serial máy thật trong adapter này; người vận hành phải xác nhận model/serial tại chỗ trước lượt có giấy.
 - Mọi ca Zalo OA thật, Core/PostgreSQL, Actions mới, Ricoh thật và giấy thật đều NOT RUN trong lượt này.

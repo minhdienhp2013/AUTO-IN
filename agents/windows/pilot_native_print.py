@@ -14,18 +14,22 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import sqlite3
 import subprocess
+import sys
 import tempfile
+import uuid
 from typing import Any, Protocol
 
 from workers.documents.pilot_source_ticket import (
-    VerifiedPilotSource, verify_pilot_source_ticket,
+    PilotTicketInvalid, VerifiedPilotSource, verify_pilot_source_ticket,
 )
 
 HEX = re.compile(r"^[a-f0-9]{64}$")
 MAX_PHYSICAL_SHEETS = 150
 PRINT_TIMEOUT_SECONDS = 60
+MAX_WORD_RESPONSE_BYTES = 4096
 
 
 class PilotPrintBlocked(RuntimeError):
@@ -39,6 +43,122 @@ def _sha(data: bytes) -> str:
 def _canonical(value: Any) -> str:
     from workers.documents.bridge import _canonical as canonical
     return canonical(value)
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Bounded best-effort termination for an ambiguous native worker timeout."""
+    if os.name == "nt":
+        try:
+            killer = subprocess.Popen(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                close_fds=True)
+            try:
+                killer.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                killer.kill()
+                killer.wait(timeout=2)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _wait_native_process(command: list[str], timeout_seconds: int, *,
+                         cwd: str | Path | None = None) -> int:
+    """Run a private native-app process without a shell and with a hard deadline."""
+    try:
+        proc = subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, shell=False, close_fds=True,
+            cwd=str(cwd) if cwd is not None else None,
+            start_new_session=(os.name != "nt"),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if os.name == "nt" else 0)
+    except Exception as exc:
+        raise PilotPrintBlocked("NATIVE_APP_START_FAILED") from exc
+    try:
+        return proc.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        _kill_process_tree(proc)
+        raise PilotPrintBlocked("NATIVE_APP_TIMEOUT") from exc
+
+
+def _run_word_worker(*, source_path: Path, source_sha256: str, mode: str,
+                     timeout_seconds: int, printer_name: str | None = None,
+                     copies: int = 1,
+                     expected_page_count: int | None = None) -> dict[str, Any]:
+    """Isolate Word COM; a timed-out print is ambiguous and must never be retried."""
+    response_path = source_path.with_name(
+        source_path.name + "." + uuid.uuid4().hex + ".response.json")
+    command = [sys.executable, "-m", "agents.windows.pilot_word_print_worker",
+               "--source", str(source_path), "--response", str(response_path),
+               "--expected-sha256", source_sha256, "--mode", mode]
+    if mode == "print":
+        if printer_name is None or expected_page_count is None:
+            raise PilotPrintBlocked("WORD_PRINT_REQUEST_INVALID")
+        command.extend(("--printer", printer_name, "--copies", str(copies),
+                        "--expected-pages", str(expected_page_count)))
+    try:
+        project_root = Path(__file__).resolve().parents[2]
+        return_code = _wait_native_process(command, timeout_seconds, cwd=project_root)
+        if return_code != 0 or response_path.is_symlink() or not response_path.is_file():
+            raise PilotPrintBlocked("WORD_WORKER_RESPONSE_INVALID")
+        _assert_private_windows_acl(response_path)
+        if response_path.stat().st_size > MAX_WORD_RESPONSE_BYTES:
+            raise PilotPrintBlocked("WORD_WORKER_RESPONSE_INVALID")
+
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate response key")
+                result[key] = value
+            return result
+
+        try:
+            value = json.loads(response_path.read_text(encoding="utf-8"),
+                               object_pairs_hook=unique_object,
+                               parse_constant=lambda _x: (_ for _ in ()).throw(ValueError()))
+        except Exception as exc:
+            raise PilotPrintBlocked("WORD_WORKER_RESPONSE_INVALID") from exc
+        if (type(value) is not dict or set(value) != {"status", "source_sha256", "page_count"} or
+                value.get("source_sha256") != source_sha256 or
+                type(value.get("page_count")) is not int or
+                not 1 <= value["page_count"] <= 10000 or
+                value.get("status") != ("INSPECTED" if mode == "inspect" else "SUBMITTED")):
+            raise PilotPrintBlocked("WORD_WORKER_RESPONSE_INVALID")
+        return value
+    finally:
+        try:
+            response_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _assert_private_windows_acl(path: Path) -> None:
@@ -188,6 +308,14 @@ class NativePrinterPort(Protocol):
              verified: VerifiedPilotSource) -> dict[str, Any]: ...
 
 
+def _close_prepared(prepared: PreparedPrint | None) -> None:
+    if prepared is not None:
+        try:
+            prepared.close()
+        except Exception:
+            pass
+
+
 def _server_binding_matches(value: object, verified: VerifiedPilotSource,
                             expected_state: str) -> bool:
     if not isinstance(value, dict):
@@ -239,6 +367,9 @@ class PilotPrintAgent:
                 job=work.job, candidate=work.candidate,
                 authorization=work.authorization, source_bytes=work.source_bytes,
                 configured_printer_id=self.configured_printer_id)
+        except PilotTicketInvalid as exc:
+            return {"status": "BLOCKED", "job_id": work.job.get("job_id"),
+                    "reason": str(exc)}
         except Exception:
             return {"status": "BLOCKED", "job_id": work.job.get("job_id"),
                     "reason": "PILOT_SOURCE_OR_JOB_UNVERIFIED"}
@@ -257,26 +388,40 @@ class PilotPrintAgent:
 
         prepared: PreparedPrint | None = None
         try:
-            # Opening Word and counting pages is preflight only; PrintOut is later.
+            # Native inspection is preflight only; the driver is reached later.
             prepared = self.printer.prepare(work, verified)
             if type(prepared.page_count) is not int or prepared.page_count < 1:
+                _close_prepared(prepared)
                 return {"status": "BLOCKED", "job_id": verified.job_id,
                         "reason": "DOCUMENT_PAGE_COUNT_UNVERIFIED"}
             sheets = ((prepared.page_count + 1) // 2 if verified.settings["duplex"]
                       else prepared.page_count) * verified.settings["copies"]
             if sheets > MAX_PHYSICAL_SHEETS:
+                _close_prepared(prepared)
                 return {"status": "BLOCKED", "job_id": verified.job_id,
                         "reason": "PILOT_PHYSICAL_SHEET_LIMIT"}
             preflight = self.backend.preflight(work)
             if not _server_binding_matches(preflight, verified, "AUTHORIZED"):
+                _close_prepared(prepared)
                 return {"status": "BLOCKED", "job_id": verified.job_id,
                         "reason": "CORE_PILOT_PREFLIGHT_DENIED"}
+        except PilotPrintBlocked as exc:
+            _close_prepared(prepared)
+            return {"status": "BLOCKED", "job_id": verified.job_id,
+                    "reason": str(exc)}
         except Exception:
+            _close_prepared(prepared)
             return {"status": "UNKNOWN", "job_id": verified.job_id,
                     "reason": "PILOT_PREFLIGHT_AMBIGUOUS"}
 
-        previous = self.journal.begin(verified)
+        try:
+            previous = self.journal.begin(verified)
+        except Exception:
+            _close_prepared(prepared)
+            return {"status": "UNKNOWN", "job_id": verified.job_id,
+                    "reason": "JOURNAL_BOUNDARY_AMBIGUOUS"}
         if previous is not None:
+            _close_prepared(prepared)
             return {"status": "UNKNOWN", "job_id": verified.job_id,
                     "reason": "JOURNAL_ALREADY_CONTAINS_JOB_NO_RESEND"}
         try:
@@ -284,23 +429,49 @@ class PilotPrintAgent:
             if not _server_binding_matches(marked, verified, "SENDING"):
                 raise PilotPrintBlocked("CORE_MARK_SENDING_NOT_CONFIRMED")
         except Exception:
-            self.journal.state(verified.job_id, "UNKNOWN",
-                               {"reason": "CORE_SEND_ACK_AMBIGUOUS"})
+            try:
+                self.journal.state(verified.job_id, "UNKNOWN",
+                                   {"reason": "CORE_SEND_ACK_AMBIGUOUS"})
+            except Exception:
+                pass
+            _close_prepared(prepared)
             return {"status": "UNKNOWN", "job_id": verified.job_id,
                     "reason": "CORE_SEND_ACK_AMBIGUOUS"}
 
-        self.journal.state(verified.job_id, "ARMED")
-        self.journal.state(verified.job_id, "DRIVER_CALLED")
+        try:
+            self.journal.state(verified.job_id, "ARMED")
+            self.journal.state(verified.job_id, "DRIVER_CALLED")
+        except Exception:
+            # A failed/ambiguous durable write must stop before native I/O.
+            _close_prepared(prepared)
+            try:
+                self.journal.state(verified.job_id, "UNKNOWN",
+                                   {"reason": "JOURNAL_DRIVER_BOUNDARY_AMBIGUOUS"})
+            except Exception:
+                pass
+            return {"status": "UNKNOWN", "job_id": verified.job_id,
+                    "reason": "JOURNAL_DRIVER_BOUNDARY_AMBIGUOUS"}
         try:
             result = self.printer.send(prepared, work, verified)
-            if (not isinstance(result, dict) or result.get("accepted") is not True):
+            expected_app = "WINWORD" if verified.source_format == "DOCX" else "SUMATRA_PDF"
+            if (not isinstance(result, dict) or result.get("accepted") is not True or
+                    result.get("native_app") != expected_app):
                 raise PilotPrintBlocked("NATIVE_DRIVER_RESULT_UNCERTAIN")
             evidence = {
-                "kind": "spooler_submission_unverified",
+                "kind": "native_application_submission_unverified",
                 "paper_verified": False,
-                "spooler_job_id": result.get("spooler_job_id")
-                if type(result.get("spooler_job_id")) is str else None,
+                "native_app": result["native_app"],
             }
+            if verified.source_format == "DOCX":
+                if (type(result.get("word_worker_exit_code")) is not int or
+                        result["word_worker_exit_code"] != 0):
+                    raise PilotPrintBlocked("NATIVE_DRIVER_RESULT_UNCERTAIN")
+                evidence["word_worker_exit_code"] = result["word_worker_exit_code"]
+            else:
+                if (type(result.get("native_app_exit_code")) is not int or
+                        result["native_app_exit_code"] != 0):
+                    raise PilotPrintBlocked("NATIVE_DRIVER_RESULT_UNCERTAIN")
+                evidence["native_app_exit_code"] = result["native_app_exit_code"]
             state = "SENT_UNVERIFIED"
         except Exception:
             evidence = {"kind": "agent_uncertain", "reason": "NATIVE_SEND_AMBIGUOUS",
@@ -335,25 +506,12 @@ class WindowsPrinterProfile:
 class _PreparedNativePrint:
     source_path: Path
     page_count: int
-    app: Any = None
-    document: Any = None
-    pythoncom: Any = None
 
     def close(self) -> None:
         try:
-            if self.document is not None:
-                self.document.Close(SaveChanges=0)
-        finally:
-            try:
-                if self.app is not None:
-                    self.app.Quit(SaveChanges=0)
-            finally:
-                if self.pythoncom is not None:
-                    self.pythoncom.CoUninitialize()
-                try:
-                    self.source_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
+            self.source_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 class WindowsNativePrinter:
@@ -419,6 +577,8 @@ class WindowsNativePrinter:
                 page_count = document.page_count
             extension = ".pdf"
         else:
+            # Word opens only a private byte-for-byte snapshot in a bounded
+            # child process. It never converts the DOCX to another format.
             page_count = 0
             extension = ".docx"
         fd, name = tempfile.mkstemp(prefix="autoin-pilot-", suffix=extension,
@@ -434,46 +594,14 @@ class WindowsNativePrinter:
                 raise PilotPrintBlocked("PRIVATE_SOURCE_SNAPSHOT_CHANGED")
             if verified.source_format == "PDF":
                 return _PreparedNativePrint(source_path=source_path, page_count=page_count)
-            return self._prepare_word(source_path)
+            result = _run_word_worker(
+                source_path=source_path, source_sha256=verified.source_sha256,
+                mode="inspect", timeout_seconds=self.timeout_seconds)
+            return _PreparedNativePrint(source_path=source_path,
+                                        page_count=result["page_count"])
         except Exception:
             source_path.unlink(missing_ok=True)
             raise
-
-    @staticmethod
-    def _prepare_word(source_path: Path) -> _PreparedNativePrint:
-        if os.name != "nt":
-            raise PilotPrintBlocked("WINDOWS_WORD_UNAVAILABLE")
-        try:
-            import pythoncom
-            from win32com.client import DispatchEx
-            pythoncom.CoInitialize()
-            app = DispatchEx("Word.Application")
-            app.Visible = False
-            app.DisplayAlerts = 0
-            app.AutomationSecurity = 3
-            app.Options.UpdateLinksAtOpen = False
-            document = app.Documents.Open(
-                FileName=str(source_path), ConfirmConversions=False,
-                ReadOnly=True, AddToRecentFiles=False, Visible=False,
-                OpenAndRepair=False, NoEncodingDialog=True, UpdateLinks=0)
-            document.Repaginate()
-            page_count = int(document.ComputeStatistics(2))
-            if not 1 <= page_count <= 10000:
-                raise PilotPrintBlocked("WORD_PAGE_COUNT_UNVERIFIED")
-            return _PreparedNativePrint(source_path, page_count, app, document, pythoncom)
-        except Exception as exc:
-            try:
-                if "document" in locals():
-                    document.Close(SaveChanges=0)
-                if "app" in locals():
-                    app.Quit(SaveChanges=0)
-                if "pythoncom" in locals():
-                    pythoncom.CoUninitialize()
-            except Exception:
-                pass
-            if isinstance(exc, PilotPrintBlocked):
-                raise
-            raise PilotPrintBlocked("WORD_NATIVE_PREFLIGHT_UNVERIFIED") from exc
 
     def send(self, prepared: _PreparedNativePrint, work: PilotPrintWork,
              verified: VerifiedPilotSource) -> dict[str, Any]:
@@ -484,15 +612,18 @@ class WindowsNativePrinter:
         with _ExclusivePrinterLock(self.profile.printer_id):
             with _PerUserPrinterSettings(self.profile.queue_name, verified.settings):
                 if verified.source_format == "DOCX":
-                    if prepared.document is None or prepared.app is None:
-                        raise PilotPrintBlocked("WORD_SESSION_MISSING")
-                    prepared.app.ActivePrinter = self.profile.queue_name
-                    prepared.document.PageSetup.PaperSize = 9  # wdPaperA4
-                    prepared.document.PageSetup.Orientation = 0  # portrait
-                    # The original DOCX is passed directly to Microsoft Word.
-                    prepared.document.PrintOut(
-                        Background=False, Copies=verified.settings["copies"],
-                        Collate=True, PrintToFile=False, ManualDuplexPrint=False)
+                    # A fresh Word process reopens exactly the same DOCX bytes,
+                    # checks page count against preflight, and calls PrintOut.
+                    result = _run_word_worker(
+                        source_path=prepared.source_path,
+                        source_sha256=verified.source_sha256, mode="print",
+                        timeout_seconds=self.timeout_seconds,
+                        printer_name=self.profile.queue_name,
+                        copies=verified.settings["copies"],
+                        expected_page_count=prepared.page_count)
+                    return {"accepted": True, "native_app": "WINWORD",
+                            "word_worker_exit_code": 0,
+                            "word_page_count": result["page_count"]}
                 else:
                     settings = [f"{verified.settings['copies']}x", "paper=A4",
                                 "monochrome", "shrink", "ignore-pdf-print-settings",
@@ -500,15 +631,13 @@ class WindowsNativePrinter:
                     command = [str(self.sumatra_exe), "-print-to", self.profile.queue_name,
                                "-print-settings", ",".join(settings), "-silent",
                                str(prepared.source_path)]
-                    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                    result = subprocess.run(
-                        command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL, timeout=self.timeout_seconds,
-                        check=False, shell=False, creationflags=flags)
-                    if result.returncode != 0:
+                    exit_code = _wait_native_process(command, self.timeout_seconds)
+                    if exit_code != 0:
                         raise PilotPrintBlocked("PDF_NATIVE_SEND_UNCONFIRMED")
-        # Native applications/spooler do not prove that paper was produced.
-        return {"accepted": True, "spooler_job_id": None}
+                    return {"accepted": True, "native_app": "SUMATRA_PDF",
+                            "native_app_exit_code": exit_code}
+        # Native-app return is not proof of spooler acceptance or paper output.
+        return {"accepted": False}
 
 
 class _PerUserPrinterSettings(AbstractContextManager):
@@ -529,21 +658,27 @@ class _PerUserPrinterSettings(AbstractContextManager):
             import win32print
             self.win32print = win32print
             self.handle = win32print.OpenPrinter(self.queue_name)
-            self.original = deepcopy(win32print.GetPrinter(self.handle, 8))
+            # PRINTER_INFO_9 is per-user. Level 8 changes global defaults and
+            # could affect other users of this Windows print queue.
+            self.original = deepcopy(win32print.GetPrinter(self.handle, 9))
             current = deepcopy(self.original)
             devmode = current.get("pDevMode")
             if devmode is None:
                 raise PilotPrintBlocked("PRINTER_DEVMODE_UNAVAILABLE")
-            devmode.Fields |= (win32con.DM_PAPERSIZE | win32con.DM_ORIENTATION |
-                               win32con.DM_COLOR | win32con.DM_DUPLEX)
+            devmode.Fields |= (win32con.DM_PAPERSIZE | win32con.DM_COLOR |
+                               win32con.DM_DUPLEX)
             devmode.PaperSize = win32con.DMPAPER_A4
-            devmode.Orientation = win32con.DMORIENT_PORTRAIT
             devmode.Color = win32con.DMCOLOR_MONOCHROME
             # Pilot wire v0.1 has a boolean duplex field; long-edge is the
             # fixed A4 document policy until the shared contract adds a binding field.
             devmode.Duplex = (win32con.DMDUP_VERTICAL if self.settings["duplex"]
                               else win32con.DMDUP_SIMPLEX)
-            win32print.SetPrinter(self.handle, 8, current, 0)
+            win32print.SetPrinter(self.handle, 9, current, 0)
+            applied = win32print.GetPrinter(self.handle, 9).get("pDevMode")
+            if (applied is None or applied.PaperSize != win32con.DMPAPER_A4 or
+                    applied.Color != win32con.DMCOLOR_MONOCHROME or
+                    applied.Duplex != win32con.DMDUP_SIMPLEX):
+                raise PilotPrintBlocked("PRINTER_DEVMODE_SETTINGS_UNVERIFIED")
             return self
         except PilotPrintBlocked:
             self.__exit__(None, None, None)
@@ -555,7 +690,7 @@ class _PerUserPrinterSettings(AbstractContextManager):
     def __exit__(self, *_args):
         try:
             if self.handle is not None and self.original is not None:
-                self.win32print.SetPrinter(self.handle, 8, self.original, 0)
+                self.win32print.SetPrinter(self.handle, 9, self.original, 0)
         finally:
             if self.handle is not None:
                 self.win32print.ClosePrinter(self.handle)

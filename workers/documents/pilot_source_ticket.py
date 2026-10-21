@@ -79,6 +79,10 @@ def _check_settings(settings: object) -> dict[str, Any]:
             type(settings["duplex"]) is not bool or settings["paper"] != "A4" or
             settings["color"] != "black_white"):
         raise PilotTicketInvalid("PILOT_SETTINGS_UNSUPPORTED")
+    # PR #163 carries only a boolean; it does not bind long-edge vs short-edge.
+    # Do not silently guess a duplex binding policy for a physical print.
+    if settings["duplex"] is True:
+        raise PilotTicketInvalid("PILOT_DUPLEX_BINDING_UNVERIFIED")
     return dict(settings)
 
 
