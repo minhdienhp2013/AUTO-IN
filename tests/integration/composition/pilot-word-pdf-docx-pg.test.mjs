@@ -89,7 +89,7 @@ test('verified synthetic OA DOCX -> durable custody/binder -> Core -> Agent HTTP
    artifact_ref:source.artifact_ref})),sourceBytes);
   const requestData={documents:[{artifact_name:source.artifact_ref,copies:2,duplex:true,paper:'A4'}]};
   const draft=await core.service.createDraft(owner.principal,{customer_id:customer,
-   conversation_id:conversation,request_data,idempotency_key:`docx-${suffix}`});
+   conversation_id:conversation,request_data:requestData,idempotency_key:`docx-${suffix}`});
   orderId=draft.order_id;
   const plan={request_hash:draft.request_hash,physical_sheets:2,document_pages:1,printed_faces:2,
    ready:true,printer_id:printer,artifact_ref:source.artifact_ref,verified_by:'pilot-docx-test'};
