@@ -188,8 +188,10 @@ def verify_pilot_source_ticket(*, job: dict[str, Any], candidate: dict[str, Any]
     for field in ("code_window_id", "provider_event_id", "job_id"):
         if type(authorization.get(field)) is not str or not authorization[field]:
             raise PilotTicketInvalid("PILOT_AUTHORIZATION_IDENTITY_INVALID")
-    if authorization.get("provider_event_id") != source.get("provider_event_id"):
-        raise PilotTicketInvalid("PILOT_PROVIDER_EVENT_MISMATCH")
+    # The source event is the file; Core's authorization event is the code text.
+    # A single OA event cannot fill both roles.
+    if authorization["provider_event_id"] == source["provider_event_id"]:
+        raise PilotTicketInvalid("PILOT_PROVIDER_EVENT_ROLE_COLLISION")
     if type(authorization.get("authorized_at")) is not str:
         raise PilotTicketInvalid("PILOT_AUTHORIZATION_TIME_INVALID")
     try:

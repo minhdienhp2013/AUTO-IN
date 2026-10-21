@@ -54,7 +54,7 @@ def make_work(file_format: str = "PDF", *, duplex: bool = False) -> PilotPrintWo
             "artifact_ref": f"public/pilot/{PUBLIC_FILES[file_format].name}",
             "sha256": source_sha,
             "size_bytes": len(source_bytes),
-            "provider_event_id": "event-public-test",
+            "provider_event_id": "file-event-public-test",
         },
         "settings": settings,
         "settings_sha256": settings_sha,
@@ -73,7 +73,7 @@ def make_work(file_format: str = "PDF", *, duplex: bool = False) -> PilotPrintWo
         "evidence_sha256": "e" * 64,
         "printer_id": "RMP7000",
         "code_window_id": "window-public-test",
-        "provider_event_id": "event-public-test",
+        "provider_event_id": "code-event-public-test",
         "authorized_at": "2026-10-21T12:00:00+07:00",
         "job_id": "job-public-test",
     }
@@ -206,6 +206,28 @@ class PilotNativePrintTests(unittest.TestCase):
                 self.assertEqual(verified.settings_sha256, work.candidate["settings_sha256"])
                 self.assertEqual(verified.job_id, work.authorization["job_id"])
                 self.assertEqual(verified.printer_id, "RMP7000")
+
+    def test_file_and_code_event_roles_cannot_collide_before_journal_or_driver(self):
+        work = make_work()
+        self.assertNotEqual(work.candidate["source"]["provider_event_id"],
+                            work.authorization["provider_event_id"])
+        tampered = replace(work, authorization={
+            **work.authorization,
+            "provider_event_id": work.candidate["source"]["provider_event_id"]})
+        with self.assertRaisesRegex(PilotTicketInvalid, "PILOT_PROVIDER_EVENT_ROLE_COLLISION"):
+            verify_pilot_source_ticket(
+                job=tampered.job, candidate=tampered.candidate,
+                authorization=tampered.authorization, source_bytes=tampered.source_bytes,
+                configured_printer_id="RMP7000")
+        with tempfile.TemporaryDirectory() as folder:
+            agent, journal, _backend, printer = self.make_agent(folder, tampered)
+            result = agent.run_once()
+            self.assertEqual(result["status"], "BLOCKED")
+            self.assertEqual(result["reason"], "PILOT_PROVIDER_EVENT_ROLE_COLLISION")
+            self.assertIsNone(journal.get(work.job["job_id"]))
+            self.assertEqual(printer.prepare_calls, [])
+            self.assertEqual(printer.send_calls, [])
+            journal.close()
 
     def test_source_hash_job_settings_and_printer_mismatch_block_before_driver(self):
         mutations = (

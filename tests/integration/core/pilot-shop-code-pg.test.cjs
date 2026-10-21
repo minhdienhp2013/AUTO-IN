@@ -98,6 +98,7 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
     worlds.push(world);return world;
    };
    const jobs=async id=>Number((await a.query('SELECT count(*)::int AS n FROM core_print_jobs WHERE order_id=$1',[id])).rows[0].n);
+   const authorizations=async id=>Number((await a.query('SELECT count(*)::int AS n FROM core_pilot_print_authorizations WHERE order_id=$1',[id])).rows[0].n);
    const candidateCount=async id=>Number((await a.query('SELECT count(*)::int AS n FROM core_pilot_candidates WHERE order_id=$1',[id])).rows[0].n);
 
    await t.test('valid code arrives before file, stays HMAC-only, then creates one pilot job and worker receives private bytes',async()=>{
@@ -197,10 +198,13 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
     await w.A.registerPilotCandidate(w.candidate);
     const submission=w.submission();
     const raced=await Promise.all([w.A.authorizePilotPrint(submission),w.B.authorizePilotPrint(submission)]);
+    assert.equal(raced.length,2);
     assert.ok(raced.every(result=>result.status==='AUTHORIZED'));
-    assert.equal(raced[0].authorization.job_id,raced[1].authorization.job_id);assert.equal(await jobs(w.orderId),1);
+    assert.equal(raced[0].authorization.job_id,raced[1].authorization.job_id);
+    assert.equal(await authorizations(w.orderId),1);assert.equal(await jobs(w.orderId),1);
     const replay=await w.B.authorizePilotPrint(submission);
-    assert.equal(replay.authorization.job_id,raced[0].authorization.job_id);assert.equal(await jobs(w.orderId),1);
+    assert.equal(replay.authorization.job_id,raced[0].authorization.job_id);
+    assert.equal(await authorizations(w.orderId),1);assert.equal(await jobs(w.orderId),1);
     const claim=await w.A.claimPilot(w.agent,{printer_id:'RMP7000',idempotency_key:idempotency()});
     const gate={expected_revision:1,lease_token:claim.work.job.lease_token,request_hash:claim.work.job.request_hash,
      source_sha256:claim.work.authorization.source_sha256,settings_sha256:claim.work.authorization.settings_sha256,

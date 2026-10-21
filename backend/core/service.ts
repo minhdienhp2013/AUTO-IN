@@ -120,11 +120,12 @@ export class OrderService {
  private async currentPilotJobResult(db:SqlConnection,authId:string):Promise<PilotResult|null>{
   const row=(await db.query<{a:{shop_id:string;oa_id:string;customer_id:string;order_id:string;revision:number;request_hash:string;
    source_sha256:string;settings_sha256:string;evidence_sha256:string;printer_id:string;code_window_id:string;
-   provider_event_id:string;authorized_at:Date};j:JobRow}>(
+   provider_event_id:string;authorized_at:Date};j:{id:string;cancelled_at:string|null;state:JobRow['state']}}>(
    'SELECT jsonb_build_object(\'shop_id\',a.shop_id,\'oa_id\',a.oa_id,\'customer_id\',a.customer_id,'+
    '\'order_id\',a.order_id,\'revision\',a.revision,\'request_hash\',a.request_hash,\'source_sha256\',a.source_sha256,'+
    '\'settings_sha256\',a.settings_sha256,\'evidence_sha256\',a.evidence_sha256,\'printer_id\',a.printer_id,'+
-   '\'code_window_id\',a.code_window_id,\'provider_event_id\',a.provider_event_id,\'authorized_at\',a.authorized_at) AS a,j.* '+
+   '\'code_window_id\',a.code_window_id,\'provider_event_id\',a.provider_event_id,\'authorized_at\',a.authorized_at) AS a,'+
+   'jsonb_build_object(\'id\',j.id,\'cancelled_at\',j.cancelled_at,\'state\',j.state) AS j '+
    'FROM core_pilot_print_authorizations a JOIN core_print_jobs j ON j.pilot_authorization_id=a.id WHERE a.id=$1',[authId])).rows[0];
   if(!row)return null;
   const a=row.a;

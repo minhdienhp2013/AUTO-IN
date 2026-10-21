@@ -30,7 +30,7 @@ def _fixture():
         "request_hash": "a" * 64,
         "source": {"format": "PDF", "artifact_ref": "public/synthetic.pdf",
                    "sha256": source_sha, "size_bytes": len(source),
-                   "provider_event_id": "synthetic-event"},
+                   "provider_event_id": "synthetic-file-event"},
         "settings": settings, "settings_sha256": settings_sha,
         "printer_id": "RMP7000",
     }
@@ -45,7 +45,7 @@ def _fixture():
         "request_hash": candidate["request_hash"], "source_sha256": source_sha,
         "settings_sha256": settings_sha, "evidence_sha256": "e" * 64,
         "printer_id": candidate["printer_id"], "code_window_id": "synthetic-window",
-        "provider_event_id": "synthetic-event", "authorized_at": "2026-10-21T00:00:00Z",
+        "provider_event_id": "synthetic-code-event", "authorized_at": "2026-10-21T00:00:00Z",
         "job_id": job["job_id"],
     }
     return source, job, candidate, authorization
