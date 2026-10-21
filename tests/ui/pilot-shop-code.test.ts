@@ -37,7 +37,10 @@ test('loader requires an authenticated staff session and matching server shop; R
   let calls = 0, now = 100;
   const port = { async loadCurrentShopCode() { calls++; return validDto; } };
   assert.deepEqual(await loadPilotShopCode(port, null, shopId, () => now), { status: 'unauthenticated' });
-  assert.equal(calls, 0);
+  assert.equal((await loadPilotShopCode(port, { ...staff, role: 'staff' }, null, () => now)).status, 'unauthenticated');
+  assert.equal((await loadPilotShopCode(port, { ...staff, role: 'owner' }, shopId, () => now)).status, 'ready');
+  assert.equal((await loadPilotShopCode(port, { ...staff, role: 'customer' } as unknown as StaffSession, shopId, () => now)).status, 'unauthenticated');
+  assert.equal(calls, 1, 'only the authorized owner request reached the port');
   const state = await loadPilotShopCode(port, staff, shopId, () => { const current = now; now += 75; return current; });
   assert.equal(state.status, 'ready');
   if (state.status === 'ready') assert.equal(state.remainingAtReceiptMs, 30 * 60 * 1000 - 75);
@@ -50,7 +53,42 @@ test('loader requires an authenticated staff session and matching server shop; R
   }
 });
 
-test('panel renders only authenticated code as escaped text and hides code plus old orders on unhealthy API', () => {
+test('countdown uses server time and a monotonic clock, not the device wall clock', async () => {
+  const originalDateNow = Date.now;
+  try {
+    Date.now = () => 9_999_999_999_999;
+    const state = await loadPilotShopCode({ async loadCurrentShopCode() { return validDto; } }, staff, shopId);
+    assert.equal(state.status, 'ready');
+    if (state.status === 'ready') {
+      assert.ok(state.remainingAtReceiptMs > 29 * 60 * 1000);
+      assert.ok(state.remainingAtReceiptMs <= 30 * 60 * 1000);
+    }
+  } finally { Date.now = originalDateNow; }
+});
+
+test('each refresh receives the rotated server code and errors produce no displayable old code', async () => {
+  const rotated: PilotShopCodeDisplay = {
+    ...validDto, code: 'B9M2-ROTATED', server_time: '2026-10-21T10:29:59.000Z', expires_at: '2026-10-21T10:59:59.000Z',
+  };
+  let request = 0;
+  const port = { async loadCurrentShopCode() { return [validDto, rotated][request++]; } };
+  const first = await loadPilotShopCode(port, staff, shopId);
+  const second = await loadPilotShopCode(port, staff, shopId);
+  assert.equal(first.status, 'ready');
+  assert.equal(second.status, 'ready');
+  if (first.status === 'ready' && second.status === 'ready') {
+    assert.equal(first.display.code, 'A7KQ-2026');
+    assert.equal(second.display.code, 'B9M2-ROTATED');
+  }
+  const afterNetworkFailure = await loadPilotShopCode({ async loadCurrentShopCode() { throw new Error('offline'); } }, staff, shopId);
+  const unavailable = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
+    authenticatedStaff: true, apiHealthy: true, state: afterNetworkFailure, orders: [], remainingMs: null, onRefresh() {},
+  }));
+  assert.doesNotMatch(unavailable, /A7KQ-2026|B9M2-ROTATED/);
+  assert.match(unavailable, /pilot-code-unavailable/);
+});
+
+test('panel renders only authenticated escaped code, hides stale order rows, and marks uncertain print state UNKNOWN', () => {
   const unsafe = { ...validDto, code: '<img src=x onerror=alert(1)>' };
   const ready = { status: 'ready' as const, display: unsafe, receivedAt: 0, remainingAtReceiptMs: 120000 };
   const authenticatedHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
@@ -78,15 +116,33 @@ test('panel renders only authenticated code as escaped text and hides code plus 
   }));
   assert.doesNotMatch(codeUnavailableHtml, /A7KQ-2026|pilot-code-ready/);
   assert.match(codeUnavailableHtml, /pilot-code-unavailable/);
+
+  const unknownOrder = { ...structuredClone(demoOrders[0]), order_id: 'current-order', print_state: 'UNKNOWN' as const };
+  const unknownOrderHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
+    authenticatedStaff: true, apiHealthy: true, state: currentCode, orders: [unknownOrder], remainingMs: 120000, onRefresh() {},
+  }));
+  assert.match(unknownOrderHtml, /UNKNOWN/);
+  assert.match(unknownOrderHtml, /không tự gửi lại lệnh/i);
+  assert.doesNotMatch(unknownOrderHtml, /Đã in/);
+
+  const sessionExpiredHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
+    authenticatedStaff: true, apiHealthy: true, state: { status: 'session-expired' }, orders: [], remainingMs: null, onRefresh() {},
+  }));
+  assert.doesNotMatch(sessionExpiredHtml, /A7KQ-2026|B9M2-ROTATED/);
+  assert.match(sessionExpiredHtml, /pilot-code-unavailable/);
 });
 
 test('HTTP port calls only the authenticated #163 GET with Bearer and no-store; demo never synthesizes a code', async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
+  let codeReads = 0;
   const fetcher: typeof fetch = async (input, init = {}) => {
     const url = String(input); requests.push({ url, init });
     if (url.endsWith('/api/v1/auth/login')) return jsonResponse({ token: 'ephemeral-token', principal: loginPrincipal });
     if (url.endsWith('/api/v1/auth/me')) return jsonResponse({ principal: loginPrincipal });
-    if (url.endsWith('/api/v1/pilot/shop-code')) return jsonResponse(validDto);
+    if (url.endsWith('/api/v1/pilot/shop-code')) {
+      const rotated: PilotShopCodeDisplay = { ...validDto, code: 'B9M2-ROTATED', server_time: '2026-10-21T10:29:59.000Z', expires_at: '2026-10-21T10:59:59.000Z' };
+      return jsonResponse(codeReads++ === 0 ? validDto : rotated);
+    }
     return jsonResponse({ error: { code: 'NOT_FOUND', message: 'not found' } }, 404);
   };
   const port = new HttpPrintPort('', fetcher);
@@ -94,7 +150,9 @@ test('HTTP port calls only the authenticated #163 GET with Bearer and no-store; 
   assert.equal(requests.length, 0);
   await port.login(shopId, 'staff', 'secret');
   const dto = await port.loadCurrentShopCode();
+  const rotated = await port.loadCurrentShopCode();
   assert.deepEqual(dto, validDto);
+  assert.equal(rotated.code, 'B9M2-ROTATED');
   const request = requests.at(-1)!;
   assert.equal(request.url, '/api/v1/pilot/shop-code');
   assert.equal(request.init.method, undefined);
@@ -121,10 +179,13 @@ test('HTTP port rejects cross-shop and invalid DTO responses instead of displayi
 test('pilot page is gated to a live staff session while the existing order-management view remains', async () => {
   const app = await readFile(new URL('../../web/src/App.tsx', import.meta.url), 'utf8');
   const api = await readFile(new URL('../../web/src/api.ts', import.meta.url), 'utf8');
+  const panel = await readFile(new URL('../../web/src/pilot-shop-code.ts', import.meta.url), 'utf8');
   assert.ok(/!useDemo&&session&&<button[^>]+data-testid="pilot-shop-code-nav"/.test(app), 'navigation is staff-session gated');
   assert.ok(/setSession\(await port\.login\(loginShop,\s*loginUser,\s*loginPassword\)\);\s*setView\('shop-code'\)/.test(app), 'successful login opens the pilot page');
   assert.ok(/view === 'shop-code' \? <PilotShopCodePanel/.test(app), 'pilot page is part of the authenticated app');
   assert.ok(/view === 'orders'/.test(app), 'existing order-management flow remains');
   assert.ok(/this\.call\('\/api\/v1\/pilot\/shop-code'\)/.test(api), 'uses only the #163 route');
-  assert.ok(!/localStorage|sessionStorage|URL\(|dangerouslySetInnerHTML|fetch\(/.test(await readFile(new URL('../../web/src/pilot-shop-code.ts', import.meta.url), 'utf8')), 'panel does not persist, generate, or fetch arbitrary code sources');
+  assert.ok(/if \(next <= 0\)[\s\S]*?setState\(\{ status: 'expired' \}\);\s*void refresh\(\)/.test(panel), 'expiry hides the code and triggers a server refresh');
+  assert.ok(/window\.setInterval\(tick, 1000\)/.test(panel), 'countdown ticks from the server-derived monotonic deadline');
+  assert.ok(!/localStorage|sessionStorage|URL\(|dangerouslySetInnerHTML|fetch\(/.test(panel), 'panel does not persist, generate, or fetch arbitrary code sources');
 });
