@@ -132,10 +132,17 @@ export interface PilotAgentGateReceipt {
 
 export type PilotAgentReportState = 'SIMULATED_DONE' | 'SENT_UNVERIFIED' | 'UNKNOWN';
 
+/** Only these sanitized scalar fields are accepted by Core. */
+export interface PilotAgentReportEvidence {
+  readonly driver_called?: boolean;
+  readonly spooler_ack?: boolean;
+  readonly reason_code?: string;
+}
+
 export interface PilotAgentReport {
   readonly schema: 'ai0.pilot_agent_report.v1';
   readonly lease_token: string;
   readonly idempotency_key: string;
   readonly state: PilotAgentReportState;
-  readonly evidence: Readonly<Record<string, string | number | boolean | null>>;
+  readonly evidence: Readonly<PilotAgentReportEvidence>;
 }
