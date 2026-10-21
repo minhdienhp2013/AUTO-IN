@@ -16,6 +16,8 @@ export interface WordReviewSourceScope {
 }
 export interface TrustedWordReviewBytes {
  source:{artifact_ref:string;bytes:Uint8Array};manifest:{ref:string;bytes:Uint8Array};
+ /** Required for pilot authorization; copied from the server-owned source registry, never client input. */
+ provider_event_id?:string;
 }
 /** Adapter must resolve both objects from the server-owned tenant/order/revision
  * registry and immutable private storage. It must not dereference caller URLs. */

@@ -16,6 +16,10 @@ export interface CoreRouteDependencies {
  resolveVerifiedCustomer:(r:HttpRequest)=>Promise<Principal>;
  // MUST authenticate scoped service/agent credentials, not a client-provided role header.
  resolvePrintAgent:(r:HttpRequest)=>Promise<Principal>;
+ // AI2 ingress adapters must verify the OA signature/service identity and derive these values
+ // from the verified webhook/event store; never trust identity fields from an arbitrary body.
+ resolvePilotCandidate?:(r:HttpRequest)=>Promise<unknown>;
+ resolvePilotCodeSubmission?:(r:HttpRequest)=>Promise<unknown>;
 }
 const token=(r:HttpRequest)=>r.headers.authorization?.startsWith('Bearer ')?r.headers.authorization.slice(7):'';
 /** Only parsed JSON objects are allowed; do not hide untrusted request bodies behind any. */
@@ -42,12 +46,34 @@ export function registerCoreRoutes(app:RouteRegistrar,d:CoreRouteDependencies):v
  const staff=async(r:HttpRequest)=>d.auth.principal(token(r));
  const agent=async(r:HttpRequest)=>d.resolvePrintAgent(r);
  const customer=async(r:HttpRequest)=>d.resolveVerifiedCustomer(r);
+ const pilotCandidate=async(r:HttpRequest)=>{
+  if(!d.resolvePilotCandidate)throw new DomainError('PILOT_INGRESS_UNAVAILABLE','OA pilot ingress chưa được cấu hình',503);
+  return d.resolvePilotCandidate(r);
+ };
+ const pilotSubmission=async(r:HttpRequest)=>{
+  if(!d.resolvePilotCodeSubmission)throw new DomainError('PILOT_INGRESS_UNAVAILABLE','OA pilot ingress chưa được cấu hình',503);
+  return d.resolvePilotCodeSubmission(r);
+ };
  const id=(r:HttpRequest)=>r.params?.order_id??'';
  const job=(r:HttpRequest)=>r.params?.job_id??'';
  const conversation=(r:HttpRequest)=>r.params?.conversation_id??'';
  app.post('/api/v1/auth/login',wrap(async(r)=>{const c=loginCredentials(r);return d.auth.login(c.shop_id,c.username,c.password);}));
  app.post('/api/v1/auth/logout',wrap(async(r)=>{await d.auth.logout(token(r));return {ok:true};}));
  app.get('/api/v1/auth/me',wrap(async(r)=>({principal:await staff(r)})));
+ app.get('/api/v1/pilot/shop-code',wrap(async(r,reply)=>{
+  reply.header?.('Cache-Control','no-store');
+  return d.service.getPilotShopCode(await staff(r));
+ }));
+ // These internal service endpoints never accept browser bearer roles. The resolver is
+ // responsible for authenticating AI2 and the OA signature. AI0 must redact request.body.code.
+ app.post('/internal/v1/pilot/candidates',wrap(async(r,reply)=>{
+  reply.header?.('Cache-Control','no-store');
+  return d.service.registerPilotCandidate(await pilotCandidate(r));
+ }));
+ app.post('/internal/v1/pilot/code-submissions',wrap(async(r,reply)=>{
+  reply.header?.('Cache-Control','no-store');
+  return d.service.authorizePilotPrint(await pilotSubmission(r));
+ }));
  app.get('/api/v1/inbound-review-items',wrap(async(r,reply)=>{
   reply.header?.('Cache-Control','no-store');
   if(!d.inboundReviewReader)throw new DomainError('INBOUND_REVIEW_UNAVAILABLE','Hàng chờ nhân viên chưa được cấu hình',503,true);
@@ -74,6 +100,32 @@ export function registerCoreRoutes(app:RouteRegistrar,d:CoreRouteDependencies):v
  app.post('/internal/v1/print-jobs/:job_id/preflight',wrap(async(r)=>d.service.preflight(await agent(r),job(r),bodyOf<Parameters<OrderService['preflight']>[2]>(r))));
  app.post('/internal/v1/print-jobs/:job_id/mark-sending',wrap(async(r)=>d.service.markSending(await agent(r),job(r),bodyOf<Parameters<OrderService['markSending']>[2]>(r))));
  app.post('/internal/v1/print-jobs/:job_id/reports',wrap(async(r)=>d.service.report(await agent(r),job(r),bodyOf<Parameters<OrderService['report']>[2]>(r))));
+ app.post('/internal/v1/pilot/print-jobs/claim',wrap(async(r,reply)=>{
+  reply.header?.('Cache-Control','no-store');
+  return d.service.claimPilot(await agent(r),bodyOf<Record<string,unknown>>(r));
+ }));
+ app.get('/internal/v1/pilot/print-jobs/:job_id/source',wrap(async(r,reply)=>{
+  reply.header?.('Cache-Control','no-store');
+  const source=await d.service.getPilotJobSource(await agent(r),job(r),r.headers['x-auto-in-pilot-lease']??'');
+  reply.header?.('Content-Type',source.format==='DOCX'
+   ?'application/vnd.openxmlformats-officedocument.wordprocessingml.document':'application/pdf');
+  reply.header?.('Content-Length',String(source.size_bytes));
+  reply.header?.('X-AUTO-IN-Source-SHA256',source.sha256);
+  reply.header?.('X-AUTO-IN-Source-Size',String(source.size_bytes));
+  return reply.send(Buffer.from(source.bytes));
+ }));
+ app.post('/internal/v1/pilot/print-jobs/:job_id/preflight',wrap(async(r,reply)=>{
+  reply.header?.('Cache-Control','no-store');
+  return d.service.preflightPilot(await agent(r),job(r),bodyOf<Record<string,unknown>>(r));
+ }));
+ app.post('/internal/v1/pilot/print-jobs/:job_id/mark-sending',wrap(async(r,reply)=>{
+  reply.header?.('Cache-Control','no-store');
+  return d.service.markPilotSending(await agent(r),job(r),bodyOf<Record<string,unknown>>(r));
+ }));
+ app.post('/internal/v1/pilot/print-jobs/:job_id/reports',wrap(async(r,reply)=>{
+  reply.header?.('Cache-Control','no-store');
+  return d.service.reportPilot(await agent(r),job(r),bodyOf<Record<string,unknown>>(r));
+ }));
  app.post('/api/v1/print-jobs/:job_id/mark-unknown',wrap(async(r)=>d.service.markUnknownForReconciliation(await staff(r),job(r),bodyOf<Parameters<OrderService['markUnknownForReconciliation']>[2]>(r))));
  app.post('/api/v1/print-jobs/:job_id/verify-paper',wrap(async(r)=>d.service.verifyPaper(await staff(r),job(r),bodyOf<Parameters<OrderService['verifyPaper']>[2]>(r))));
  app.post('/api/v1/conversations/:conversation_id/handover',wrap(async(r)=>d.service.handover(await staff(r),conversation(r),bodyOf<Parameters<OrderService['handover']>[2]>(r))));

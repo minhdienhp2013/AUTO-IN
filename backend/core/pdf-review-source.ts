@@ -15,6 +15,8 @@ export interface PdfReviewSourceScope {
 }
 export interface TrustedPdfReviewBytes {
  source:{artifact_ref:string;bytes:Uint8Array};manifest:{ref:string;bytes:Uint8Array};
+ /** Required for pilot authorization; copied from the server-owned source registry, never client input. */
+ provider_event_id?:string;
 }
 /** Implemented by AI0 composition against its server-owned registry/private store.
  * Return null unless exactly one current PDF is registered for this revision;
