@@ -102,7 +102,7 @@ jobs:
             >"$RUNNER_TEMP/pilot-node-tests.log" 2>&1; then
             awk '/^# (tests|pass|fail|cancelled|skipped|todo) /' "$RUNNER_TEMP/pilot-node-tests.log"
           else
-            awk '/^[[:space:]]*not ok [0-9]+ - / || /^[[:space:]]*(failureType|code|name|operator|location): / || /^[[:space:]]*at .*tests\/(integration|unit)\// || /^# (tests|pass|fail|cancelled|skipped|todo) /' "$RUNNER_TEMP/pilot-node-tests.log"
+            awk '/^[[:space:]]*not ok [0-9]+ - / || /^[[:space:]]*(failureType|code|name|operator|location): / || (/^[[:space:]]*(async )?TestContext\.<anonymous> \(/ && /tests\/(integration|unit)\//) || /^# (tests|pass|fail|cancelled|skipped|todo) /' "$RUNNER_TEMP/pilot-node-tests.log"
             echo 'Pilot Node tests failed; details suppressed.'
             exit 1
           fi
