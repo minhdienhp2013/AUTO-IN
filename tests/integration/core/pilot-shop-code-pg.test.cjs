@@ -106,7 +106,7 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
     assert.equal(pending.status,'WAITING_FOR_FILE');
     const registered=await w.A.registerPilotCandidate(w.candidate);
     assert.equal(registered.status,'AUTHORIZED');
-    assert.equal(candidateCount(w.orderId),1);assert.equal(await jobs(w.orderId),1);
+    assert.equal(await candidateCount(w.orderId),1);assert.equal(await jobs(w.orderId),1);
     const rows=(await a.query('SELECT id,approval_id,pilot_authorization_id,confirmed_at,state FROM core_print_jobs WHERE order_id=$1',[w.orderId])).rows;
     assert.equal(rows[0].approval_id,null);assert.ok(rows[0].pilot_authorization_id);assert.equal(rows[0].confirmed_at,null);
     const window=(await a.query('SELECT issued_at,expires_at,code_hmac FROM core_pilot_shop_code_windows WHERE shop_id=$1',[w.shop])).rows[0];
