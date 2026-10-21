@@ -133,7 +133,7 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
    await t.test('accepted code expires before the file is ready and cannot create authorization/job later',async()=>{
     const w=await makeWorld('expiry-after-arrival');
     assert.equal((await w.A.authorizePilotPrint(w.submission())).status,'WAITING_FOR_FILE');
-    await a.query("UPDATE core_pilot_shop_code_windows SET expires_at=clock_timestamp()-interval '1 second' WHERE shop_id=$1",[w.shop]);
+    await a.query("UPDATE core_pilot_shop_code_windows SET issued_at=statement_timestamp()-interval '30 minutes', expires_at=statement_timestamp()-interval '1 second' WHERE shop_id=$1",[w.shop]);
     const result=await w.A.registerPilotCandidate(w.candidate);
     assert.deepEqual(result,{status:'WAITING_FOR_CODE',reason:'CODE_EXPIRED'});
     assert.equal(await jobs(w.orderId),0);
@@ -162,7 +162,7 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
 
    await t.test('expired code and source/settings drift do not authorize',async()=>{
     const expired=await makeWorld('expired-code');
-    await a.query("UPDATE core_pilot_shop_code_windows SET expires_at=clock_timestamp()-interval '1 second' WHERE shop_id=$1",[expired.shop]);
+    await a.query("UPDATE core_pilot_shop_code_windows SET issued_at=statement_timestamp()-interval '30 minutes', expires_at=statement_timestamp()-interval '1 second' WHERE shop_id=$1",[expired.shop]);
     assert.equal((await expired.A.authorizePilotPrint(expired.submission())).status,'WAITING_FOR_CODE');
     const rotated=await expired.A.getPilotShopCode(expired.staff);
     assert.notEqual(rotated.code,expired.display.code);
