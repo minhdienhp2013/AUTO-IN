@@ -25,8 +25,9 @@ import { parseWordReviewPreview, WordReviewPanel,
   type WordReviewIdentity, type WordReviewPanelState, type WordReviewPageObjectUrl } from './word-review-panel.ts';
 import { parsePdfReviewPreview, PdfReviewPanel,
   type PdfReviewIdentity, type PdfReviewPanelState, type PdfReviewPageObjectUrl } from './pdf-review-panel.ts';
+import { PilotShopCodePanel } from './pilot-shop-code.ts';
 
-type View = 'orders' | 'overview' | 'settings' | 'inbound-review';
+type View = 'orders' | 'overview' | 'settings' | 'inbound-review' | 'shop-code';
 type DetailTab = 'document' | 'activity';
 type Filter = 'all' | 'approval' | 'attention' | 'delivery';
 const port: PrintPort = makePort();
@@ -232,7 +233,7 @@ function App() {
     requestEpoch.current++;
     setChatLoaded(false);setChatLoading(false);
     ev.preventDefault(); setBusy(true); setError(null);
-    try { setSession(await port.login(loginShop, loginUser, loginPassword)); await load(true); setLoginPassword(''); }
+    try { setSession(await port.login(loginShop, loginUser, loginPassword)); setView('shop-code'); await load(true); setLoginPassword(''); }
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   };
@@ -272,6 +273,7 @@ function App() {
       <nav aria-label="Điều hướng chính" className="nav">
         <button className={view === 'overview' ? 'active' : ''} onClick={() => {setView('overview');setMenuOpen(false)}}><LayoutDashboard size={19}/> Tổng quan</button>
         <button className={view === 'orders' ? 'active' : ''} onClick={() => {setView('orders');setMenuOpen(false);setMobileDetail(false)}}><BookOpen size={19}/> Quản lý đơn in <span className="nav-count">{totals.count}</span></button>
+        {!useDemo&&session&&<button className={view==='shop-code'?'active':''} data-testid="pilot-shop-code-nav" onClick={()=>{setView('shop-code');setMenuOpen(false);setMobileDetail(false)}}><LockKeyhole size={19}/> Mã cửa hàng</button>}
         {!useDemo&&session&&<button className={view==='inbound-review'?'active':''} data-testid="inbound-review-nav" onClick={()=>{setView('inbound-review');setMenuOpen(false);setMobileDetail(false);void loadInboundReviewQueue()}}><Inbox size={19}/> Sự kiện cần nhân viên {inboundItems&&inboundItems.length>0&&<span className="nav-count">{inboundItems.length}</span>}</button>}
         <button disabled title="Chưa có API hội thoại độc lập"><Smartphone size={19}/> Hội thoại <span className="soon">Sớm</span></button>
         <button disabled title="Chưa có API quản lý print job độc lập"><Printer size={19}/> Hàng đợi máy in <span className="soon">Sớm</span></button>
@@ -283,7 +285,7 @@ function App() {
     {menuOpen && <button className="mobile-backdrop" onClick={()=>setMenuOpen(false)} aria-label="Đóng điều hướng"/>}
     <div className="main-area">
       <header className="topbar">
-        <div className="top-left"><button aria-label="Mở menu" className="menu-icon" onClick={() => setMenuOpen(x=>!x)}><Menu size={22}/></button><div className="breadcrumb">Vận hành <ChevronRight size={14}/> <strong>{view === 'orders' ? 'Quản lý đơn in' : view === 'overview' ? 'Tổng quan' : view==='inbound-review'?'Sự kiện cần nhân viên':'Cài đặt'}</strong></div></div>
+        <div className="top-left"><button aria-label="Mở menu" className="menu-icon" onClick={() => setMenuOpen(x=>!x)}><Menu size={22}/></button><div className="breadcrumb">Vận hành <ChevronRight size={14}/> <strong>{view === 'orders' ? 'Quản lý đơn in' : view === 'overview' ? 'Tổng quan' : view==='inbound-review'?'Sự kiện cần nhân viên':view==='shop-code'?'Mã cửa hàng':'Cài đặt'}</strong></div></div>
         <div className="top-right"><span data-testid="operation-mode" className={`mode-pill ${modeTone(mode)}`}><span className="status-dot"/>{labelMode(mode)}</span><button className="icon-button" title="Làm mới" aria-label="Làm mới dữ liệu" disabled={loading || busy || inboundLoading} onClick={()=>view==='inbound-review'?void loadInboundReviewQueue():void load()}><RefreshCw size={19}/></button><div className="user-avatar" title={session?.display_name ?? 'Chưa đăng nhập'}><UserRound size={19}/></div></div>
       </header>
       <div className="content">
@@ -292,6 +294,7 @@ function App() {
         {toast && <div className="banner success" role="status"><Check size={19}/><span>{toast}</span><button aria-label="Đóng thông báo" onClick={()=>setToast(null)}><X size={17}/></button></div>}
         {!useDemo && !session && !loading ? <section className="login-card"><div className="login-icon"><LockKeyhole/></div><h1>Đăng nhập nhân viên</h1><p>Đăng nhập bằng tài khoản cấp từ máy chủ AUTO-IN. Quyền được kiểm tra tại server.</p><form data-testid="staff-login" onSubmit={doLogin}><label>Mã cửa hàng<input autoComplete="organization" required value={loginShop} onChange={e=>setLoginShop(e.target.value)} /></label><label>Tên đăng nhập<input autoComplete="username" required value={loginUser} onChange={e=>setLoginUser(e.target.value)}/></label><label>Mật khẩu<input autoComplete="current-password" type="password" required value={loginPassword} onChange={e=>setLoginPassword(e.target.value)}/></label><button className="primary" disabled={busy}>Đăng nhập an toàn</button></form></section>
           : loading ? <div className="empty-center"><RefreshCw className="spin" size={26}/> Đang tải dữ liệu…</div>
+          : view === 'shop-code' ? <PilotShopCodePanel key={`${port.authenticatedShopId()??''}:${session?.actor_id??''}:${session?.role??''}`} port={port} session={session} authenticatedShopId={port.authenticatedShopId()} apiHealthy={apiHealthy} orders={orders} onUnauthorized={clearExpiredStaffSession} onRefreshOrders={()=>void load(true)}/>
           : view === 'settings' ? <SettingsView mode={mode} session={session} onLogout={()=>void doLogout()}/>
           : view === 'inbound-review' ? <InboundReviewQueue items={inboundItems} loading={inboundLoading} error={inboundError} refresh={()=>void loadInboundReviewQueue()}/>
           : view === 'overview' ? <Overview totals={totals} orders={orders} open={(id)=>{doSelect(id);setView('orders')}}/>

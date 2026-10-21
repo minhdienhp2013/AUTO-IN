@@ -85,6 +85,30 @@
 .settings-box .schedule-alert{color:#aa4a36;font-weight:700}
 @media(max-width:450px){.shop-schedule-fields{grid-template-columns:minmax(0,1fr)}}
 
+/* V1 pilot: staff-only shop code and read-only order status. */
+.pilot-code-page{max-width:1100px;margin:0 auto;padding:24px 4px}
+.pilot-code-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:18px}
+.pilot-code-heading h1{font-size:30px;margin:4px 0 7px;color:#244b38}
+.pilot-code-heading .outline-btn{display:flex;align-items:center;gap:7px;white-space:nowrap}
+.pilot-code-heading .subtext{max-width:680px}
+.pilot-code-safety{padding:13px 15px;border:1px solid #d7e5da;border-left:4px solid #38815e;border-radius:10px;background:#f6faf6;color:#456b52;font-size:13px;line-height:1.6;margin-bottom:16px}
+.pilot-code-card,.pilot-order-status{background:#fff;border:1px solid #dce7df;border-radius:12px;padding:20px;margin-bottom:18px;min-width:0}
+.pilot-code-value{display:grid;gap:8px;justify-items:start}
+.pilot-code-label{font-size:12px;font-weight:750;color:#557260}
+.pilot-code-value code{display:block;max-width:100%;overflow-wrap:anywhere;padding:12px 16px;border-radius:9px;background:#edf6ef;color:#214b37;font-size:clamp(24px,5vw,38px);font-weight:800;letter-spacing:.08em}
+.pilot-code-value p,.pilot-code-value small,.pilot-code-empty,.pilot-order-status-heading p{margin:0;color:#687c70;font-size:12px;line-height:1.55}
+.pilot-order-status-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:13px}
+.pilot-order-status h2{font-size:18px;margin:0 0 5px;color:#294b39}
+.pilot-order-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));gap:10px}
+.pilot-order-card{min-width:0;border:1px solid #e1e9e2;border-radius:9px;padding:12px;background:#fbfdfb}
+.pilot-order-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;overflow-wrap:anywhere}
+.pilot-order-heading strong{font-size:13px;color:#304f3d}
+.pilot-order-state,.pilot-order-unknown{flex:0 0 auto;padding:4px 7px;border-radius:20px;background:#eaf5ed;color:#28734f;font-size:10px;font-weight:800}
+.pilot-order-unknown{background:#fff0df;color:#92571d}
+.pilot-order-card p{margin:8px 0 0;color:#607367;font-size:11px;line-height:1.5}
+.pilot-order-card small{display:block;margin-top:8px;color:#96551f;font-size:10px;line-height:1.5}
+@media(max-width:600px){.pilot-code-page{padding:14px 0}.pilot-code-heading{flex-direction:column}.pilot-code-heading h1{font-size:24px}.pilot-code-heading>.outline-btn{width:100%;justify-content:center}.pilot-code-card,.pilot-order-status{padding:14px}.pilot-code-value code{font-size:25px}}
+
 
 /* V1-QUEUE-01: read-only server-bound statuses inside existing detail layout. */
 .v1-routing-panel{margin:12px 23px;padding:14px 15px;border:1px solid #d8e4df;background:#f8fbf8;border-radius:11px;color:#335649;font-size:11px;line-height:1.6}
