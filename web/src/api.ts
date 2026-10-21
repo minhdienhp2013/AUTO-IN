@@ -7,16 +7,18 @@ import { parseShopSchedule, type ShopSchedule, type SchedulePatch, type Schedule
 import { parseInboundReviewItems, type InboundReviewItem } from './inbound-review.ts';
 import { parsePdfReviewPreview, type PdfReviewIdentity, type PdfReviewPreviewV1 } from './pdf-review-panel.ts';
 import { parseWordReviewPreview, type WordReviewIdentity, type WordReviewPreviewV1 } from './word-review-panel.ts';
+import { parsePilotShopCodeDisplay, type PilotShopCodeDisplay, type PilotShopCodePort } from './pilot-shop-code.ts';
 
 export class ApiFault extends Error {
   readonly status: number; readonly code: string; readonly currentRevision?: number;
   constructor(status: number, code: string, message: string, currentRevision?: number) { super(message); this.name = 'ApiFault'; this.status = status; this.code = code; this.currentRevision = currentRevision; }
 }
-export interface PrintPort extends SchedulePort {
+export interface PrintPort extends SchedulePort, PilotShopCodePort {
   login(shopId: string, username: string, password: string): Promise<StaffSession>;
   logout(): Promise<void>;
   me(): Promise<StaffSession>;
   authenticatedShopId(): string|null;
+  loadCurrentShopCode(): Promise<PilotShopCodeDisplay>;
   listOrders(): Promise<OrderView[]>;
   listInboundReviewItems(): Promise<InboundReviewItem[]>;
   getOrder(id: string): Promise<OrderView>;
@@ -277,6 +279,21 @@ export class HttpPrintPort implements PrintPort {
       role: o.role as StaffSession['role'], can_approve: true, can_manage_schedule: o.role === 'owner' };
   }
   authenticatedShopId(): string|null { return this.shopId; }
+  async loadCurrentShopCode(): Promise<PilotShopCodeDisplay> {
+    if (!this.token || !this.shopId) {
+      throw new ApiFault(401, 'UNAUTHENTICATED', 'Vui lòng đăng nhập nhân viên để xem mã cửa hàng.');
+    }
+    const token = this.token, shopId = this.shopId;
+    const raw = await this.call('/api/v1/pilot/shop-code');
+    if (this.token !== token || this.shopId !== shopId) {
+      throw new ApiFault(401, 'PILOT_CODE_SESSION_CHANGED', 'Phiên nhân viên đã đổi; không dùng mã cửa hàng cũ.');
+    }
+    const display = parsePilotShopCodeDisplay(raw);
+    if (!display || display.shop_id !== shopId) {
+      throw new ApiFault(503, 'INVALID_PILOT_SHOP_CODE', 'Mã cửa hàng không khớp hợp đồng hoặc tài khoản hiện hành.');
+    }
+    return display;
+  }
   async login(shopId: string, username: string, password: string): Promise<StaffSession> {
     this.token = null; this.shopId=null;
     const result = asObject(await this.call('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ shop_id: shopId, username, password }) }));
@@ -654,6 +671,9 @@ export class DemoPrintPort implements PrintPort {
   async logout() { this.checkNetwork(); }
   async me() { this.checkNetwork(); return structuredClone(this.session); }
   authenticatedShopId(): string|null { return null; }
+  async loadCurrentShopCode(): Promise<PilotShopCodeDisplay> {
+    throw new ApiFault(503, 'SIMULATION_ONLY', 'Mã cửa hàng chỉ được cấp từ API đã xác thực; demo không tạo mã.');
+  }
   async listOrders() { this.checkNetwork(); return structuredClone(this.orders); }
   async listInboundReviewItems():Promise<InboundReviewItem[]> { this.checkNetwork(); return []; }
   async getOrder(id: string) {
