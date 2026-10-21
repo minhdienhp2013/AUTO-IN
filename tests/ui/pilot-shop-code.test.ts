@@ -14,7 +14,7 @@ const { renderToStaticMarkup } = fromWeb('react-dom/server');
 const shopId = 'shop-42';
 const staff: StaffSession = { actor_id: 'staff-7', display_name: 'Nhân viên', role: 'staff', can_approve: false, can_manage_schedule: false };
 const validDto: PilotShopCodeDisplay = {
-  schema: 'ai0.pilot_shop_code_display.v1', shop_id: shopId, code: 'A7KQ-2026',
+  schema: 'ai0.pilot_shop_code_display.v1', shop_id: shopId, code: 'A7KQ2M9R6V',
   server_time: '2026-10-21T10:00:00.000Z', expires_at: '2026-10-21T10:30:00.000Z',
 };
 const jsonResponse = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
@@ -22,11 +22,20 @@ const jsonResponse = (value: unknown, status = 200) => new Response(JSON.stringi
 });
 const loginPrincipal = { id: staff.actor_id, shop_id: shopId, role: 'staff', verified: true };
 
-test('pilot code DTO accepts the #163 contract and rejects stale, oversized, or malformed windows', () => {
+test('pilot code DTO accepts the locked wire format and rejects malformed codes or time windows', () => {
   assert.deepEqual(parsePilotShopCodeDisplay(validDto), validDto);
   for (const value of [
     { ...validDto, schema: 'wrong' },
     { ...validDto, code: '   ' },
+    { ...validDto, code: 'A7KQ-2026' },
+    { ...validDto, code: 'a7kq2m9r6v' },
+    { ...validDto, code: 'A7KQ2M9R6I' },
+    { ...validDto, code: 'A7KQ2M9R6L' },
+    { ...validDto, code: 'A7KQ2M9R6O' },
+    { ...validDto, code: 'A7KQ2M9R6U' },
+    { ...validDto, code: 'A7KQ2M9R6' },
+    { ...validDto, code: 'A7KQ2M9R6V7' },
+    { ...validDto, code: '<img src=x>' },
     { ...validDto, expires_at: '2026-10-21T09:59:59.000Z' },
     { ...validDto, expires_at: '2026-10-21T10:30:01.000Z' },
     { ...validDto, server_time: 'not-a-time' },
@@ -68,7 +77,7 @@ test('countdown uses server time and a monotonic clock, not the device wall cloc
 
 test('each refresh receives the rotated server code and errors produce no displayable old code', async () => {
   const rotated: PilotShopCodeDisplay = {
-    ...validDto, code: 'B9M2-ROTATED', server_time: '2026-10-21T10:29:59.000Z', expires_at: '2026-10-21T10:59:59.000Z',
+    ...validDto, code: 'B9M2R6V4KQ', server_time: '2026-10-21T10:29:59.000Z', expires_at: '2026-10-21T10:59:59.000Z',
   };
   let request = 0;
   const port = { async loadCurrentShopCode() { return [validDto, rotated][request++]; } };
@@ -77,14 +86,14 @@ test('each refresh receives the rotated server code and errors produce no displa
   assert.equal(first.status, 'ready');
   assert.equal(second.status, 'ready');
   if (first.status === 'ready' && second.status === 'ready') {
-    assert.equal(first.display.code, 'A7KQ-2026');
-    assert.equal(second.display.code, 'B9M2-ROTATED');
+    assert.equal(first.display.code, 'A7KQ2M9R6V');
+    assert.equal(second.display.code, 'B9M2R6V4KQ');
   }
   const afterNetworkFailure = await loadPilotShopCode({ async loadCurrentShopCode() { throw new Error('offline'); } }, staff, shopId);
   const unavailable = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
     authenticatedStaff: true, apiHealthy: true, state: afterNetworkFailure, orders: [], remainingMs: null, onRefresh() {},
   }));
-  assert.doesNotMatch(unavailable, /A7KQ-2026|B9M2-ROTATED/);
+  assert.doesNotMatch(unavailable, /A7KQ2M9R6V|B9M2R6V4KQ/);
   assert.match(unavailable, /pilot-code-unavailable/);
 });
 
@@ -101,20 +110,20 @@ test('panel renders only authenticated escaped code, hides stale order rows, and
   const lockedHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
     authenticatedStaff: false, apiHealthy: true, state: ready, orders: [], remainingMs: 120000, onRefresh() {},
   }));
-  assert.doesNotMatch(lockedHtml, /A7KQ-2026|pilot-code-ready/);
+  assert.doesNotMatch(lockedHtml, /A7KQ2M9R6V|pilot-code-ready/);
 
   const staleOrder = { ...structuredClone(demoOrders[0]), order_id: 'old-order' };
   const currentCode = { status: 'ready' as const, display: validDto, receivedAt: 0, remainingAtReceiptMs: 120000 };
   const orderUnavailableHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
     authenticatedStaff: true, apiHealthy: false, state: currentCode, orders: [staleOrder], remainingMs: 120000, onRefresh() {},
   }));
-  assert.match(orderUnavailableHtml, /A7KQ-2026/);
+  assert.match(orderUnavailableHtml, /A7KQ2M9R6V/);
   assert.doesNotMatch(orderUnavailableHtml, /old-order/);
   assert.match(orderUnavailableHtml, /pilot-orders-unknown/);
   const codeUnavailableHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
     authenticatedStaff: true, apiHealthy: true, state: { status: 'unavailable' }, orders: [], remainingMs: null, onRefresh() {},
   }));
-  assert.doesNotMatch(codeUnavailableHtml, /A7KQ-2026|pilot-code-ready/);
+  assert.doesNotMatch(codeUnavailableHtml, /A7KQ2M9R6V|pilot-code-ready/);
   assert.match(codeUnavailableHtml, /pilot-code-unavailable/);
 
   const unknownOrder = { ...structuredClone(demoOrders[0]), order_id: 'current-order', print_state: 'UNKNOWN' as const };
@@ -128,7 +137,7 @@ test('panel renders only authenticated escaped code, hides stale order rows, and
   const sessionExpiredHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
     authenticatedStaff: true, apiHealthy: true, state: { status: 'session-expired' }, orders: [], remainingMs: null, onRefresh() {},
   }));
-  assert.doesNotMatch(sessionExpiredHtml, /A7KQ-2026|B9M2-ROTATED/);
+  assert.doesNotMatch(sessionExpiredHtml, /A7KQ2M9R6V|B9M2R6V4KQ/);
   assert.match(sessionExpiredHtml, /pilot-code-unavailable/);
 });
 
@@ -140,7 +149,7 @@ test('HTTP port calls only the authenticated #163 GET with Bearer and no-store; 
     if (url.endsWith('/api/v1/auth/login')) return jsonResponse({ token: 'ephemeral-token', principal: loginPrincipal });
     if (url.endsWith('/api/v1/auth/me')) return jsonResponse({ principal: loginPrincipal });
     if (url.endsWith('/api/v1/pilot/shop-code')) {
-      const rotated: PilotShopCodeDisplay = { ...validDto, code: 'B9M2-ROTATED', server_time: '2026-10-21T10:29:59.000Z', expires_at: '2026-10-21T10:59:59.000Z' };
+      const rotated: PilotShopCodeDisplay = { ...validDto, code: 'B9M2R6V4KQ', server_time: '2026-10-21T10:29:59.000Z', expires_at: '2026-10-21T10:59:59.000Z' };
       return jsonResponse(codeReads++ === 0 ? validDto : rotated);
     }
     return jsonResponse({ error: { code: 'NOT_FOUND', message: 'not found' } }, 404);
@@ -152,7 +161,7 @@ test('HTTP port calls only the authenticated #163 GET with Bearer and no-store; 
   const dto = await port.loadCurrentShopCode();
   const rotated = await port.loadCurrentShopCode();
   assert.deepEqual(dto, validDto);
-  assert.equal(rotated.code, 'B9M2-ROTATED');
+  assert.equal(rotated.code, 'B9M2R6V4KQ');
   const request = requests.at(-1)!;
   assert.equal(request.url, '/api/v1/pilot/shop-code');
   assert.equal(request.init.method, undefined);

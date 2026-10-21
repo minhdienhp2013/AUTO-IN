@@ -1,7 +1,7 @@
 import { createElement as h, useCallback, useEffect, useRef, useState } from 'react';
 import { orderLabels, printLabels, type OrderView, type StaffSession } from './domain.ts';
 
-/** UI mirror of the authenticated display DTO proposed in PR #163. */
+/** UI mirror of the authenticated display DTO in the locked AI0 pilot wire. */
 export interface PilotShopCodeDisplay {
   readonly schema: 'ai0.pilot_shop_code_display.v1';
   readonly shop_id: string;
@@ -24,6 +24,7 @@ export type PilotShopCodeState =
   | { status: 'ready'; display: PilotShopCodeDisplay; receivedAt: number; remainingAtReceiptMs: number };
 
 const MAX_CODE_WINDOW_MS = 30 * 60 * 1000;
+const SHOP_CODE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{10}$/;
 const object = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const isUtcTimestamp = (value: unknown): value is string =>
@@ -33,7 +34,7 @@ export function parsePilotShopCodeDisplay(value: unknown): PilotShopCodeDisplay 
   const raw = object(value);
   if (raw.schema !== 'ai0.pilot_shop_code_display.v1' ||
       typeof raw.shop_id !== 'string' || !raw.shop_id ||
-      typeof raw.code !== 'string' || !raw.code.trim() ||
+      typeof raw.code !== 'string' || !SHOP_CODE_PATTERN.test(raw.code) ||
       !isUtcTimestamp(raw.expires_at) || !isUtcTimestamp(raw.server_time)) return null;
   const lifetime = Date.parse(raw.expires_at) - Date.parse(raw.server_time);
   if (lifetime <= 0 || lifetime > MAX_CODE_WINDOW_MS) return null;
