@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { ApiFault, DemoPrintPort, HttpPrintPort } from '../../web/src/api.ts';
 import { demoOrders } from '../../web/src/fixtures.ts';
 import { type StaffSession } from '../../web/src/domain.ts';
-import { loadPilotShopCode, parsePilotShopCodeDisplay, PilotShopCodePanelView, type PilotShopCodeDisplay } from '../../web/src/pilot-shop-code.ts';
+import { listenForPilotConnection, loadPilotShopCode, parsePilotShopCodeDisplay, pilotOrderPrintStatus, PilotShopCodePanelView, type PilotShopCodeDisplay } from '../../web/src/pilot-shop-code.ts';
 
 const fromWeb = createRequire(new URL('../../web/package.json', import.meta.url));
 const React = fromWeb('react');
@@ -95,6 +95,36 @@ test('each refresh receives the rotated server code and errors produce no displa
   }));
   assert.doesNotMatch(unavailable, /A7KQ2M9R6V|B9M2R6V4KQ/);
   assert.match(unavailable, /pilot-code-unavailable/);
+});
+
+test('offline invalidates the displayed code and order snapshot; online requests a fresh read', () => {
+  const handlers = new Map<string, EventListener>();
+  const target = {
+    addEventListener(type: string, listener: EventListener) { handlers.set(type, listener); },
+    removeEventListener(type: string, listener: EventListener) { handlers.delete(type); },
+  } as unknown as Window;
+  let codeVisible = true, ordersFresh = true, refreshCount = 0;
+  const unlisten = listenForPilotConnection(target, () => { codeVisible = false; ordersFresh = false; }, () => { refreshCount++; });
+  handlers.get('offline')!(new Event('offline'));
+  assert.equal(codeVisible, false);
+  assert.equal(ordersFresh, false);
+  handlers.get('online')!(new Event('online'));
+  assert.equal(refreshCount, 1);
+  unlisten();
+  assert.equal(handlers.size, 0);
+});
+
+test('pilot order status maps waiting, sending, sent, blocked and UNKNOWN without treating ACK as print proof', () => {
+  const printState = (state: 'NOT_SENT'|'SENDING'|'SENT_UNVERIFIED'|'UNKNOWN', manual_lock = false) =>
+    pilotOrderPrintStatus({ print_state: state, manual_lock });
+  assert.equal(printState('NOT_SENT').status, 'WAITING');
+  assert.equal(printState('NOT_SENT').label, 'Chờ xử lý · chưa gửi máy');
+  assert.equal(printState('SENDING').status, 'SENDING');
+  assert.equal(printState('SENT_UNVERIFIED').status, 'SENT');
+  assert.match(printState('SENT_UNVERIFIED').label, /chưa xác minh giấy/);
+  assert.equal(printState('NOT_SENT', true).status, 'BLOCKED');
+  assert.equal(printState('UNKNOWN').status, 'UNKNOWN');
+  assert.doesNotMatch(printState('SENT_UNVERIFIED').label, /đã in/i);
 });
 
 test('panel renders only authenticated escaped code, hides stale order rows, and marks uncertain print state UNKNOWN', () => {
@@ -194,7 +224,11 @@ test('pilot page is gated to a live staff session while the existing order-manag
   assert.ok(/view === 'shop-code' \? <PilotShopCodePanel/.test(app), 'pilot page is part of the authenticated app');
   assert.ok(/view === 'orders'/.test(app), 'existing order-management flow remains');
   assert.ok(/this\.call\('\/api\/v1\/pilot\/shop-code'\)/.test(api), 'uses only the #163 route');
+  assert.ok(/listenForPilotConnection\(window, onOffline, onOnline\)/.test(panel), 'offline/online events are attached to the pilot page');
+  assert.ok(/setState\(\{ status: 'unavailable' \}\);\s*setRefreshing\(false\)/.test(panel), 'offline invalidates the old code immediately');
+  assert.ok(/apiHealthy: apiHealthy && browserOnline && ordersFresh/.test(panel), 'offline and stale order data display UNKNOWN');
   assert.ok(/if \(next <= 0\)[\s\S]*?setState\(\{ status: 'expired' \}\);\s*void refresh\(\)/.test(panel), 'expiry hides the code and triggers a server refresh');
   assert.ok(/window\.setInterval\(tick, 1000\)/.test(panel), 'countdown ticks from the server-derived monotonic deadline');
+  assert.ok(/if \(stillValidMs > 60_000\) void refresh\(\)[\s\S]*?\}, 60_000\)/.test(panel), 'reachability is periodically revalidated before expiry');
   assert.ok(!/localStorage|sessionStorage|URL\(|dangerouslySetInnerHTML|fetch\(/.test(panel), 'panel does not persist, generate, or fetch arbitrary code sources');
 });

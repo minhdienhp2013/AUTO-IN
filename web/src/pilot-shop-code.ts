@@ -1,5 +1,5 @@
 import { createElement as h, useCallback, useEffect, useRef, useState } from 'react';
-import { orderLabels, printLabels, type OrderView, type StaffSession } from './domain.ts';
+import { orderLabels, type OrderView, type StaffSession } from './domain.ts';
 
 /** UI mirror of the authenticated display DTO in the locked AI0 pilot wire. */
 export interface PilotShopCodeDisplay {
@@ -22,6 +22,35 @@ export type PilotShopCodeState =
   | { status: 'expired' }
   | { status: 'unavailable' }
   | { status: 'ready'; display: PilotShopCodeDisplay; receivedAt: number; remainingAtReceiptMs: number };
+
+export type PilotOrderPrintStatus = 'WAITING' | 'SENDING' | 'SENT' | 'BLOCKED' | 'UNKNOWN' | 'VERIFIED_DONE' | 'SIMULATED_DONE';
+export function pilotOrderPrintStatus(order: Pick<OrderView, 'print_state' | 'manual_lock'>): {
+  status: PilotOrderPrintStatus; label: string;
+} {
+  if (order.print_state === 'SENDING') return { status: 'SENDING', label: 'Đang gửi lệnh' };
+  if (order.print_state === 'SENT_UNVERIFIED') return { status: 'SENT', label: 'Đã gửi · chưa xác minh giấy' };
+  if (order.print_state === 'UNKNOWN') return { status: 'UNKNOWN', label: 'UNKNOWN · cần đối soát' };
+  if (order.print_state === 'VERIFIED_DONE') return { status: 'VERIFIED_DONE', label: 'Đã xác minh giấy thật' };
+  if (order.print_state === 'SIMULATED_DONE') return { status: 'SIMULATED_DONE', label: 'Mô phỏng xong · chưa in giấy' };
+  if (order.manual_lock) return { status: 'BLOCKED', label: 'Bị chặn · khóa xử lý' };
+  return { status: 'WAITING', label: 'Chờ xử lý · chưa gửi máy' };
+}
+
+type PilotConnectionTarget = Pick<Window, 'addEventListener' | 'removeEventListener'>;
+export function listenForPilotConnection(
+  target: PilotConnectionTarget,
+  onOffline: () => void,
+  onOnline: () => void,
+): () => void {
+  const offline = () => onOffline();
+  const online = () => onOnline();
+  target.addEventListener('offline', offline);
+  target.addEventListener('online', online);
+  return () => {
+    target.removeEventListener('offline', offline);
+    target.removeEventListener('online', online);
+  };
+}
 
 const MAX_CODE_WINDOW_MS = 30 * 60 * 1000;
 const SHOP_CODE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{10}$/;
@@ -125,11 +154,11 @@ export function PilotShopCodePanelView({
       ? h('p', { className: 'pilot-code-empty', 'data-testid': 'pilot-orders-empty' }, 'Máy chủ chưa trả đơn nào trong danh sách hiện tại.')
       : h('div', { className: 'pilot-order-list', 'data-testid': 'pilot-order-list' },
         ...orders.map(order => h('article', { className: 'pilot-order-card', key: order.order_id, 'data-testid': 'pilot-order' },
-          h('div', { className: 'pilot-order-heading' },
+          (() => { const print = pilotOrderPrintStatus(order); return h('div', { className: 'pilot-order-heading' },
             h('strong', null, order.order_id),
-            h('span', { className: order.print_state === 'UNKNOWN' ? 'pilot-order-unknown' : 'pilot-order-state', 'data-testid': 'pilot-print-state' }, order.print_state)),
+            h('span', { className: print.status === 'UNKNOWN' ? 'pilot-order-unknown' : print.status === 'BLOCKED' ? 'pilot-order-blocked' : 'pilot-order-state', 'data-testid': 'pilot-print-state' }, print.status)); })(),
           h('p', null, 'Đơn: ', orderLabels[order.order_state]),
-          h('p', null, 'Lệnh in: ', printLabels[order.print_state]),
+          h('p', null, 'Lệnh in: ', pilotOrderPrintStatus(order).label),
           order.print_state === 'UNKNOWN' ? h('small', null, 'Cần nhân viên đối soát; không tự gửi lại lệnh.') : null)));
 
   return h('section', { className: 'pilot-code-page', 'data-testid': 'pilot-code-page', 'aria-labelledby': 'pilot-code-title' },
@@ -157,17 +186,41 @@ export function PilotShopCodePanel({
   apiHealthy: boolean;
   orders: readonly OrderView[];
   onUnauthorized: () => void;
-  onRefreshOrders: () => void;
+  onRefreshOrders: () => Promise<boolean>;
 }) {
   const authenticatedStaff = Boolean(session && ['staff', 'owner'].includes(session.role) && authenticatedShopId);
   const [state, setState] = useState<PilotShopCodeState>({ status: 'loading' });
   const [remainingMs, setRemainingMs] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [browserOnline, setBrowserOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine);
+  const [ordersFresh, setOrdersFresh] = useState(() => typeof navigator === 'undefined' || navigator.onLine);
   const requestEpoch = useRef(0);
+  const ordersEpoch = useRef(0);
+
+  const refreshOrders = useCallback(async () => {
+    const epoch = ++ordersEpoch.current;
+    setOrdersFresh(false);
+    try {
+      const fresh = await onRefreshOrders();
+      const stillCurrentAndOnline = ordersEpoch.current === epoch && (typeof navigator === 'undefined' || navigator.onLine);
+      setOrdersFresh(fresh && stillCurrentAndOnline);
+      return fresh && stillCurrentAndOnline;
+    } catch {
+      if (ordersEpoch.current === epoch) setOrdersFresh(false);
+      return false;
+    }
+  }, [onRefreshOrders]);
 
   const refresh = useCallback(async () => {
     const epoch = ++requestEpoch.current;
     setRemainingMs(null);
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setBrowserOnline(false);
+      setOrdersFresh(false);
+      setState({ status: 'unavailable' });
+      setRefreshing(false);
+      return;
+    }
     if (!authenticatedStaff) { setState({ status: 'unauthenticated' }); setRefreshing(false); return; }
     setState({ status: 'loading' });
     setRefreshing(true);
@@ -179,10 +232,27 @@ export function PilotShopCodePanel({
     if (next.status === 'session-expired') onUnauthorized();
   }, [authenticatedShopId, authenticatedStaff, onUnauthorized, port, session]);
 
-  useEffect(() => {
+  const onOffline = useCallback(() => {
+    requestEpoch.current++;
+    ordersEpoch.current++;
+    setBrowserOnline(false);
+    setOrdersFresh(false);
+    setRemainingMs(null);
+    setState({ status: 'unavailable' });
+    setRefreshing(false);
+  }, []);
+  const onOnline = useCallback(() => {
+    setBrowserOnline(true);
+    void refreshOrders();
     void refresh();
-    return () => { requestEpoch.current++; };
-  }, [refresh]);
+  }, [refresh, refreshOrders]);
+
+  useEffect(() => {
+    const unsubscribe = listenForPilotConnection(window, onOffline, onOnline);
+    if (typeof navigator !== 'undefined' && !navigator.onLine) onOffline();
+    else void refresh();
+    return () => { unsubscribe(); requestEpoch.current++; };
+  }, [onOffline, onOnline, refresh]);
 
   useEffect(() => {
     if (state.status !== 'ready') return;
@@ -198,10 +268,26 @@ export function PilotShopCodePanel({
     return () => window.clearInterval(timer);
   }, [refresh, state]);
 
-  const handleRefresh = () => { onRefreshOrders(); void refresh(); };
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    const timer = window.setInterval(() => {
+      const stillValidMs = state.remainingAtReceiptMs - (performance.now() - state.receivedAt);
+      // Revalidate reachability even when the browser does not emit `offline`.
+      // Skip the final minute; the expiry timer already requests the next code.
+      if (stillValidMs > 60_000) void refresh();
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [refresh, state]);
+
+  const handleRefresh = () => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) { onOffline(); return; }
+    setBrowserOnline(true);
+    void refreshOrders();
+    void refresh();
+  };
   return h(PilotShopCodePanelView, {
     authenticatedStaff,
-    apiHealthy,
+    apiHealthy: apiHealthy && browserOnline && ordersFresh,
     state,
     orders,
     remainingMs,

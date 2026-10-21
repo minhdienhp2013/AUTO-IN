@@ -103,8 +103,9 @@
 .pilot-order-card{min-width:0;border:1px solid #e1e9e2;border-radius:9px;padding:12px;background:#fbfdfb}
 .pilot-order-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;overflow-wrap:anywhere}
 .pilot-order-heading strong{font-size:13px;color:#304f3d}
-.pilot-order-state,.pilot-order-unknown{flex:0 0 auto;padding:4px 7px;border-radius:20px;background:#eaf5ed;color:#28734f;font-size:10px;font-weight:800}
+.pilot-order-state,.pilot-order-unknown,.pilot-order-blocked{flex:0 0 auto;padding:4px 7px;border-radius:20px;background:#eaf5ed;color:#28734f;font-size:10px;font-weight:800}
 .pilot-order-unknown{background:#fff0df;color:#92571d}
+.pilot-order-blocked{background:#fdecec;color:#9b2c2c}
 .pilot-order-card p{margin:8px 0 0;color:#607367;font-size:11px;line-height:1.5}
 .pilot-order-card small{display:block;margin-top:8px;color:#96551f;font-size:10px;line-height:1.5}
 @media(max-width:600px){.pilot-code-page{padding:14px 0}.pilot-code-heading{flex-direction:column}.pilot-code-heading h1{font-size:24px}.pilot-code-heading>.outline-btn{width:100%;justify-content:center}.pilot-code-card,.pilot-order-status{padding:14px}.pilot-code-value code{font-size:25px}}

@@ -82,7 +82,7 @@ function App() {
   const selectedOrder = orders.find(o => o.order_id === selected) ?? null;
   const firstWordDocument=selectedOrder?.documents.find(d=>['DOC','DOCX','WORD'].includes(d.format.trim().toUpperCase()))??null;
   useEffect(() => { selectedIdRef.current = selected; }, [selected]);
-  const load = useCallback(async (onlyOrders = false) => {
+  const load = useCallback(async (onlyOrders = false): Promise<boolean> => {
     requestEpoch.current++;
     setChatLoaded(false);
     setChatLoading(false);
@@ -98,13 +98,16 @@ function App() {
           ? list.map(o => o.order_id === id ? detail : o) : [detail, ...list]);
       } else setOrders(list);
       setApiHealthy(true);
+      return true;
     } catch (e) {
       const fault = e as ApiFault;
       if (fault.status === 401) { inboundEpoch.current++;setSession(null);setOrders([]);setSelected(null);setInboundItems(null); }
       setApiHealthy(false);
       setError(fault.message || 'Không kết nối được.');
+      return false;
     } finally { setLoading(false); }
   }, []);
+  const refreshPilotOrders = useCallback(() => load(true), [load]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
@@ -294,7 +297,7 @@ function App() {
         {toast && <div className="banner success" role="status"><Check size={19}/><span>{toast}</span><button aria-label="Đóng thông báo" onClick={()=>setToast(null)}><X size={17}/></button></div>}
         {!useDemo && !session && !loading ? <section className="login-card"><div className="login-icon"><LockKeyhole/></div><h1>Đăng nhập nhân viên</h1><p>Đăng nhập bằng tài khoản cấp từ máy chủ AUTO-IN. Quyền được kiểm tra tại server.</p><form data-testid="staff-login" onSubmit={doLogin}><label>Mã cửa hàng<input autoComplete="organization" required value={loginShop} onChange={e=>setLoginShop(e.target.value)} /></label><label>Tên đăng nhập<input autoComplete="username" required value={loginUser} onChange={e=>setLoginUser(e.target.value)}/></label><label>Mật khẩu<input autoComplete="current-password" type="password" required value={loginPassword} onChange={e=>setLoginPassword(e.target.value)}/></label><button className="primary" disabled={busy}>Đăng nhập an toàn</button></form></section>
           : loading ? <div className="empty-center"><RefreshCw className="spin" size={26}/> Đang tải dữ liệu…</div>
-          : view === 'shop-code' ? <PilotShopCodePanel key={`${port.authenticatedShopId()??''}:${session?.actor_id??''}:${session?.role??''}`} port={port} session={session} authenticatedShopId={port.authenticatedShopId()} apiHealthy={apiHealthy} orders={orders} onUnauthorized={clearExpiredStaffSession} onRefreshOrders={()=>void load(true)}/>
+          : view === 'shop-code' ? <PilotShopCodePanel key={`${port.authenticatedShopId()??''}:${session?.actor_id??''}:${session?.role??''}`} port={port} session={session} authenticatedShopId={port.authenticatedShopId()} apiHealthy={apiHealthy} orders={orders} onUnauthorized={clearExpiredStaffSession} onRefreshOrders={refreshPilotOrders}/>
           : view === 'settings' ? <SettingsView mode={mode} session={session} onLogout={()=>void doLogout()}/>
           : view === 'inbound-review' ? <InboundReviewQueue items={inboundItems} loading={inboundLoading} error={inboundError} refresh={()=>void loadInboundReviewQueue()}/>
           : view === 'overview' ? <Overview totals={totals} orders={orders} open={(id)=>{doSelect(id);setView('orders')}}/>
