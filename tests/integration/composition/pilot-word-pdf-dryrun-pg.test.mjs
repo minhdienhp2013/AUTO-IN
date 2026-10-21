@@ -43,8 +43,16 @@ function runDryRun({apiBaseUrl,agentToken,journalPath}){
   });
   child.once('close',code=>{
    if(settled)return;settled=true;clearTimeout(timer);
-   if(code!==0){reject(new Error('PILOT_DRYRUN_EXIT_FAILED'));return;}
-   try{resolve(JSON.parse(stdout));}catch{reject(new Error('PILOT_DRYRUN_RESULT_INVALID'));}
+   let result;
+   try{result=JSON.parse(stdout);}catch{reject(new Error('PILOT_DRYRUN_RESULT_INVALID'));return;}
+   if(code!==0){
+    const error=new Error('PILOT_DRYRUN_EXIT_FAILED');
+    const safe=value=>typeof value==='string'&&/^[A-Z][A-Z0-9_]{1,40}$/.test(value)?value:'NA';
+    error.pilotStatus=safe(result?.result?.status);
+    error.pilotReason=safe(result?.result?.reason);
+    reject(error);return;
+   }
+   resolve(result);
   });
  });
 }
@@ -74,6 +82,7 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
   let currentCandidate=null,currentSubmission=null,orderId=null,app=null,serverUrl=null;
   let tempRoot=null,journalPath=null,bootstrapped=false;
   let stage='bootstrap',lastStatus='NA',lastReason='NA';
+  let agentRoute='NA',agentHttpStatus='NA',agentHttpReason='NA';
   const safe=value=>typeof value==='number'&&Number.isInteger(value)?String(value):
    typeof value==='string'&&/^[A-Z][A-Z0-9_]{1,40}$/.test(value)?value:'NA';
   const observe=(name,response)=>{
@@ -125,6 +134,20 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
     pilotWordPdf:{hmacKey,pdfSource,
      resolveCandidate:async request=>{assertServiceRequest(request,currentCandidate);return currentCandidate;},
      resolveCodeSubmission:async request=>{assertServiceRequest(request,currentSubmission);return currentSubmission;}}
+   });
+   app.addHook('onSend',async(request,reply,payload)=>{
+    if(stage==='agent-dryrun'){
+     const route=request.url.split('?')[0];
+     const action=route==='/internal/v1/pilot/print-jobs/claim'?'claim':
+      /^\/internal\/v1\/pilot\/print-jobs\/[^/]+\/(source|preflight|mark-sending|report)$/.exec(route)?.[1];
+     if(action){
+      agentRoute=action.toUpperCase().replace('-','_');agentHttpStatus=safe(reply.statusCode);
+      if(reply.statusCode>=400){
+       try{agentHttpReason=safe(JSON.parse(String(payload))?.error?.code);}catch{agentHttpReason='NA';}
+      }
+     }
+    }
+    return payload;
    });
    await app.ready();
    const sendEvent=async(name,event)=>{
@@ -280,7 +303,7 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
    assert.equal((await pool.query('SELECT count(*)::int AS n FROM core_approvals WHERE order_id=$1',[orderId])).rows[0].n,0);
    assert.equal((await pool.query('SELECT count(*)::int AS n FROM core_confirmations WHERE order_id=$1',[orderId])).rows[0].n,0);
   }catch(failure){
-   t.diagnostic(`PILOT_COMPOSITION_DIAG stage=${stage} status=${lastStatus} reason=${lastReason} assertion=${safe(failure?.actual)}/${safe(failure?.expected)} error=${safe(failure?.code)}`);
+   t.diagnostic(`PILOT_COMPOSITION_DIAG stage=${stage} status=${safe(failure?.pilotStatus) === 'NA'?lastStatus:safe(failure.pilotStatus)} reason=${safe(failure?.pilotReason) === 'NA'?lastReason:safe(failure.pilotReason)} route=${agentRoute} http=${agentHttpStatus} http_reason=${agentHttpReason} assertion=${safe(failure?.actual)}/${safe(failure?.expected)} error=${safe(failure?.message)}`);
    throw failure;
   }finally{
    if(app)await app.close().catch(()=>{});
