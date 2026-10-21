@@ -56,6 +56,15 @@
 - Kiểm thử mới: 3 ca unit chạy thật trên Linux (PyMuPDF/Pillow); ca tích hợp `inspect` được thêm vào bộ test và cần kiểm lại cùng toàn suite khi AI0 ghép nhánh. Windows/Ricoh vẫn chưa thử thật.
 
 
+## V1 Word/PDF shop-code pilot — AI0 locked wire (2026-10-21)
+
+- `agents/windows/pilot_backend_http.py` dùng riêng các route `/internal/v1/pilot/print-jobs/*`; nó không thay client approval-based cũ. Claim yêu cầu ticket pilot không có `approval_id`. Source tải bằng GET riêng, có Bearer agent + `X-AUTO-IN-Pilot-Lease`, `Cache-Control: no-store`, `X-AUTO-IN-Source-SHA256` và `X-AUTO-IN-Source-Size`; byte phải khớp ticket trước khi tiếp tục.
+- Callable/CLI mô phỏng một job bằng HTTP thật tới Core: `run_pilot_dryrun_once(api_base_url=..., token=..., journal_path=...)` hoặc `AUTO_IN_AGENT_TOKEN=... python -m agents.windows.pilot_cli --api-base-url http://127.0.0.1:3000 --journal /secure/pilot.sqlite`. HTTP thường chỉ được chấp nhận cho loopback simulation; Core từ xa cần HTTPS. Core phải trả `mode=simulation`.
+- DryRun ghi journal bền, gọi preflight/mark-sending/report qua Core nhưng không gọi `prepare`, Word COM, Sumatra, spooler hay Ricoh. Báo `SIMULATED_DONE`, `driver_called=false`, `paper_verified=false`; đây không phải bằng chứng giấy.
+- Wire copies là 1–99; `duplex=true` là A4 lật cạnh dài, `false` là simplex. Driver settings phải được đọc lại và khớp chính xác trước lệnh native. Thay đổi này mới có unit test mock; chưa xác minh driver Windows/Ricoh thực.
+- Gọi native path vẫn cần Windows 11, Word, Sumatra đã pin hash, printer/driver/port đúng, người đứng máy và phê duyệt riêng của chủ. Chưa thử OA, Windows, Word, Sumatra hoặc Ricoh thật; không được coi CI/local synthetic là pilot đã chạy.
+
+
 ## CODE-203 — Processor bridge / AI0 Port (đợt 2)
 
 **Module base** `72647b4e8d489c506f8814ac7565116d0d1a16df`, scaffold AI0 `a681fe91f24f3b0cec61cb72887cc0928d9460ca` (giữ nguyên file chung được lấy vào nhánh mới). Không sửa `contracts/**` hoặc HTTP wire AI1.
