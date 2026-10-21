@@ -1,0 +1,17 @@
+{
+  "schema": "autoin.pilot.public_fixtures.v1",
+  "kind": "synthetic_public_only",
+  "product_result": "NOT_RUN",
+  "files": [
+    {
+      "name": "public-one-page.pdf",
+      "size_bytes": 598,
+      "sha256": "75ff2ebf9db02e33aa38619578e0744769babf68edef8c7045f86f1f365f5910"
+    },
+    {
+      "name": "public-one-page.docx",
+      "size_bytes": 1417,
+      "sha256": "5c8a1c98a0f3d1117b7f5b2b630609b2b67eadd26be9df24bb62b41a1962f81e"
+    }
+  ]
+}
