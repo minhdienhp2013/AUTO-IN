@@ -50,7 +50,7 @@ function runDryRun({apiBaseUrl,agentToken,journalPath}){
 }
 
 test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun stays simulation-only',
- {skip,timeout:120_000},async()=>{
+ {skip,timeout:120_000},async t=>{
   // Guard before constructing a pool: only an explicitly named loopback test DB is eligible.
   assertIsolatedSimulationDatabase(databaseUrl);
   const pool=new pg.Pool({connectionString:databaseUrl,max:5,connectionTimeoutMillis:5000});
@@ -73,6 +73,14 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
   const sealed=new Map();
   let currentCandidate=null,currentSubmission=null,orderId=null,app=null,serverUrl=null;
   let tempRoot=null,journalPath=null,bootstrapped=false;
+  let stage='bootstrap',lastStatus='NA',lastReason='NA';
+  const safe=value=>typeof value==='number'&&Number.isInteger(value)?String(value):
+   typeof value==='string'&&/^[A-Z][A-Z0-9_]{1,40}$/.test(value)?value:'NA';
+  const observe=(name,response)=>{
+   stage=name;lastStatus=safe(response.statusCode);
+   try{const body=response.json();lastReason=safe(body?.error?.code??body?.reason??body?.status);}catch{lastReason='NA';}
+   return response;
+  };
   const evidenceOptions={artifactRoot:path.join(os.tmpdir(),'unused-pilot-runtime-evidence-root'),
    printerCapabilities:{simulation_only:true,printer_id:printerId,queue_name:printerId}};
   const evidence=createTrustedPrintEvidencePort(evidenceOptions);
@@ -119,25 +127,27 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
      resolveCodeSubmission:async request=>{assertServiceRequest(request,currentSubmission);return currentSubmission;}}
    });
    await app.ready();
-   const sendEvent=async event=>{
-    const response=await app.inject({method:'POST',url:'/webhooks/zalo',
-     headers:{'content-type':'application/json','x-test-fixture-key':fixtureKey},payload:JSON.stringify(event)});
+   const sendEvent=async(name,event)=>{
+    stage=name;
+    const response=observe(name,await app.inject({method:'POST',url:'/webhooks/zalo',
+     headers:{'content-type':'application/json','x-test-fixture-key':fixtureKey},payload:JSON.stringify(event)}));
     assert.equal(response.statusCode,200);
     assert.equal(response.json().status,'accepted');
    };
    const baseEvent={synthetic_fixture:true,oa_id:oa,customer_id:customer,conversation_id:conversation,
     occurred_at:new Date().toISOString()};
-   await sendEvent({...baseEvent,event_id:fileEvent,kind:'file',file_ref:`media-${suffix}`,
+   await sendEvent('oa-file',{...baseEvent,event_id:fileEvent,kind:'file',file_ref:`media-${suffix}`,
     filename:'public-one-page.pdf',mime_type:'application/pdf'});
-   await sendEvent({...baseEvent,event_id:settingsEvent,kind:'text',text:'In 2 bản A4, 2 mặt, đen trắng.'});
+   await sendEvent('oa-settings',{...baseEvent,event_id:settingsEvent,kind:'text',text:'In 2 bản A4, 2 mặt, đen trắng.'});
 
-   const displayResponse=await app.inject({method:'GET',url:'/api/v1/pilot/shop-code',
-    headers:{authorization:`Bearer ${ownerLogin.token}`}});
+   stage='shop-code';
+   const displayResponse=observe('shop-code',await app.inject({method:'GET',url:'/api/v1/pilot/shop-code',
+    headers:{authorization:`Bearer ${ownerLogin.token}`}}));
    assert.equal(displayResponse.statusCode,200);
    assert.equal(displayResponse.headers['cache-control'],'no-store');
    const display=displayResponse.json();
    assert.ok(/^[0-9A-HJKMNP-TV-Z]{10}$/.test(display.code),'server shop code follows the locked wire format');
-   await sendEvent({...baseEvent,event_id:codeEvent,kind:'text',text:`Mã cửa hàng: ${display.code}`});
+   await sendEvent('oa-code',{...baseEvent,event_id:codeEvent,kind:'text',text:`Mã cửa hàng: ${display.code}`});
 
    const intake=createPilotWordPdfIntakeAdapter({trusted_shop_id:shop,trusted_oa_id:oa,ports:{
     async read_verified_events({event_ids}){
@@ -179,24 +189,29 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
     core:{
      async registerPilotCandidate(candidate){
       currentCandidate=candidate;
-      const response=await app.inject({method:'POST',url:'/internal/v1/pilot/candidates',
-       headers:{authorization:`Bearer ${ai2Token}`},payload:candidate});
+      stage='register-candidate';
+      const response=observe('register-candidate',await app.inject({method:'POST',url:'/internal/v1/pilot/candidates',
+       headers:{authorization:`Bearer ${ai2Token}`},payload:candidate}));
       assert.equal(response.statusCode,200);
       return response.json();
      },
      async authorizePilotPrint(submission){
       currentSubmission={...submission,idempotency_key:`caller-controlled-${suffix}`};
-      const response=await app.inject({method:'POST',url:'/internal/v1/pilot/code-submissions',
-       headers:{authorization:`Bearer ${ai2Token}`},payload:currentSubmission});
+      stage='authorize-code';
+      const response=observe('authorize-code',await app.inject({method:'POST',url:'/internal/v1/pilot/code-submissions',
+       headers:{authorization:`Bearer ${ai2Token}`},payload:currentSubmission}));
       assert.equal(response.statusCode,200);
       return response.json();
      }
     }
    }});
+   stage='process-intake';
    const intakeResult=await intake.processVerifiedEvents({event_ids:[fileEvent,settingsEvent,codeEvent],source_event_id:fileEvent});
+   stage='intake-result';lastStatus=safe(intakeResult.status);lastReason=safe(intakeResult.reason);
    assert.equal(intakeResult.status,'AUTHORIZED');
    assert.equal(intakeResult.candidate_registered,true);
    assert.equal(intakeResult.authorization_attempted,true);
+   stage='verify-provenance';
    const replayKeys=(await pool.query('SELECT ca.idempotency_key AS attempt_key,a.idempotency_key AS authorization_key '+
     'FROM core_pilot_code_attempts ca JOIN core_pilot_print_authorizations a '+
     'ON a.shop_id=ca.shop_id AND a.oa_id=ca.oa_id AND a.provider_event_id=ca.provider_event_id '+
@@ -227,8 +242,9 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
      payload:{printer_id:printerId,idempotency_key:`denied-${suffix}-${headers.authorization?'wrong':'missing'}`}});
     assert.equal(denied.statusCode,401);
    }
-   const legacyClaim=await app.inject({method:'POST',url:'/internal/v1/print-jobs/claim',
-    headers:{authorization:`Bearer ${agentToken}`},payload:{printer_id:printerId,idempotency_key:`legacy-${suffix}`}});
+   stage='legacy-claim';
+   const legacyClaim=observe('legacy-claim',await app.inject({method:'POST',url:'/internal/v1/print-jobs/claim',
+    headers:{authorization:`Bearer ${agentToken}`},payload:{printer_id:printerId,idempotency_key:`legacy-${suffix}`}}));
    assert.equal(legacyClaim.statusCode,200);
    assert.equal(legacyClaim.json().job,null,'legacy claim must not see the pilot authorization job');
    assert.equal((await pool.query('SELECT claimed_by FROM core_print_jobs WHERE order_id=$1',[orderId])).rows[0].claimed_by,null);
@@ -238,7 +254,9 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
    await fs.chmod(tempRoot,0o700);
    journalPath=path.join(tempRoot,'pilot.sqlite');
    serverUrl=await app.listen({host:'127.0.0.1',port:0});
+   stage='agent-dryrun';
    const agentResult=await runDryRun({apiBaseUrl:serverUrl,agentToken,journalPath});
+   stage='agent-result';lastStatus=safe(agentResult.result?.status);lastReason=safe(agentResult.result?.reason);
    assert.equal(agentResult.mode,'simulation');
    assert.equal(agentResult.driver_called,false);
    assert.equal(agentResult.result.status,'SIMULATED_DONE');
@@ -261,6 +279,9 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
    }
    assert.equal((await pool.query('SELECT count(*)::int AS n FROM core_approvals WHERE order_id=$1',[orderId])).rows[0].n,0);
    assert.equal((await pool.query('SELECT count(*)::int AS n FROM core_confirmations WHERE order_id=$1',[orderId])).rows[0].n,0);
+  }catch(failure){
+   t.diagnostic(`PILOT_COMPOSITION_DIAG stage=${stage} status=${lastStatus} reason=${lastReason} assertion=${safe(failure?.actual)}/${safe(failure?.expected)} error=${safe(failure?.code)}`);
+   throw failure;
   }finally{
    if(app)await app.close().catch(()=>{});
    if(bootstrapped){
