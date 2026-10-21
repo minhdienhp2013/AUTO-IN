@@ -330,6 +330,3 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
    await pool.end();
   }
  });
-
-test('DOCX integration NOT RUN: no executable pilot DOCX Core-to-Agent integration case',
- {skip:'NOT RUN: this pilot integration executable covers PDF only'},()=>{});

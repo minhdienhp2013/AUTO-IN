@@ -72,7 +72,7 @@ test('verified synthetic OA DOCX -> durable custody/binder -> Core -> Agent HTTP
    identities:[{token:agentToken,principal:{id:agentId,shop_id:shop,role:'print_agent',verified:true,printer_ids:[printer]}}],
    trustedPrintEvidence:evidence,pilotWordPdf:{hmacKey,wordSource:ports.wordSource,pdfSource:ports.pdfSource,...ingress}});
   app.addHook('preHandler',async request=>{
-   if(/^\/internal\/v1\/pilot\/print-jobs\/[^/]+\/report$/.test(request.url)){
+   if(/^\/internal\/v1\/pilot\/print-jobs\/[^/]+\/reports$/.test(request.url)){
     const value=request.body?.evidence;
     reportEvidence={driver_called:value?.driver_called,spooler_ack:value?.spooler_ack};
    }
