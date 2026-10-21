@@ -24,7 +24,7 @@ def execute_word_job(*, source_path: Path, expected_sha256: str, mode: str,
     if (mode not in ("inspect", "print") or not source_path.is_absolute() or
             str(source_path).startswith("\\\\") or source_path.is_symlink() or
             not source_path.is_file() or not SHA256.fullmatch(expected_sha256) or
-            type(copies) is not int or not 1 <= copies <= 999):
+            type(copies) is not int or not 1 <= copies <= 99):
         raise ValueError("WORD_REQUEST_INVALID")
     if mode == "print" and (not printer_name or type(expected_page_count) is not int or
                              expected_page_count < 1):

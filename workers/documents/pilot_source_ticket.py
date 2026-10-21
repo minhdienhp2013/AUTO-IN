@@ -75,14 +75,11 @@ def _check_settings(settings: object) -> dict[str, Any]:
     if not isinstance(settings, dict) or set(settings) != {
             "copies", "duplex", "paper", "color"}:
         raise PilotTicketInvalid("PILOT_SETTINGS_SHAPE_INVALID")
-    if (type(settings["copies"]) is not int or not 1 <= settings["copies"] <= 999 or
+    if (type(settings["copies"]) is not int or not 1 <= settings["copies"] <= 99 or
             type(settings["duplex"]) is not bool or settings["paper"] != "A4" or
             settings["color"] != "black_white"):
         raise PilotTicketInvalid("PILOT_SETTINGS_UNSUPPORTED")
-    # PR #163 carries only a boolean; it does not bind long-edge vs short-edge.
-    # Do not silently guess a duplex binding policy for a physical print.
-    if settings["duplex"] is True:
-        raise PilotTicketInvalid("PILOT_DUPLEX_BINDING_UNVERIFIED")
+    # Locked AI0 wire meaning: A4 duplex=True is long-edge, False is simplex.
     return dict(settings)
 
 

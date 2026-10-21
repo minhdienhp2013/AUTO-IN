@@ -19,7 +19,7 @@ from agents.windows.pilot_native_print import (
 from agents.windows.pilot_word_print_worker import execute_word_job
 from agents.windows import pilot_native_print as native_module
 from workers.documents.bridge import _canonical
-from workers.documents.pilot_source_ticket import verify_pilot_source_ticket
+from workers.documents.pilot_source_ticket import PilotTicketInvalid, verify_pilot_source_ticket
 
 ROOT = Path(__file__).resolve().parent / "fixtures" / "pilot-word-pdf"
 PUBLIC_FILES = {
@@ -84,6 +84,7 @@ def make_work(file_format: str = "PDF", *, duplex: bool = False) -> PilotPrintWo
         "request_hash": candidate["request_hash"],
         "printer_id": "RMP7000",
         "lease_token": "synthetic-public-test-lease",
+        "mode": "controlled_test",
     }
     return PilotPrintWork(job, candidate, authorization, source_bytes)
 
@@ -183,7 +184,8 @@ class PilotNativePrintTests(unittest.TestCase):
         backend = backend or FakeBackend(work)
         printer = printer or FakeNativePrinter()
         journal = PilotJournal(Path(folder) / "pilot.sqlite")
-        return PilotPrintAgent(backend=backend, journal=journal, printer=printer), journal, backend, printer
+        return PilotPrintAgent(backend=backend, journal=journal, printer=printer,
+                              dry_run=False), journal, backend, printer
 
     def test_pr165_public_fixtures_match_manifest_hashes(self):
         for file_format, path in PUBLIC_FILES.items():
@@ -248,16 +250,17 @@ class PilotNativePrintTests(unittest.TestCase):
                 self.assertIsNone(journal.get("job-public-test"))
                 journal.close()
 
-    def test_duplex_without_bound_edge_policy_blocks_before_preparation(self):
+    def test_locked_duplex_true_means_a4_long_edge(self):
         with tempfile.TemporaryDirectory() as folder:
             work = make_work("DOCX", duplex=True)
             agent, journal, _backend, printer = self.make_agent(folder, work)
             result = agent.run_once()
-            self.assertEqual(result["status"], "BLOCKED")
-            self.assertEqual(result["reason"], "PILOT_DUPLEX_BINDING_UNVERIFIED")
-            self.assertEqual(printer.prepare_calls, [])
-            self.assertEqual(printer.send_calls, [])
-            self.assertIsNone(journal.get("job-public-test"))
+            self.assertEqual(result["status"], "SENT_UNVERIFIED")
+            self.assertEqual(printer.prepare_calls,
+                             [("DOCX", EXPECTED_SHA256["DOCX"])])
+            self.assertEqual(printer.send_calls,
+                             [("DOCX", EXPECTED_SHA256["DOCX"])])
+            self.assertEqual(journal.get("job-public-test")["state"], "SENT_UNVERIFIED")
             journal.close()
 
     def test_preflight_mismatch_never_calls_native_driver(self):
@@ -309,12 +312,86 @@ class PilotNativePrintTests(unittest.TestCase):
             journal.close()
 
             reopened = PilotJournal(Path(folder) / "pilot.sqlite")
-            repeated = PilotPrintAgent(backend=backend, journal=reopened, printer=printer)
+            repeated = PilotPrintAgent(backend=backend, journal=reopened, printer=printer,
+                                       dry_run=False)
             again = repeated.run_once()
             self.assertEqual(again["status"], "SENT_UNVERIFIED")
             self.assertTrue(again["reconciled"])
             self.assertEqual(len(printer.send_calls), 1)
             reopened.close()
+
+    def test_pilot_dry_run_reports_simulated_done_without_native_calls(self):
+        class DisabledNativePrinter:
+            def prepare(self, *_args, **_kwargs):
+                raise AssertionError("DryRun must not inspect with Word or a printer")
+
+            def send(self, *_args, **_kwargs):
+                raise AssertionError("DryRun must not call the native printer")
+
+        work = make_work()
+        work.job["mode"] = "simulation"
+        backend = FakeBackend(work)
+        with tempfile.TemporaryDirectory() as folder:
+            journal = PilotJournal(Path(folder) / "pilot.sqlite")
+            agent = PilotPrintAgent(backend=backend, journal=journal,
+                                    printer=DisabledNativePrinter(), dry_run=True)
+            result = agent.run_once()
+            self.assertEqual(result["status"], "SIMULATED_DONE")
+            self.assertIs(result["driver_called"], False)
+            self.assertIs(backend.reports[-1][1]["driver_called"], False)
+            self.assertEqual(backend.reports[-1][0], "SIMULATED_DONE")
+            self.assertEqual(journal.get(work.job["job_id"])["state"], "SIMULATED_DONE")
+            again = agent.run_once()
+            self.assertEqual(again["status"], "SIMULATED_DONE")
+            self.assertIs(again["reconciled"], True)
+            journal.close()
+
+    def test_pilot_dry_run_rejects_non_simulation_job_before_gates(self):
+        work = make_work()
+        backend = FakeBackend(work)
+        with tempfile.TemporaryDirectory() as folder:
+            journal = PilotJournal(Path(folder) / "pilot.sqlite")
+            agent = PilotPrintAgent(backend=backend, journal=journal,
+                                    printer=FakeNativePrinter(), dry_run=True)
+            result = agent.run_once()
+            self.assertEqual(result["status"], "BLOCKED")
+            self.assertEqual(result["reason"], "PILOT_DRY_RUN_REQUIRES_SIMULATION_JOB")
+            self.assertEqual(backend.reports, [])
+            self.assertIsNone(journal.get(work.job["job_id"]))
+            journal.close()
+
+    def test_pilot_copy_limit_matches_locked_wire(self):
+        vector = make_work(duplex=True)
+        vector.candidate["settings"]["copies"] = 2
+        vector.candidate["settings_sha256"] = sha(_canonical(
+            vector.candidate["settings"]).encode("utf-8"))
+        vector.authorization["settings_sha256"] = vector.candidate["settings_sha256"]
+        self.assertEqual(vector.candidate["settings_sha256"],
+                         "e6ed1f13eba6750d851960ef87efb679356b36aad49c20887ac249e55162b486")
+        self.assertTrue(verify_pilot_source_ticket(
+            job=vector.job, candidate=vector.candidate,
+            authorization=vector.authorization, source_bytes=vector.source_bytes,
+            configured_printer_id="RMP7000").settings["duplex"])
+
+        work = make_work()
+        work.candidate["settings"]["copies"] = 99
+        work.candidate["settings_sha256"] = sha(_canonical(
+            work.candidate["settings"]).encode("utf-8"))
+        work.authorization["settings_sha256"] = work.candidate["settings_sha256"]
+        self.assertEqual(verify_pilot_source_ticket(
+            job=work.job, candidate=work.candidate,
+            authorization=work.authorization, source_bytes=work.source_bytes,
+            configured_printer_id="RMP7000").settings["copies"], 99)
+
+        work.candidate["settings"]["copies"] = 100
+        work.candidate["settings_sha256"] = sha(_canonical(
+            work.candidate["settings"]).encode("utf-8"))
+        work.authorization["settings_sha256"] = work.candidate["settings_sha256"]
+        with self.assertRaises(PilotTicketInvalid):
+            verify_pilot_source_ticket(job=work.job, candidate=work.candidate,
+                                       authorization=work.authorization,
+                                       source_bytes=work.source_bytes,
+                                       configured_printer_id="RMP7000")
 
     def test_crash_after_journal_boundary_recovers_unknown_without_driver_call(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -323,7 +400,8 @@ class PilotNativePrintTests(unittest.TestCase):
             printer = FakeNativePrinter()
             journal_path = Path(folder) / "pilot.sqlite"
             journal = CrashAfterDriverBoundaryJournal(journal_path)
-            agent = PilotPrintAgent(backend=backend, journal=journal, printer=printer)
+            agent = PilotPrintAgent(backend=backend, journal=journal, printer=printer,
+                                    dry_run=False)
             with self.assertRaises(SimulatedProcessCrash):
                 agent.run_once()
             self.assertEqual(printer.send_calls, [])
@@ -331,7 +409,8 @@ class PilotNativePrintTests(unittest.TestCase):
             journal.close()
 
             reopened = PilotJournal(journal_path)
-            restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer)
+            restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer,
+                                        dry_run=False)
             self.assertEqual(restarted.run_once()["status"], "UNKNOWN")
             self.assertEqual(printer.send_calls, [])
             self.assertEqual(reopened.get("job-public-test")["state"], "UNKNOWN")
@@ -345,7 +424,8 @@ class PilotNativePrintTests(unittest.TestCase):
             printer = CrashAfterNativeCallPrinter()
             journal_path = Path(folder) / "pilot.sqlite"
             journal = PilotJournal(journal_path)
-            agent = PilotPrintAgent(backend=backend, journal=journal, printer=printer)
+            agent = PilotPrintAgent(backend=backend, journal=journal, printer=printer,
+                                    dry_run=False)
             with self.assertRaises(SimulatedProcessCrash):
                 agent.run_once()
             self.assertEqual(len(printer.send_calls), 1)
@@ -353,7 +433,8 @@ class PilotNativePrintTests(unittest.TestCase):
             journal.close()
 
             reopened = PilotJournal(journal_path)
-            restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer)
+            restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer,
+                                        dry_run=False)
             self.assertEqual(restarted.run_once()["status"], "UNKNOWN")
             self.assertEqual(len(printer.send_calls), 1)
             self.assertEqual(reopened.get("job-public-test")["state"], "UNKNOWN")
@@ -558,6 +639,38 @@ class PilotNativePrintTests(unittest.TestCase):
         self.assertEqual(calls["set"], [(9, 0), (9, 0)])
         self.assertEqual(calls["close"], 1)
 
+    def test_printer_settings_apply_and_verify_long_edge_duplex(self):
+        class DevMode:
+            def __init__(self, *, fields=0, paper=1, color=2, duplex=2):
+                self.Fields = fields
+                self.PaperSize = paper
+                self.Color = color
+                self.Duplex = duplex
+
+        win32con = ModuleType("win32con")
+        win32con.DM_PAPERSIZE = 1
+        win32con.DM_COLOR = 4
+        win32con.DM_DUPLEX = 8
+        win32con.DMPAPER_A4 = 9
+        win32con.DMCOLOR_MONOCHROME = 1
+        win32con.DMDUP_SIMPLEX = 1
+        win32con.DMDUP_VERTICAL = 2
+        state = {"devmode": DevMode()}
+        handle = object()
+        win32print = ModuleType("win32print")
+        win32print.OpenPrinter = lambda _queue: handle
+        win32print.GetPrinter = lambda _handle, _level: {
+            "pDevMode": deepcopy(state["devmode"])}
+        win32print.SetPrinter = lambda _handle, _level, value, _command: state.__setitem__(
+            "devmode", deepcopy(value["pDevMode"]))
+        win32print.ClosePrinter = lambda _handle: None
+        settings = {"copies": 1, "duplex": True, "paper": "A4", "color": "black_white"}
+        with patch.object(native_module.os, "name", "nt"), \
+                patch.dict(sys.modules, {"win32con": win32con, "win32print": win32print}):
+            with _PerUserPrinterSettings("RMP7000 - Ricoh PCL6 V4", settings):
+                self.assertEqual(state["devmode"].Duplex, win32con.DMDUP_VERTICAL)
+            self.assertEqual(state["devmode"].Duplex, 2)
+
     def test_unverified_printer_settings_stop_before_native_process(self):
         class DevMode:
             def __init__(self, *, fields=0, paper=1, orientation=2, color=2, duplex=2):
@@ -637,7 +750,8 @@ class PilotNativePrintTests(unittest.TestCase):
             journal.close()
 
             reopened = PilotJournal(Path(folder) / "pilot.sqlite")
-            restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer)
+            restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer,
+                                        dry_run=False)
             self.assertEqual(restarted.run_once()["status"], "UNKNOWN")
             self.assertEqual(len(printer.send_calls), 1)
             reopened.close()

@@ -1,8 +1,9 @@
-"""Windows native DOCX/PDF pilot adapter for AI0 contract v0.1 (PR #163).
+"""Windows native DOCX/PDF pilot adapter for the locked AI0 pilot wire.
 
-The production Core transport is intentionally a port: F7 has no pilot claim
-endpoint yet. The driver always uses the original DOCX or PDF bytes. A spooler
-acceptance is SENT_UNVERIFIED, never proof that paper came out.
+The standalone AI3 module targets the distinct pilot Core endpoints introduced
+after F7; the base commit itself has no such routes. The native path always uses
+the original DOCX or PDF bytes. A spooler acceptance is SENT_UNVERIFIED, never
+proof that paper came out.
 """
 from __future__ import annotations
 
@@ -335,14 +336,18 @@ def _server_binding_matches(value: object, verified: VerifiedPilotSource,
 
 
 class PilotPrintAgent:
-    """Core-authorized single-send flow. A lost ACK becomes UNKNOWN forever."""
+    """Core-authorized pilot flow. DryRun is the safe default and never touches a printer."""
 
     def __init__(self, *, backend: PilotBackendPort, journal: PilotJournal,
-                 printer: NativePrinterPort, configured_printer_id: str = "RMP7000"):
+                 printer: NativePrinterPort, configured_printer_id: str = "RMP7000",
+                 dry_run: bool = True):
         self.backend = backend
         self.journal = journal
         self.printer = printer
         self.configured_printer_id = configured_printer_id
+        if type(dry_run) is not bool:
+            raise ValueError("PILOT_DRY_RUN_FLAG_INVALID")
+        self.dry_run = dry_run
 
     def recover(self) -> list[str]:
         pending = self.journal.unresolved()
@@ -362,6 +367,17 @@ class PilotPrintAgent:
             return {"status": "NO_JOB"}
         if not isinstance(work, PilotPrintWork):
             return {"status": "BLOCKED", "reason": "PILOT_TICKET_NOT_CORE_ADAPTER_OBJECT"}
+        mode = work.job.get("mode")
+        if (type(mode) is not str or
+                mode not in {"simulation", "controlled_test", "production"}):
+            return {"status": "BLOCKED", "job_id": work.job.get("job_id"),
+                    "reason": "PILOT_MODE_UNVERIFIED"}
+        if self.dry_run and mode != "simulation":
+            return {"status": "BLOCKED", "job_id": work.job.get("job_id"),
+                    "reason": "PILOT_DRY_RUN_REQUIRES_SIMULATION_JOB"}
+        if not self.dry_run and mode == "simulation":
+            return {"status": "BLOCKED", "job_id": work.job.get("job_id"),
+                    "reason": "PILOT_SIMULATION_JOB_CANNOT_PRINT"}
         try:
             verified = verify_pilot_source_ticket(
                 job=work.job, candidate=work.candidate,
@@ -385,6 +401,9 @@ class PilotPrintAgent:
             except Exception:
                 return {"status": state, "job_id": verified.job_id, "report_pending": True}
             return {"status": state, "job_id": verified.job_id, "reconciled": True}
+
+        if self.dry_run:
+            return self._run_dry_run(work, verified)
 
         prepared: PreparedPrint | None = None
         try:
@@ -489,6 +508,63 @@ class PilotPrintAgent:
         except Exception:
             return {"status": state, "job_id": verified.job_id, "report_pending": True}
         return {"status": state, "job_id": verified.job_id, "evidence": evidence}
+
+    def _run_dry_run(self, work: PilotPrintWork,
+                     verified: VerifiedPilotSource) -> dict[str, Any]:
+        """Exercise Core's pilot gates without preparing or calling a native printer."""
+        try:
+            preflight = self.backend.preflight(work)
+            if not _server_binding_matches(preflight, verified, "AUTHORIZED"):
+                return {"status": "BLOCKED", "job_id": verified.job_id,
+                        "reason": "CORE_PILOT_PREFLIGHT_DENIED"}
+        except PilotPrintBlocked as exc:
+            return {"status": "BLOCKED", "job_id": verified.job_id,
+                    "reason": str(exc)}
+        except Exception:
+            return {"status": "UNKNOWN", "job_id": verified.job_id,
+                    "reason": "PILOT_PREFLIGHT_AMBIGUOUS"}
+
+        try:
+            previous = self.journal.begin(verified)
+        except Exception:
+            return {"status": "UNKNOWN", "job_id": verified.job_id,
+                    "reason": "JOURNAL_BOUNDARY_AMBIGUOUS"}
+        if previous is not None:
+            return {"status": "UNKNOWN", "job_id": verified.job_id,
+                    "reason": "JOURNAL_ALREADY_CONTAINS_JOB_NO_RESEND"}
+
+        try:
+            marked = self.backend.mark_sending(work)
+            if not _server_binding_matches(marked, verified, "SENDING"):
+                raise PilotPrintBlocked("CORE_MARK_SENDING_NOT_CONFIRMED")
+        except Exception:
+            try:
+                self.journal.state(verified.job_id, "UNKNOWN",
+                                   {"reason": "CORE_SEND_ACK_AMBIGUOUS"})
+            except Exception:
+                pass
+            return {"status": "UNKNOWN", "job_id": verified.job_id,
+                    "reason": "CORE_SEND_ACK_AMBIGUOUS"}
+
+        evidence = {"kind": "pilot_dry_run", "driver_called": False,
+                    "paper_verified": False}
+        try:
+            self.journal.state(verified.job_id, "SIMULATED_DONE", evidence)
+        except Exception:
+            try:
+                self.journal.state(verified.job_id, "UNKNOWN",
+                                   {"reason": "JOURNAL_SIMULATION_RESULT_AMBIGUOUS"})
+            except Exception:
+                pass
+            return {"status": "UNKNOWN", "job_id": verified.job_id,
+                    "reason": "JOURNAL_SIMULATION_RESULT_AMBIGUOUS"}
+        try:
+            self.backend.report(work, "SIMULATED_DONE", evidence)
+        except Exception:
+            return {"status": "SIMULATED_DONE", "job_id": verified.job_id,
+                    "driver_called": False, "report_pending": True}
+        return {"status": "SIMULATED_DONE", "job_id": verified.job_id,
+                "driver_called": False, "evidence": evidence}
 
 
 @dataclass(frozen=True)
@@ -675,9 +751,11 @@ class _PerUserPrinterSettings(AbstractContextManager):
                               else win32con.DMDUP_SIMPLEX)
             win32print.SetPrinter(self.handle, 9, current, 0)
             applied = win32print.GetPrinter(self.handle, 9).get("pDevMode")
+            expected_duplex = (win32con.DMDUP_VERTICAL if self.settings["duplex"]
+                               else win32con.DMDUP_SIMPLEX)
             if (applied is None or applied.PaperSize != win32con.DMPAPER_A4 or
                     applied.Color != win32con.DMCOLOR_MONOCHROME or
-                    applied.Duplex != win32con.DMDUP_SIMPLEX):
+                    applied.Duplex != expected_duplex):
                 raise PilotPrintBlocked("PRINTER_DEVMODE_SETTINGS_UNVERIFIED")
             return self
         except PilotPrintBlocked:
