@@ -51,6 +51,7 @@ test('verified synthetic OA DOCX -> durable custody/binder -> Core -> Agent HTTP
  const temp=await fs.mkdtemp(path.join(os.tmpdir(),'autoin-docx-pilot-'));
  await fs.chmod(temp,0o700);
  let app,orderId,bootstrapped=false,stage='bootstrap',status='NA',reason='NA';
+ let reportEvidence=null;
  const observe=(name,response)=>{stage=name;status=String(response.statusCode);
   try{reason=safe(response.json()?.error?.code);}catch{reason='NA';}return response;};
  try{
@@ -70,6 +71,12 @@ test('verified synthetic OA DOCX -> durable custody/binder -> Core -> Agent HTTP
   app=buildIntegratedApp({pool:sql,zaloWebhook:createSyntheticZaloIngress(pool,{kind:'synthetic_fixture',shop_id:shop,oa_id:oa,fixture_key:fixtureKey}),
    identities:[{token:agentToken,principal:{id:agentId,shop_id:shop,role:'print_agent',verified:true,printer_ids:[printer]}}],
    trustedPrintEvidence:evidence,pilotWordPdf:{hmacKey,wordSource:ports.wordSource,pdfSource:ports.pdfSource,...ingress}});
+  app.addHook('preHandler',async request=>{
+   if(/^\/internal\/v1\/pilot\/print-jobs\/[^/]+\/report$/.test(request.url)){
+    const value=request.body?.evidence;
+    reportEvidence={driver_called:value?.driver_called,spooler_ack:value?.spooler_ack};
+   }
+  });
   await app.ready();
   const send=async(name,event)=>{
    const response=observe(name,await app.inject({method:'POST',url:'/webhooks/zalo',
@@ -137,8 +144,8 @@ test('verified synthetic OA DOCX -> durable custody/binder -> Core -> Agent HTTP
   const agent=await runAgent(url,agentToken,path.join(temp,'journal.sqlite'));
   assert.equal(agent.mode,'simulation');assert.equal(agent.driver_called,false);
   assert.equal(agent.result.status,'SIMULATED_DONE');assert.equal(agent.result.driver_called,false);
-  assert.equal(agent.result.evidence.driver_called,false);
-  assert.equal(agent.result.evidence.spooler_ack,false);
+  assert.equal(reportEvidence?.driver_called,false);
+  assert.equal(reportEvidence?.spooler_ack,false);
   assert.equal(JSON.stringify(agent).includes(code),false);
   const jobs=(await pool.query('SELECT id,state,pilot_authorization_id,approval_id,evidence_kind FROM core_print_jobs WHERE order_id=$1',[orderId])).rows;
   assert.equal(jobs.length,1);assert.equal(jobs[0].state,'SIMULATED_DONE');
