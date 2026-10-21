@@ -78,6 +78,34 @@ test('verified synthetic event batch seals bytes, binds exact candidate, and cal
   assert.equal(JSON.stringify(result).includes(submission.code),false);
 });
 
+test('multiple file inputs or an image in the same batch fail closed before Core writes',async()=>{
+  const extraFile=event('file-2','file');
+  const fileBatch=[...events,extraFile];
+  const multipleFiles=fixture({eventReader(ids){
+    return ids.map(id=>fileBatch.find(item=>item.event_id===id)).filter(Boolean);
+  }});
+  const multipleResult=await multipleFiles.intake.processVerifiedEvents({
+    event_ids:fileBatch.map(item=>item.event_id),source_event_id:'file-1'});
+  assert.deepEqual(multipleResult,{status:'NEEDS_HUMAN',
+    reason:'MULTIPLE_OR_UNSUPPORTED_INPUT_EVENTS',candidate_registered:false,authorization_attempted:false});
+  assert.equal(multipleFiles.calls.register.length,0);
+  assert.equal(multipleFiles.calls.authorize.length,0);
+  assert.equal(multipleFiles.stored.size,0);
+
+  const image=event('image-1','image');
+  const imageBatch=[...events,image];
+  const withImage=fixture({eventReader(ids){
+    return ids.map(id=>imageBatch.find(item=>item.event_id===id)).filter(Boolean);
+  }});
+  const imageResult=await withImage.intake.processVerifiedEvents({
+    event_ids:imageBatch.map(item=>item.event_id),source_event_id:'file-1'});
+  assert.deepEqual(imageResult,{status:'NEEDS_HUMAN',
+    reason:'MULTIPLE_OR_UNSUPPORTED_INPUT_EVENTS',candidate_registered:false,authorization_attempted:false});
+  assert.equal(withImage.calls.register.length,0);
+  assert.equal(withImage.calls.authorize.length,0);
+  assert.equal(withImage.stored.size,0);
+});
+
 test('unsealed or mutated bytes fail closed before either Core write',async()=>{
   const h=fixture({tamperReadback:true});
   const result=await h.intake.processVerifiedEvents({event_ids:events.map(e=>e.event_id),source_event_id:'file-1'});

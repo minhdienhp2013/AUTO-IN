@@ -182,8 +182,13 @@ export function createPilotWordPdfIntakeAdapter(options:{readonly trusted_shop_i
       const first=events[0]!;
       if(events.some(event=>event.customer_id!==first.customer_id||event.conversation_id!==first.conversation_id))
         return {status:"NEEDS_HUMAN",reason:"EVENT_SCOPE_MISMATCH",candidate_registered:false,authorization_attempted:false};
-      const sourceEvent=events.find(event=>event.event_id===request.source_event_id);
-      if(sourceEvent?.kind!=="file")
+      const fileEvents=events.filter(event=>event.kind==="file");
+      const unsupportedEvents=events.filter(event=>event.kind!=="file"&&event.kind!=="text");
+      if(fileEvents.length!==1||fileEvents[0]?.event_id!==request.source_event_id||unsupportedEvents.length>0)
+        return {status:"NEEDS_HUMAN",reason:"MULTIPLE_OR_UNSUPPORTED_INPUT_EVENTS",
+          candidate_registered:false,authorization_attempted:false};
+      const sourceEvent=fileEvents[0];
+      if(!sourceEvent)
         return {status:"NEEDS_HUMAN",reason:"SOURCE_EVENT_NOT_VERIFIED_FILE",candidate_registered:false,authorization_attempted:false};
       const intent=extractPilotPrintIntent(events);
       if(!intent||!eligibleSettings(intent))
