@@ -115,7 +115,9 @@ class PilotBackendHttpTests(unittest.TestCase):
                 assert body["schema"] == "ai0.pilot_agent_report.v1"
                 assert body["lease_token"] == job["lease_token"]
                 assert body["state"] == "SIMULATED_DONE"
-                assert body["evidence"]["driver_called"] is False
+                assert body["evidence"] == {
+                    "driver_called": False, "spooler_ack": False,
+                    "reason_code": "PILOT_DRY_RUN"}
                 assert "source" not in body and "code" not in body
                 return self._json({"job_id": job["job_id"], "state": body["state"]})
 
@@ -137,4 +139,4 @@ class PilotBackendHttpTests(unittest.TestCase):
                                              "driver_called": False}})
         self.assertEqual([name for name, _ in calls],
                          ["claim", "source", "preflight", "mark-sending", "reports"])
-        self.assertIs(calls[-1][1]["evidence"]["paper_verified"], False)
+        self.assertIs(calls[-1][1]["evidence"]["spooler_ack"], False)

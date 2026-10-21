@@ -338,7 +338,9 @@ class PilotNativePrintTests(unittest.TestCase):
             result = agent.run_once()
             self.assertEqual(result["status"], "SIMULATED_DONE")
             self.assertIs(result["driver_called"], False)
-            self.assertIs(backend.reports[-1][1]["driver_called"], False)
+            self.assertEqual(backend.reports[-1][1], {
+                "driver_called": False, "spooler_ack": False,
+                "reason_code": "PILOT_DRY_RUN"})
             self.assertEqual(backend.reports[-1][0], "SIMULATED_DONE")
             self.assertEqual(journal.get(work.job["job_id"])["state"], "SIMULATED_DONE")
             again = agent.run_once()

@@ -546,8 +546,8 @@ class PilotPrintAgent:
             return {"status": "UNKNOWN", "job_id": verified.job_id,
                     "reason": "CORE_SEND_ACK_AMBIGUOUS"}
 
-        evidence = {"kind": "pilot_dry_run", "driver_called": False,
-                    "paper_verified": False}
+        evidence = {"driver_called": False, "spooler_ack": False,
+                    "reason_code": "PILOT_DRY_RUN"}
         try:
             self.journal.state(verified.job_id, "SIMULATED_DONE", evidence)
         except Exception:
