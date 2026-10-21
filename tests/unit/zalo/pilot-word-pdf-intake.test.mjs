@@ -17,18 +17,23 @@ const events=[
 ];
 
 function fixture({tamperReadback=false,candidate=true,candidateMutator=value=>value,
-  eventReader=null}={}){
-  const stored=new Map(),calls={register:[],authorize:[]};
+  eventReader=null,mediaReader=null}={}){
+  const stored=new Map(),calls={register:[],authorize:[],seal:[]};
   const ports={
     async read_verified_events({event_ids}){
       if(eventReader)return eventReader(event_ids);
       return event_ids.map(id=>events.find(item=>item.event_id===id)).filter(Boolean);
     },
     media:{async read_verified(input){
+      if(mediaReader)return mediaReader(input);
       return input.provider_event_id==='file-1'?{...scope,provider_event_id:'file-1',bytes:new Uint8Array(pdf)}:null;
     }},
     custody:{
       async seal(input){
+        calls.seal.push(input);
+        const prior=stored.get(input.provider_event_id);
+        if(prior&&!Buffer.from(prior).equals(Buffer.from(input.bytes)))
+          throw new Error('SEALED_SOURCE_REPLACEMENT_REJECTED');
         stored.set(input.provider_event_id,new Uint8Array(input.bytes));
         return {schema:'ai0.pilot_sealed_source.v1',...scope,provider_event_id:input.provider_event_id,
           format:input.format,artifact_ref:`doc-synth01/source-000-${input.sha256}.pdf`,
@@ -76,6 +81,80 @@ test('verified synthetic event batch seals bytes, binds exact candidate, and cal
   assert.equal(submission.order_id,'order-synthetic');
   assert.equal(submission.revision,1);
   assert.equal(JSON.stringify(result).includes(submission.code),false);
+});
+
+test('file arriving before settings is sealed to its event; code/settings can be added later',async()=>{
+  const h=fixture();
+  const first=await h.intake.processVerifiedEvents({event_ids:['file-1'],source_event_id:'file-1'});
+  assert.deepEqual(first,{status:'WAITING_FOR_SETTINGS',reason:'PRINT_SETTINGS_INCOMPLETE_OR_UNSUPPORTED',
+    candidate_registered:false,authorization_attempted:false});
+  assert.deepEqual(Buffer.from(h.stored.get('file-1')),pdf);
+  assert.equal(h.calls.register.length,0);
+  assert.equal(h.calls.authorize.length,0);
+
+  const complete=await h.intake.processVerifiedEvents({event_ids:events.map(e=>e.event_id),source_event_id:'file-1'});
+  assert.equal(complete.status,'AUTHORIZED');
+  assert.equal(h.calls.register.length,1);
+  assert.equal(h.calls.authorize.length,1);
+  assert.equal(h.calls.seal.length,2); // same OA/event is sealed idempotently; no replacement bytes
+});
+
+test('code/settings arriving before a file stays waiting and never reaches custody or Core',async()=>{
+  const textEvents=events.filter(item=>item.kind==='text');
+  const h=fixture({eventReader(ids){return ids.map(id=>textEvents.find(item=>item.event_id===id)).filter(Boolean);}});
+  const result=await h.intake.processVerifiedEvents({event_ids:textEvents.map(item=>item.event_id)});
+  assert.deepEqual(result,{status:'WAITING_FOR_FILE',reason:'SOURCE_FILE_EVENT_REQUIRED',
+    candidate_registered:false,authorization_attempted:false});
+  assert.equal(h.calls.seal.length,0);
+  assert.equal(h.calls.register.length,0);
+  assert.equal(h.calls.authorize.length,0);
+});
+
+test('expired or mismatched media is held without sealing; corrupt bytes never reach Core',async()=>{
+  const fileOnly={event_ids:['file-1'],source_event_id:'file-1'};
+  const expired=fixture({mediaReader:async()=>null});
+  const expiredResult=await expired.intake.processVerifiedEvents(fileOnly);
+  assert.equal(expiredResult.status,'NEEDS_HUMAN');
+  assert.equal(expiredResult.reason,'VERIFIED_MEDIA_UNAVAILABLE');
+  assert.equal(expired.calls.seal.length,0);
+
+  const wrongCustomer=fixture({mediaReader:async()=>({...scope,customer_id:'customer-other',
+    provider_event_id:'file-1',bytes:new Uint8Array(pdf)})});
+  const mismatch=await wrongCustomer.intake.processVerifiedEvents(fileOnly);
+  assert.equal(mismatch.reason,'VERIFIED_MEDIA_UNAVAILABLE');
+  assert.equal(wrongCustomer.calls.seal.length,0);
+
+  const corrupt=fixture({mediaReader:async()=>({...scope,provider_event_id:'file-1',
+    bytes:new Uint8Array(Buffer.from('corrupt bytes, not PDF or DOCX'))})});
+  const corruptResult=await corrupt.intake.processVerifiedEvents(fileOnly);
+  assert.equal(corruptResult.reason,'UNSUPPORTED_SOURCE_BYTES');
+  assert.equal(corrupt.calls.seal.length,0);
+  assert.equal(corrupt.calls.register.length,0);
+  assert.equal(corrupt.calls.authorize.length,0);
+
+  const oversized=fixture({mediaReader:async()=>({...scope,provider_event_id:'file-1',
+    bytes:new Uint8Array(25*1024*1024+1)})});
+  const oversizeResult=await oversized.intake.processVerifiedEvents(fileOnly);
+  assert.equal(oversizeResult.reason,'VERIFIED_MEDIA_UNAVAILABLE');
+  assert.equal(oversized.calls.seal.length,0);
+});
+
+test('different customer/shop candidate cannot bind the sealed event or call Core',async()=>{
+  const wrongCustomer=fixture({eventReader(ids){
+    return ids.map(id=>events.find(item=>item.event_id===id)).filter(Boolean)
+      .map(item=>item.event_id==='settings-1'?{...item,customer_id:'customer-other'}:item);
+  }});
+  const customerResult=await wrongCustomer.intake.processVerifiedEvents({
+    event_ids:events.map(item=>item.event_id),source_event_id:'file-1'});
+  assert.equal(customerResult.reason,'EVENT_SCOPE_MISMATCH');
+  assert.equal(wrongCustomer.calls.seal.length,0);
+
+  const wrongShop=fixture({candidateMutator(value){return {...value,shop_id:'shop-other'};}});
+  const shopResult=await wrongShop.intake.processVerifiedEvents({
+    event_ids:events.map(item=>item.event_id),source_event_id:'file-1'});
+  assert.equal(shopResult.reason,'CORE_CANDIDATE_BINDING_MISMATCH');
+  assert.equal(wrongShop.calls.register.length,0);
+  assert.equal(wrongShop.calls.authorize.length,0);
 });
 
 test('multiple file inputs or an image in the same batch fail closed before Core writes',async()=>{
