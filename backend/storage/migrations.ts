@@ -16,5 +16,6 @@ export const CORE_MIGRATIONS = [
   '010_customer_print_choice_evidence.sql',
   '011_print_evidence_binding.sql',
   '012_preview_review_receipts.sql',
-  '013_inbound_review_items.sql'
+  '013_inbound_review_items.sql',
+  '014_pilot_shop_code.sql'
 ] as const;

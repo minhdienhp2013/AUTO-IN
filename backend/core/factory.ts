@@ -28,6 +28,8 @@ export interface CoreModule {
 export interface VerifiedIdentityPorts {
   resolveVerifiedCustomer: CoreRouteDependencies['resolveVerifiedCustomer'];
   resolvePrintAgent: CoreRouteDependencies['resolvePrintAgent'];
+  resolvePilotCandidate?:CoreRouteDependencies['resolvePilotCandidate'];
+  resolvePilotCodeSubmission?:CoreRouteDependencies['resolvePilotCodeSubmission'];
 }
 
 /**
@@ -36,9 +38,9 @@ export interface VerifiedIdentityPorts {
  * verifier; an incomplete V1 configuration is rejected at construction.
  */
 export type CoreModuleOptions =
-  | {pool: SqlPool; now?: () => Date; mode?: 'legacy'; evidence?: never; wordSource?: never; pdfSource?: never}
+  | {pool: SqlPool; now?: () => Date; mode?: 'legacy'; evidence?: never; wordSource?: never; pdfSource?: never;pilotCodeHmacKey?:never}
   | {pool: SqlPool; now?: () => Date; mode: 'v1'; evidence: TrustedPrintEvidencePort;
-      wordSource?: TrustedWordReviewSourceReader;pdfSource?:TrustedPdfReviewSourceReader};
+      wordSource?: TrustedWordReviewSourceReader;pdfSource?:TrustedPdfReviewSourceReader;pilotCodeHmacKey?:Uint8Array};
 
 function validCustomer(p: Principal | null | undefined): p is Principal {
   return !!p?.verified && p.role === 'customer' &&
@@ -65,7 +67,8 @@ export function createCoreModule(options: CoreModuleOptions): CoreModule {
   const service = new OrderService(store, options.now ?? (() => new Date()),
     options.mode === 'v1' ? options.evidence : undefined,
     options.mode === 'v1' ? options.wordSource : undefined,
-    options.mode === 'v1' ? options.pdfSource : undefined);
+    options.mode === 'v1' ? options.pdfSource : undefined,
+    options.mode === 'v1' ? options.pilotCodeHmacKey : undefined);
   const schedule = new ShopScheduleService(store);
   const inboundReviewReader = createInboundReviewReader({store});
   return {
@@ -88,7 +91,9 @@ export function createCoreModule(options: CoreModuleOptions): CoreModule {
           if (!validAgent(principal))
             throw new DomainError('AGENT_VERIFICATION_REQUIRED','Thiếu scope máy in đã xác minh',403);
           return principal;
-        }
+        },
+        ...(typeof identities.resolvePilotCandidate==='function'?{resolvePilotCandidate:identities.resolvePilotCandidate}:{}),
+        ...(typeof identities.resolvePilotCodeSubmission==='function'?{resolvePilotCodeSubmission:identities.resolvePilotCodeSubmission}:{})
       });
     }
   };
