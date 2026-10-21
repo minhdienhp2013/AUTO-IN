@@ -150,7 +150,7 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
     const correctEvent=`correct-${uid()}`;await w.addEvent(correctEvent,'text');
     assert.equal((await w.A.authorizePilotPrint(w.submission(correctEvent))).status,'WAITING_FOR_CODE');
     assert.equal((await a.query('SELECT count(*)::int n FROM core_pilot_code_attempts WHERE shop_id=$1 AND accepted=false',[w.shop])).rows[0].n,6);
-    await assert.rejects(w.A.authorizePilotPrint({...w.submission(`wrong-shop-${uid()}`),shop_id:`other-${w.shop}`}),error('PILOT_SUBMISSION_REJECTED'));
+    await assert.rejects(w.A.authorizePilotPrint({...w.submission(`wrong-shop-${uid()}`),shop_id:`other-${w.shop}`}),error('PILOT_NOT_CONFIGURED'));
     await assert.rejects(w.A.authorizePilotPrint(w.submission(`wrong-customer-${uid()}`,w.display.code,'not-this-customer')),
      error('PILOT_SUBMISSION_REJECTED'));
     const staleRevisionEvent=`stale-revision-${uid()}`;await w.addEvent(staleRevisionEvent,'text');

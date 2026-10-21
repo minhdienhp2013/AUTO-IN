@@ -17,17 +17,17 @@ jobs:
         image: postgres:18.3
         env:
           POSTGRES_USER: auto_in
-          POSTGRES_DB: autoin_test_pilot_word_pdf
+          POSTGRES_DB: autoin_test_pilotwordpdf
           POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U auto_in -d autoin_test_pilot_word_pdf"
+          --health-cmd "pg_isready -U auto_in -d autoin_test_pilotwordpdf"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      DATABASE_URL: postgresql://auto_in@127.0.0.1:5432/autoin_test_pilot_word_pdf
-      TEST_DATABASE_URL: postgresql://auto_in@127.0.0.1:5432/autoin_test_pilot_word_pdf
-      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in@127.0.0.1:5432/autoin_test_pilot_word_pdf
+      DATABASE_URL: postgresql://auto_in@127.0.0.1:5432/autoin_test_pilotwordpdf
+      TEST_DATABASE_URL: postgresql://auto_in@127.0.0.1:5432/autoin_test_pilotwordpdf
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in@127.0.0.1:5432/autoin_test_pilotwordpdf
       AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
       AUTOIN_OPERATION_MODE: simulation
     steps:
