@@ -177,7 +177,7 @@ export function createPilotPrivateSourcePorts(db:SqlPool,root:string):{
   const manifest=Buffer.from(JSON.stringify({schema:row.format==='PDF'?'ai0.pdf_review_manifest.v1':
    'ai0.word_review_manifest.v1',manifest_ref:manifestRef,shop_id:row.shop_id,order_id:row.order_id,
    active_revision:row.revision,request_hash:row.request_hash,
-   source:{...(row.format==='DOCX'?{format:'DOCX'}:{}),artifact_ref:row.artifact_ref,
+   source:{format:row.format,artifact_ref:row.artifact_ref,
     sha256:row.sha256,size_bytes:Number(row.size_bytes)}}));
   return {source:{artifact_ref:row.artifact_ref,bytes},manifest:{ref:manifestRef,bytes:manifest},
    provider_event_id:row.event_id};
