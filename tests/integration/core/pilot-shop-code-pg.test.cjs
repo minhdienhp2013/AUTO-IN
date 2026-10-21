@@ -153,6 +153,9 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
     await assert.rejects(w.A.authorizePilotPrint({...w.submission(`wrong-shop-${uid()}`),shop_id:`other-${w.shop}`}),error('PILOT_SUBMISSION_REJECTED'));
     await assert.rejects(w.A.authorizePilotPrint(w.submission(`wrong-customer-${uid()}`,w.display.code,'not-this-customer')),
      error('PILOT_SUBMISSION_REJECTED'));
+    const staleRevisionEvent=`stale-revision-${uid()}`;await w.addEvent(staleRevisionEvent,'text');
+    await assert.rejects(w.A.authorizePilotPrint({...w.submission(staleRevisionEvent),revision:2}),
+     error('PILOT_SUBMISSION_REJECTED'));
     assert.equal(await jobs(w.orderId),0);
     await w.destroy();
    });
@@ -181,6 +184,12 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
      [settingsChanged.orderId,JSON.stringify(changed),changedHash,JSON.stringify({...storedPlan,request_hash:changedHash})]);
     await assert.rejects(settingsChanged.A.authorizePilotPrint(settingsChanged.submission()),error('PILOT_SUBMISSION_REJECTED'));
     assert.equal(await jobs(settingsChanged.orderId),0);await settingsChanged.destroy();
+
+    const printerChanged=await makeWorld('printer-drift');
+    const wrongPrinter=await printerChanged.A.registerPilotCandidate({...printerChanged.candidate,printer_id:'OTHER-PRINTER'});
+    assert.deepEqual(wrongPrinter,{status:'NEEDS_HUMAN',reason:'OUT_OF_PILOT_SCOPE'});
+    assert.equal(await candidateCount(printerChanged.orderId),0);
+    assert.equal(await jobs(printerChanged.orderId),0);await printerChanged.destroy();
    });
 
    await t.test('same webhook replay/race creates one job; UNKNOWN is returned and never reclaimed by a new code event',async()=>{

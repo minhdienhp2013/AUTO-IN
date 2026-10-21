@@ -3,6 +3,7 @@ on:
   push:
     branches-ignore:
       - ai0/v1-claim-error-proof-20261020
+      - ai0/v1-word-pdf-dryrun-integration-20261021
     tags:
       - '**'
   pull_request:

@@ -205,6 +205,33 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
    assert.equal(replayKeys[0].attempt_key,replayKeys[0].authorization_key);
    assert.match(replayKeys[0].attempt_key,/^core-pilot:[0-9a-f]{64}$/);
    assert.notEqual(replayKeys[0].attempt_key,currentSubmission.idempotency_key);
+   const eventBinding=(await pool.query('SELECT c.source_event_id,a.provider_event_id '+
+    'FROM core_pilot_candidates c JOIN core_pilot_print_authorizations a ON a.candidate_id=c.id '+
+    'WHERE c.order_id=$1',[orderId])).rows;
+   assert.equal(eventBinding.length,1);
+   assert.equal(eventBinding[0].source_event_id,fileEvent);
+   assert.equal(eventBinding[0].provider_event_id,codeEvent);
+   assert.notEqual(eventBinding[0].source_event_id,eventBinding[0].provider_event_id);
+   const storedPilotData={
+    candidateAuthorizationJob:(await pool.query('SELECT to_jsonb(c) AS candidate,to_jsonb(a) AS authorization,'+
+     'to_jsonb(j) AS job FROM core_pilot_candidates c JOIN core_pilot_print_authorizations a ON a.candidate_id=c.id '+
+     'JOIN core_print_jobs j ON j.pilot_authorization_id=a.id WHERE c.order_id=$1',[orderId])).rows,
+    attempts:(await pool.query('SELECT * FROM core_pilot_code_attempts WHERE order_id=$1',[orderId])).rows,
+    audit:(await pool.query('SELECT action,details FROM core_audit WHERE shop_id=$1',[shop])).rows
+   };
+   assert.equal(JSON.stringify(storedPilotData).includes(display.code),false,
+    'raw shop code must not persist in candidate, authorization, job, attempt, or audit rows');
+
+   for(const headers of [{},{authorization:`Bearer ${'X'.repeat(32)}`}]){
+    const denied=await app.inject({method:'POST',url:'/internal/v1/pilot/print-jobs/claim',headers,
+     payload:{printer_id:printerId,idempotency_key:`denied-${suffix}-${headers.authorization?'wrong':'missing'}`}});
+    assert.equal(denied.statusCode,401);
+   }
+   const legacyClaim=await app.inject({method:'POST',url:'/internal/v1/print-jobs/claim',
+    headers:{authorization:`Bearer ${agentToken}`},payload:{printer_id:printerId,idempotency_key:`legacy-${suffix}`}});
+   assert.equal(legacyClaim.statusCode,200);
+   assert.equal(legacyClaim.json().job,null,'legacy claim must not see the pilot authorization job');
+   assert.equal((await pool.query('SELECT claimed_by FROM core_print_jobs WHERE order_id=$1',[orderId])).rows[0].claimed_by,null);
 
    // Exercise AI3's real loopback HTTP client against Core routes, in simulation DryRun only.
    tempRoot=await fs.mkdtemp(path.join(os.tmpdir(),'autoin-pilot-dryrun-'));
@@ -216,6 +243,7 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
    assert.equal(agentResult.driver_called,false);
    assert.equal(agentResult.result.status,'SIMULATED_DONE');
    assert.equal(agentResult.result.driver_called,false);
+   assert.equal(JSON.stringify(agentResult).includes(display.code),false);
 
    const jobs=(await pool.query('SELECT j.id,j.state,j.approval_id,j.pilot_authorization_id,j.mode_at_send '+
     'FROM core_print_jobs j WHERE j.order_id=$1',[orderId])).rows;
@@ -224,6 +252,13 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
    assert.equal(jobs[0].approval_id,null);
    assert.ok(jobs[0].pilot_authorization_id);
    assert.equal(jobs[0].mode_at_send,'simulation');
+   for(const lease of ['',`wrong-${suffix}`]){
+    const headers={authorization:`Bearer ${agentToken}`};
+    if(lease)headers['x-auto-in-pilot-lease']=lease;
+    const denied=await app.inject({method:'GET',url:`/internal/v1/pilot/print-jobs/${jobs[0].id}/source`,headers});
+    assert.equal(denied.statusCode,403);
+    assert.equal(denied.json().error.code,'BAD_LEASE');
+   }
    assert.equal((await pool.query('SELECT count(*)::int AS n FROM core_approvals WHERE order_id=$1',[orderId])).rows[0].n,0);
    assert.equal((await pool.query('SELECT count(*)::int AS n FROM core_confirmations WHERE order_id=$1',[orderId])).rows[0].n,0);
   }finally{
@@ -251,3 +286,6 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
    await pool.end();
   }
  });
+
+test('DOCX integration NOT RUN: no executable pilot DOCX Core-to-Agent integration case',
+ {skip:'NOT RUN: this pilot integration executable covers PDF only'},()=>{});

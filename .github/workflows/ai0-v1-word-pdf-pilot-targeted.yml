@@ -1,0 +1,120 @@
+name: AI0 V1 Word PDF pilot targeted PostgreSQL
+on:
+  push:
+    branches:
+      - ai0/v1-word-pdf-dryrun-integration-20261021
+permissions:
+  contents: read
+concurrency:
+  group: ai0-v1-word-pdf-pilot-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  pilot-word-pdf-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: auto_in
+          POSTGRES_DB: autoin_test_pilot_word_pdf
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U auto_in -d autoin_test_pilot_word_pdf"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://auto_in@127.0.0.1:5432/autoin_test_pilot_word_pdf
+      TEST_DATABASE_URL: postgresql://auto_in@127.0.0.1:5432/autoin_test_pilot_word_pdf
+      AUTOIN_TEST_DATABASE_URL: postgresql://auto_in@127.0.0.1:5432/autoin_test_pilot_word_pdf
+      AUTOIN_ALLOW_PG_ACCEPTANCE: YES_ISOLATED_TEST_DB
+      AUTOIN_OPERATION_MODE: simulation
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact candidate and isolated DB configuration
+        run: node scripts/pilot-targeted-ci-guard.mjs
+      - name: Install locked Node dependencies
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          if npm ci >"$RUNNER_TEMP/pilot-npm-ci.log" 2>&1; then
+            echo 'Node dependencies installed.'
+          else
+            echo 'Node dependency setup failed; details suppressed.'
+            exit 1
+          fi
+      - name: Install locked Python test dependencies
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          if python -m pip install --disable-pip-version-check -r workers/documents/requirements-test.txt >"$RUNNER_TEMP/pilot-pip.log" 2>&1; then
+            echo 'Python test dependencies installed.'
+          else
+            echo 'Python dependency setup failed; details suppressed.'
+            exit 1
+          fi
+      - name: Build Core test target
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          if npm run build >"$RUNNER_TEMP/pilot-build.log" 2>&1; then
+            echo 'Core build completed.'
+          else
+            echo 'Core build failed; details suppressed.'
+            exit 1
+          fi
+      - name: Recheck exact checkout and DB guards before migration
+        run: node scripts/pilot-targeted-ci-guard.mjs
+      - name: Migrate isolated PostgreSQL 18.3
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          if npm run db:migrate >"$RUNNER_TEMP/pilot-migration.log" 2>&1; then
+            echo 'Isolated PostgreSQL migration completed.'
+          else
+            echo 'Isolated PostgreSQL migration failed; details suppressed.'
+            exit 1
+          fi
+      - name: Recheck exact checkout and DB guards before tests
+        run: node scripts/pilot-targeted-ci-guard.mjs
+      - name: Run exact pilot Node test paths
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          if node --import tsx --test \
+            tests/integration/core/pilot-shop-code-pg.test.cjs \
+            tests/integration/composition/pilot-word-pdf-dryrun-pg.test.mjs \
+            tests/unit/core/pilot-shop-code.test.cjs \
+            tests/unit/core/pilot-shop-code-route.test.cjs \
+            tests/unit/zalo/pilot-print-intent.test.mjs \
+            tests/unit/zalo/pilot-word-pdf-intake.test.mjs \
+            >"$RUNNER_TEMP/pilot-node-tests.log" 2>&1; then
+            awk '/^# (tests|pass|fail|cancelled|skipped|todo) /' "$RUNNER_TEMP/pilot-node-tests.log"
+          else
+            echo 'Pilot Node tests failed; details suppressed.'
+            exit 1
+          fi
+      - name: Run exact pilot Agent unit test paths
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          if python -m pytest -q \
+            tests/unit/printing/test_pilot_backend_http.py \
+            tests/unit/printing/test_pilot_native_print.py \
+            >"$RUNNER_TEMP/pilot-python-tests.log" 2>&1; then
+            tail -n 1 "$RUNNER_TEMP/pilot-python-tests.log"
+          else
+            echo 'Pilot Agent tests failed; details suppressed.'
+            exit 1
+          fi
