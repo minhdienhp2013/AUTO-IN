@@ -6,7 +6,7 @@ import {checkedEvidence,currentEvidence,type PrintEvidenceV1,type TrustedPrintEv
 import {internalReviewReceipt,previewReviewReadModel,requirePreviewReview} from './preview-review.js';
 import {readWordReviewSnapshot,wordReviewPrincipalScope,type TrustedWordReviewSourceReader,type WordReviewSnapshot} from './word-review-source.js';
 import {readPdfReviewSnapshot,pdfReviewPrincipalScope,type TrustedPdfReviewSourceReader,type PdfReviewSnapshot} from './pdf-review-source.js';
-import {canonicalPilotCode,derivePilotShopCode,pilotCodeHash,pilotEvidenceHash,pilotRequestHmac,pilotSettingsHash,
+import {canonicalPilotCode,derivePilotShopCode,pilotCodeHash,pilotCoreIdempotencyKey,pilotEvidenceHash,pilotRequestHmac,pilotSettingsHash,
  readPilotSourceSnapshot,safeEqualPilotCodeHash,validatePilotCandidateShape,validatePilotStoredSettings,
  validatePilotSubmissionShape,validatePilotClaimRequest,validatePilotGateRequest,validatePilotAgentReport,validPilotCode,
  type PilotAgentClaimResponse,type PilotAgentGateReceipt,type PilotAgentReport,type PilotCodeSubmission,
@@ -412,7 +412,10 @@ export class OrderService {
   });
  }
  async authorizePilotPrint(input:unknown):Promise<PilotResult>{
-  const submission=validatePilotSubmissionShape(input),key=this.requirePilotKey();
+  const received=validatePilotSubmissionShape(input),key=this.requirePilotKey();
+  // The request field is retained for wire compatibility, but Core owns the
+  // durable replay key and never trusts the caller's value.
+  const submission={...received,idempotency_key:pilotCoreIdempotencyKey(key,received)};
   const payloadHmac=pilotRequestHmac(key,submission);
   return this.store.tx(async db=>{
    await db.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');

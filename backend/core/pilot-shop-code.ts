@@ -95,6 +95,11 @@ export function safeEqualPilotCodeHash(actual:Uint8Array,expected:Uint8Array):bo
 export function pilotRequestHmac(key:Uint8Array,value:unknown):string{
  return createHmac('sha256',key).update('ai1.pilot.submission.v1\0').update(canonical(value)).digest('hex');
 }
+export function pilotCoreIdempotencyKey(key:Uint8Array,value:Pick<PilotCodeSubmission,'shop_id'|'oa_id'|'provider_event_id'>):string{
+ const scope={schema:'ai1.pilot.code_submission_idempotency.v1',shop_id:value.shop_id,oa_id:value.oa_id,
+  provider_event_id:value.provider_event_id};
+ return `core-pilot:${createHmac('sha256',key).update(canonical(scope)).digest('hex')}`;
+}
 export function pilotEvidenceHash(value:unknown):string{
  return sha(canonical({schema:'ai0.pilot_print_evidence.v1',value}));
 }

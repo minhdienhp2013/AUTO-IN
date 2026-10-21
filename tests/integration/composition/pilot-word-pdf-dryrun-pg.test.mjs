@@ -185,9 +185,9 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
       return response.json();
      },
      async authorizePilotPrint(submission){
-      currentSubmission=submission;
+      currentSubmission={...submission,idempotency_key:`caller-controlled-${suffix}`};
       const response=await app.inject({method:'POST',url:'/internal/v1/pilot/code-submissions',
-       headers:{authorization:`Bearer ${ai2Token}`},payload:submission});
+       headers:{authorization:`Bearer ${ai2Token}`},payload:currentSubmission});
       assert.equal(response.statusCode,200);
       return response.json();
      }
@@ -197,6 +197,14 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
    assert.equal(intakeResult.status,'AUTHORIZED');
    assert.equal(intakeResult.candidate_registered,true);
    assert.equal(intakeResult.authorization_attempted,true);
+   const replayKeys=(await pool.query('SELECT ca.idempotency_key AS attempt_key,a.idempotency_key AS authorization_key '+
+    'FROM core_pilot_code_attempts ca JOIN core_pilot_print_authorizations a '+
+    'ON a.shop_id=ca.shop_id AND a.oa_id=ca.oa_id AND a.provider_event_id=ca.provider_event_id '+
+    'WHERE ca.order_id=$1',[orderId])).rows;
+   assert.equal(replayKeys.length,1);
+   assert.equal(replayKeys[0].attempt_key,replayKeys[0].authorization_key);
+   assert.match(replayKeys[0].attempt_key,/^core-pilot:[0-9a-f]{64}$/);
+   assert.notEqual(replayKeys[0].attempt_key,currentSubmission.idempotency_key);
 
    // Exercise AI3's real loopback HTTP client against Core routes, in simulation DryRun only.
    tempRoot=await fs.mkdtemp(path.join(os.tmpdir(),'autoin-pilot-dryrun-'));
