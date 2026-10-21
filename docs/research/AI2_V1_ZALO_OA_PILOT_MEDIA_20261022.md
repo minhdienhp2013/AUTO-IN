@@ -2,7 +2,7 @@
 
 **Status: BLOCKED for real OA/media; synthetic candidate only.** This review is for base `9002e78e3dd043392b8f3203fb460742a3f75e03`. The prior AI2 candidate commit `f2f146bba59ba83a2e3ef49e5eb5c6648b6cdc4b` (parent `80f1f32c257b7bbb0a0aa2b2969c599b7f5f3700`) was cherry-picked as `4ed1d092ad03d54194457f59c2383f7ad19b987d` on the new base. That transplant changes only `backend/conversation/pilot-word-pdf-intake.ts`, its unit test, and the earlier AI2 report. No real OA/API calls, customer messages, attachment URL fetches, print authorization, print jobs, deploy, or Core/schema/queue edits were performed.
 
-## Official Zalo documentation reviewed 2026-10-22
+## Official Zalo documentation reviewed for this handoff
 
 | Area | VERIFIED in official documentation | UNKNOWN / not safe to implement from docs alone |
 | --- | --- | --- |
