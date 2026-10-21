@@ -26,8 +26,7 @@ import { createSyntheticWordReviewSourceReader } from './word-review-source.js';
 import { createWordReviewPreviewService } from './word-review-preview.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
-/** Test-only injection points for the shop-code lane. `buildIntegratedApp` is
- * simulation-only; backend/server.ts does not accept these options. */
+/** Server-owned pilot dependencies. This runtime remains simulation-only. */
 export interface PilotWordPdfSimulationOptions {
   hmacKey: Uint8Array;
   pdfSource?: TrustedPdfReviewSourceReader;

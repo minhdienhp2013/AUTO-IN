@@ -1,7 +1,7 @@
 import {execFileSync} from 'node:child_process';
 
 const branch='ai0/v1-word-pdf-dryrun-integration-20261021';
-const expectedParent='f85b008ebcd0d1e116dfca3108d7dc4f16682487';
+const expectedParent='27b42d051b5b30799e9047afb4f072a796371d69';
 const expectedDatabase='autoin_test_pilotwordpdf';
 
 function git(args){

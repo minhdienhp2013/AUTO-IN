@@ -95,6 +95,7 @@ jobs:
           if node --import tsx --test --test-reporter=tap \
             tests/integration/core/pilot-shop-code-pg.test.cjs \
             tests/integration/composition/pilot-word-pdf-dryrun-pg.test.mjs \
+            tests/integration/composition/pilot-word-pdf-docx-pg.test.mjs \
             tests/unit/core/pilot-shop-code.test.cjs \
             tests/unit/core/pilot-shop-code-route.test.cjs \
             tests/unit/zalo/pilot-print-intent.test.mjs \

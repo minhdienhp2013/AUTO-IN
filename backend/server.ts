@@ -4,6 +4,8 @@ import { buildIntegratedApp, type ServiceIdentity } from './composition/runtime.
 import { asSqlPool, assertIsolatedSimulationDatabase } from './composition/postgres.js';
 import { createCoreModule } from './core/factory.js';
 import { createSyntheticZaloRuntime } from './composition/zalo-simulation.js';
+import { createPilotPrivateSourcePorts } from './composition/pilot-private-source.js';
+import { createPilotIngressResolvers } from './composition/pilot-ingress.js';
 if ((process.env.AUTO_IN_MODE ?? 'simulation') !== 'simulation') throw new Error('Only simulation is available');
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL required; run db:migrate and db:bootstrap first');
@@ -32,6 +34,26 @@ const documentArtifactRoot = process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT;
 const reviewMode = process.env.AUTOIN_SIMULATION_REVIEW_ENABLED ?? '0';
 if (reviewMode !== '0' && reviewMode !== '1') throw new Error('AUTOIN_SIMULATION_REVIEW_ENABLED must be 0 or 1');
 const simulationReviewEnabled = reviewMode === '1';
+const pilotFiles=[process.env.AUTOIN_PILOT_CODE_KEY_FILE,
+  process.env.AUTOIN_PILOT_PRIVATE_SOURCE_ROOT,process.env.AUTOIN_PILOT_INGRESS_TOKEN_FILE];
+if(pilotFiles.some(Boolean)&&pilotFiles.some(value=>!value))
+  throw new Error('Pilot requires code key, private source root, and scoped ingress token files together');
+const pilotEnabled=pilotFiles.every(Boolean);
+const pilotKey=pilotEnabled?await readFile(process.env.AUTOIN_PILOT_CODE_KEY_FILE!):undefined;
+const pilotToken=pilotEnabled?(await readFile(process.env.AUTOIN_PILOT_INGRESS_TOKEN_FILE!,'utf8')).trim():undefined;
+if(pilotEnabled&&(!pilotKey||pilotKey.length<32||!pilotToken||pilotToken.length<32))
+  throw new Error('Pilot private credentials invalid');
+if(pilotEnabled){
+  const pilotRoot=process.env.AUTOIN_PILOT_PRIVATE_SOURCE_ROOT!;
+  await mkdir(pilotRoot,{recursive:true,mode:0o700});
+  const rootStat=await lstat(pilotRoot);
+  if(!rootStat.isDirectory()||rootStat.isSymbolicLink()||(rootStat.mode&0o077))
+    throw new Error('Pilot private source root must be owner-only');
+}
+const pilotPorts=pilotEnabled?createPilotPrivateSourcePorts(asSqlPool(pool),
+  process.env.AUTOIN_PILOT_PRIVATE_SOURCE_ROOT!):undefined;
+const pilotIngress=pilotPorts&&pilotToken?createPilotIngressResolvers(asSqlPool(pool),pilotToken,
+  pilotPorts.binding,input=>pilotPorts.custody.read_sealed(input)):undefined;
 const reviewArtifactRoot = process.env.AUTOIN_SIMULATION_REVIEW_ROOT;
 const allowWordLaunchValue = process.env.AUTOIN_WORD_REVIEW_ALLOW_LAUNCH ?? '0';
 if (allowWordLaunchValue !== '0' && allowWordLaunchValue !== '1')
@@ -68,16 +90,22 @@ const app = buildIntegratedApp({ pool: asSqlPool(pool), identities,
     },
     firstPageQuestionQueue: input => zaloRuntime.queue_first_page_suggested_question(input)
   } : {}),
-  ...(simulationReviewEnabled ? {
+  ...(simulationReviewEnabled||pilotEnabled ? {
     trustedPrintEvidence: {
-      artifactRoot: documentArtifactRoot!,
+      artifactRoot: simulationReviewEnabled?documentArtifactRoot!:process.env.AUTOIN_PILOT_PRIVATE_SOURCE_ROOT!,
       printerCapabilities: { simulation_only: true as const, printer_id: 'RMP7000' as const,
         queue_name: 'RMP7000' as const }
-    },
+    }
+  } : {}),
+  ...(simulationReviewEnabled ? {
     pdfReviewArtifactRoot: reviewArtifactRoot!,
     wordReviewArtifactRoot: reviewArtifactRoot!,
     allowNativeWordLaunch: allowWordLaunch
-  } : {}) });
+  } : {}),
+  ...(pilotEnabled&&pilotPorts&&pilotIngress&&pilotKey?{
+    pilotWordPdf:{hmacKey:pilotKey,pdfSource:pilotPorts.pdfSource,
+      wordSource:pilotPorts.wordSource,...pilotIngress}
+  }: {}) });
 app.addHook('onClose', async () => { if (timer) clearInterval(timer); await pool.end(); });
 try {
   await pool.query('SELECT 1 FROM core_shop_settings LIMIT 1');
