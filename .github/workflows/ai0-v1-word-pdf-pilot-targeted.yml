@@ -92,7 +92,7 @@ jobs:
         timeout-minutes: 12
         shell: bash
         run: |
-          if node --import tsx --test \
+          if node --import tsx --test --test-reporter=tap \
             tests/integration/core/pilot-shop-code-pg.test.cjs \
             tests/integration/composition/pilot-word-pdf-dryrun-pg.test.mjs \
             tests/unit/core/pilot-shop-code.test.cjs \
