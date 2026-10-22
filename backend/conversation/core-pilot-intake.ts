@@ -61,6 +61,9 @@ function leaseIdentity(batch:Batch):batch is LeasedBatch {
     typeof value.lease_token==="string"&&value.lease_token.length>0&&
     Array.isArray(value.server_received_event_ids);
 }
+export function isLeasedCorePilotBatch(batch:Batch):batch is LeasedBatch {
+  return leaseIdentity(batch);
+}
 function validLease(batch:LeasedBatch,trustedOa:string):string[]|null {
   const ids=batch.server_received_event_ids;
   if(!Array.isArray(ids)||ids.length<1||ids.length!==batch.events.length||
@@ -161,7 +164,7 @@ export function createCorePilotIntakeAdapter(options:CorePilotIntakeOptions) {
   return {
     async consume(batch:Batch,generation:number):Promise<"processed"|"held"> {
       if(!isCorePilotIntakeBatch(batch))return "processed";
-      if(!leaseIdentity(batch)||!Number.isSafeInteger(generation)||generation<0)return "held";
+      if(!isLeasedCorePilotBatch(batch)||!Number.isSafeInteger(generation)||generation<0)return "held";
       const lease=batch as LeasedBatch,ids=validLease(lease,oa),first=lease.events[0];
       if(!ids||!first)return "held";
       const ordered=ids.map(id=>lease.events.find(event=>event.event_id===id)!);

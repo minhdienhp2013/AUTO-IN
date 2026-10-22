@@ -10,7 +10,8 @@ import {gateFirstPageEnqueue,type FirstPageCasDecision,
   type FirstPageCoreCasPort} from "./first-page-core-cas.ts";
 import {SAFE_FIRST_PAGE_QUESTION,type FirstPageQuestionReadPort,
   type FirstPageQuestionScope} from "./first-page-question.ts";
-import {createCorePilotIntakeAdapter,isCorePilotIntakeBatch,type CorePilotIntakePort} from "./core-pilot-intake.ts";
+import {createCorePilotIntakeAdapter,isCorePilotIntakeBatch,isLeasedCorePilotBatch,
+  type CorePilotIntakePort} from "./core-pilot-intake.ts";
 
 /** AI1 MUST compare expected_generation under its authoritative shop-scoped
  * PostgreSQL row lock in the SAME transaction as each business effect.
@@ -145,7 +146,8 @@ export class ConversationProcessor {
     if(snap.mode!=="AI")return "held";
     // Pilot file/code/settings events use only the current durable claim and
     // Core's persistent intake roles. Missing Core wiring fails closed.
-    if(isCorePilotIntakeBatch(batch)) {
+    if(isCorePilotIntakeBatch(batch)&&
+       (this.pilotIntake!==undefined||isLeasedCorePilotBatch(batch))) {
       if(!this.pilotIntake)return "held";
       return this.pilotIntake.consume(batch,snap.generation);
     }
