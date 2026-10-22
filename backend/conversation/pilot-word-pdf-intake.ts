@@ -85,7 +85,8 @@ export interface PilotWordPdfIntakePorts {
 }
 export interface PilotIntakeRequest {
   readonly event_ids:readonly string[];
-  readonly source_event_id:string;
+  /** Omitted while a customer has sent only code/settings text and no file yet. */
+  readonly source_event_id?:string;
 }
 export interface PilotIntakeResult {
   readonly status:PilotReadiness;
@@ -129,12 +130,14 @@ function eligibleSettings(intent:PilotPrintIntent):boolean {
 }
 
 function safeInput(request:unknown):PilotIntakeRequest {
-  if(!isRecord(request)||Object.keys(request).sort().join(",")!=="event_ids,source_event_id"||
+  const keys=isRecord(request)?Object.keys(request).sort().join(","):"";
+  if(!isRecord(request)||!(["event_ids","event_ids,source_event_id"].includes(keys))||
     !Array.isArray(request.event_ids)||request.event_ids.length<1||request.event_ids.length>100||
     request.event_ids.some(id=>typeof id!=="string"||!id||id.length>256||id!==id.trim())||
     new Set(request.event_ids).size!==request.event_ids.length||
-    typeof request.source_event_id!=="string"||!request.source_event_id||request.source_event_id.length>256||
-    request.source_event_id!==request.source_event_id.trim()||!request.event_ids.includes(request.source_event_id))
+    (request.source_event_id!==undefined&&
+      (typeof request.source_event_id!=="string"||!request.source_event_id||request.source_event_id.length>256||
+       request.source_event_id!==request.source_event_id.trim()||!request.event_ids.includes(request.source_event_id))))
     throw new Error("INVALID_PILOT_INTAKE_REQUEST");
   return request as unknown as PilotIntakeRequest;
 }
@@ -184,40 +187,49 @@ export function createPilotWordPdfIntakeAdapter(options:{readonly trusted_shop_i
         return {status:"NEEDS_HUMAN",reason:"EVENT_SCOPE_MISMATCH",candidate_registered:false,authorization_attempted:false};
       const fileEvents=events.filter(event=>event.kind==="file");
       const unsupportedEvents=events.filter(event=>event.kind!=="file"&&event.kind!=="text");
-      if(fileEvents.length!==1||fileEvents[0]?.event_id!==request.source_event_id||unsupportedEvents.length>0)
+      if(unsupportedEvents.length>0||fileEvents.length>1)
         return {status:"NEEDS_HUMAN",reason:"MULTIPLE_OR_UNSUPPORTED_INPUT_EVENTS",
           candidate_registered:false,authorization_attempted:false};
-      const sourceEvent=fileEvents[0];
-      if(!sourceEvent)
-        return {status:"NEEDS_HUMAN",reason:"SOURCE_EVENT_NOT_VERIFIED_FILE",candidate_registered:false,authorization_attempted:false};
-      const intent=extractPilotPrintIntent(events);
-      if(!intent||!eligibleSettings(intent))
-        return {status:"WAITING_FOR_SETTINGS",reason:"PRINT_SETTINGS_INCOMPLETE_OR_UNSUPPORTED",
+      if(fileEvents.length===0)
+        return {status:"WAITING_FOR_FILE",reason:"SOURCE_FILE_EVENT_REQUIRED",
           candidate_registered:false,authorization_attempted:false};
-      const media=await ports.media.read_verified({oa_id:oaId,provider_event_id:request.source_event_id});
+      const sourceEvent=fileEvents[0];
+      if(!sourceEvent||sourceEvent.event_id!==request.source_event_id)
+        return {status:"NEEDS_HUMAN",reason:"SOURCE_EVENT_NOT_VERIFIED_FILE",candidate_registered:false,authorization_attempted:false};
+      // Seal the original immediately once the event-keyed media Port provides
+      // bytes. TN-004 requires file intake even when code/settings arrive later.
+      // This Port must resolve an already verified event key; it never receives
+      // an OA/customer-supplied URL or path.
+      const media=await ports.media.read_verified({oa_id:oaId,provider_event_id:sourceEvent.event_id});
       if(!media||media.oa_id!==oaId||media.customer_id!==first.customer_id||
-        media.conversation_id!==first.conversation_id||media.provider_event_id!==request.source_event_id||
+        media.conversation_id!==first.conversation_id||media.provider_event_id!==sourceEvent.event_id||
         !(media.bytes instanceof Uint8Array)||media.bytes.byteLength<1||media.bytes.byteLength>MAX_SOURCE_BYTES)
         return {status:"NEEDS_HUMAN",reason:"VERIFIED_MEDIA_UNAVAILABLE",candidate_registered:false,authorization_attempted:false};
-      const format=mediaFormat(media.bytes);
+      // Snapshot once so format/size/hash/custody all refer to identical bytes.
+      const originalBytes=new Uint8Array(media.bytes);
+      const format=mediaFormat(originalBytes);
       if(!format)return {status:"NEEDS_HUMAN",reason:"UNSUPPORTED_SOURCE_BYTES",candidate_registered:false,authorization_attempted:false};
-      const digest=sha(media.bytes);
+      const digest=sha(originalBytes);
       let source:SealedPilotSource;
       try{
         source=await ports.custody.seal({oa_id:oaId,customer_id:first.customer_id,
-          conversation_id:first.conversation_id,provider_event_id:request.source_event_id,
-          format,bytes:new Uint8Array(media.bytes),sha256:digest,size_bytes:media.bytes.byteLength});
+          conversation_id:first.conversation_id,provider_event_id:sourceEvent.event_id,
+          format,bytes:new Uint8Array(originalBytes),sha256:digest,size_bytes:originalBytes.byteLength});
       }catch{
         return {status:"NEEDS_HUMAN",reason:"SOURCE_CUSTODY_FAILED",candidate_registered:false,authorization_attempted:false};
       }
       if(!validSource(source,{oa_id:oaId,customer_id:first.customer_id,
-        conversation_id:first.conversation_id,provider_event_id:request.source_event_id,
-        format,sha256:digest,size_bytes:media.bytes.byteLength}))
+        conversation_id:first.conversation_id,provider_event_id:sourceEvent.event_id,
+        format,sha256:digest,size_bytes:originalBytes.byteLength}))
         return {status:"NEEDS_HUMAN",reason:"SOURCE_CUSTODY_UNVERIFIED",candidate_registered:false,authorization_attempted:false};
       const readback=await ports.custody.read_sealed({oa_id:oaId,
-        provider_event_id:request.source_event_id,artifact_ref:source.artifact_ref}).catch(()=>null);
-      if(!(readback instanceof Uint8Array)||readback.byteLength!==media.bytes.byteLength||sha(readback)!==digest)
+        provider_event_id:sourceEvent.event_id,artifact_ref:source.artifact_ref}).catch(()=>null);
+      if(!(readback instanceof Uint8Array)||readback.byteLength!==originalBytes.byteLength||sha(readback)!==digest)
         return {status:"NEEDS_HUMAN",reason:"SOURCE_CUSTODY_READBACK_MISMATCH",candidate_registered:false,authorization_attempted:false};
+      const intent=extractPilotPrintIntent(events);
+      if(!intent||!eligibleSettings(intent))
+        return {status:"WAITING_FOR_SETTINGS",reason:"PRINT_SETTINGS_INCOMPLETE_OR_UNSUPPORTED",
+          candidate_registered:false,authorization_attempted:false};
       const settings={copies:intent.copies!,duplex:intent.sides===2,paper:"A4" as const,color:"black_white" as const};
       let candidate:PilotWordPdfCandidate|null;
       try{

@@ -22,7 +22,7 @@ const make=(extra={})=>createOfficialZaloWebhookAdapter({
  resolve_verified_user:uid=>uid==="246845883529697922"?{customer_id:"trusted-customer",conversation_id:"trusted-oa-conversation"}:null,
  now:()=>now,...extra
 });
-test("official documented SHA-256 MAC is computed from ORIGINAL raw bytes",async()=>{
+test("synthetic raw-body SHA-256 formula fixture passes; it is not a Zalo signature vector",async()=>{
  const {verifier,normalizer}=make();
  const bytes=raw(signedObject());
  assert.equal(await verifier.verify(bytes,sign(bytes)),true);
