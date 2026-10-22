@@ -12,7 +12,7 @@ export interface CloseIncomingQueueBatchInput {
 }
 export interface IncomingQueueBatchSnapshot {
  schema:'ai1.oa_intake_batch.v1';status:'OPEN'|'BOUND'|'CLOSED'|'EXPIRED'|'NEEDS_HUMAN';
- readiness:'WAITING_FOR_FILE'|'WAITING_FOR_CODE'|'READY';intake_batch_id:string;queue_batch_id:string;
+ readiness:'WAITING_FOR_FILE'|'WAITING_FOR_SETTINGS'|'WAITING_FOR_CODE'|'READY';intake_batch_id:string;queue_batch_id:string;
  shop_id:string;oa_id:string;customer_id:string;conversation_id:string;purpose:'PILOT'|'ORDER';
  opened_at:string;expires_at:string;order_id:string|null;revision:number|null;
  events:{event_id:string;kind:'text'|'image'|'file';role:IntakeEventRole;received_at:string}[];
@@ -163,9 +163,11 @@ async function snapshot(db:SqlConnection,batch:IntakeRow,queueBatchId:string):Pr
  const events=(await db.query<{event_id:string;event_kind:'text'|'image'|'file';role:IntakeEventRole;received_at:Date}>(
   'SELECT event_id,event_kind,role,received_at FROM core_oa_intake_event_bindings WHERE intake_batch_id=$1 '+
   'ORDER BY received_at,event_id',[batch.id])).rows;
- const hasSource=events.some(event=>event.role==='SOURCE'),hasCode=events.some(event=>event.role==='CODE');
+ const hasSource=events.some(event=>event.role==='SOURCE'),hasSettings=events.some(event=>event.role==='SETTINGS');
  return {schema:'ai1.oa_intake_batch.v1',status:batch.status,
-  readiness:!hasSource?'WAITING_FOR_FILE':!hasCode?'WAITING_FOR_CODE':'READY',intake_batch_id:batch.id,
+  // READY means Core has a sealed source and validated settings to bind to a
+  // revision. Shop-code authorization remains a separate Core gate.
+  readiness:!hasSource?'WAITING_FOR_FILE':!hasSettings?'WAITING_FOR_SETTINGS':'READY',intake_batch_id:batch.id,
   queue_batch_id:queueBatchId,shop_id:batch.shop_id,oa_id:batch.oa_id,customer_id:batch.customer_id,
   conversation_id:batch.conversation_id,purpose:batch.purpose,opened_at:new Date(batch.opened_at).toISOString(),
   expires_at:new Date(batch.expires_at).toISOString(),order_id:batch.order_id,revision:batch.revision,

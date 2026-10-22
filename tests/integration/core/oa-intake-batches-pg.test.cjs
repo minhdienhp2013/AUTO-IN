@@ -69,12 +69,19 @@ test('AI1 OA intake batch REAL PostgreSQL: code-before-file, durable membership,
   const repeated=await Promise.all([service.acceptIncomingQueueBatch(codeInput),service.acceptIncomingQueueBatch(codeInput)]);
   assert.deepEqual(repeated.map(item=>item.intake_batch_id),[opened.intake_batch_id,opened.intake_batch_id]);
 
+  const settingsEvent=await leasedEvent('text','A4 black-and-white, 2 copies, duplex');
+  const withSettings=await service.acceptIncomingQueueBatch({queue_batch_id:settingsEvent.queue_batch_id,
+   lease_token:settingsEvent.lease_token,purpose:'PILOT',event_ids:[settingsEvent.event_id],
+   selection:{settings_event_ids:[settingsEvent.event_id]}});
+  assert.equal(withSettings.intake_batch_id,opened.intake_batch_id);
+  assert.equal(withSettings.readiness,'WAITING_FOR_FILE','settings can be durably held before the source arrives');
+
   const file=await leasedEvent('file',null);
   const ready=await service.acceptIncomingQueueBatch({queue_batch_id:file.queue_batch_id,lease_token:file.lease_token,
    purpose:'PILOT',event_ids:[file.event_id],selection:{source_event_id:file.event_id}});
   assert.equal(ready.intake_batch_id,opened.intake_batch_id,'file arriving later completes the open code batch');
   assert.equal(ready.readiness,'READY');
-  assert.deepEqual(ready.events.map(item=>item.role),['CODE','SOURCE']);
+  assert.deepEqual(ready.events.map(item=>item.role),['CODE','SETTINGS','SOURCE']);
   await store.tx(db=>bindIntakeBatchToRevision(db,{intake_batch_id:ready.intake_batch_id,shop_id:shop,oa_id:oa,
    customer_id:customer,conversation_id:conversation,order_id:order1,revision:1,purpose:'PILOT'}));
   await assert.rejects(store.tx(db=>bindIntakeBatchToRevision(db,{intake_batch_id:ready.intake_batch_id,shop_id:shop,oa_id:oa,

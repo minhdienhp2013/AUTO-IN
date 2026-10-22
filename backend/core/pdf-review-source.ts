@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {canonical,DomainError,sha,type Principal} from './model.js';
+import {pilotRevisionSourceBinding} from './pilot-intake-request.js';
 import type {SqlConnection} from '../storage/database.js';
 
 /** Internal AI1-to-AI3 contract for one verified PDF source per order revision. */
@@ -93,7 +94,9 @@ function requestDataHash(data:unknown):string{
 function validatePdfRequestData(data:unknown,artifactRef:string):void{
  if(!data||typeof data!=='object'||Array.isArray(data))throw deny();
  const request=data as Record<string,unknown>;
- if(Object.keys(request).sort().join(',')!=='documents'||!Array.isArray(request.documents)||
+ let pilotBinding:ReturnType<typeof pilotRevisionSourceBinding>;
+ try{pilotBinding=pilotRevisionSourceBinding(request);}catch{throw deny();}
+ if((!pilotBinding&&Object.keys(request).sort().join(',')!=='documents')||!Array.isArray(request.documents)||
     request.documents.length!==1)throw deny();
  const document=request.documents[0];
  if(!document||typeof document!=='object'||Array.isArray(document))throw deny();
@@ -130,6 +133,11 @@ export function checkedPdfReviewSnapshot(scope:PdfReviewSourceScope,raw:TrustedP
  if(requestDataHash(requestData)!==scope.request_hash)throw deny();
  const manifest=parseManifest(raw.manifest.bytes);
  const sourceSha=digest(raw.source.bytes),manifestSha=digest(raw.manifest.bytes);
+ let pilotBinding:ReturnType<typeof pilotRevisionSourceBinding>;
+ try{pilotBinding=pilotRevisionSourceBinding(scope.request_data);}catch{throw deny();}
+ if(pilotBinding&&(pilotBinding.format!=='PDF'||pilotBinding.artifact_ref!==raw.source.artifact_ref||
+    pilotBinding.sha256!==sourceSha||pilotBinding.size_bytes!==raw.source.bytes.byteLength||
+    pilotBinding.provider_event_id!==raw.provider_event_id))throw deny();
  if(manifest.manifest_ref!==raw.manifest.ref||manifest.shop_id!==scope.shop_id||manifest.order_id!==scope.order_id||
     manifest.active_revision!==scope.active_revision||manifest.request_hash!==scope.request_hash||
     manifest.source.format!=='PDF'||manifest.source.artifact_ref!==raw.source.artifact_ref||

@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {canonical,DomainError,sha,type Principal} from './model.js';
+import {pilotRevisionSourceBinding} from './pilot-intake-request.js';
 import type {SqlConnection} from '../storage/database.js';
 
 /** Core-facing contract shared with AI0/AI3. Bytes travel only through this
@@ -103,7 +104,10 @@ function freezeDeep<T>(value:T):T{
 function validateWordRequestData(data:unknown,artifactRef?:string):void{
  if(!data||typeof data!=='object'||Array.isArray(data))throw deny();
  const request=data as Record<string,unknown>;
- if(Object.keys(request).sort().join(',')!=='documents'||!Array.isArray(request.documents)||request.documents.length!==1)
+ let pilotBinding:ReturnType<typeof pilotRevisionSourceBinding>;
+ try{pilotBinding=pilotRevisionSourceBinding(request);}catch{throw deny();}
+ if((!pilotBinding&&Object.keys(request).sort().join(',')!=='documents')||
+    !Array.isArray(request.documents)||request.documents.length!==1)
   throw deny();
  const document=request.documents[0];
  if(!document||typeof document!=='object'||Array.isArray(document))throw deny();
@@ -145,6 +149,11 @@ export function checkedWordReviewSnapshot(scope:WordReviewSourceScope,raw:Truste
  validateWordRequestData(current.request_data,raw.source.artifact_ref);
  const sha256=digest(raw.source.bytes),manifestSha=digest(raw.manifest.bytes);
  const manifest=parseManifest(raw.manifest.bytes);
+ let pilotBinding:ReturnType<typeof pilotRevisionSourceBinding>;
+ try{pilotBinding=pilotRevisionSourceBinding(current.request_data);}catch{throw deny();}
+ if(pilotBinding&&(pilotBinding.format!=='DOCX'||pilotBinding.artifact_ref!==raw.source.artifact_ref||
+    pilotBinding.sha256!==sha256||pilotBinding.size_bytes!==raw.source.bytes.byteLength||
+    pilotBinding.provider_event_id!==raw.provider_event_id))throw deny();
  if(manifest.manifest_ref!==raw.manifest.ref||manifest.shop_id!==current.shop_id||manifest.order_id!==current.order_id||
     manifest.active_revision!==current.active_revision||manifest.request_hash!==current.request_hash||
     manifest.source.format!=='DOCX'||manifest.source.artifact_ref!==raw.source.artifact_ref||

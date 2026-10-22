@@ -2,6 +2,7 @@ import {createHmac, timingSafeEqual} from 'node:crypto';
 import {canonical, DomainError, sha} from './model.js';
 import {checkedPdfReviewSnapshot, type PdfReviewSourceScope, type TrustedPdfReviewSourceReader} from './pdf-review-source.js';
 import {checkedWordReviewSnapshot, type TrustedWordReviewSourceReader, type WordReviewSourceScope} from './word-review-source.js';
+import {pilotRevisionSourceBinding} from './pilot-intake-request.js';
 import type {SqlConnection} from '../storage/database.js';
 
 export type PilotSourceFormat='DOCX'|'PDF';
@@ -120,7 +121,10 @@ function boundedId(value:unknown,max=256):value is string{
 function isObject(value:unknown):value is Record<string,unknown>{return !!value&&typeof value==='object'&&!Array.isArray(value);}
 function plainObjectKeys(value:Record<string,unknown>):string{return Object.keys(value).sort().join(',');}
 function sourceFormatFromRequest(data:unknown):PilotSourceFormat{
- if(!isObject(data)||plainObjectKeys(data)!=='documents'||!Array.isArray(data.documents)||data.documents.length!==1)deny();
+ if(!isObject(data)||!Array.isArray(data.documents)||data.documents.length!==1)deny();
+ const pilotBinding=pilotRevisionSourceBinding(data);
+ if(pilotBinding)return pilotBinding.format;
+ if(plainObjectKeys(data)!=='documents')deny();
  const document=data.documents[0];if(!isObject(document)||typeof document.artifact_name!=='string')deny();
  const name=document.artifact_name.toLowerCase();
  if(name.endsWith('.docx'))return 'DOCX';if(name.endsWith('.pdf'))return 'PDF';deny();
@@ -135,6 +139,10 @@ function checkedSettings(data:unknown,format:PilotSourceFormat,sourceRef:string,
  if(format==='PDF'&&name!==sourceRef)deny();
  if(format==='DOCX'&&name!==sourceRef&&name!==sourceRef.split('/').pop())deny();
  const settings={copies:Number(doc.copies),duplex:doc.duplex,paper:'A4' as const,color:'black_white' as const};
+ const pilotBinding=pilotRevisionSourceBinding(data);
+ if(pilotBinding&&(pilotBinding.format!==format||pilotBinding.artifact_ref!==sourceRef||
+    pilotBinding.settings.copies!==settings.copies||pilotBinding.settings.duplex!==settings.duplex||
+    pilotBinding.settings.paper!==settings.paper||pilotBinding.settings.color!==settings.color))deny();
  if(candidate!==undefined&&(!isObject(candidate)||plainObjectKeys(candidate)!=='color,copies,duplex,paper'||
     candidate.color!=='black_white'||candidate.copies!==doc.copies||candidate.duplex!==doc.duplex||candidate.paper!=='A4'))deny();
  return settings;

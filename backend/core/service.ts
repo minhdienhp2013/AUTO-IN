@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { assertAgent, assertOwner, assertPlan, assertProcessor, assertStaff, canAccessShop, canonical, checkRevision, dbSafeInteger, DomainError, newId, nonNegativeVnd, printingAllowed, sha, shortage, type JobRow, type OrderRow, type Principal, type PrintPlan, type QuoteRow, type RevisionRow, type SettingsRow } from './model.js';
 import { PgStore, type SqlConnection } from '../storage/database.js';
-import {createIncomingBatchPort} from './incoming-batch-port.js';
+import {createIncomingBatchPort,type IncomingSealedSourceReader} from './incoming-batch-port.js';
 import { readPendingUpdates } from './pending-updates.js';
 import {checkedEvidence,currentEvidence,type PrintEvidenceV1,type TrustedPrintEvidencePort} from './print-evidence.js';
 import {internalReviewReceipt,previewReviewReadModel,requirePreviewReview} from './preview-review.js';
@@ -24,7 +24,8 @@ export class OrderService {
  constructor(private readonly store:PgStore, private readonly now:()=>Date=()=>new Date(),private readonly evidence?:TrustedPrintEvidencePort,
   private readonly wordSource?:TrustedWordReviewSourceReader,private readonly pdfSource?:TrustedPdfReviewSourceReader,
   private readonly pilotCodeHmacKey?:Uint8Array){}
- createIncomingBatchPort(options:{trusted:{readonly shop_id:string;readonly oa_id:string};processor:Principal}){
+ createIncomingBatchPort(options:{trusted:{readonly shop_id:string;readonly oa_id:string};processor:Principal;
+  sealed_source_reader?:IncomingSealedSourceReader}){
   return createIncomingBatchPort({store:this.store,...options});
  }
  async acceptIncomingQueueBatch(input:IncomingQueueBatchInput):Promise<IncomingQueueBatchSnapshot>{
