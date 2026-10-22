@@ -105,6 +105,41 @@ export class PostgresConversationQueue {
       return claimed;
     });
   }
+  /** Read only event IDs selected as SETTINGS by a live Core intake snapshot.
+   * This never scans a conversation; immutable verified ingress rows are read
+   * only for the exact IDs/scope returned by Core and supplied by the adapter.
+   */
+  async read_intake_settings_events(input:{intake_batch_id:string;queue_batch_id:string;
+    lease_token:string;oa_id:string;customer_id:string;conversation_id:string;
+    event_ids:readonly string[]}):Promise<InboundEvent[]> {
+    if(!input||!input.intake_batch_id||!input.queue_batch_id||!input.lease_token||
+       !input.oa_id||!input.customer_id||!input.conversation_id||
+       !Array.isArray(input.event_ids)||input.event_ids.length<1||input.event_ids.length>100||
+       input.event_ids.some(id=>typeof id!=="string"||!id||id.length>256)||
+       new Set(input.event_ids).size!==input.event_ids.length)
+      throw new Error("INVALID_INTAKE_SETTINGS_READ");
+    return this.db.transaction(async tx=>{
+      const lease=await tx.query<{oa_id:string}>(
+        "SELECT oa_id FROM zalo_batches WHERE id=$1::bigint AND oa_id=$2 AND status='LEASED' "+
+        "AND lease_token=$3::uuid AND lease_until>clock_timestamp() FOR SHARE",
+        [input.queue_batch_id,input.oa_id,input.lease_token]);
+      if(lease.rows.length!==1)throw new Error("BATCH_LEASE_LOST");
+      const selected=await tx.query<{event_id:string;payload_json:unknown}>(
+        "SELECT e.event_id,e.payload_json FROM zalo_inbound_events e "+
+        "WHERE e.oa_id=$1 AND e.event_id=ANY($2::text[]) AND e.customer_id=$3 AND e.conversation_id=$4 "+
+        "ORDER BY e.received_at,e.event_id FOR SHARE OF e",
+        [input.oa_id,[...input.event_ids],input.customer_id,input.conversation_id]);
+      if(selected.rows.length!==input.event_ids.length||
+         new Set(selected.rows.map(row=>row.event_id)).size!==input.event_ids.length)
+        throw new Error("PILOT_SETTINGS_EVENTS_UNVERIFIED");
+      const events=selected.rows.map(row=>normalized(row.payload_json));
+      if(events.some((event,index)=>event.event_id!==selected.rows[index]?.event_id||
+         event.kind!=="text"||event.oa_id!==input.oa_id||
+         event.customer_id!==input.customer_id||event.conversation_id!==input.conversation_id||
+         !input.event_ids.includes(event.event_id)))throw new Error("PILOT_SETTINGS_EVENTS_UNVERIFIED");
+      return events;
+    });
+  }
   async complete(batch:LeasedBatch):Promise<boolean> {
     return this.db.transaction(async tx=>{
       const result=await tx.query(`UPDATE zalo_batches SET status='DONE',

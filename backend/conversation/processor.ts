@@ -10,6 +10,7 @@ import {gateFirstPageEnqueue,type FirstPageCasDecision,
   type FirstPageCoreCasPort} from "./first-page-core-cas.ts";
 import {SAFE_FIRST_PAGE_QUESTION,type FirstPageQuestionReadPort,
   type FirstPageQuestionScope} from "./first-page-question.ts";
+import {createCorePilotIntakeAdapter,isCorePilotIntakeBatch,type CorePilotIntakePort} from "./core-pilot-intake.ts";
 
 /** AI1 MUST compare expected_generation under its authoritative shop-scoped
  * PostgreSQL row lock in the SAME transaction as each business effect.
@@ -90,12 +91,17 @@ export class ConversationProcessor {
   private readonly classifier:ClassifierPort|undefined;
   private readonly confirmations:ConfirmationCandidatePort|undefined;
   private readonly firstPage:FirstPageSuggestionIntegration|undefined;
+  private readonly pilotIntake:ReturnType<typeof createCorePilotIntakeAdapter>|undefined;
   constructor(gate:GatePort,documents:DocumentFactsPort,orders:OrderDraftPort,
     reply:ReplyQueuePort,classifier?:ClassifierPort,confirmations?:ConfirmationCandidatePort,
-    firstPage?:FirstPageSuggestionIntegration) {
+    firstPage?:FirstPageSuggestionIntegration,pilotIntake?:CorePilotIntakePort) {
     this.gate=gate;this.documents=documents;this.orders=orders;
     this.reply=reply;this.classifier=classifier;this.confirmations=confirmations;
     this.firstPage=firstPage;
+    this.pilotIntake=pilotIntake?createCorePilotIntakeAdapter({
+      trusted_shop_id:pilotIntake.trusted_shop_id,trusted_oa_id:pilotIntake.trusted_oa_id,
+      core:pilotIntake
+    }):undefined;
   }
   private async current(snapshot:GateSnapshot,batch:Batch):Promise<boolean> {
     const now=this.gate.read_verified_batch
@@ -137,6 +143,12 @@ export class ConversationProcessor {
       ? await this.gate.read_verified_batch(batch)
       : await this.gate.read(first.conversation_id);
     if(snap.mode!=="AI")return "held";
+    // Pilot file/code/settings events use only the current durable claim and
+    // Core's persistent intake roles. Missing Core wiring fails closed.
+    if(isCorePilotIntakeBatch(batch)) {
+      if(!this.pilotIntake)return "held";
+      return this.pilotIntake.consume(batch,snap.generation);
+    }
     // CODE-402: a standalone "OK" is never a confirmation. Only the
     // authenticated, event-bound challenge Port may persist a candidate.
     // Without that Port we hold for staff; DeepSeek must not infer approval.
