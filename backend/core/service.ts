@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { assertAgent, assertOwner, assertPlan, assertProcessor, assertStaff, canAccessShop, canonical, checkRevision, dbSafeInteger, DomainError, newId, nonNegativeVnd, printingAllowed, sha, shortage, type JobRow, type OrderRow, type Principal, type PrintPlan, type QuoteRow, type RevisionRow, type SettingsRow } from './model.js';
 import { PgStore, type SqlConnection } from '../storage/database.js';
+import {createIncomingBatchPort} from './incoming-batch-port.js';
 import { readPendingUpdates } from './pending-updates.js';
 import {checkedEvidence,currentEvidence,type PrintEvidenceV1,type TrustedPrintEvidencePort} from './print-evidence.js';
 import {internalReviewReceipt,previewReviewReadModel,requirePreviewReview} from './preview-review.js';
@@ -12,6 +13,8 @@ import {canonicalPilotCode,derivePilotShopCode,pilotCodeHash,pilotCoreIdempotenc
  type PilotAgentClaimResponse,type PilotAgentGateReceipt,type PilotAgentReport,type PilotCodeSubmission,
  type PilotPrintAuthorization,type PilotPrintMode,type PilotReadiness,type PilotResult,type PilotShopCodeDisplay,
  type PilotSourceFormat,type PilotSourceSnapshot,type PilotWordPdfCandidate} from './pilot-shop-code.js';
+import {acceptIncomingQueueBatch,bindIntakeBatchToRevision,closeIncomingQueueBatch,expireIncomingQueueBatches,
+ verifyIntakeEventRole,type CloseIncomingQueueBatchInput,type IncomingQueueBatchInput,type IncomingQueueBatchSnapshot} from './oa-intake-batches.js';
 
 type PilotProvenance={candidate:PilotWordPdfCandidate;authorization:PilotPrintAuthorization;source:PilotSourceSnapshot};
 type PilotJobContext={o:OrderRow;j:JobRow;rev:RevisionRow;
@@ -21,6 +24,14 @@ export class OrderService {
  constructor(private readonly store:PgStore, private readonly now:()=>Date=()=>new Date(),private readonly evidence?:TrustedPrintEvidencePort,
   private readonly wordSource?:TrustedWordReviewSourceReader,private readonly pdfSource?:TrustedPdfReviewSourceReader,
   private readonly pilotCodeHmacKey?:Uint8Array){}
+ createIncomingBatchPort(options:{trusted:{readonly shop_id:string;readonly oa_id:string};processor:Principal}){
+  return createIncomingBatchPort({store:this.store,...options});
+ }
+ async acceptIncomingQueueBatch(input:IncomingQueueBatchInput):Promise<IncomingQueueBatchSnapshot>{
+  return acceptIncomingQueueBatch(this.store,input);
+ }
+ async closeIncomingQueueBatch(input:CloseIncomingQueueBatchInput){return closeIncomingQueueBatch(this.store,input);}
+ async expireIncomingQueueBatches(limit=100,shopId?:string){return expireIncomingQueueBatches(this.store,limit,shopId);}
  private async order(db:SqlConnection,id:string,p:Principal):Promise<OrderRow>{
   const o=await this.store.one<Omit<OrderRow,'delivered_sheets'> & {delivered_sheets:string}>(db,'SELECT * FROM core_orders WHERE id=$1 FOR UPDATE',[id]);canAccessShop(p,o.shop_id);return {...o,delivered_sheets:dbSafeInteger(o.delivered_sheets,'delivered_sheets')};
  }
@@ -92,6 +103,8 @@ export class OrderService {
    'SELECT 1 FROM core_shop_zalo_oa_registry WHERE shop_id=$1 AND oa_id=$2',[input.shop_id,input.oa_id]);
   if(binding.rows.length!==1)
    throw new DomainError('PILOT_SUBMISSION_REJECTED','Yêu cầu không được xác minh',403);
+  await verifyIntakeEventRole(db,{intake_batch_id:input.intake_batch_id,shop_id:input.shop_id,oa_id:input.oa_id,
+   customer_id:input.customer_id,conversation_id:input.conversation_id,event_id:input.provider_event_id,role:'CODE'});
   const event=(await db.query<{event_id:string;customer_id:string;conversation_id:string;kind:string}>(
    "SELECT event_id,customer_id,conversation_id,payload_json->>'kind' AS kind FROM zalo_inbound_events "+
    'WHERE oa_id=$1 AND event_id=$2 FOR SHARE',[input.oa_id,input.provider_event_id])).rows[0];
@@ -119,10 +132,11 @@ export class OrderService {
  }
  private async currentPilotJobResult(db:SqlConnection,authId:string):Promise<PilotResult|null>{
   const row=(await db.query<{a:{shop_id:string;oa_id:string;customer_id:string;order_id:string;revision:number;request_hash:string;
+   intake_batch_id:string;
    source_sha256:string;settings_sha256:string;evidence_sha256:string;printer_id:string;code_window_id:string;
    provider_event_id:string;authorized_at:Date};j:{id:string;cancelled_at:string|null;state:JobRow['state']}}>(
    'SELECT jsonb_build_object(\'shop_id\',a.shop_id,\'oa_id\',a.oa_id,\'customer_id\',a.customer_id,'+
-   '\'order_id\',a.order_id,\'revision\',a.revision,\'request_hash\',a.request_hash,\'source_sha256\',a.source_sha256,'+
+   '\'order_id\',a.order_id,\'revision\',a.revision,\'request_hash\',a.request_hash,\'intake_batch_id\',a.intake_batch_id,\'source_sha256\',a.source_sha256,'+
    '\'settings_sha256\',a.settings_sha256,\'evidence_sha256\',a.evidence_sha256,\'printer_id\',a.printer_id,'+
    '\'code_window_id\',a.code_window_id,\'provider_event_id\',a.provider_event_id,\'authorized_at\',a.authorized_at) AS a,'+
    'jsonb_build_object(\'id\',j.id,\'cancelled_at\',j.cancelled_at,\'state\',j.state) AS j '+
@@ -139,35 +153,39 @@ export class OrderService {
  private async pilotProvenance(db:SqlConnection,o:OrderRow,j:JobRow,rev:RevisionRow):Promise<PilotProvenance>{
   if(!j.pilot_authorization_id||j.approval_id!==null)
    throw new DomainError('PILOT_PROVENANCE_INVALID','Nguồn cấp quyền pilot không hợp lệ',409);
-  const row=(await db.query<{auth_id:string;shop_id:string;oa_id:string;customer_id:string;conversation_id:string;
+  const row=(await db.query<{auth_id:string;shop_id:string;oa_id:string;customer_id:string;conversation_id:string;intake_batch_id:string;
    order_id:string;revision:number;request_hash:string;candidate_id:string;source_sha256:string;settings_sha256:string;
    evidence_sha256:string;printer_id:string;code_window_id:string;provider_event_id:string;idempotency_key:string;
    authorized_at:Date;payload_hmac:string;candidate_shop_id:string;candidate_oa_id:string;candidate_customer_id:string;
-   candidate_conversation_id:string;candidate_order_id:string;candidate_revision:number;candidate_request_hash:string;
+   candidate_conversation_id:string;candidate_intake_batch_id:string;candidate_order_id:string;candidate_revision:number;candidate_request_hash:string;
    source_format:PilotSourceFormat;source_artifact_ref:string;candidate_source_sha256:string;source_size_bytes:string|number;
    source_event_id:string;manifest_ref:string;manifest_sha256:string;settings:unknown;candidate_settings_sha256:string;
    candidate_evidence_sha256:string;candidate_printer_id:string;candidate_sha256:string;
-   attempt_shop_id:string;attempt_oa_id:string;attempt_customer_id:string;attempt_conversation_id:string;
+   attempt_shop_id:string;attempt_oa_id:string;attempt_customer_id:string;attempt_conversation_id:string;attempt_intake_batch_id:string;
    attempt_order_id:string;attempt_revision:number;attempt_idempotency_key:string;attempt_code_window_id:string|null;
    attempt_payload_hmac:string;attempt_accepted:boolean;attempt_consumed_at:Date|null}>(
-   'SELECT a.id AS auth_id,a.shop_id,a.oa_id,a.customer_id,a.conversation_id,a.order_id,a.revision,a.request_hash,'+
+   'SELECT a.id AS auth_id,a.shop_id,a.oa_id,a.customer_id,a.conversation_id,a.intake_batch_id,a.order_id,a.revision,a.request_hash,'+
    'a.candidate_id,a.source_sha256,a.settings_sha256,a.evidence_sha256,a.printer_id,a.code_window_id,'+
    'a.provider_event_id,a.idempotency_key,a.authorized_at,a.payload_hmac,c.shop_id AS candidate_shop_id,c.oa_id AS candidate_oa_id,'+
-   'c.customer_id AS candidate_customer_id,c.conversation_id AS candidate_conversation_id,c.order_id AS candidate_order_id,'+
+   'c.customer_id AS candidate_customer_id,c.conversation_id AS candidate_conversation_id,c.intake_batch_id AS candidate_intake_batch_id,c.order_id AS candidate_order_id,'+
    'c.revision AS candidate_revision,c.request_hash AS candidate_request_hash,c.source_format,c.source_artifact_ref,'+
    'c.source_sha256 AS candidate_source_sha256,c.source_size_bytes,c.source_event_id,c.manifest_ref,c.manifest_sha256,'+
    'c.settings,c.settings_sha256 AS candidate_settings_sha256,c.evidence_sha256 AS candidate_evidence_sha256,'+
    'c.printer_id AS candidate_printer_id,c.candidate_sha256,ca.payload_hmac AS attempt_payload_hmac,'+
-   'ca.shop_id AS attempt_shop_id,ca.oa_id AS attempt_oa_id,ca.customer_id AS attempt_customer_id,'+
+   'ca.shop_id AS attempt_shop_id,ca.oa_id AS attempt_oa_id,ca.customer_id AS attempt_customer_id,ca.intake_batch_id AS attempt_intake_batch_id,'+
    'ca.conversation_id AS attempt_conversation_id,ca.order_id AS attempt_order_id,ca.revision AS attempt_revision,'+
    'ca.idempotency_key AS attempt_idempotency_key,ca.code_window_id AS attempt_code_window_id,'+
    'ca.accepted AS attempt_accepted,ca.consumed_at AS attempt_consumed_at '+
    'FROM core_pilot_print_authorizations a JOIN core_pilot_candidates c ON c.id=a.candidate_id '+
    'JOIN core_pilot_code_attempts ca ON ca.shop_id=a.shop_id AND ca.oa_id=a.oa_id AND ca.provider_event_id=a.provider_event_id '+
-   'WHERE a.id=$1 AND a.order_id=$2 AND a.revision=$3 FOR SHARE OF a,c,ca',
+   'JOIN core_oa_intake_batches ib ON ib.id=a.intake_batch_id AND ib.id=c.intake_batch_id AND ib.id=ca.intake_batch_id '+
+   "JOIN core_oa_intake_event_bindings sf ON sf.intake_batch_id=ib.id AND sf.oa_id=ib.oa_id AND sf.event_id=c.source_event_id AND sf.role='SOURCE' "+
+   "JOIN core_oa_intake_event_bindings ce ON ce.intake_batch_id=ib.id AND ce.oa_id=ib.oa_id AND ce.event_id=a.provider_event_id AND ce.role='CODE' "+
+   "WHERE a.id=$1 AND a.order_id=$2 AND a.revision=$3 AND ib.status='CLOSED' AND ib.order_id=a.order_id AND ib.revision=a.revision FOR SHARE OF a,c,ca,ib,sf,ce",
    [j.pilot_authorization_id,o.id,j.revision])).rows[0];
   if(!row||row.auth_id!==j.pilot_authorization_id||row.shop_id!==o.shop_id||row.customer_id!==o.customer_id||
      row.conversation_id!==o.conversation_id||row.order_id!==o.id||row.revision!==o.active_revision||
+     !row.intake_batch_id||row.candidate_intake_batch_id!==row.intake_batch_id||row.attempt_intake_batch_id!==row.intake_batch_id||
      row.request_hash!==rev.request_hash||row.source_sha256!==row.candidate_source_sha256||
      row.settings_sha256!==row.candidate_settings_sha256||row.evidence_sha256!==row.candidate_evidence_sha256||
      row.printer_id!==j.printer_id||row.candidate_shop_id!==row.shop_id||row.candidate_oa_id!==row.oa_id||
@@ -181,7 +199,8 @@ export class OrderService {
      row.attempt_payload_hmac!==row.payload_hmac||!row.attempt_accepted||!row.attempt_consumed_at)
    throw new DomainError('PILOT_PROVENANCE_INVALID','Nguồn cấp quyền pilot không còn hợp lệ',409);
   const candidate:PilotWordPdfCandidate={shop_id:row.candidate_shop_id,oa_id:row.candidate_oa_id,
-   customer_id:row.candidate_customer_id,conversation_id:row.candidate_conversation_id,order_id:row.candidate_order_id,
+   customer_id:row.candidate_customer_id,conversation_id:row.candidate_conversation_id,
+   intake_batch_id:row.candidate_intake_batch_id,order_id:row.candidate_order_id,
    revision:row.candidate_revision,request_hash:row.candidate_request_hash,
    source:{format:row.source_format,artifact_ref:row.source_artifact_ref,sha256:row.candidate_source_sha256,
     size_bytes:dbSafeInteger(row.source_size_bytes,'pilot.source_size_bytes'),provider_event_id:row.source_event_id},
@@ -194,7 +213,8 @@ export class OrderService {
   const settings=validatePilotStoredSettings(source.request_data,candidate.source.format,
    source.source.artifact_ref,candidate.settings);
   const evidenceHash=pilotEvidenceHash({shop_id:candidate.shop_id,oa_id:candidate.oa_id,
-   customer_id:candidate.customer_id,conversation_id:candidate.conversation_id,order_id:candidate.order_id,
+   customer_id:candidate.customer_id,conversation_id:candidate.conversation_id,intake_batch_id:candidate.intake_batch_id,
+   order_id:candidate.order_id,
    revision:candidate.revision,request_hash:candidate.request_hash,
    source:{format:source.format,artifact_ref:source.source.artifact_ref,sha256:source.source.sha256,
     size_bytes:source.source.size_bytes,provider_event_id:source.provider_event_id},
@@ -206,7 +226,7 @@ export class OrderService {
    throw new DomainError('STALE_PILOT_SOURCE','File hoặc thông số pilot đã thay đổi',409);
   const authorization:PilotPrintAuthorization={schema:'ai0.pilot_print_authorization.v1',
    shop_id:row.shop_id,oa_id:row.oa_id,customer_id:row.customer_id,order_id:row.order_id,revision:row.revision,
-   request_hash:row.request_hash,source_sha256:row.source_sha256,settings_sha256:row.settings_sha256,
+   request_hash:row.request_hash,intake_batch_id:row.intake_batch_id,source_sha256:row.source_sha256,settings_sha256:row.settings_sha256,
    evidence_sha256:row.evidence_sha256,printer_id:row.printer_id,code_window_id:row.code_window_id,
    provider_event_id:row.provider_event_id,authorized_at:new Date(row.authorized_at).toISOString(),job_id:j.id};
   return {candidate,authorization,source};
@@ -260,8 +280,8 @@ export class OrderService {
  }
  private async finalizePilotAuthorization(db:SqlConnection,candidate:PilotWordPdfCandidate,candidateId:string,
   evidenceSha:string,attempt:{provider_event_id:string;idempotency_key:string;payload_hmac:string;
-   code_window_id:string|null;accepted:boolean;consumed_at:Date|null}):Promise<PilotResult|null>{
-  if(!attempt.accepted||attempt.consumed_at||!attempt.code_window_id)return null;
+   intake_batch_id:string;code_window_id:string|null;accepted:boolean;consumed_at:Date|null}):Promise<PilotResult|null>{
+  if(!attempt.accepted||attempt.consumed_at||!attempt.code_window_id||attempt.intake_batch_id!==candidate.intake_batch_id)return null;
   const existing=(await db.query<{id:string}>(
    'SELECT id FROM core_pilot_print_authorizations WHERE order_id=$1 AND revision=$2 FOR UPDATE',
    [candidate.order_id,candidate.revision])).rows[0];
@@ -278,10 +298,10 @@ export class OrderService {
   if(!window?.active)return null;
   const authId=newId(),jobId=newId(),authorizedAt=new Date(window.now);
   await this.pilotConfig(db,candidate.shop_id,true);
-  await db.query('INSERT INTO core_pilot_print_authorizations(id,shop_id,oa_id,customer_id,conversation_id,order_id,revision,request_hash,'+
+  await db.query('INSERT INTO core_pilot_print_authorizations(id,shop_id,oa_id,customer_id,conversation_id,intake_batch_id,order_id,revision,request_hash,'+
    'candidate_id,source_sha256,settings_sha256,evidence_sha256,printer_id,code_window_id,provider_event_id,idempotency_key,payload_hmac,authorized_at) '+
-   'VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)',
-   [authId,candidate.shop_id,candidate.oa_id,candidate.customer_id,candidate.conversation_id,candidate.order_id,candidate.revision,
+   'VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)',
+   [authId,candidate.shop_id,candidate.oa_id,candidate.customer_id,candidate.conversation_id,candidate.intake_batch_id,candidate.order_id,candidate.revision,
     candidate.request_hash,candidateId,candidate.source.sha256,candidate.settings_sha256,evidenceSha,candidate.printer_id,
     attempt.code_window_id,attempt.provider_event_id,attempt.idempotency_key,attempt.payload_hmac,authorizedAt]);
   await db.query('INSERT INTO core_print_jobs(id,order_id,revision,request_hash,approval_id,pilot_authorization_id,printer_id,evidence_sha256) '+
@@ -289,6 +309,9 @@ export class OrderService {
    [jobId,candidate.order_id,candidate.revision,candidate.request_hash,authId,candidate.printer_id,evidenceSha]);
   await db.query('UPDATE core_pilot_code_attempts SET consumed_at=$4 WHERE shop_id=$1 AND oa_id=$2 AND provider_event_id=$3',
    [candidate.shop_id,candidate.oa_id,attempt.provider_event_id,authorizedAt]);
+  await db.query("UPDATE core_oa_intake_batches SET status='CLOSED',close_reason='AUTHORIZED',closed_at=clock_timestamp(),updated_at=clock_timestamp() "+
+   "WHERE id=$1 AND status='BOUND' AND order_id=$2 AND revision=$3",
+   [candidate.intake_batch_id,candidate.order_id,candidate.revision]);
   await db.query('INSERT INTO core_audit(id,shop_id,actor_id,action,order_id,details) VALUES($1,$2,$3,$4,$5,$6::jsonb)',
    [newId(),candidate.shop_id,'pilot:service:'+candidate.oa_id,'pilot.code_authorized',candidate.order_id,
     JSON.stringify({authorization_id:authId,job_id:jobId,revision:candidate.revision,request_hash:candidate.request_hash,
@@ -296,7 +319,7 @@ export class OrderService {
      printer_id:candidate.printer_id,code_window_id:attempt.code_window_id,provider_event_id:attempt.provider_event_id})]);
   return {status:'AUTHORIZED',job_state:'NOT_SENT',authorization:{schema:'ai0.pilot_print_authorization.v1',
    shop_id:candidate.shop_id,oa_id:candidate.oa_id,customer_id:candidate.customer_id,order_id:candidate.order_id,
-   revision:candidate.revision,request_hash:candidate.request_hash,source_sha256:candidate.source.sha256,
+   revision:candidate.revision,request_hash:candidate.request_hash,intake_batch_id:candidate.intake_batch_id,source_sha256:candidate.source.sha256,
    settings_sha256:candidate.settings_sha256,evidence_sha256:evidenceSha,printer_id:candidate.printer_id,
    code_window_id:attempt.code_window_id,provider_event_id:attempt.provider_event_id,
    authorized_at:authorizedAt.toISOString(),job_id:jobId}};
@@ -341,8 +364,16 @@ export class OrderService {
    const rev=await this.store.one<RevisionRow>(db,'SELECT * FROM core_revisions WHERE order_id=$1 AND revision=$2',[order.id,order.active_revision]);
    if(rev.request_hash!==candidate.request_hash||sha(canonical(rev.request_data))!==rev.request_hash)
     throw new DomainError('PILOT_CANDIDATE_REJECTED','Hash revision không khớp',409);
+   await verifyIntakeEventRole(db,{intake_batch_id:candidate.intake_batch_id,shop_id:candidate.shop_id,oa_id:candidate.oa_id,
+    customer_id:candidate.customer_id,conversation_id:candidate.conversation_id,event_id:candidate.source.provider_event_id,role:'SOURCE'});
+   await bindIntakeBatchToRevision(db,{intake_batch_id:candidate.intake_batch_id,shop_id:candidate.shop_id,oa_id:candidate.oa_id,
+    customer_id:candidate.customer_id,conversation_id:candidate.conversation_id,order_id:candidate.order_id,
+    revision:candidate.revision,purpose:'PILOT'});
    const {sourceEvent}=await this.validatePilotOaEvents(db,candidate,rev.request_data);
    const source=await this.readPilotCandidateSource(db,candidate,rev);
+   await verifyIntakeEventRole(db,{intake_batch_id:candidate.intake_batch_id,shop_id:candidate.shop_id,oa_id:candidate.oa_id,
+    customer_id:candidate.customer_id,conversation_id:candidate.conversation_id,event_id:candidate.source.provider_event_id,
+    role:'SOURCE',allowClosed:true});
    let plan:PrintPlan;
    try{this.assertRevisionBinding(rev);plan=rev.plan;}catch{return {status:'NEEDS_HUMAN',reason:'PLAN_NOT_READY'};}
    const quote=await this.quote(db,candidate.order_id);
@@ -351,7 +382,8 @@ export class OrderService {
     return {status:'NEEDS_HUMAN',reason:quote?.significant_cost?'SIGNIFICANT_COST':'OUT_OF_PILOT_SCOPE'};
    const settings=validatePilotStoredSettings(source.request_data,candidate.source.format,source.source.artifact_ref,candidate.settings);
    const evidenceHash=pilotEvidenceHash({shop_id:candidate.shop_id,oa_id:candidate.oa_id,customer_id:candidate.customer_id,
-    conversation_id:candidate.conversation_id,order_id:candidate.order_id,revision:candidate.revision,
+    conversation_id:candidate.conversation_id,intake_batch_id:candidate.intake_batch_id,
+    order_id:candidate.order_id,revision:candidate.revision,
     request_hash:candidate.request_hash,source:{format:source.format,artifact_ref:source.source.artifact_ref,
      sha256:source.source.sha256,size_bytes:source.source.size_bytes,provider_event_id:source.provider_event_id},
     manifest:source.manifest,settings,settings_sha256:candidate.settings_sha256,printer_id:candidate.printer_id});
@@ -372,11 +404,11 @@ export class OrderService {
     if(exists.candidate_sha256!==candidateHash)throw new DomainError('PILOT_CANDIDATE_CONFLICT','Đã có candidate khác cho revision này',409);
     const auth=(await db.query<{id:string}>('SELECT id FROM core_pilot_print_authorizations WHERE candidate_id=$1',[exists.id])).rows[0];
     if(auth)return (await this.currentPilotJobResult(db,auth.id))??{status:'NEEDS_HUMAN',reason:'JOB_MISSING'};
-    const pending=(await db.query<{provider_event_id:string;idempotency_key:string;payload_hmac:string;code_window_id:string|null;accepted:boolean;consumed_at:Date|null}>(
-     'SELECT provider_event_id,idempotency_key,payload_hmac,code_window_id,accepted,consumed_at FROM core_pilot_code_attempts '+
+    const pending=(await db.query<{provider_event_id:string;idempotency_key:string;payload_hmac:string;intake_batch_id:string;code_window_id:string|null;accepted:boolean;consumed_at:Date|null}>(
+     'SELECT provider_event_id,idempotency_key,payload_hmac,intake_batch_id,code_window_id,accepted,consumed_at FROM core_pilot_code_attempts '+
      'WHERE shop_id=$1 AND oa_id=$2 AND customer_id=$3 AND conversation_id=$4 AND order_id=$5 AND revision=$6 '+
-     'AND accepted=true AND consumed_at IS NULL ORDER BY submitted_at DESC LIMIT 1 FOR UPDATE',
-     [candidate.shop_id,candidate.oa_id,candidate.customer_id,candidate.conversation_id,candidate.order_id,candidate.revision])).rows[0];
+     'AND accepted=true AND consumed_at IS NULL AND intake_batch_id=$7 ORDER BY submitted_at DESC LIMIT 1 FOR UPDATE',
+     [candidate.shop_id,candidate.oa_id,candidate.customer_id,candidate.conversation_id,candidate.order_id,candidate.revision,candidate.intake_batch_id])).rows[0];
     if(pending){
      await this.validatePilotOaEvents(db,candidate,rev.request_data,pending.provider_event_id);
      const completed=await this.finalizePilotAuthorization(db,candidate,exists.id,exists.evidence_sha256,pending);
@@ -387,10 +419,10 @@ export class OrderService {
    const duplicateSource=(await db.query('SELECT 1 FROM core_pilot_candidates WHERE oa_id=$1 AND source_event_id=$2',[candidate.oa_id,candidate.source.provider_event_id])).rows.length>0;
    if(duplicateSource)throw new DomainError('PILOT_SOURCE_REPLAY','Event nguồn đã gắn với candidate khác',409);
    const id=newId();
-   await db.query('INSERT INTO core_pilot_candidates(id,shop_id,oa_id,customer_id,conversation_id,order_id,revision,request_hash,'+
+   await db.query('INSERT INTO core_pilot_candidates(id,shop_id,oa_id,customer_id,conversation_id,intake_batch_id,order_id,revision,request_hash,'+
     'source_format,source_artifact_ref,source_sha256,source_size_bytes,source_event_id,manifest_ref,manifest_sha256,settings,'+
-    'settings_sha256,evidence_sha256,printer_id,candidate_sha256) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20)',
-    [id,candidate.shop_id,candidate.oa_id,candidate.customer_id,candidate.conversation_id,candidate.order_id,candidate.revision,
+    'settings_sha256,evidence_sha256,printer_id,candidate_sha256) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18,$19,$20,$21)',
+    [id,candidate.shop_id,candidate.oa_id,candidate.customer_id,candidate.conversation_id,candidate.intake_batch_id,candidate.order_id,candidate.revision,
      candidate.request_hash,source.format,source.source.artifact_ref,source.source.sha256,source.source.size_bytes,
      source.provider_event_id,source.manifest.ref,source.manifest.sha256,JSON.stringify(settings),candidate.settings_sha256,
      evidenceHash,candidate.printer_id,candidateHash]);
@@ -398,11 +430,11 @@ export class OrderService {
     [newId(),candidate.shop_id,'pilot:service:'+candidate.oa_id,'pilot.candidate_registered',candidate.order_id,
      JSON.stringify({candidate_id:id,revision:candidate.revision,request_hash:candidate.request_hash,
       source_sha256:source.source.sha256,settings_sha256:candidate.settings_sha256,evidence_sha256:evidenceHash,printer_id:candidate.printer_id})]);
-   const pending=(await db.query<{provider_event_id:string;idempotency_key:string;payload_hmac:string;code_window_id:string|null;accepted:boolean;consumed_at:Date|null}>(
-    'SELECT provider_event_id,idempotency_key,payload_hmac,code_window_id,accepted,consumed_at FROM core_pilot_code_attempts '+
+   const pending=(await db.query<{provider_event_id:string;idempotency_key:string;payload_hmac:string;intake_batch_id:string;code_window_id:string|null;accepted:boolean;consumed_at:Date|null}>(
+    'SELECT provider_event_id,idempotency_key,payload_hmac,intake_batch_id,code_window_id,accepted,consumed_at FROM core_pilot_code_attempts '+
     'WHERE shop_id=$1 AND oa_id=$2 AND customer_id=$3 AND conversation_id=$4 AND order_id=$5 AND revision=$6 '+
-    'AND accepted=true AND consumed_at IS NULL ORDER BY submitted_at DESC LIMIT 1 FOR UPDATE',
-    [candidate.shop_id,candidate.oa_id,candidate.customer_id,candidate.conversation_id,candidate.order_id,candidate.revision])).rows[0];
+      'AND accepted=true AND consumed_at IS NULL AND intake_batch_id=$7 ORDER BY submitted_at DESC LIMIT 1 FOR UPDATE',
+    [candidate.shop_id,candidate.oa_id,candidate.customer_id,candidate.conversation_id,candidate.order_id,candidate.revision,candidate.intake_batch_id])).rows[0];
    if(pending){
     await this.validatePilotOaEvents(db,candidate,rev.request_data,pending.provider_event_id);
     const completed=await this.finalizePilotAuthorization(db,candidate,id,evidenceHash,pending);
@@ -426,15 +458,16 @@ export class OrderService {
     'pilot-idempotency:'+submission.shop_id+':'+submission.idempotency_key
    ].sort();
    for(const lock of locks)await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1::text,0))',[lock]);
-   const prior=await db.query<{provider_event_id:string;idempotency_key:string;payload_hmac:string;accepted:boolean;
+   const prior=await db.query<{provider_event_id:string;idempotency_key:string;payload_hmac:string;intake_batch_id:string;accepted:boolean;
     code_window_id:string|null;consumed_at:Date|null;order_id:string;revision:number}>(
-    'SELECT provider_event_id,idempotency_key,payload_hmac,accepted,code_window_id,consumed_at,order_id,revision '+
+    'SELECT provider_event_id,idempotency_key,payload_hmac,intake_batch_id,accepted,code_window_id,consumed_at,order_id,revision '+
     'FROM core_pilot_code_attempts WHERE shop_id=$1 AND ((oa_id=$2 AND provider_event_id=$3) OR idempotency_key=$4) FOR UPDATE',
     [submission.shop_id,submission.oa_id,submission.provider_event_id,submission.idempotency_key]);
    const priorAttempt=prior.rows[0];
    if(priorAttempt){
     const same=prior.rows.length===1&&priorAttempt.provider_event_id===submission.provider_event_id&&
      priorAttempt.idempotency_key===submission.idempotency_key&&priorAttempt.payload_hmac===payloadHmac&&
+     priorAttempt.intake_batch_id===submission.intake_batch_id&&
      priorAttempt.order_id===submission.order_id&&priorAttempt.revision===submission.revision;
     if(!same)throw new DomainError('PILOT_REPLAY_CONFLICT','Pilot replay mismatch',409);
     if(!priorAttempt.accepted)return {status:'WAITING_FOR_CODE',reason:'CODE_NOT_ACCEPTED'};
@@ -459,8 +492,24 @@ export class OrderService {
    // AI2 authenticates the OA webhook and extracts the labelled code before this Core-only API.
    // Core persists only payload_hmac; it never stores raw code in pilot tables or audit details.
    await this.validatePilotCodeEvent(db,submission);
+   const priorAuthorization=(await db.query<{id:string}>(
+    'SELECT id FROM core_pilot_print_authorizations WHERE order_id=$1 AND revision=$2 FOR SHARE',
+    [submission.order_id,submission.revision])).rows[0];
+   if(priorAuthorization){
+    const intake=(await db.query<{status:string;order_id:string|null;revision:number|null}>(
+     'SELECT status,order_id,revision FROM core_oa_intake_batches WHERE id=$1 FOR UPDATE',[submission.intake_batch_id])).rows[0];
+    if(!intake||(intake.order_id&&(intake.order_id!==submission.order_id||intake.revision!==submission.revision)))
+     throw new DomainError('INCOMING_BATCH_ORDER_CONFLICT','Code intake is bound to another order/revision');
+    if(intake.status==='OPEN'||intake.status==='BOUND')await db.query(
+     "UPDATE core_oa_intake_batches SET status='NEEDS_HUMAN',close_reason='ORDER_ALREADY_AUTHORIZED',closed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1",
+     [submission.intake_batch_id]);
+    return (await this.currentPilotJobResult(db,priorAuthorization.id))??{status:'NEEDS_HUMAN',reason:'JOB_MISSING'};
+   }
+   await bindIntakeBatchToRevision(db,{intake_batch_id:submission.intake_batch_id,shop_id:submission.shop_id,
+    oa_id:submission.oa_id,customer_id:submission.customer_id,conversation_id:submission.conversation_id,
+    order_id:submission.order_id,revision:submission.revision,purpose:'PILOT'});
    const candidateRow=(await db.query<{id:string;shop_id:string;oa_id:string;customer_id:string;conversation_id:string;
-    order_id:string;revision:number;request_hash:string;source_format:PilotSourceFormat;source_artifact_ref:string;
+    intake_batch_id:string;order_id:string;revision:number;request_hash:string;source_format:PilotSourceFormat;source_artifact_ref:string;
     source_sha256:string;source_size_bytes:string|number;source_event_id:string;manifest_ref:string;
     manifest_sha256:string;settings:unknown;settings_sha256:string;evidence_sha256:string;printer_id:string;
     candidate_sha256:string}>(
@@ -471,7 +520,8 @@ export class OrderService {
    let candidate:PilotWordPdfCandidate|undefined;
    if(candidateRow){
     candidate={shop_id:candidateRow.shop_id,oa_id:candidateRow.oa_id,customer_id:candidateRow.customer_id,
-     conversation_id:candidateRow.conversation_id,order_id:candidateRow.order_id,revision:candidateRow.revision,
+     conversation_id:candidateRow.conversation_id,intake_batch_id:candidateRow.intake_batch_id,
+     order_id:candidateRow.order_id,revision:candidateRow.revision,
      request_hash:candidateRow.request_hash,source:{format:candidateRow.source_format,
       artifact_ref:candidateRow.source_artifact_ref,sha256:candidateRow.source_sha256,
       size_bytes:dbSafeInteger(candidateRow.source_size_bytes,'pilot.source_size_bytes'),
@@ -480,6 +530,7 @@ export class OrderService {
      settings_sha256:candidateRow.settings_sha256,printer_id:candidateRow.printer_id};
     if(candidate.shop_id!==submission.shop_id||candidate.oa_id!==submission.oa_id||
        candidate.customer_id!==submission.customer_id||candidate.conversation_id!==submission.conversation_id||
+       candidate.intake_batch_id!==submission.intake_batch_id||
        candidate.order_id!==submission.order_id||candidate.revision!==submission.revision||
        candidate.request_hash!==revision.request_hash||candidateRow.candidate_sha256!==sha(canonical(candidate)))
      throw new DomainError('PILOT_SUBMISSION_REJECTED','Pilot submission rejected',403);
@@ -487,7 +538,8 @@ export class OrderService {
     const source=await this.readPilotCandidateSource(db,candidate,revision);
     const settings=validatePilotStoredSettings(source.request_data,candidate.source.format,source.source.artifact_ref,candidate.settings);
     const evidenceHash=pilotEvidenceHash({shop_id:candidate.shop_id,oa_id:candidate.oa_id,
-     customer_id:candidate.customer_id,conversation_id:candidate.conversation_id,order_id:candidate.order_id,
+     customer_id:candidate.customer_id,conversation_id:candidate.conversation_id,intake_batch_id:candidate.intake_batch_id,
+     order_id:candidate.order_id,
      revision:candidate.revision,request_hash:candidate.request_hash,
      source:{format:source.format,artifact_ref:source.source.artifact_ref,sha256:source.source.sha256,
       size_bytes:source.source.size_bytes,provider_event_id:source.provider_event_id},
@@ -534,14 +586,14 @@ export class OrderService {
     'SELECT expires_at>clock_timestamp() AS active FROM core_pilot_shop_code_windows WHERE id=$1 FOR UPDATE',[latest.id])).rows[0]?.active;
    const accepted=Boolean(priorAttempt?.accepted)||(!blocked&&active&&digestOk);
    if(!priorAttempt)await db.query('INSERT INTO core_pilot_code_attempts(shop_id,code_window_id,oa_id,customer_id,'+
-    'conversation_id,order_id,revision,provider_event_id,idempotency_key,payload_hmac,accepted) '+
-    'VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+    'conversation_id,intake_batch_id,order_id,revision,provider_event_id,idempotency_key,payload_hmac,accepted) '+
+    'VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
     [submission.shop_id,latest?.id??null,submission.oa_id,submission.customer_id,submission.conversation_id,
-     submission.order_id,submission.revision,submission.provider_event_id,submission.idempotency_key,payloadHmac,accepted]);
+     submission.intake_batch_id,submission.order_id,submission.revision,submission.provider_event_id,submission.idempotency_key,payloadHmac,accepted]);
    if(!accepted)return {status:'WAITING_FOR_CODE',reason:'CODE_NOT_ACCEPTED'};
    if(!candidate)return {status:active?'WAITING_FOR_FILE':'WAITING_FOR_CODE',reason:active?'SOURCE_REQUIRED':'CODE_EXPIRED'};
    const attempt=priorAttempt??{provider_event_id:submission.provider_event_id,idempotency_key:submission.idempotency_key,
-    payload_hmac:payloadHmac,code_window_id:latest?.id??null,accepted:true,consumed_at:null};
+    payload_hmac:payloadHmac,intake_batch_id:submission.intake_batch_id,code_window_id:latest?.id??null,accepted:true,consumed_at:null};
    const completed=await this.finalizePilotAuthorization(db,candidate,candidateRow!.id,
     candidateRow!.evidence_sha256,attempt);
    if(completed)return completed;

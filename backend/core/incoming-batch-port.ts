@@ -1,9 +1,12 @@
 import {assertProcessor,canonical,dbSafeInteger,DomainError,newId,sha,type Principal} from './model.js';
 import type {PgStore,SqlConnection} from '../storage/database.js';
+import {bindIntakeBatchToRevision,lockIncomingQueueBatch,selectIncomingQueueEvents,
+ validateApplyIncomingBatchScope,verifyIntakeBatchEvents} from './oa-intake-batches.js';
 
 export type IncomingChange='attachment'|'copies'|'paper'|'duplex'|'print_request';
 export interface ApplyIncomingBatchInput {
  scope:{oa_id:string;customer_id:string;conversation_id:string};
+ queue_batch_id:string;lease_token:string;intake_batch_id:string;purpose:'PILOT'|'ORDER';
  expected_generation:number;event_ids:string[];text:string;
  idempotency_key:string;intent:'append_or_create'|'explicit_separate';
  changes:IncomingChange[];
@@ -27,6 +30,7 @@ const negatedSeparate=/(?:không|đừng|chưa)\s+(?:cần\s+|muốn\s+)?(?:tạ
 function identifiers(input:ApplyIncomingBatchInput){
  const conv=bounded(input.scope.conversation_id,'conversation_id',256),
  customer=bounded(input.scope.customer_id,'customer_id',256);
+ const batch=validateApplyIncomingBatchScope(input);
  if(!Array.isArray(input.event_ids)||input.event_ids.length<1||input.event_ids.length>100)
   throw new DomainError('INVALID_INCOMING_EVENTS','Expected verified event IDs',422);
  const ids=input.event_ids.map(e=>bounded(e,'event_id',256)).sort();
@@ -37,7 +41,9 @@ function identifiers(input:ApplyIncomingBatchInput){
   throw new DomainError('INVALID_INCOMING_GENERATION','Invalid generation',422);
  if(input.intent!=='append_or_create'&&input.intent!=='explicit_separate')
   throw new DomainError('INVALID_INCOMING_INTENT','Ambiguous intent',422);
- return {conv,customer,ids,text:bounded(input.text,'text',4000),
+ if(input.purpose!=='PILOT'&&input.purpose!=='ORDER')
+  throw new DomainError('INVALID_INCOMING_BATCH','Invalid purpose',422);
+ return {conv,customer,ids,batch,purpose:input.purpose,text:bounded(input.text,'text',4000),
   key:bounded(input.idempotency_key,'idempotency_key',128)};
 }
 /**
@@ -57,18 +63,17 @@ export function createIncomingBatchPort(options:{
  if(processor.shop_id!==trusted.shop_id||!processor.id)
   throw new DomainError('INCOMING_PROCESSOR_SCOPE_DENIED','Processor not bound to shop',403);
  const shop=bounded(trusted.shop_id,'shop_id',128),oa=bounded(trusted.oa_id,'oa_id',256);
- async function verified(db:SqlConnection,conv:string,customer:string,ids:string[]):Promise<Inbound[]>{
+ async function verified(db:SqlConnection,conv:string,customer:string,ids:string[],batch:{queue_batch_id:string;lease_token:string;intake_batch_id:string},purpose:'PILOT'|'ORDER'):Promise<Inbound[]>{
   const found=await db.query('SELECT shop_id FROM core_shop_settings WHERE shop_id=$1 FOR SHARE',[shop]);
   if(found.rows.length!==1)throw new DomainError('INCOMING_SHOP_NOT_FOUND','Shop absent',403);
-  const events=await db.query<Inbound>(
-   "SELECT event_id,customer_id,conversation_id,occurred_at,received_at,"+
-   "payload_json->>'kind' AS kind,COALESCE(payload_json->>'text',payload_json->>'message_text') AS source_text "+
-   "FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=ANY($2::text[]) FOR SHARE",[oa,ids]);
-  if(events.rows.length!==ids.length||
-     events.rows.some(e=>e.customer_id!==customer||e.conversation_id!==conv||
-      !['text','image','file'].includes(e.kind)))
+  const queue=await lockIncomingQueueBatch(db,batch.queue_batch_id,batch.lease_token,oa);
+  const selected=selectIncomingQueueEvents(queue,ids);
+  if(selected.length!==ids.length||selected.some(e=>e.customer_id!==customer||e.conversation_id!==conv))
    throw new DomainError('INCOMING_EVENT_SCOPE_DENIED','Event/OA/customer/chat mismatch',403);
-  return events.rows;
+  await verifyIntakeBatchEvents(db,{intake_batch_id:batch.intake_batch_id,queue_batch_id:batch.queue_batch_id,
+   shop_id:shop,oa_id:oa,customer_id:customer,conversation_id:conv,event_ids:ids,purpose});
+  return selected.map(event=>({event_id:event.event_id,customer_id:event.customer_id,conversation_id:event.conversation_id,
+   occurred_at:event.received_at,received_at:event.received_at,kind:event.kind,source_text:event.source_text}));
  }
  async function matchingOrders(db:SqlConnection,conv:string,customer:string,lock:boolean):Promise<OrderMatch[]>{
   const sql="SELECT o.id,o.active_revision,o.manual_lock,o.print_closed,"+
@@ -110,14 +115,14 @@ export function createIncomingBatchPort(options:{
  async function apply_incoming_batch(input:ApplyIncomingBatchInput):Promise<ApplyIncomingBatchResult>{
   if(!input?.scope||input.scope.oa_id!==oa)
    throw new DomainError('INCOMING_OA_SCOPE_DENIED','Untrusted OA',403);
-  const {conv,customer,ids,key,text}=identifiers(input);
+  const {conv,customer,ids,key,text,batch,purpose}=identifiers(input);
   const fingerprint=sha(canonical({conversation_id:conv,event_ids:ids}));
   const contentHash=sha(canonical({conversation_id:conv,customer_id:customer,text,expected_generation:input.expected_generation}));
   return store.tx(async db=>{
    // The AI0 inbound INSERT trigger locks the relevant order row. We use the
    // same row order, then generation row, then revisions/journals. No pre-read
    // in another transaction can authorize an append.
-   const events=await verified(db,conv,customer,ids);
+   const events=await verified(db,conv,customer,ids,batch,purpose);
    // Lock candidate orders first (approval and verified-confirmation lock these rows first).
    // Re-read under the generation lock: another legacy worker may have created an
    // order while we were acquiring it. No unlocked candidate list is authoritative.
@@ -189,6 +194,8 @@ export function createIncomingBatchPort(options:{
     await db.query('INSERT INTO core_revisions(order_id,revision,request_hash,request_data,plan) VALUES($1,$2,$3,$4::jsonb,NULL)',
      [target.id,revision,hash,JSON.stringify(nextData)]);
     await db.query('UPDATE core_orders SET active_revision=$2,updated_at=now() WHERE id=$1',[target.id,revision]);
+    await bindIntakeBatchToRevision(db,{intake_batch_id:batch.intake_batch_id,shop_id:shop,oa_id:oa,
+     customer_id:customer,conversation_id:conv,order_id:target.id,revision,purpose});
     await db.query('INSERT INTO core_order_supplement_batches(order_id,shop_id,oa_id,event_fingerprint,idempotency_key,revision,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7)',
      [target.id,shop,oa,fingerprint,key,revision,hash]);
     for(const e of ids)await db.query(
@@ -209,6 +216,8 @@ export function createIncomingBatchPort(options:{
     [orderId,shop,customer,conv]);
    await db.query('INSERT INTO core_revisions(order_id,revision,request_hash,request_data) VALUES($1,1,$2,$3::jsonb)',
     [orderId,hash,JSON.stringify(data)]);
+   await bindIntakeBatchToRevision(db,{intake_batch_id:batch.intake_batch_id,shop_id:shop,oa_id:oa,
+    customer_id:customer,conversation_id:conv,order_id:orderId,revision:1,purpose});
    await db.query('INSERT INTO core_ai_draft_proposals(shop_id,oa_id,conversation_id,customer_id,event_fingerprint,idempotency_key,content_hash,order_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
     [shop,oa,conv,customer,fingerprint,key,contentHash,orderId]);
    await db.query('INSERT INTO core_audit(id,shop_id,actor_id,action,order_id,details) VALUES($1,$2,$3,$4,$5,$6::jsonb)',

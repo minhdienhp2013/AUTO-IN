@@ -7,7 +7,8 @@ const {derivePilotShopCode,pilotCodeHash,safeEqualPilotCodeHash,validPilotCode,
  validatePilotGateRequest,validatePilotAgentReport}=require(path.join(root,'core/pilot-shop-code.js'));
 
 const key=Buffer.from('synthetic-only-pilot-hmac-key-material-32-bytes-plus');
-const candidate={shop_id:'shop-a',oa_id:'oa-a',customer_id:'customer-a',conversation_id:'chat-a',order_id:'order-a',
+const candidate={shop_id:'shop-a',oa_id:'oa-a',customer_id:'customer-a',conversation_id:'chat-a',
+ intake_batch_id:'00000000-0000-4000-8000-000000000003',order_id:'order-a',
  revision:1,request_hash:'a'.repeat(64),source:{format:'DOCX',artifact_ref:'bundle-a/source.docx',
  sha256:'b'.repeat(64),size_bytes:12,provider_event_id:'file-event-a'},
  settings:{copies:2,duplex:true,paper:'A4',color:'black_white'},settings_sha256:'c'.repeat(64),printer_id:'RMP7000'};
@@ -31,7 +32,8 @@ test('pilot candidate/submission contracts are exact and accept only the 10-char
  assert.deepEqual(validatePilotCandidateShape(withHash),withHash);
  assert.throws(()=>validatePilotCandidateShape({...withHash,code:'AB12345678'}),e=>e.code==='PILOT_SOURCE_NOT_VERIFIED');
  const submission={schema:'ai0.pilot_code_submission.v1',shop_id:'shop-a',oa_id:'oa-a',customer_id:'customer-a',
-  conversation_id:'chat-a',order_id:'order-a',revision:1,provider_event_id:'code-event-a',code:'AB23456789',
+  conversation_id:'chat-a',intake_batch_id:candidate.intake_batch_id,order_id:'order-a',revision:1,
+  provider_event_id:'code-event-a',code:'AB23456789',
   idempotency_key:'idempotency-a'};
  assert.deepEqual(validatePilotSubmissionShape(submission),submission);
  assert.throws(()=>validatePilotSubmissionShape({...submission,unexpected:'field'}),

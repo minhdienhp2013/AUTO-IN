@@ -7,6 +7,7 @@ import type {SqlConnection} from '../storage/database.js';
 export type PilotSourceFormat='DOCX'|'PDF';
 export interface PilotWordPdfCandidate {
  readonly shop_id:string;readonly oa_id:string;readonly customer_id:string;readonly conversation_id:string;
+ readonly intake_batch_id:string;
  readonly order_id:string;readonly revision:number;readonly request_hash:string;
  readonly source:{readonly format:PilotSourceFormat;readonly artifact_ref:string;readonly sha256:string;
   readonly size_bytes:number;readonly provider_event_id:string};
@@ -16,6 +17,7 @@ export interface PilotWordPdfCandidate {
 export interface PilotCodeSubmission {
  readonly schema:'ai0.pilot_code_submission.v1';readonly shop_id:string;readonly oa_id:string;
  readonly customer_id:string;readonly conversation_id:string;readonly order_id:string;readonly revision:number;
+ readonly intake_batch_id:string;
  readonly provider_event_id:string;readonly code:string;readonly idempotency_key:string;
 }
 export interface PilotShopCodeDisplay {
@@ -25,6 +27,7 @@ export interface PilotShopCodeDisplay {
 export interface PilotPrintAuthorization {
  readonly schema:'ai0.pilot_print_authorization.v1';readonly shop_id:string;readonly oa_id:string;
  readonly customer_id:string;readonly order_id:string;readonly revision:number;readonly request_hash:string;
+ readonly intake_batch_id:string;
  readonly source_sha256:string;readonly settings_sha256:string;readonly evidence_sha256:string;
  readonly printer_id:string;readonly code_window_id:string;readonly provider_event_id:string;
  readonly authorized_at:string;readonly job_id:string;
@@ -74,6 +77,7 @@ export interface PilotSourceSnapshot {
 const CODE_ALPHABET='0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const MAX_CODE_ATTEMPTS_CUSTOMER=5;
 const MAX_CODE_ATTEMPTS_SHOP=50;
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function digestCode(key:Uint8Array,shopId:string,windowId:string,code:string):Buffer{
  return createHmac('sha256',key).update('ai1.pilot.shop-code.verify.v1\0').update(shopId).update('\0')
   .update(windowId).update('\0').update(code,'ascii').digest();
@@ -136,12 +140,13 @@ function checkedSettings(data:unknown,format:PilotSourceFormat,sourceRef:string,
  return settings;
 }
 export function validatePilotCandidateShape(value:unknown):PilotWordPdfCandidate{
- if(!isObject(value)||plainObjectKeys(value)!=='conversation_id,customer_id,oa_id,order_id,printer_id,request_hash,revision,settings,settings_sha256,shop_id,source')deny();
+ if(!isObject(value)||plainObjectKeys(value)!=='conversation_id,customer_id,intake_batch_id,oa_id,order_id,printer_id,request_hash,revision,settings,settings_sha256,shop_id,source')deny();
  const source=value.source,settings=value.settings;
  if(!isObject(source)||plainObjectKeys(source)!=='artifact_ref,format,provider_event_id,sha256,size_bytes'||
     !isObject(settings)||plainObjectKeys(settings)!=='color,copies,duplex,paper')deny();
  if(!boundedId(value.shop_id,128)||!boundedId(value.oa_id)||!boundedId(value.customer_id)||
-    !boundedId(value.conversation_id)||!boundedId(value.order_id,128)||!boundedId(value.printer_id,128)||
+    !boundedId(value.conversation_id)||typeof value.intake_batch_id!=='string'||!UUID.test(value.intake_batch_id)||
+    !boundedId(value.order_id,128)||!boundedId(value.printer_id,128)||
     !Number.isSafeInteger(value.revision)||Number(value.revision)<1||typeof value.request_hash!=='string'||
     !/^[0-9a-f]{64}$/.test(value.request_hash)||typeof value.settings_sha256!=='string'||
     !/^[0-9a-f]{64}$/.test(value.settings_sha256)||
@@ -153,9 +158,10 @@ export function validatePilotCandidateShape(value:unknown):PilotWordPdfCandidate
  return value as unknown as PilotWordPdfCandidate;
 }
 export function validatePilotSubmissionShape(value:unknown):PilotCodeSubmission{
- if(!isObject(value)||plainObjectKeys(value)!=='code,conversation_id,customer_id,idempotency_key,oa_id,order_id,provider_event_id,revision,schema,shop_id')deny();
+ if(!isObject(value)||plainObjectKeys(value)!=='code,conversation_id,customer_id,idempotency_key,intake_batch_id,oa_id,order_id,provider_event_id,revision,schema,shop_id')deny();
  if(value.schema!=='ai0.pilot_code_submission.v1'||!boundedId(value.shop_id,128)||!boundedId(value.oa_id)||
-    !boundedId(value.customer_id)||!boundedId(value.conversation_id)||!boundedId(value.order_id,128)||
+    !boundedId(value.customer_id)||!boundedId(value.conversation_id)||typeof value.intake_batch_id!=='string'||
+    !UUID.test(value.intake_batch_id)||!boundedId(value.order_id,128)||
     !Number.isSafeInteger(value.revision)||Number(value.revision)<1||!boundedId(value.provider_event_id)||
     !boundedId(value.idempotency_key,128)||typeof value.code!=='string'||value.code.length>32)deny();
  return value as unknown as PilotCodeSubmission;

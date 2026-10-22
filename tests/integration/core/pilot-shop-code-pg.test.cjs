@@ -12,7 +12,7 @@ let pg;try{pg=require('pg')}catch{}
 const databaseUrl=process.env.TEST_DATABASE_URL,uid=()=>randomUUID(),idempotency=()=>`pilot-${uid()}`;
 const skip=!(pg&&databaseUrl)&&'NOT RUN - isolated PostgreSQL TEST_DATABASE_URL and pg are required';
 const codeKey=Buffer.from('synthetic-only-pilot-HMAC-secret-key-32-bytes-minimum');
-const fixedNow=()=>new Date('2026-10-21T05:00:00.000Z');
+const fixedNow=()=>new Date();
 const error=code=>e=>e&&e.code===code;
 
 test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code, rate limit, replay/race and one job',
@@ -25,6 +25,7 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
   try{
    for(const migration of [
     '../../../backend/integrations/zalo/migrations/001_zalo_durable.sql',
+    '../../../backend/integrations/zalo/migrations/002_zalo_oa_scope.sql',
     '../../../backend/storage/migrations/001_core.sql',
     '../../../backend/storage/migrations/002_send_mode.sql',
     '../../../backend/storage/migrations/003_confirmed_queue.sql',
@@ -32,12 +33,14 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
     '../../../backend/storage/migrations/011_print_evidence_binding.sql',
     '../../../backend/storage/migrations/013_inbound_review_items.sql',
     '../../../backend/storage/migrations/014_pilot_shop_code.sql',
+    '../../../backend/storage/migrations/015_oa_intake_batches.sql',
     '../../../backend/composition/migrations/005_official_zalo_shop_registry.sql'
    ])await a.query(fs.readFileSync(path.resolve(__dirname,migration),'utf8'));
    const makeWorld=async(label)=>{
     const suffix=uid(),shop=`pilot-${label}-${suffix}`,oa=`pilot-oa-${suffix}`,customer=`customer-${suffix}`;
     const conversation=`chat-${suffix}`,orderId=uid(),agentId=`agent-${suffix}`;
     const fileEvent=`file-${suffix}`,codeEvent=`code-${suffix}`,bundle=`bundle_${suffix.replaceAll('-','')}`;
+    const queueBatchIds=[];let intakeBatchId;
     const artifactRef=`${bundle}/source.docx`,manifestRef=`${bundle}/manifest.json`;
     const sourceBytes=Buffer.from(`synthetic-docx-${suffix}`),requestData={documents:[{
      artifact_name:artifactRef,copies:2,duplex:true,paper:'A4'}]};
@@ -64,19 +67,30 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
      [orderId,shop,customer,conversation]);
     await a.query('INSERT INTO core_revisions(order_id,revision,request_hash,request_data,plan) VALUES($1,1,$2,$3::jsonb,$4::jsonb)',
      [orderId,requestHash,JSON.stringify(requestData),JSON.stringify(plan)]);
-    const addEvent=async(eventId,kind,who=customer,chat=conversation)=>a.query(
-     'INSERT INTO zalo_inbound_events(oa_id,event_id,conversation_id,customer_id,occurred_at,payload_json) '+
-     'VALUES($1,$2,$3,$4,clock_timestamp(),$5::jsonb)',[oa,eventId,chat,who,JSON.stringify({kind})]);
+    const addEvent=async(eventId,kind,who=customer,chat=conversation)=>{
+     await a.query('INSERT INTO zalo_inbound_events(oa_id,event_id,conversation_id,customer_id,occurred_at,payload_json) '+
+      'VALUES($1,$2,$3,$4,clock_timestamp(),$5::jsonb)',[oa,eventId,chat,who,JSON.stringify({kind,text:kind==='text'?'SYNTHETIC-PRIVATE-CODE':''})]);
+     const leaseToken=uid(),queueBatchId=(await a.query(
+      "INSERT INTO zalo_batches(batch_key,oa_id,event_count,status,lease_token,lease_until) VALUES($1,$2,1,'LEASED',$3,clock_timestamp()+interval '2 minutes') RETURNING id::text",
+      [`pilot-${uid()}`,oa,leaseToken])).rows[0].id;
+     queueBatchIds.push(queueBatchId);
+     await a.query('INSERT INTO zalo_batch_items(batch_id,oa_id,event_id) VALUES($1,$2,$3)',[queueBatchId,oa,eventId]);
+     const selection=kind==='file'?{source_event_id:eventId}:kind==='text'?{code_event_id:eventId}:undefined;
+     const snapshot=await A.acceptIncomingQueueBatch({queue_batch_id:queueBatchId,lease_token:leaseToken,
+      purpose:'PILOT',event_ids:[eventId],...(selection?{selection}:{})});
+     if(who===customer&&chat===conversation&&!intakeBatchId)intakeBatchId=snapshot.intake_batch_id;
+     return snapshot;
+    };
     await addEvent(fileEvent,'file');
-    const candidate={shop_id:shop,oa_id:oa,customer_id:customer,conversation_id:conversation,order_id:orderId,
+    const candidate={shop_id:shop,oa_id:oa,customer_id:customer,conversation_id:conversation,intake_batch_id:intakeBatchId,order_id:orderId,
      revision:1,request_hash:requestHash,source:{format:'DOCX',artifact_ref:artifactRef,
       sha256:createHash('sha256').update(sourceBytes).digest('hex'),size_bytes:sourceBytes.length,
       provider_event_id:fileEvent},settings,settings_sha256:pilotSettingsHash(settings),printer_id:'RMP7000'};
     const staff={id:`staff-${suffix}`,shop_id:shop,role:'staff',verified:true};
     const agent={id:agentId,shop_id:shop,role:'print_agent',verified:true,printer_ids:['RMP7000']};
     const display=await A.getPilotShopCode(staff);
-    const submission=(eventId=codeEvent,code=display.code,customerId=customer)=>({schema:'ai0.pilot_code_submission.v1',
-     shop_id:shop,oa_id:oa,customer_id:customerId,conversation_id:conversation,order_id:orderId,
+    const submission=(eventId=codeEvent,code=display.code,customerId=customer,batchId=intakeBatchId)=>({schema:'ai0.pilot_code_submission.v1',
+     shop_id:shop,oa_id:oa,customer_id:customerId,conversation_id:conversation,intake_batch_id:batchId,order_id:orderId,
      revision:1,provider_event_id:eventId,code,idempotency_key:idempotency()});
     await addEvent(codeEvent,'text');
     const destroy=async()=>{
@@ -85,15 +99,19 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
      await a.query('DELETE FROM core_pilot_code_attempts WHERE order_id=$1',[orderId]).catch(()=>{});
      await a.query('DELETE FROM core_pilot_candidates WHERE order_id=$1',[orderId]).catch(()=>{});
      await a.query('DELETE FROM core_audit WHERE order_id=$1',[orderId]).catch(()=>{});
+     await a.query('DELETE FROM core_oa_intake_event_bindings WHERE intake_batch_id IN (SELECT id FROM core_oa_intake_batches WHERE shop_id=$1)',[shop]).catch(()=>{});
+     await a.query('DELETE FROM core_oa_intake_batches WHERE shop_id=$1',[shop]).catch(()=>{});
      await a.query('DELETE FROM core_revisions WHERE order_id=$1',[orderId]).catch(()=>{});
      await a.query('DELETE FROM core_orders WHERE id=$1',[orderId]).catch(()=>{});
      await a.query('DELETE FROM core_pilot_shop_code_windows WHERE shop_id=$1',[shop]).catch(()=>{});
      await a.query('DELETE FROM core_pilot_shop_config WHERE shop_id=$1',[shop]).catch(()=>{});
      await a.query('DELETE FROM core_shop_zalo_oa_registry WHERE shop_id=$1',[shop]).catch(()=>{});
+     await a.query('DELETE FROM zalo_batch_items WHERE batch_id=ANY($1::bigint[])',[queueBatchIds]).catch(()=>{});
+     await a.query('DELETE FROM zalo_batches WHERE id=ANY($1::bigint[])',[queueBatchIds]).catch(()=>{});
      await a.query('DELETE FROM zalo_inbound_events WHERE oa_id=$1',[oa]).catch(()=>{});
      await a.query('DELETE FROM core_shop_settings WHERE shop_id=$1',[shop]).catch(()=>{});
     };
-    const world={A,B,a,b,shop,oa,customer,conversation,orderId,agentId,fileEvent,codeEvent,
+    const world={A,B,a,b,shop,oa,customer,conversation,orderId,agentId,fileEvent,codeEvent,intakeBatchId,
      artifactRef,sourceBytes,material,candidate,staff,agent,display,submission,addEvent,destroy};
     worlds.push(world);return world;
    };
@@ -212,9 +230,11 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
     await w.A.markPilotSending(w.agent,claim.work.job.job_id,gate);
     await w.B.reportPilot(w.agent,claim.work.job.job_id,{schema:'ai0.pilot_agent_report.v1',
      lease_token:claim.work.job.lease_token,state:'UNKNOWN',idempotency_key:idempotency(),evidence:{}});
-    const newCodeEvent=`new-code-${uid()}`;await w.addEvent(newCodeEvent,'text');
-    const afterUnknown=await w.B.authorizePilotPrint(w.submission(newCodeEvent));
+    const newCodeEvent=`new-code-${uid()}`,newIntake=await w.addEvent(newCodeEvent,'text');
+    const afterUnknown=await w.B.authorizePilotPrint(w.submission(newCodeEvent,w.display.code,w.customer,newIntake.intake_batch_id));
     assert.equal(afterUnknown.status,'UNKNOWN');assert.equal(afterUnknown.authorization.job_id,claim.work.job.job_id);
+    assert.equal((await a.query('SELECT status FROM core_oa_intake_batches WHERE id=$1',[newIntake.intake_batch_id])).rows[0].status,'NEEDS_HUMAN',
+     'new code event after authorization is consumed into a terminal intake and cannot be rebound');
     assert.equal(await jobs(w.orderId),1);
     assert.equal((await w.A.claimPilot(w.agent,{printer_id:'RMP7000',idempotency_key:idempotency()})).work,null);
     await w.destroy();
