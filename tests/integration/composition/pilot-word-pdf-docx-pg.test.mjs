@@ -15,6 +15,7 @@ import {createTrustedPrintEvidencePort} from '../../../backend/composition/trust
 import {createPilotPrivateSourcePorts} from '../../../backend/composition/pilot-private-source.ts';
 import {createPilotIngressResolvers} from '../../../backend/composition/pilot-ingress.ts';
 import {createPilotWordPdfIntakeAdapter} from '../../../backend/conversation/pilot-word-pdf-intake.ts';
+import {acceptPilotQueueFixture} from './pilot-queue-batch-fixture.mjs';
 
 const databaseUrl=process.env.TEST_DATABASE_URL;
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../..');
@@ -51,7 +52,7 @@ for(const format of ['DOCX','PDF'])test(`verified synthetic OA ${format} -> dura
  const sourceHash=sha(sourceBytes);
  const temp=await fs.mkdtemp(path.join(os.tmpdir(),'autoin-private-pilot-'));
  await fs.chmod(temp,0o700);
- let app,orderId,bootstrapped=false,stage='bootstrap',status='NA',reason='NA';
+ let app,orderId,queueBatch,bootstrapped=false,stage='bootstrap',status='NA',reason='NA';
  let reportEvidence=null;
  const observe=(name,response)=>{stage=name;status=String(response.statusCode);
   try{reason=safe(response.json()?.error?.code);}catch{reason='NA';}return response;};
@@ -118,6 +119,8 @@ for(const format of ['DOCX','PDF'])test(`verified synthetic OA ${format} -> dura
   assert.equal(display.statusCode,200);
   const code=display.json().code;
   await send('oa-code',{event_id:codeEvent,kind:'text',text:`Mã cửa hàng: ${code}`});
+  stage='queue-batch-lease';
+  queueBatch=await acceptPilotQueueFixture(pool,core.service,{oa,fileEvent,settingsEvent,codeEvent});
   const intake=createPilotWordPdfIntakeAdapter({trusted_shop_id:shop,trusted_oa_id:oa,ports:{
    async read_verified_events({event_ids}){
     const rows=(await pool.query('SELECT event_id,payload_json FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=ANY($2::text[])',[oa,event_ids])).rows;
@@ -143,9 +146,11 @@ for(const format of ['DOCX','PDF'])test(`verified synthetic OA ${format} -> dura
   stage='intake';
   const intakeResult=await intake.processVerifiedEvents({event_ids:[fileEvent,settingsEvent,codeEvent],source_event_id:fileEvent});
   assert.equal(intakeResult.status,'AUTHORIZED');
-  const stored=(await pool.query('SELECT c.order_id,c.revision,c.request_hash,c.source_artifact_ref,c.source_format,c.source_sha256,c.source_size_bytes,c.source_event_id,c.settings,c.settings_sha256,c.manifest_sha256,a.provider_event_id FROM core_pilot_candidates c JOIN core_pilot_print_authorizations a ON a.candidate_id=c.id WHERE c.order_id=$1',[orderId])).rows;
+  const stored=(await pool.query('SELECT c.order_id,c.revision,c.request_hash,c.intake_batch_id AS candidate_batch,a.intake_batch_id AS authorization_batch,c.source_artifact_ref,c.source_format,c.source_sha256,c.source_size_bytes,c.source_event_id,c.settings,c.settings_sha256,c.manifest_sha256,a.provider_event_id FROM core_pilot_candidates c JOIN core_pilot_print_authorizations a ON a.candidate_id=c.id WHERE c.order_id=$1',[orderId])).rows;
   assert.equal(stored.length,1);assert.equal(stored[0].source_format,format);
   assert.equal(stored[0].order_id,orderId);assert.equal(stored[0].revision,draft.revision);
+  assert.equal(stored[0].candidate_batch,queueBatch.intakeBatchId);
+  assert.equal(stored[0].authorization_batch,queueBatch.intakeBatchId);
   assert.equal(stored[0].request_hash,draft.request_hash);
   assert.equal(stored[0].source_artifact_ref,source.artifact_ref);
   assert.equal(stored[0].source_sha256,sourceHash);assert.equal(stored[0].source_event_id,fileEvent);
@@ -175,6 +180,8 @@ for(const format of ['DOCX','PDF'])test(`verified synthetic OA ${format} -> dura
     ['DELETE FROM core_pilot_print_authorizations WHERE order_id=$1',[orderId]],
     ['DELETE FROM core_pilot_code_attempts WHERE order_id=$1',[orderId]],
     ['DELETE FROM core_pilot_candidates WHERE order_id=$1',[orderId]],
+    ['DELETE FROM core_oa_intake_event_bindings WHERE intake_batch_id=$1',[queueBatch?.intakeBatchId]],
+    ['DELETE FROM core_oa_intake_batches WHERE id=$1',[queueBatch?.intakeBatchId]],
     ['DELETE FROM core_audit WHERE shop_id=$1',[shop]],
     ['DELETE FROM core_order_inbound_reviews WHERE shop_id=$1',[shop]],
     ['DELETE FROM core_revisions WHERE order_id=$1',[orderId]],
@@ -185,6 +192,8 @@ for(const format of ['DOCX','PDF'])test(`verified synthetic OA ${format} -> dura
     ['DELETE FROM core_pilot_shop_config WHERE shop_id=$1',[shop]],
     ['DELETE FROM ai0_pilot_private_sources WHERE shop_id=$1',[shop]],
     ['DELETE FROM core_shop_zalo_oa_registry WHERE shop_id=$1',[shop]],
+    ['DELETE FROM zalo_batch_items WHERE batch_id=$1',[queueBatch?.queueBatchId]],
+    ['DELETE FROM zalo_batches WHERE id=$1',[queueBatch?.queueBatchId]],
     ['DELETE FROM zalo_process_queue WHERE oa_id=$1',[oa]],
     ['DELETE FROM zalo_inbound_events WHERE oa_id=$1',[oa]],
     ['DELETE FROM core_sessions WHERE user_id IN (SELECT id FROM core_users WHERE shop_id=$1)',[shop]],

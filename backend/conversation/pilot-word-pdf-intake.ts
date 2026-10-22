@@ -257,6 +257,7 @@ export function createPilotWordPdfIntakeAdapter(options:{readonly trusted_shop_i
 
       const submission:PilotCodeSubmission={schema:"ai0.pilot_code_submission.v1",shop_id:shopId,oa_id:oaId,
         customer_id:candidate.customer_id,conversation_id:candidate.conversation_id,
+        intake_batch_id:candidate.intake_batch_id,
         order_id:candidate.order_id,revision:candidate.revision,provider_event_id:intent.code_event_id,
         code:intent.code_candidate,idempotency_key:"ai2-pilot:"+sha(Buffer.from(JSON.stringify([
           shopId,oaId,candidate.order_id,candidate.revision,intent.code_event_id]),"utf8"))};

@@ -14,6 +14,7 @@ import {createCoreModule} from '../../../backend/core/factory.ts';
 import {createTrustedPrintEvidencePort} from '../../../backend/composition/trusted-print-evidence.ts';
 import {createPilotWordPdfIntakeAdapter} from '../../../backend/conversation/pilot-word-pdf-intake.ts';
 import {pilotSettingsHash} from '../../../backend/core/pilot-shop-code.ts';
+import {acceptPilotQueueFixture} from './pilot-queue-batch-fixture.mjs';
 
 const databaseUrl=process.env.TEST_DATABASE_URL;
 const skip=!databaseUrl?'TEST_DATABASE_URL unset: isolated OA-to-Core-to-Agent pilot NOT RUN':false;
@@ -79,7 +80,7 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
   const trusted={shop_id:shop,oa_id:oa};
   const hmacKey=codeKey;
   const sealed=new Map();
-  let currentCandidate=null,currentSubmission=null,orderId=null,app=null,serverUrl=null;
+  let currentCandidate=null,currentSubmission=null,orderId=null,app=null,serverUrl=null,queueBatch=null;
   let tempRoot=null,journalPath=null,bootstrapped=false;
   let stage='bootstrap',lastStatus='NA',lastReason='NA';
   let agentRoute='NA',agentHttpStatus='NA',agentHttpReason='NA';
@@ -171,6 +172,8 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
    const display=displayResponse.json();
    assert.ok(/^[0-9A-HJKMNP-TV-Z]{10}$/.test(display.code),'server shop code follows the locked wire format');
    await sendEvent('oa-code',{...baseEvent,event_id:codeEvent,kind:'text',text:`Mã cửa hàng: ${display.code}`});
+   stage='queue-batch-lease';
+   queueBatch=await acceptPilotQueueFixture(pool,core.service,{oa,fileEvent,settingsEvent,codeEvent});
 
    const intake=createPilotWordPdfIntakeAdapter({trusted_shop_id:shop,trusted_oa_id:oa,ports:{
     async read_verified_events({event_ids}){
@@ -204,6 +207,7 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
        input.settings.copies!==2||input.settings.duplex!==true||input.settings.paper!=='A4'||
        input.settings.color!=='black_white')return null;
      currentCandidate={shop_id:shop,oa_id:oa,customer_id:customer,conversation_id:conversation,
+      intake_batch_id:queueBatch.intakeBatchId,
       order_id:draft.order_id,revision:draft.revision,request_hash:draft.request_hash,
       source:{format:'PDF',artifact_ref:sourceRef,sha256:sourceHash,size_bytes:sourceBytes.length,provider_event_id:fileEvent},
       settings:input.settings,settings_sha256:pilotSettingsHash(input.settings),printer_id:printerId};
@@ -219,7 +223,8 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
       return response.json();
      },
      async authorizePilotPrint(submission){
-      currentSubmission={...submission,idempotency_key:`caller-controlled-${suffix}`};
+      currentSubmission={...submission,intake_batch_id:queueBatch.intakeBatchId,
+       idempotency_key:`caller-controlled-${suffix}`};
       stage='authorize-code';
       const response=observe('authorize-code',await app.inject({method:'POST',url:'/internal/v1/pilot/code-submissions',
        headers:{authorization:`Bearer ${ai2Token}`},payload:currentSubmission}));
@@ -243,10 +248,13 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
    assert.equal(replayKeys[0].attempt_key,replayKeys[0].authorization_key);
    assert.match(replayKeys[0].attempt_key,/^core-pilot:[0-9a-f]{64}$/);
    assert.notEqual(replayKeys[0].attempt_key,currentSubmission.idempotency_key);
-   const eventBinding=(await pool.query('SELECT c.source_event_id,a.provider_event_id '+
+   const eventBinding=(await pool.query('SELECT c.source_event_id,a.provider_event_id,'+
+    'c.intake_batch_id AS candidate_batch,a.intake_batch_id AS authorization_batch '+
     'FROM core_pilot_candidates c JOIN core_pilot_print_authorizations a ON a.candidate_id=c.id '+
     'WHERE c.order_id=$1',[orderId])).rows;
    assert.equal(eventBinding.length,1);
+   assert.equal(eventBinding[0].candidate_batch,queueBatch.intakeBatchId);
+   assert.equal(eventBinding[0].authorization_batch,queueBatch.intakeBatchId);
    assert.equal(eventBinding[0].source_event_id,fileEvent);
    assert.equal(eventBinding[0].provider_event_id,codeEvent);
    assert.notEqual(eventBinding[0].source_event_id,eventBinding[0].provider_event_id);
@@ -312,6 +320,8 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
     await pool.query('DELETE FROM core_pilot_print_authorizations WHERE order_id=$1',[orderId]).catch(()=>{});
     await pool.query('DELETE FROM core_pilot_code_attempts WHERE order_id=$1',[orderId]).catch(()=>{});
     await pool.query('DELETE FROM core_pilot_candidates WHERE order_id=$1',[orderId]).catch(()=>{});
+    await pool.query('DELETE FROM core_oa_intake_event_bindings WHERE intake_batch_id=$1',[queueBatch?.intakeBatchId]).catch(()=>{});
+    await pool.query('DELETE FROM core_oa_intake_batches WHERE id=$1',[queueBatch?.intakeBatchId]).catch(()=>{});
     await pool.query('DELETE FROM core_audit WHERE shop_id=$1',[shop]).catch(()=>{});
     await pool.query('DELETE FROM core_revisions WHERE order_id=$1',[orderId]).catch(()=>{});
     await pool.query('DELETE FROM core_orders WHERE shop_id=$1',[shop]).catch(()=>{});
@@ -320,6 +330,8 @@ test('synthetic OA file/settings/code -> Core pilot job -> Agent HTTP DryRun sta
     await pool.query('DELETE FROM core_pilot_shop_code_windows WHERE shop_id=$1',[shop]).catch(()=>{});
     await pool.query('DELETE FROM core_pilot_shop_config WHERE shop_id=$1',[shop]).catch(()=>{});
     await pool.query('DELETE FROM core_shop_zalo_oa_registry WHERE shop_id=$1',[shop]).catch(()=>{});
+    await pool.query('DELETE FROM zalo_batch_items WHERE batch_id=$1',[queueBatch?.queueBatchId]).catch(()=>{});
+    await pool.query('DELETE FROM zalo_batches WHERE id=$1',[queueBatch?.queueBatchId]).catch(()=>{});
     await pool.query('DELETE FROM zalo_process_queue WHERE oa_id=$1',[oa]).catch(()=>{});
     await pool.query('DELETE FROM zalo_inbound_events WHERE oa_id=$1',[oa]).catch(()=>{});
     await pool.query('DELETE FROM core_sessions WHERE user_id IN (SELECT id FROM core_users WHERE shop_id=$1)',[shop]).catch(()=>{});

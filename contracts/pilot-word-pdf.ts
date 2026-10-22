@@ -10,6 +10,7 @@ export interface PilotWordPdfCandidate {
   readonly oa_id: string;
   readonly customer_id: string;
   readonly conversation_id: string;
+  readonly intake_batch_id: string;
   readonly order_id: string;
   readonly revision: number;
   readonly request_hash: string;
@@ -46,6 +47,7 @@ export interface PilotCodeSubmission {
   readonly oa_id: string;
   readonly customer_id: string;
   readonly conversation_id: string;
+  readonly intake_batch_id: string;
   readonly order_id: string;
   readonly revision: number;
   readonly provider_event_id: string;
@@ -59,6 +61,7 @@ export interface PilotPrintAuthorization {
   readonly shop_id: string;
   readonly oa_id: string;
   readonly customer_id: string;
+  readonly intake_batch_id: string;
   readonly order_id: string;
   readonly revision: number;
   readonly request_hash: string;

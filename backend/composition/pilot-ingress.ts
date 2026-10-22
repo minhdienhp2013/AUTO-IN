@@ -68,7 +68,7 @@ export function createPilotIngressResolvers(db:SqlPool,token:string,binding:Pilo
    const intent=extractPilotPrintIntent([text]);
    if(intent?.code_event_id!==event||!intent.code_candidate)throw deny();
    const rows=(await db.query<PilotWordPdfCandidate>(
-    `SELECT c.shop_id,c.oa_id,c.customer_id,c.conversation_id,c.order_id,c.revision,
+    `SELECT c.shop_id,c.oa_id,c.customer_id,c.conversation_id,c.intake_batch_id,c.order_id,c.revision,
      c.request_hash,c.settings_sha256,c.printer_id,
      jsonb_build_object('format',c.source_format,'artifact_ref',c.source_artifact_ref,
       'sha256',c.source_sha256,'size_bytes',c.source_size_bytes,
@@ -86,10 +86,12 @@ export function createPilotIngressResolvers(db:SqlPool,token:string,binding:Pilo
      provider_event_id:candidate.source.provider_event_id,format:candidate.source.format,
      artifact_ref:candidate.source.artifact_ref,sha256:candidate.source.sha256,
      size_bytes:Number(candidate.source.size_bytes)},settings:candidate.settings});
-   if(!rebound||rebound.order_id!==candidate.order_id||rebound.revision!==candidate.revision)throw deny();
+   if(!rebound||rebound.intake_batch_id!==candidate.intake_batch_id||
+      rebound.order_id!==candidate.order_id||rebound.revision!==candidate.revision)throw deny();
    return {schema:'ai0.pilot_code_submission.v1' as const,shop_id:candidate.shop_id,oa_id:oa,
     customer_id:text.customer_id,conversation_id:text.conversation_id,
-    order_id:candidate.order_id,revision:candidate.revision,provider_event_id:event,
+    intake_batch_id:candidate.intake_batch_id,order_id:candidate.order_id,
+    revision:candidate.revision,provider_event_id:event,
     code:intent.code_candidate,idempotency_key:`ai0-event:${digest(`${oa}\0${event}`).toString('hex')}`};
   }
  };

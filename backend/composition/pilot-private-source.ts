@@ -153,6 +153,15 @@ export function createPilotPrivateSourcePorts(db:SqlPool,root:string):{
   const linked=await bound(db,{shop_id:input.shop_id,order_id:revision.order_id,
    active_revision:revision.revision,request_hash:revision.request_hash,request_data:revision.request_data});
   if(!linked)return null;
+  const intake=(await db.query<{id:string}>(
+   `SELECT i.id FROM core_oa_intake_batches i
+    JOIN core_oa_intake_event_bindings e ON e.intake_batch_id=i.id
+    WHERE i.shop_id=$1 AND i.oa_id=$2 AND i.customer_id=$3 AND i.conversation_id=$4
+      AND i.purpose='PILOT' AND i.status IN ('OPEN','BOUND') AND i.expires_at>clock_timestamp()
+      AND (i.order_id IS NULL OR (i.order_id=$5 AND i.revision=$6))
+      AND e.oa_id=$2 AND e.event_id=$7 AND e.role='SOURCE'`,
+   [row.shop_id,row.oa_id,row.customer_id,row.conversation_id,linked.order_id,linked.revision,row.event_id])).rows;
+  if(intake.length!==1)return null;
   const settings={copies:(linked.request_data as any).documents[0].copies,
    duplex:(linked.request_data as any).documents[0].duplex,paper:'A4' as const,color:'black_white' as const};
   if(!equal(settings,input.settings))return null;
@@ -163,7 +172,8 @@ export function createPilotPrivateSourcePorts(db:SqlPool,root:string):{
   if(texts.length!==input.text_event_ids.length)return null;
   await read(row);
   return {shop_id:row.shop_id,oa_id:row.oa_id,customer_id:row.customer_id,
-   conversation_id:row.conversation_id,order_id:linked.order_id,revision:linked.revision,
+   conversation_id:row.conversation_id,intake_batch_id:intake[0]!.id,
+   order_id:linked.order_id,revision:linked.revision,
    request_hash:linked.request_hash,source:{format:row.format,artifact_ref:row.artifact_ref,
     sha256:row.sha256,size_bytes:Number(row.size_bytes),provider_event_id:row.event_id},
    settings,settings_sha256:pilotSettingsHash(settings),printer_id:linked.printer_id};
