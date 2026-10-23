@@ -22,7 +22,8 @@ type QueueEvent={event_id:string;oa_id:string;customer_id:string;conversation_id
 type QueueLease={id:string;oa_id:string;event_count:number;status:string;lease_token:string|null;
  lease_until:Date|null;events:QueueEvent[]};
 type IntakeRow={id:string;shop_id:string;oa_id:string;customer_id:string;conversation_id:string;purpose:'PILOT'|'ORDER';
- status:IncomingQueueBatchSnapshot['status'];opened_at:Date;expires_at:Date;order_id:string|null;revision:number|null};
+ status:IncomingQueueBatchSnapshot['status'];opened_at:Date;expires_at:Date;order_id:string|null;revision:number|null;
+ new_order_requested?:boolean};
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PG_BIGINT_MAX=9223372036854775807n;
 function invalid():never{throw new DomainError('INCOMING_BATCH_INVALID','Incoming queue batch request is invalid',422);}
@@ -56,17 +57,18 @@ export function validateApplyIncomingBatchScope(value:unknown):{queue_batch_id:s
 }
 function dbError(code:string,message:string,status=409):DomainError{return new DomainError(code,message,status);}
 async function requireSchema(db:SqlConnection):Promise<void>{
- const rows=await db.query<{zalo_batches:string|null;batch_items:string|null;events:string|null;intake:string|null;bindings:string|null;oa_registry:string|null;batch_oa:boolean}>(
+ const rows=await db.query<{zalo_batches:string|null;batch_items:string|null;events:string|null;intake:string|null;bindings:string|null;oa_registry:string|null;batch_oa:boolean;new_order_requested:boolean}>(
   "SELECT to_regclass('public.zalo_batches')::text AS zalo_batches,"+
   "to_regclass('public.zalo_batch_items')::text AS batch_items,"+
   "to_regclass('public.zalo_inbound_events')::text AS events,"+
   "to_regclass('public.core_oa_intake_batches')::text AS intake,"+
   "to_regclass('public.core_oa_intake_event_bindings')::text AS bindings,"+
   "to_regclass('public.core_shop_zalo_oa_registry')::text AS oa_registry,"+
-  "EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='zalo_batches' AND column_name='oa_id') AS batch_oa");
+  "EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='zalo_batches' AND column_name='oa_id') AS batch_oa,"+
+  "EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='core_oa_intake_batches' AND column_name='new_order_requested') AS new_order_requested");
  const row=rows.rows[0];
- if(!row?.zalo_batches||!row.batch_items||!row.events||!row.intake||!row.bindings||!row.oa_registry||!row.batch_oa)
-  throw new DomainError('INCOMING_BATCH_SCHEMA_REQUIRED','Zalo migrations 001/002 and Core migration 015 are required',503,true);
+ if(!row?.zalo_batches||!row.batch_items||!row.events||!row.intake||!row.bindings||!row.oa_registry||!row.batch_oa||!row.new_order_requested)
+  throw new DomainError('INCOMING_BATCH_SCHEMA_REQUIRED','Zalo migrations 001/002 and Core migrations 015/016 are required',503,true);
 }
 export async function lockIncomingQueueBatch(db:SqlConnection,batchId:string,leaseToken:string,expectedOa?:string):Promise<QueueLease>{
  await requireSchema(db);
@@ -100,21 +102,41 @@ export function selectIncomingQueueEvents(batch:QueueLease,selectors?:readonly s
 }
 async function activeIntake(db:SqlConnection,shop:string,oa:string,customer:string,conversation:string):Promise<IntakeRow|undefined>{
  return (await db.query<IntakeRow>(
-  'SELECT id,shop_id,oa_id,customer_id,conversation_id,purpose,status,opened_at,expires_at,order_id,revision '+
+  'SELECT id,shop_id,oa_id,customer_id,conversation_id,purpose,status,opened_at,expires_at,order_id,revision,new_order_requested '+
   'FROM core_oa_intake_batches WHERE shop_id=$1 AND oa_id=$2 AND customer_id=$3 AND conversation_id=$4 '+
   "AND status IN ('OPEN','BOUND') FOR UPDATE",[shop,oa,customer,conversation])).rows[0];
 }
 async function createIntake(db:SqlConnection,shop:string,oa:string,customer:string,conversation:string,
- purpose:'PILOT'|'ORDER',receivedAt:Date):Promise<IntakeRow>{
+ purpose:'PILOT'|'ORDER',receivedAt:Date,newOrderRequested:boolean):Promise<IntakeRow>{
  const id=newId();
  const row=(await db.query<IntakeRow>(
-  'INSERT INTO core_oa_intake_batches(id,shop_id,oa_id,customer_id,conversation_id,purpose,status,opened_at,expires_at,closed_at) '+
+  'INSERT INTO core_oa_intake_batches(id,shop_id,oa_id,customer_id,conversation_id,purpose,status,opened_at,expires_at,closed_at,new_order_requested) '+
   "VALUES($1,$2,$3,$4,$5,$6,CASE WHEN $7::timestamptz+interval '30 minutes'<=clock_timestamp() THEN 'EXPIRED' ELSE 'OPEN' END,"+
-  "$7,$7::timestamptz+interval '30 minutes',CASE WHEN $7::timestamptz+interval '30 minutes'<=clock_timestamp() THEN clock_timestamp() ELSE NULL END) "+
-  'RETURNING id,shop_id,oa_id,customer_id,conversation_id,purpose,status,opened_at,expires_at,order_id,revision',
-  [id,shop,oa,customer,conversation,purpose,receivedAt])).rows[0];
+  "$7,$7::timestamptz+interval '30 minutes',CASE WHEN $7::timestamptz+interval '30 minutes'<=clock_timestamp() THEN clock_timestamp() ELSE NULL END,$8) "+
+  'RETURNING id,shop_id,oa_id,customer_id,conversation_id,purpose,status,opened_at,expires_at,order_id,revision,new_order_requested',
+  [id,shop,oa,customer,conversation,purpose,receivedAt,newOrderRequested])).rows[0];
  if(!row)throw dbError('INCOMING_BATCH_CREATE_FAILED','Could not create durable intake batch',500);
  return row;
+}
+async function replayNewBoundary(db:SqlConnection,queue:QueueLease,shop:string,purpose:'PILOT'|'ORDER',
+ customer:string,conversation:string):Promise<IncomingQueueBatchSnapshot|undefined>{
+ const rows=(await db.query<IntakeRow&{event_id:string;queue_batch_id:string;received_at:Date;event_kind:string}>(
+  'SELECT i.id,i.shop_id,i.oa_id,i.customer_id,i.conversation_id,i.purpose,i.status,i.opened_at,i.expires_at,'+
+  'i.order_id,i.revision,i.new_order_requested,b.event_id,b.queue_batch_id::text,b.received_at,b.event_kind '+
+  'FROM core_oa_intake_event_bindings b JOIN core_oa_intake_batches i ON i.id=b.intake_batch_id '+
+  'WHERE b.oa_id=$1 AND b.event_id=ANY($2::text[]) ORDER BY b.event_id',[queue.oa_id,queue.events.map(event=>event.event_id)])).rows;
+ if(rows.length===0)return undefined;
+ const byId=new Map(rows.map(row=>[row.event_id,row]));
+ const intakeId=rows[0]?.id;
+ const matches=rows.length===queue.events.length&&!!intakeId&&rows.every(row=>row.id===intakeId&&
+  row.new_order_requested===true&&row.shop_id===shop&&row.oa_id===queue.oa_id&&row.customer_id===customer&&
+  row.conversation_id===conversation&&row.purpose===purpose)&&queue.events.every(event=>{
+   const row=byId.get(event.event_id);
+   return !!row&&row.queue_batch_id===event.queue_batch_id&&row.event_kind===event.kind&&
+    new Date(row.received_at).getTime()===new Date(event.received_at).getTime();
+  });
+ if(!matches)throw dbError('INCOMING_EVENT_ALREADY_BOUND','Event is permanently bound to another intake lifecycle');
+ return snapshot(db,rows[0]!,queue.id);
 }
 async function bindEvents(db:SqlConnection,batch:IntakeRow,events:QueueEvent[]):Promise<void>{
  for(const event of events){
@@ -196,6 +218,10 @@ export async function acceptIncomingQueueBatch(store:PgStore,value:unknown):Prom
   await db.query("UPDATE core_oa_intake_batches SET status='EXPIRED',closed_at=clock_timestamp(),updated_at=clock_timestamp() "+
    "WHERE shop_id=$1 AND oa_id=$2 AND customer_id=$3 AND conversation_id=$4 AND status IN ('OPEN','BOUND') AND expires_at<=clock_timestamp()",
    [shop,queue.oa_id,selected[0]!.customer_id,selected[0]!.conversation_id]);
+  if(input.boundary==='NEW'){
+   const replay=await replayNewBoundary(db,queue,shop,input.purpose,selected[0]!.customer_id,selected[0]!.conversation_id);
+   if(replay)return replay;
+  }
   let batch=await activeIntake(db,shop,queue.oa_id,selected[0]!.customer_id,selected[0]!.conversation_id);
   if(input.boundary==='NEW'&&batch){
    await db.query("UPDATE core_oa_intake_batches SET status='CLOSED',close_reason='NEW_INTAKE',closed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1",[batch.id]);
@@ -215,7 +241,8 @@ export async function acceptIncomingQueueBatch(store:PgStore,value:unknown):Prom
   }
   if(!batch){
    const first=queue.events[0]!.received_at;
-   batch=await createIntake(db,shop,queue.oa_id,queue.events[0]!.customer_id,queue.events[0]!.conversation_id,input.purpose,first);
+   batch=await createIntake(db,shop,queue.oa_id,queue.events[0]!.customer_id,queue.events[0]!.conversation_id,
+    input.purpose,first,input.boundary==='NEW');
   }
   if(batch.status==='EXPIRED'){
    await bindEvents(db,batch,queue.events);

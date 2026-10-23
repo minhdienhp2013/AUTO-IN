@@ -34,6 +34,7 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
     '../../../backend/storage/migrations/013_inbound_review_items.sql',
     '../../../backend/storage/migrations/014_pilot_shop_code.sql',
     '../../../backend/storage/migrations/015_oa_intake_batches.sql',
+    '../../../backend/storage/migrations/016_persist_intake_new_order_intent.sql',
     '../../../backend/composition/migrations/005_official_zalo_shop_registry.sql'
    ])await a.query(fs.readFileSync(path.resolve(__dirname,migration),'utf8'));
    const makeWorld=async(label)=>{
