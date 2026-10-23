@@ -7,6 +7,7 @@ import {PostgresConversationQueue,PostgresOutboundRepository,type PgTransactions
 import {ConversationProcessor,type FirstPageSuggestionIntegration,
   type OrderDraftPort,type ClassifierPort,type DocumentFactsPort} from '../../conversation/processor.ts';
 import {DurableConversationWorker} from '../../conversation/durable-worker.ts';
+import type {CorePilotIntakeIntegration,CorePilotIntakePort} from '../../conversation/core-pilot-intake.ts';
 import {OutboundDispatcher,type ReplySchedule,type ZaloSender} from '../../conversation/gate.ts';
 import {PostgresConfirmationCandidates,type VerifiedChallengePort} from './confirmation-candidates.ts';
 import type {FirstPageQuestionReadPort,FirstPageQuestionScope} from '../../conversation/first-page-question.ts';
@@ -30,6 +31,8 @@ export interface ZaloPipelineOptions {
   trusted_oa_id: string;
   orders: OrderDraftPort;
   documents: DocumentFactsPort;
+  /** Core methods already configured on the server with the private sealed-source reader. */
+  pilot_intake?:CorePilotIntakeIntegration;
   schedule: ReplySchedule;
   clock: {now():Date};
   classifier?: ClassifierPort;
@@ -69,8 +72,17 @@ export function createZaloPipeline(options:ZaloPipelineOptions) {
       ?{trusted_shop_id:options.trusted_shop_id,trusted_oa_id:options.trusted_oa_id,
         questions:options.first_page_question_reader,core:options.first_page_core_cas}
       :undefined;
+  const pilotIntake:CorePilotIntakePort|undefined=options.pilot_intake&&
+    options.pilot_intake.trusted_shop_id===options.trusted_shop_id&&
+    options.pilot_intake.trusted_oa_id===options.trusted_oa_id?{
+      trusted_shop_id:options.pilot_intake.trusted_shop_id,
+      trusted_oa_id:options.pilot_intake.trusted_oa_id,
+      acceptIncomingQueueBatch(input){return options.pilot_intake!.acceptIncomingQueueBatch(input);},
+      apply_incoming_batch(input){return options.pilot_intake!.apply_incoming_batch(input);},
+      read_settings_events(input){return queue.read_intake_settings_events(input);}
+    }:undefined;
   const processor=new ConversationProcessor(gate,options.documents,options.orders,outbox,
-    options.classifier,confirmations,firstPage);
+    options.classifier,confirmations,firstPage,pilotIntake);
   const worker=new DurableConversationWorker(queue,processor);
   const dispatcher=provider?.sender ? new OutboundDispatcher(gate,outbox,provider.sender,
     options.clock,options.schedule):undefined;
