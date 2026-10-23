@@ -24,6 +24,7 @@ import { createSyntheticPdfReviewSourceReader } from './pdf-review-source.js';
 import { createPdfReviewPreviewService } from './pdf-review-preview.js';
 import { createSyntheticWordReviewSourceReader } from './word-review-source.js';
 import { createWordReviewPreviewService } from './word-review-preview.js';
+import { admitAgentRoute, type ControlledPilotScope } from './controlled-pilot-admission.js';
 
 export interface ServiceIdentity { token: string; principal: Principal }
 /** Server-owned pilot dependencies. This runtime remains simulation-only. */
@@ -71,6 +72,9 @@ export interface RuntimeOptions {
   trustedPrintEvidence?: TrustedPrintEvidenceOptions;
   /** Explicit simulation-only wiring for the V1 Word/PDF pilot. */
   pilotWordPdf?: PilotWordPdfSimulationOptions;
+  /** Server-owned, one-order Windows trial admission. Core still checks the
+   * expiring owner grant at claim/preflight/mark-sending. Absent by default. */
+  controlledPilot?: ControlledPilotScope;
 }
 export function identityResolver(identities: readonly ServiceIdentity[]) {
   for (const identity of identities) {
@@ -115,6 +119,12 @@ function staleWordPreview(): DomainError {
 
 /** Simulation-only composition. Uses AI1 routes exactly once, not CODE-000 routes. */
 export function buildIntegratedApp(options: RuntimeOptions) {
+  const controlled = options.controlledPilot;
+  if (controlled && (!options.tls || !options.pilotWordPdf || options.zaloWebhook ||
+      options.officialZaloSimulation || options.syntheticArtifactIngest ||
+      !controlled.shop_id?.trim() || !controlled.order_id?.trim() ||
+      controlled.printer_id !== 'RMP7000'))
+    throw new Error('CONTROLLED_PILOT_CONFIGURATION_REQUIRED');
   if (options.zaloWebhook && options.officialZaloSimulation)
     throw new Error('CONFLICTING_ZALO_WEBHOOK_CONFIGURATION');
   if (options.pilotWordPdf && (!options.trustedPrintEvidence ||
@@ -178,10 +188,11 @@ export function buildIntegratedApp(options: RuntimeOptions) {
         ? await resolve({ headers: { authorization: request.headers.authorization } })
         : undefined;
       if (printAgent) {
-        const settings = await options.pool.query<{ mode: string }>(
-          'SELECT mode FROM core_shop_settings WHERE shop_id=$1', [printAgent.shop_id]);
-        if (settings.rows[0]?.mode !== 'simulation')
-          throw new DomainError('SIMULATION_REQUIRED', 'Simulation shop required', 409);
+        await admitAgentRoute({pool:options.pool,agent:printAgent,pilotRoute:pilotAgentRoute,
+          ...(controlled ? {scope:controlled} : {}),
+          ...((request.params as {job_id?:string}).job_id ?
+            {jobId:(request.params as {job_id:string}).job_id} : {}),
+          requestedPrinterId:(request.body as {printer_id?:unknown}|null)?.printer_id});
       }
       if ((method === 'POST' || method === 'PATCH') &&
           (request.body === null || typeof request.body !== 'object' || Array.isArray(request.body)))
@@ -234,7 +245,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
       resolvePilotCodeSubmission: options.pilotWordPdf.resolveCodeSubmission
     } : {})
   });
-  app.get('/health', async () => ({ status: 'ok', mode: 'simulation', live_enabled: false,
+  app.get('/health', async () => ({ status: 'ok', mode: controlled ? 'controlled_test' : 'simulation', live_enabled: false,
     auth_configured: true, configured_operations: ['me', 'listOrders', 'approveOrder', 'claimJob', 'markSending', 'reportJob'],
     registered_routes: registered, zalo_webhook_configured: !!options.zaloWebhook || !!options.officialZaloSimulation,
     official_zalo_simulation_configured: !!options.officialZaloSimulation,
@@ -245,7 +256,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
     word_review_source_configured: !!wordSource,
     synthetic_artifact_ingest_configured: !!options.syntheticArtifactIngest,
     trusted_print_evidence_v1_configured: !!trustedPrintEvidence,
-    pilot_word_pdf_simulation_configured: !!options.pilotWordPdf,
+    pilot_word_pdf_simulation_configured: !!options.pilotWordPdf && !controlled,
     integration_stage: 'core-http' }));
   // Authenticated server-owned operation truth for the AI4 product adapter.
   // Never infer this from the browser environment or anonymous /health.

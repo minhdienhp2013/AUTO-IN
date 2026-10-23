@@ -7,7 +7,12 @@ import { createSyntheticZaloRuntime } from './composition/zalo-simulation.js';
 import { createPilotPrivateSourcePorts } from './composition/pilot-private-source.js';
 import { createPilotIngressResolvers } from './composition/pilot-ingress.js';
 import { createPilotCoreBatchPort } from './composition/pilot-core-batch.js';
-if ((process.env.AUTO_IN_MODE ?? 'simulation') !== 'simulation') throw new Error('Only simulation is available');
+const serverMode = process.env.AUTO_IN_MODE ?? 'simulation';
+if (serverMode !== 'simulation' && serverMode !== 'controlled_test') throw new Error('Unsupported server mode');
+const controlledEnabled = process.env.AUTOIN_PILOT_CONTROLLED_TEST_ENABLED ?? '0';
+if (controlledEnabled !== '0' && controlledEnabled !== '1') throw new Error('Invalid controlled pilot switch');
+if ((serverMode === 'controlled_test') !== (controlledEnabled === '1'))
+  throw new Error('Controlled pilot requires explicit mode and switch');
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL required; run db:migrate and db:bootstrap first');
 assertIsolatedSimulationDatabase(url);
@@ -22,19 +27,48 @@ const keyFile = process.env.AUTOIN_TLS_KEY;
 const certFile = process.env.AUTOIN_TLS_CERT;
 if (!!keyFile !== !!certFile) throw new Error('TLS key and certificate required together');
 const tls = keyFile && certFile ? { key: await readFile(keyFile), cert: await readFile(certFile) } : undefined;
+const controlledFile = process.env.AUTOIN_PILOT_CONTROLLED_SCOPE_FILE;
+if (serverMode === 'controlled_test' && (!controlledFile || !tls))
+  throw new Error('Controlled pilot requires private scope file and TLS');
+if (serverMode === 'simulation' && controlledFile)
+  throw new Error('Controlled pilot scope is unavailable in simulation mode');
+let controlledPilot: {shop_id:string;order_id:string;printer_id:string}|undefined;
+if (controlledFile) {
+  const stat = await lstat(controlledFile);
+  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) || stat.size > 1024)
+    throw new Error('Controlled pilot scope file must be private');
+  const input:unknown = JSON.parse(await readFile(controlledFile,'utf8'));
+  if (!input || typeof input !== 'object' || Array.isArray(input) ||
+      Object.keys(input).sort().join(',') !== 'order_id,printer_id,shop_id')
+    throw new Error('Controlled pilot scope invalid');
+  const scope=input as Record<string,unknown>;
+  if (typeof scope.shop_id !== 'string' || !scope.shop_id.trim() ||
+      typeof scope.order_id !== 'string' || !scope.order_id.trim() ||
+      scope.printer_id !== 'RMP7000') throw new Error('Controlled pilot scope invalid');
+  controlledPilot={shop_id:scope.shop_id,order_id:scope.order_id,printer_id:'RMP7000'};
+  if (!identities.some(identity => identity.principal.role === 'print_agent' &&
+      identity.principal.shop_id === scope.shop_id &&
+      identity.principal.printer_ids?.includes('RMP7000')))
+    throw new Error('Controlled pilot Agent identity missing');
+}
 const registry = process.env.AUTOIN_ZALO_SYNTHETIC_REGISTRY
   ? JSON.parse(await readFile(process.env.AUTOIN_ZALO_SYNTHETIC_REGISTRY, 'utf8')) as unknown : undefined;
+if (controlledPilot && registry !== undefined) throw new Error('Synthetic OA unavailable in controlled pilot');
 const pool = new pg.Pool({ connectionString: url, connectionTimeoutMillis: 5000 });
 const core = createCoreModule({ pool: asSqlPool(pool) });
 const documentArtifactRoot = process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT;
 const reviewMode = process.env.AUTOIN_SIMULATION_REVIEW_ENABLED ?? '0';
 if (reviewMode !== '0' && reviewMode !== '1') throw new Error('AUTOIN_SIMULATION_REVIEW_ENABLED must be 0 or 1');
 const simulationReviewEnabled = reviewMode === '1';
+if (controlledPilot && simulationReviewEnabled)
+  throw new Error('Simulation review unavailable in controlled pilot');
 const pilotFiles=[process.env.AUTOIN_PILOT_CODE_KEY_FILE,
   process.env.AUTOIN_PILOT_PRIVATE_SOURCE_ROOT,process.env.AUTOIN_PILOT_INGRESS_TOKEN_FILE];
 if(pilotFiles.some(Boolean)&&pilotFiles.some(value=>!value))
   throw new Error('Pilot requires code key, private source root, and scoped ingress token files together');
 const pilotEnabled=pilotFiles.every(Boolean);
+if (controlledPilot && !pilotEnabled)
+  throw new Error('Controlled pilot requires private source and ingress dependencies');
 const pilotKey=pilotEnabled?await readFile(process.env.AUTOIN_PILOT_CODE_KEY_FILE!):undefined;
 const pilotToken=pilotEnabled?(await readFile(process.env.AUTOIN_PILOT_INGRESS_TOKEN_FILE!,'utf8')).trim():undefined;
 if(pilotEnabled&&(!pilotKey||pilotKey.length<32||!pilotToken||pilotToken.length<32))
@@ -86,6 +120,7 @@ if (configuredTick !== undefined && (!zaloRuntime || !Number.isInteger(tickMs) |
 let ticking = false;
 let timer: ReturnType<typeof setInterval> | undefined;
 const app = buildIntegratedApp({ pool: asSqlPool(pool), identities,
+  ...(controlledPilot ? { controlledPilot } : {}),
   ...(tls ? { tls } : {}), ...(zaloRuntime ? { zaloWebhook: zaloRuntime.webhook } : {}),
   zaloWorkerConfigured: tickMs > 0,
   ...(process.env.AUTOIN_ARTIFACT_ROOT ? {previewArtifactRoot: process.env.AUTOIN_ARTIFACT_ROOT} : {}),
@@ -127,7 +162,7 @@ try {
       console.error('Synthetic inbound worker failed; batch remains durable');
     }).finally(() => { ticking = false; });
   }, tickMs);
-  console.info('AUTO-IN core HTTP ready in simulation mode');
+  console.info(`AUTO-IN core HTTP ready in ${serverMode} mode`);
 } catch {
   await app.close();
   console.error('AUTO-IN startup failed: verify test database, migrations and listener configuration');
