@@ -147,6 +147,9 @@ test("negated or conflicting boundary signal holds the leased batch for human re
   for(const message of [
     "Không tạo đơn",
     "Không tạo đơn mới",
+    "Không tạo đơn nào",
+    "Không tạo đơn nữa",
+    "Không tạo đơn mới nữa",
     "không tạo đơn mới",
     "Không muốn tạo đơn mới",
     "Không cần lập đơn",
@@ -263,6 +266,26 @@ test("durable worker completes the lease only after Core returns a committed res
   const worker=new DurableConversationWorker(queue,processor);
   const result=await worker.tick();
   assert.equal(result.processed,1);assert.deepEqual(trace,["core-apply-start","core-apply-committed","queue-complete"]);
+});
+
+test("negated new-order phrases hold the lease without Core calls or successful completion",async()=>{
+  for(const message of ["Không tạo đơn","Không tạo đơn mới","Không tạo đơn nào",
+    "Không tạo đơn nữa"]){
+    const h=harness(),candidate=lease("84",[file(),settings(),event("negated-boundary","text",message)]);
+    const trace=[];
+    const queue={async ingest_pending(){return 0;},async claim_due(){return [candidate];},
+      async complete(){trace.push("complete");return true;},
+      async hold(){trace.push("hold");return true;},
+      async fail(_batch,error){throw new Error(`unexpected queue failure: ${error}`);}};
+    const worker=new DurableConversationWorker(queue,{async consume(batch){
+      h.setLease(batch);return h.adapter.consume(batch,1);
+    }});
+    const result=await worker.tick();
+    assert.equal(result.held,1,message);
+    assert.deepEqual(trace,["hold"],message);
+    assert.equal(h.seen.accept.length,0,message);
+    assert.equal(h.seen.apply.length,0,message);
+  }
 });
 
 test("pilot signal without the Core adapter is held instead of entering legacy draft flow",async()=>{

@@ -19,7 +19,7 @@ const bareNewOrderPrefix=new RegExp(String.raw`^\s*${newOrderNoun}(?:\s*(?:$|[,;
 const newOrderMention=new RegExp(newOrderNoun,'iu');
 const possibleCreateOrder=/(?:^|[^\p{L}\p{N}])(?:tạo|lập|mở|làm|tách|đặt)\s+(?:(?:giúp|cho|ra|một|thêm)\s+)*đơn(?=$|[^\p{L}\p{N}])/iu;
 const negatedNewOrder=new RegExp(String.raw`(?:^|[^\p{L}])(?:không|đừng|chưa|chớ|chẳng|khỏi)(?:\s+\p{L}+){0,5}\s+${newOrderNoun}(?=$|[^\p{L}\p{N}])`,'iu');
-const negatedOrderCreation=new RegExp(String.raw`(?:^|[^\p{L}])(?:không|đừng|chưa|chớ|chẳng|khỏi)(?:\s+\p{L}+){0,4}\s+(?:tạo|lập|mở|làm|tách|đặt)\s+(?:(?:giúp|cho|ra|một|thêm|cái)\s+)*đơn(?:\s+(?:in|hàng))?(?:\s+(?:mới|riêng|khác|thứ\s+(?:hai|2)|tiếp\s+theo))?(?=$|[^\p{L}\p{N}])`,'iu');
+const negatedOrderCreation=new RegExp(String.raw`(?:^|[^\p{L}])(?:không|đừng|chưa|chớ|chẳng|khỏi)(?:\s+\p{L}+){0,4}\s+(?:tạo|lập|mở|làm|tách|đặt)\s+(?:(?:giúp|cho|ra|một|thêm|cái)\s+)*đơn(?:\s+(?:in|hàng))?(?:\s+(?:mới|riêng|khác|thứ\s+(?:hai|2)|tiếp\s+theo))?(?:\s+(?:nào|nữa)){0,2}(?=$|[^\p{L}\p{N}])`,'iu');
 const append=/(?:gửi|thêm|bổ\s+sung|đính\s+kèm|kèm|đổi|sửa|chỉnh|thay|tăng|giảm|chuyển|cho)\s+(?:thêm\s+|sang\s+|lại\s+)?(?:file|tài\s+liệu|ảnh|bản|số\s+bản|khổ|giấy|a[345]|mặt|trang)|(?:in\s+thêm|file\s+tiếp|còn\s+file)/iu;
 const keepCurrentOrder=/(?:tiếp\s+tục|nối\s+tiếp|ghép|bổ\s+sung|thêm)\s+(?:(?:vào|cho)\s+)?(?:đơn\s+(?:cũ|trước|hiện\s+tại|này)|đơn\b)/iu;
 const copies=/(?:\d+\s*(?:bản|copies)|(?:số\s+bản|bản\s+in|in\s+thêm\s+\d+))/iu;

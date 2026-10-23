@@ -34,6 +34,9 @@ test('negated, contradictory, questioned and unclear new-order intent is ambiguo
  for(const message of [
    'Không tạo đơn',
    'Không tạo đơn mới',
+   'Không tạo đơn nào',
+   'Không tạo đơn nữa',
+   'Không tạo đơn mới nữa',
    'không tạo đơn mới',
    'Không muốn tạo đơn mới',
    'Không cần lập đơn',
