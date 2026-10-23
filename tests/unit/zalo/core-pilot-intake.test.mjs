@@ -145,7 +145,13 @@ test("standalone NEW boundary between leases separates old CODE from later file 
 
 test("negated or conflicting boundary signal holds the leased batch for human review",async()=>{
   for(const message of [
+    "Không tạo đơn",
     "Không tạo đơn mới",
+    "không tạo đơn mới",
+    "Không muốn tạo đơn mới",
+    "Không cần lập đơn",
+    "Đừng mở đơn mới",
+    "Chưa tạo đơn",
     "Đơn mới nhưng tiếp tục đơn cũ",
     "Đơn mới, gửi thêm file vào đơn cũ",
     "Làm một đơn rồi gửi file"
@@ -157,6 +163,16 @@ test("negated or conflicting boundary signal holds the leased batch for human re
     assert.equal(h.seen.accept.length,0,message);
     assert.equal(h.seen.apply.length,0,message);
   }
+});
+
+test("affirmative create-order request opens a fresh intake",async()=>{
+  const h=harness(),candidate=lease("361",[file("create-file"),settings("create-settings",
+    "Tạo đơn mới, A4, in 2 bản, hai mặt, đen trắng")]);
+  h.setLease(candidate);
+  assert.equal(await h.adapter.consume(candidate,1),"processed");
+  assert.equal(h.seen.accept[0].boundary,"NEW");
+  assert.equal(h.seen.snapshots[0].intake_batch_id,"intake-1");
+  assert.deepEqual(h.seen.apply[0].event_ids,["create-file","create-settings"]);
 });
 
 test("unknown Core readiness is held; only the declared waiting states are processed",async()=>{

@@ -32,7 +32,13 @@ test('explicit new-order wording maps to NEW even when the signal is a standalon
 });
 test('negated, contradictory, questioned and unclear new-order intent is ambiguous',()=>{
  for(const message of [
+   'Không tạo đơn',
    'Không tạo đơn mới',
+   'không tạo đơn mới',
+   'Không muốn tạo đơn mới',
+   'Không cần lập đơn',
+   'Đừng mở đơn mới',
+   'Chưa tạo đơn',
    'Chưa cần đơn riêng',
    'Đừng mở đơn khác',
    'Đơn mới nhưng tiếp tục đơn cũ',
@@ -43,6 +49,14 @@ test('negated, contradictory, questioned and unclear new-order intent is ambiguo
    assert.equal(boundary(batch(evt('ambiguous',message))),'AMBIGUOUS',message);
    assert.equal(classify(batch(evt('ambiguous',message))).intent,'clarify',message);
  }
+});
+test('affirmative new-order controls remain NEW',()=>{
+ for(const message of ['Đơn mới','Tạo đơn mới'])
+   assert.equal(boundary(batch(evt('affirmative',message))),'NEW',message);
+ const created=classify(batch(evt('create-request','Tạo đơn mới, A4, in 2 bản'),
+   evt('create-file',undefined,{kind:'file'})));
+ assert.equal(created.intent,'explicit_separate');
+ assert.ok(created.changes.includes('attachment'));
 });
 test('wrong OA/customer/conversation and conflicted explicit instructions fail closed',()=>{
  assert.equal(classify(batch(evt('1','In A4'),evt('2','In A4',{customer_id:'other'}))).intent,'clarify');
