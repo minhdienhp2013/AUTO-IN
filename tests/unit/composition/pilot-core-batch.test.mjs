@@ -9,7 +9,8 @@ const source={oa_id:trusted.oa_id,provider_event_id:'verified-file-event',
 
 test('pilot Core bridge fails closed before port construction without private custody reader',()=>{
  let constructed=0;
- const service={createIncomingBatchPort(){constructed++;throw new Error('must not construct');}};
+ const service={async acceptIncomingQueueBatch(){throw new Error('must not accept');},
+  createIncomingBatchPort(){constructed++;throw new Error('must not construct');}};
  assert.throws(()=>createPilotCoreBatchPort({service,trusted,processor,custody:null}),
   error=>error.code==='INCOMING_SOURCE_NOT_CONFIGURED');
  assert.equal(constructed,0);
@@ -17,7 +18,8 @@ test('pilot Core bridge fails closed before port construction without private cu
 
 test('pilot Core bridge supplies custody reader and propagates missing bytes as failure',async()=>{
  let supplied,reads=0;
- const service={createIncomingBatchPort(options){supplied=options;
+ const service={async acceptIncomingQueueBatch(){return {status:'OPEN'};},
+  createIncomingBatchPort(options){supplied=options;
   return {async apply_incoming_batch(){
    const bytes=await options.sealed_source_reader.read_sealed(source);
    if(!bytes)throw new Error('INCOMING_SOURCE_NOT_VERIFIED');
@@ -26,6 +28,8 @@ test('pilot Core bridge supplies custody reader and propagates missing bytes as 
  }};
  const custody={async read_sealed(input){reads++;assert.deepEqual(input,source);return null;}};
  const port=createPilotCoreBatchPort({service,trusted,processor,custody});
+ assert.equal(port.trusted_shop_id,trusted.shop_id);
+ assert.equal(port.trusted_oa_id,trusted.oa_id);
  assert.deepEqual(supplied.trusted,trusted);
  assert.equal(supplied.processor,processor);
  await assert.rejects(port.apply_incoming_batch({}),/INCOMING_SOURCE_NOT_VERIFIED/);
