@@ -117,13 +117,13 @@ def verify_pilot_source_ticket(*, job: dict[str, Any], candidate: dict[str, Any]
     """
     candidate_fields = {
         "shop_id", "oa_id", "customer_id", "conversation_id", "order_id",
-        "revision", "request_hash", "source", "settings", "settings_sha256",
+        "intake_batch_id", "revision", "request_hash", "source", "settings", "settings_sha256",
         "printer_id",
     }
     source_fields = {"format", "artifact_ref", "sha256", "size_bytes", "provider_event_id"}
     authorization_fields = {
         "schema", "shop_id", "oa_id", "customer_id", "order_id", "revision",
-        "request_hash", "source_sha256", "settings_sha256", "evidence_sha256",
+        "intake_batch_id", "request_hash", "source_sha256", "settings_sha256", "evidence_sha256",
         "printer_id", "code_window_id", "provider_event_id", "authorized_at", "job_id",
     }
     if not all(isinstance(x, dict) for x in (job, candidate, authorization)):
@@ -140,7 +140,8 @@ def verify_pilot_source_ticket(*, job: dict[str, Any], candidate: dict[str, Any]
     if authorization.get("schema") != "ai0.pilot_print_authorization.v1":
         raise PilotTicketInvalid("PILOT_AUTHORIZATION_SCHEMA_INVALID")
 
-    for field in ("shop_id", "oa_id", "customer_id", "conversation_id", "order_id"):
+    for field in ("shop_id", "oa_id", "customer_id", "conversation_id", "order_id",
+                  "intake_batch_id"):
         if type(candidate.get(field)) is not str or not candidate[field]:
             raise PilotTicketInvalid("PILOT_IDENTITY_INVALID")
     for field in ("job_id", "order_id", "request_hash", "printer_id", "lease_token"):
@@ -162,7 +163,7 @@ def verify_pilot_source_ticket(*, job: dict[str, Any], candidate: dict[str, Any]
         auth_field = "job_id" if field == "job_id" else field
         if authorization.get(auth_field) != job.get(field):
             raise PilotTicketInvalid("PILOT_JOB_AUTHORIZATION_MISMATCH")
-    for field in ("shop_id", "oa_id", "customer_id", "order_id", "revision",
+    for field in ("shop_id", "oa_id", "customer_id", "order_id", "intake_batch_id", "revision",
                   "request_hash", "printer_id"):
         if authorization.get(field) != candidate.get(field):
             raise PilotTicketInvalid("PILOT_CANDIDATE_AUTHORIZATION_MISMATCH")

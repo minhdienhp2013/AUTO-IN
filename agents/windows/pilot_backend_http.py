@@ -11,6 +11,7 @@ import hashlib
 import ipaddress
 import json
 import math
+import re
 import uuid
 from copy import deepcopy
 from typing import Any
@@ -66,12 +67,17 @@ def _plain_evidence(evidence: object) -> dict[str, str | int | float | bool | No
     if not isinstance(evidence, dict):
         raise ValueError("Pilot report evidence must be an object")
     result: dict[str, str | int | float | bool | None] = {}
-    forbidden = {"code", "raw_code", "source", "source_bytes", "credential", "token"}
+    allowed = {"driver_called", "spooler_ack", "reason_code"}
     for key, value in evidence.items():
-        if type(key) is not str or not key or key.casefold() in forbidden:
-            raise ValueError("Sensitive pilot evidence field")
+        if type(key) is not str or key not in allowed:
+            raise ValueError("Unsupported pilot evidence field")
         if (value is not None and type(value) not in (str, int, float, bool)):
             raise ValueError("Pilot report evidence value is not scalar")
+        if key in {"driver_called", "spooler_ack"} and type(value) is not bool:
+            raise ValueError("Pilot report evidence boolean is invalid")
+        if key == "reason_code" and (type(value) is not str or
+                not re.fullmatch(r"[A-Z0-9_]{1,48}", value)):
+            raise ValueError("Pilot report reason code is invalid")
         if type(value) is float and not math.isfinite(value):
             raise ValueError("Non-finite pilot report evidence")
         if type(value) is str and len(value) > 1024:
@@ -90,17 +96,19 @@ class PilotHttpBackendClient:
     _JOB_FIELDS = {"job_id", "order_id", "revision", "request_hash", "printer_id",
                    "lease_token", "lease_seconds", "mode"}
     _CANDIDATE_FIELDS = {"shop_id", "oa_id", "customer_id", "conversation_id", "order_id",
-                         "revision", "request_hash", "source", "settings",
+                         "intake_batch_id", "revision", "request_hash", "source", "settings",
                          "settings_sha256", "printer_id"}
     _SOURCE_FIELDS = {"format", "artifact_ref", "sha256", "size_bytes", "provider_event_id"}
     _AUTH_FIELDS = {"schema", "shop_id", "oa_id", "customer_id", "order_id", "revision",
-                    "request_hash", "source_sha256", "settings_sha256", "evidence_sha256",
+                    "intake_batch_id", "request_hash", "source_sha256", "settings_sha256", "evidence_sha256",
                     "printer_id", "code_window_id", "provider_event_id", "authorized_at", "job_id"}
     _GATE_FIELDS = {"schema", "state", "job_id", "order_id", "revision", "request_hash",
                     "source_sha256", "settings_sha256", "evidence_sha256", "printer_id"}
 
     def __init__(self, base_url: str, token: str, printer_id: str = "RMP7000",
-                 timeout: float = 10):
+                 timeout: float = 10, *, configured_shop_id: str | None = None,
+                 configured_order_id: str | None = None,
+                 required_mode: str | None = None):
         parsed = urlsplit(base_url)
         if (parsed.scheme not in ("https", "http") or not parsed.hostname or
                 parsed.username or parsed.password or parsed.query or parsed.fragment or
@@ -112,12 +120,21 @@ class PilotHttpBackendClient:
             raise ValueError("Scoped pilot Agent token required")
         if printer_id != "RMP7000":
             raise ValueError("Only configured pilot printer identity is supported")
+        if ((configured_shop_id is None) != (configured_order_id is None) or
+                (configured_shop_id is not None and
+                 (type(configured_shop_id) is not str or not configured_shop_id.strip() or
+                  type(configured_order_id) is not str or not configured_order_id.strip())) or
+                required_mode not in (None, "simulation", "controlled_test")):
+            raise ValueError("Pilot local scope or mode invalid")
         if type(timeout) not in (int, float) or not 1 <= timeout <= 30:
             raise ValueError("Pilot HTTP timeout must be in 1..30 seconds")
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.printer_id = printer_id
         self.timeout = float(timeout)
+        self.configured_shop_id = configured_shop_id
+        self.configured_order_id = configured_order_id
+        self.required_mode = required_mode
         self._claimed_snapshot: tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None = None
 
     def _request(self, method: str, suffix: str, *, body: dict[str, Any] | None = None,
@@ -207,6 +224,21 @@ class PilotHttpBackendClient:
         if ticket is None:
             return None
         job, candidate, authorization = ticket
+        if (job["printer_id"] != self.printer_id or
+                candidate["printer_id"] != self.printer_id or
+                authorization["printer_id"] != self.printer_id):
+            raise ValueError("Pilot printer scope mismatch")
+        if (self.required_mode is not None and job["mode"] != self.required_mode):
+            raise ValueError("Pilot mode not allowed by local configuration")
+        if self.configured_shop_id is not None and (
+                candidate["shop_id"] != self.configured_shop_id or
+                authorization["shop_id"] != self.configured_shop_id or
+                job["order_id"] != self.configured_order_id or
+                candidate["order_id"] != self.configured_order_id or
+                authorization["order_id"] != self.configured_order_id):
+            # Reject before requesting document bytes; the claimed lease expires
+            # through Core and no send boundary is created in the local journal.
+            raise ValueError("Pilot local shop/order scope mismatch")
         source_path = self._job_suffix(job, "source")
         request = Request(self.base_url + source_path, method="GET", headers={
             "Authorization": "Bearer " + self.token,

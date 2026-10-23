@@ -46,6 +46,7 @@ def make_work(file_format: str = "PDF", *, duplex: bool = False) -> PilotPrintWo
         "oa_id": "oa-public-test",
         "customer_id": "customer-public-test",
         "conversation_id": "conversation-public-test",
+        "intake_batch_id": "intake-public-test",
         "order_id": "order-public-test",
         "revision": 1,
         "request_hash": "1" * 64,
@@ -65,6 +66,7 @@ def make_work(file_format: str = "PDF", *, duplex: bool = False) -> PilotPrintWo
         "shop_id": candidate["shop_id"],
         "oa_id": candidate["oa_id"],
         "customer_id": candidate["customer_id"],
+        "intake_batch_id": candidate["intake_batch_id"],
         "order_id": candidate["order_id"],
         "revision": 1,
         "request_hash": candidate["request_hash"],
@@ -136,10 +138,11 @@ class FakePrepared:
 
 
 class FakeNativePrinter:
-    def __init__(self, *, fail_send=False):
+    def __init__(self, *, fail_send=False, spooler_ack=True):
         self.prepare_calls = []
         self.send_calls = []
         self.fail_send = fail_send
+        self.spooler_ack = spooler_ack
         self.prepared = FakePrepared()
 
     def prepare(self, work, verified):
@@ -152,6 +155,7 @@ class FakeNativePrinter:
             raise TimeoutError("synthetic native driver ACK lost")
         result = {"accepted": True, "native_app": "WINWORD"
                   if verified.source_format == "DOCX" else "SUMATRA_PDF"}
+        result["spooler_ack"] = self.spooler_ack
         result["word_worker_exit_code" if verified.source_format == "DOCX"
                else "native_app_exit_code"] = 0
         return result
@@ -185,7 +189,33 @@ class PilotNativePrintTests(unittest.TestCase):
         printer = printer or FakeNativePrinter()
         journal = PilotJournal(Path(folder) / "pilot.sqlite")
         return PilotPrintAgent(backend=backend, journal=journal, printer=printer,
-                              dry_run=False), journal, backend, printer
+                              dry_run=False, configured_shop_id="pilot-shop-public-test",
+                              configured_order_id="order-public-test"), journal, backend, printer
+
+    def test_native_scope_and_mode_stop_before_preflight_and_driver(self):
+        for mode, local_shop, order_id, reason in (
+            ("production", "pilot-shop-public-test", "order-public-test",
+             "PILOT_NATIVE_REQUIRES_CONTROLLED_TEST"),
+            ("controlled_test", "other-shop", "order-public-test",
+             "PILOT_NATIVE_LOCAL_SCOPE_MISMATCH"),
+            ("controlled_test", "pilot-shop-public-test", "other-order",
+             "PILOT_NATIVE_LOCAL_SCOPE_MISMATCH"),
+        ):
+            with self.subTest(mode=mode, shop=local_shop, order_id=order_id), tempfile.TemporaryDirectory() as folder:
+                work = make_work()
+                work.job["mode"] = mode
+                backend = FakeBackend(work)
+                printer = FakeNativePrinter()
+                journal = PilotJournal(Path(folder) / "pilot.sqlite")
+                agent = PilotPrintAgent(backend=backend, journal=journal, printer=printer,
+                                        dry_run=False, configured_shop_id=local_shop,
+                                        configured_order_id=order_id)
+                result = agent.run_once()
+                self.assertEqual((result["status"], result["reason"]), ("BLOCKED", reason))
+                self.assertEqual(printer.prepare_calls, [])
+                self.assertEqual(printer.send_calls, [])
+                self.assertIsNone(journal.get(work.job["job_id"]))
+                journal.close()
 
     def test_pr165_public_fixtures_match_manifest_hashes(self):
         for file_format, path in PUBLIC_FILES.items():
@@ -328,18 +358,45 @@ class PilotNativePrintTests(unittest.TestCase):
             agent, journal, backend, printer = self.make_agent(folder, work)
             first = agent.run_once()
             self.assertEqual(first["status"], "SENT_UNVERIFIED")
-            self.assertFalse(first["evidence"]["paper_verified"])
+            self.assertEqual(first["evidence"], {"driver_called": True, "spooler_ack": True,
+                                                  "reason_code": "SPOOLER_ACCEPTED_UNVERIFIED"})
             self.assertEqual(printer.send_calls, [("PDF", EXPECTED_SHA256["PDF"])])
             self.assertEqual(journal.get("job-public-test")["state"], "SENT_UNVERIFIED")
             journal.close()
 
             reopened = PilotJournal(Path(folder) / "pilot.sqlite")
             repeated = PilotPrintAgent(backend=backend, journal=reopened, printer=printer,
-                                       dry_run=False)
+                                       dry_run=False, configured_shop_id="pilot-shop-public-test",
+                                       configured_order_id="order-public-test")
             again = repeated.run_once()
             self.assertEqual(again["status"], "SENT_UNVERIFIED")
             self.assertTrue(again["reconciled"])
             self.assertEqual(len(printer.send_calls), 1)
+            reopened.close()
+
+    def test_native_app_return_without_spooler_ack_is_unknown_and_not_retried(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = make_work("PDF")
+            backend = FakeBackend(work)
+            printer = FakeNativePrinter(spooler_ack=False)
+            agent, journal, _backend, _printer = self.make_agent(folder, work,
+                                                                  backend=backend,
+                                                                  printer=printer)
+            first = agent.run_once()
+            self.assertEqual(first["status"], "UNKNOWN")
+            self.assertEqual(first["evidence"], {"driver_called": True,
+                                                  "spooler_ack": False,
+                                                  "reason_code": "SPOOLER_ACK_UNAVAILABLE"})
+            journal.close()
+
+            reopened = PilotJournal(Path(folder) / "pilot.sqlite")
+            restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer,
+                                        dry_run=False,
+                                        configured_shop_id="pilot-shop-public-test",
+                                        configured_order_id="order-public-test")
+            self.assertEqual(restarted.run_once()["status"], "UNKNOWN")
+            self.assertEqual(len(printer.send_calls), 1)
+            self.assertEqual(backend.reports[-1][1], first["evidence"])
             reopened.close()
 
     def test_pilot_dry_run_reports_simulated_done_without_native_calls(self):
@@ -425,7 +482,8 @@ class PilotNativePrintTests(unittest.TestCase):
             journal_path = Path(folder) / "pilot.sqlite"
             journal = CrashAfterDriverBoundaryJournal(journal_path)
             agent = PilotPrintAgent(backend=backend, journal=journal, printer=printer,
-                                    dry_run=False)
+                                    dry_run=False, configured_shop_id="pilot-shop-public-test",
+                                       configured_order_id="order-public-test")
             with self.assertRaises(SimulatedProcessCrash):
                 agent.run_once()
             self.assertEqual(printer.send_calls, [])
@@ -434,7 +492,8 @@ class PilotNativePrintTests(unittest.TestCase):
 
             reopened = PilotJournal(journal_path)
             restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer,
-                                        dry_run=False)
+                                        dry_run=False, configured_shop_id="pilot-shop-public-test",
+                                       configured_order_id="order-public-test")
             self.assertEqual(restarted.run_once()["status"], "UNKNOWN")
             self.assertEqual(printer.send_calls, [])
             self.assertEqual(reopened.get("job-public-test")["state"], "UNKNOWN")
@@ -449,7 +508,8 @@ class PilotNativePrintTests(unittest.TestCase):
             journal_path = Path(folder) / "pilot.sqlite"
             journal = PilotJournal(journal_path)
             agent = PilotPrintAgent(backend=backend, journal=journal, printer=printer,
-                                    dry_run=False)
+                                    dry_run=False, configured_shop_id="pilot-shop-public-test",
+                                       configured_order_id="order-public-test")
             with self.assertRaises(SimulatedProcessCrash):
                 agent.run_once()
             self.assertEqual(len(printer.send_calls), 1)
@@ -458,7 +518,8 @@ class PilotNativePrintTests(unittest.TestCase):
 
             reopened = PilotJournal(journal_path)
             restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer,
-                                        dry_run=False)
+                                        dry_run=False, configured_shop_id="pilot-shop-public-test",
+                                       configured_order_id="order-public-test")
             self.assertEqual(restarted.run_once()["status"], "UNKNOWN")
             self.assertEqual(len(printer.send_calls), 1)
             self.assertEqual(reopened.get("job-public-test")["state"], "UNKNOWN")
@@ -775,7 +836,8 @@ class PilotNativePrintTests(unittest.TestCase):
 
             reopened = PilotJournal(Path(folder) / "pilot.sqlite")
             restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer,
-                                        dry_run=False)
+                                        dry_run=False, configured_shop_id="pilot-shop-public-test",
+                                       configured_order_id="order-public-test")
             self.assertEqual(restarted.run_once()["status"], "UNKNOWN")
             self.assertEqual(len(printer.send_calls), 1)
             reopened.close()

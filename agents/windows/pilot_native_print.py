@@ -2,8 +2,8 @@
 
 The standalone AI3 module targets the distinct pilot Core endpoints introduced
 after F7; the base commit itself has no such routes. The native path always uses
-the original DOCX or PDF bytes. A spooler acceptance is SENT_UNVERIFIED, never
-proof that paper came out.
+the original DOCX or PDF bytes. Native app return codes are not spooler ACKs;
+without an explicit spooler ACK the job remains UNKNOWN and cannot be resent.
 """
 from __future__ import annotations
 
@@ -335,12 +335,28 @@ def _server_binding_matches(value: object, verified: VerifiedPilotSource,
     return all(value.get(field) == expected_value for field, expected_value in expected.items())
 
 
+def _safe_report_evidence(value: object, fallback: str) -> dict[str, Any]:
+    """Keep journal recovery reports within Core's closed evidence schema."""
+    allowed = {"driver_called", "spooler_ack", "reason_code"}
+    if not isinstance(value, dict) or set(value) - allowed:
+        return {"reason_code": fallback}
+    if any(key in value and type(value[key]) is not bool
+           for key in ("driver_called", "spooler_ack")):
+        return {"reason_code": fallback}
+    reason = value.get("reason_code")
+    if reason is not None and (type(reason) is not str or
+                               re.fullmatch(r"[A-Z0-9_]{1,48}", reason) is None):
+        return {"reason_code": fallback}
+    return dict(value)
+
+
 class PilotPrintAgent:
     """Core-authorized pilot flow. DryRun is the safe default and never touches a printer."""
 
     def __init__(self, *, backend: PilotBackendPort, journal: PilotJournal,
                  printer: NativePrinterPort, configured_printer_id: str = "RMP7000",
-                 dry_run: bool = True):
+                 dry_run: bool = True, configured_shop_id: str | None = None,
+                 configured_order_id: str | None = None):
         self.backend = backend
         self.journal = journal
         self.printer = printer
@@ -348,11 +364,20 @@ class PilotPrintAgent:
         if type(dry_run) is not bool:
             raise ValueError("PILOT_DRY_RUN_FLAG_INVALID")
         self.dry_run = dry_run
+        if configured_shop_id is not None and (type(configured_shop_id) is not str or
+                                                not configured_shop_id.strip()):
+            raise ValueError("PILOT_SHOP_SCOPE_INVALID")
+        self.configured_shop_id = configured_shop_id
+        if configured_order_id is not None and (type(configured_order_id) is not str or
+                                                 not configured_order_id.strip()):
+            raise ValueError("PILOT_ORDER_SCOPE_INVALID")
+        self.configured_order_id = configured_order_id
 
     def recover(self) -> list[str]:
         pending = self.journal.unresolved()
         for job_id in pending:
-            self.journal.state(job_id, "UNKNOWN", {"reason": "restart_at_send_boundary"})
+            self.journal.state(job_id, "UNKNOWN",
+                               {"reason_code": "RESTART_AT_SEND_BOUNDARY"})
         return pending
 
     def run_once(self) -> dict[str, Any]:
@@ -378,6 +403,18 @@ class PilotPrintAgent:
         if not self.dry_run and mode == "simulation":
             return {"status": "BLOCKED", "job_id": work.job.get("job_id"),
                     "reason": "PILOT_SIMULATION_JOB_CANNOT_PRINT"}
+        if not self.dry_run and mode != "controlled_test":
+            return {"status": "BLOCKED", "job_id": work.job.get("job_id"),
+                    "reason": "PILOT_NATIVE_REQUIRES_CONTROLLED_TEST"}
+        if not self.dry_run and (self.configured_shop_id is None or
+                self.configured_order_id is None or
+                work.candidate.get("shop_id") != self.configured_shop_id or
+                work.authorization.get("shop_id") != self.configured_shop_id or
+                work.job.get("order_id") != self.configured_order_id or
+                work.candidate.get("order_id") != self.configured_order_id or
+                work.authorization.get("order_id") != self.configured_order_id):
+            return {"status": "BLOCKED", "job_id": work.job.get("job_id"),
+                    "reason": "PILOT_NATIVE_LOCAL_SCOPE_MISMATCH"}
         try:
             verified = verify_pilot_source_ticket(
                 job=work.job, candidate=work.candidate,
@@ -396,8 +433,15 @@ class PilotPrintAgent:
                 return {"status": "UNKNOWN", "job_id": verified.job_id,
                         "reason": "JOURNAL_TICKET_CHANGED_NO_RESEND"}
             state = previous["state"]
+            if state not in ("SIMULATED_DONE", "SENT_UNVERIFIED", "UNKNOWN"):
+                state = "UNKNOWN"
+                self.journal.state(verified.job_id, state,
+                                   {"reason_code": "RESTART_AT_SEND_BOUNDARY"})
+            saved_evidence = _safe_report_evidence(
+                json.loads(self.journal.get(verified.job_id)["evidence"]),
+                "PREVIOUS_SEND_UNCERTAIN")
             try:
-                self.backend.report(work, state, json.loads(previous["evidence"]))
+                self.backend.report(work, state, saved_evidence)
             except Exception:
                 return {"status": state, "job_id": verified.job_id, "report_pending": True}
             return {"status": state, "job_id": verified.job_id, "reconciled": True}
@@ -450,7 +494,8 @@ class PilotPrintAgent:
         except Exception:
             try:
                 self.journal.state(verified.job_id, "UNKNOWN",
-                                   {"reason": "CORE_SEND_ACK_AMBIGUOUS"})
+                                   {"driver_called": False, "spooler_ack": False,
+                                    "reason_code": "CORE_SEND_ACK_AMBIGUOUS"})
             except Exception:
                 pass
             _close_prepared(prepared)
@@ -465,7 +510,7 @@ class PilotPrintAgent:
             _close_prepared(prepared)
             try:
                 self.journal.state(verified.job_id, "UNKNOWN",
-                                   {"reason": "JOURNAL_DRIVER_BOUNDARY_AMBIGUOUS"})
+                                   {"reason_code": "JOURNAL_DRIVER_BOUNDARY_AMBIGUOUS"})
             except Exception:
                 pass
             return {"status": "UNKNOWN", "job_id": verified.job_id,
@@ -476,25 +521,26 @@ class PilotPrintAgent:
             if (not isinstance(result, dict) or result.get("accepted") is not True or
                     result.get("native_app") != expected_app):
                 raise PilotPrintBlocked("NATIVE_DRIVER_RESULT_UNCERTAIN")
-            evidence = {
-                "kind": "native_application_submission_unverified",
-                "paper_verified": False,
-                "native_app": result["native_app"],
-            }
+            spooler_ack = result.get("spooler_ack") is True
             if verified.source_format == "DOCX":
                 if (type(result.get("word_worker_exit_code")) is not int or
                         result["word_worker_exit_code"] != 0):
                     raise PilotPrintBlocked("NATIVE_DRIVER_RESULT_UNCERTAIN")
-                evidence["word_worker_exit_code"] = result["word_worker_exit_code"]
             else:
                 if (type(result.get("native_app_exit_code")) is not int or
                         result["native_app_exit_code"] != 0):
                     raise PilotPrintBlocked("NATIVE_DRIVER_RESULT_UNCERTAIN")
-                evidence["native_app_exit_code"] = result["native_app_exit_code"]
-            state = "SENT_UNVERIFIED"
+            if spooler_ack:
+                evidence = {"driver_called": True, "spooler_ack": True,
+                            "reason_code": "SPOOLER_ACCEPTED_UNVERIFIED"}
+                state = "SENT_UNVERIFIED"
+            else:
+                evidence = {"driver_called": True, "spooler_ack": False,
+                            "reason_code": "SPOOLER_ACK_UNAVAILABLE"}
+                state = "UNKNOWN"
         except Exception:
-            evidence = {"kind": "agent_uncertain", "reason": "NATIVE_SEND_AMBIGUOUS",
-                        "paper_verified": False}
+            evidence = {"driver_called": True, "spooler_ack": False,
+                        "reason_code": "NATIVE_SEND_AMBIGUOUS"}
             state = "UNKNOWN"
         finally:
             try:
@@ -540,7 +586,8 @@ class PilotPrintAgent:
         except Exception:
             try:
                 self.journal.state(verified.job_id, "UNKNOWN",
-                                   {"reason": "CORE_SEND_ACK_AMBIGUOUS"})
+                                   {"driver_called": False, "spooler_ack": False,
+                                    "reason_code": "CORE_SEND_ACK_AMBIGUOUS"})
             except Exception:
                 pass
             return {"status": "UNKNOWN", "job_id": verified.job_id,
@@ -553,7 +600,8 @@ class PilotPrintAgent:
         except Exception:
             try:
                 self.journal.state(verified.job_id, "UNKNOWN",
-                                   {"reason": "JOURNAL_SIMULATION_RESULT_AMBIGUOUS"})
+                                   {"driver_called": False, "spooler_ack": False,
+                                    "reason_code": "JOURNAL_SIMULATION_RESULT_AMBIGUOUS"})
             except Exception:
                 pass
             return {"status": "UNKNOWN", "job_id": verified.job_id,

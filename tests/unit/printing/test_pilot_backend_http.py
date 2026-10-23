@@ -8,8 +8,10 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from agents.windows.pilot_cli import run_pilot_dryrun_once
+from agents.windows.pilot_backend_http import PilotHttpBackendClient
 from workers.documents.bridge import _canonical
 
 
@@ -26,6 +28,7 @@ def _fixture():
     candidate = {
         "shop_id": "synthetic-shop", "oa_id": "synthetic-oa",
         "customer_id": "synthetic-customer", "conversation_id": "synthetic-conversation",
+        "intake_batch_id": "synthetic-intake",
         "order_id": "synthetic-order", "revision": 3,
         "request_hash": "a" * 64,
         "source": {"format": "PDF", "artifact_ref": "public/synthetic.pdf",
@@ -41,6 +44,7 @@ def _fixture():
     authorization = {
         "schema": "ai0.pilot_print_authorization.v1", "shop_id": candidate["shop_id"],
         "oa_id": candidate["oa_id"], "customer_id": candidate["customer_id"],
+        "intake_batch_id": candidate["intake_batch_id"],
         "order_id": candidate["order_id"], "revision": candidate["revision"],
         "request_hash": candidate["request_hash"], "source_sha256": source_sha,
         "settings_sha256": settings_sha, "evidence_sha256": "e" * 64,
@@ -52,6 +56,58 @@ def _fixture():
 
 
 class PilotBackendHttpTests(unittest.TestCase):
+    def test_native_local_scope_and_mode_reject_before_source_download(self):
+        class ClaimResponse:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return self.payload.encode("utf-8")
+
+        for mismatch, expected_error in (
+            ("shop", "local shop/order scope"),
+            ("order", "local shop/order scope"),
+            ("printer", "printer scope"),
+            ("mode", "mode not allowed"),
+        ):
+            with self.subTest(mismatch=mismatch):
+                _source, job, candidate, authorization = _fixture()
+                job["mode"] = "controlled_test"
+                if mismatch == "shop":
+                    candidate["shop_id"] = "other-shop"
+                    authorization["shop_id"] = "other-shop"
+                elif mismatch == "order":
+                    job["order_id"] = "different-order"
+                    candidate["order_id"] = "different-order"
+                    authorization["order_id"] = "different-order"
+                elif mismatch == "printer":
+                    job["printer_id"] = "OTHER-PRINTER"
+                    candidate["printer_id"] = "OTHER-PRINTER"
+                    authorization["printer_id"] = "OTHER-PRINTER"
+                else:
+                    job["mode"] = "production"
+                payload = json.dumps({"schema": "ai0.pilot_agent_claim.v1", "work": {
+                    "job": job, "candidate": candidate,
+                    "authorization": authorization}})
+                client = PilotHttpBackendClient(
+                    "https://core.example.test", "S" * 24,
+                    configured_shop_id="synthetic-shop", configured_order_id="expected-order",
+                    required_mode="controlled_test")
+                with patch.object(client, "_request",
+                                  return_value=ClaimResponse(payload)), \
+                     patch("agents.windows.pilot_backend_http.urlopen") as source_fetch:
+                    with self.assertRaisesRegex(ValueError, expected_error):
+                        client.claim()
+                source_fetch.assert_not_called()
+
     def test_loopback_core_http_to_pilot_agent_dryrun(self):
         source, job, candidate, authorization = _fixture()
         calls = []
