@@ -35,7 +35,8 @@ test('AI1 OA intake batch REAL PostgreSQL: code-before-file, durable membership,
   '../../../backend/storage/migrations/013_inbound_review_items.sql',
   '../../../backend/storage/migrations/014_pilot_shop_code.sql',
   '../../../backend/composition/migrations/005_official_zalo_shop_registry.sql',
-  '../../../backend/storage/migrations/015_oa_intake_batches.sql'
+  '../../../backend/storage/migrations/015_oa_intake_batches.sql',
+  '../../../backend/storage/migrations/016_persist_intake_new_order_intent.sql'
  ];
  try{
   const database=(await pool.query('SELECT current_database() AS name')).rows[0].name;

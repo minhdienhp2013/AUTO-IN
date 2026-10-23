@@ -54,7 +54,7 @@ function validPilotBytes(format:string,bytes:Uint8Array):boolean{
  return format==='DOCX'&&bytes.byteLength>=4&&bytes[0]===0x50&&bytes[1]===0x4b&&bytes[2]===0x03&&bytes[3]===0x04;
 }
 function pilotRequestData(source:PilotSourceRow,settings:IncomingPilotSettings,settingsEventIds:string[],
- batchEventIds:string[],baseData:Record<string,unknown>,changes:IncomingChange[]){
+ batchEventIds:string[],baseData:Record<string,unknown>,changes:IncomingChange[],newOrderRequested=false){
  const match=sourceRef.exec(source.artifact_ref);
  if(!match||match[1]!==source.sha256||match[2]!==(source.format==='PDF'?'pdf':'docx'))throw privateSourceFailure();
  const previousIds=baseData.event_ids===undefined?[]:baseData.event_ids;
@@ -71,7 +71,8 @@ function pilotRequestData(source:PilotSourceRow,settings:IncomingPilotSettings,s
     !batchEventIds.includes(source.event_id))throw privateSourceFailure();
  const safeSettings={copies:settings.copies,duplex:settings.duplex,paper:settings.paper,color:settings.color};
  return {...baseData,event_ids:allEventIds,
-  incoming_batches:[...previousBatches,{event_ids:batchEventIds,changes,source:'verified_inbound'}],
+  incoming_batches:[...previousBatches,{event_ids:batchEventIds,changes,source:'verified_inbound',
+   ...(newOrderRequested?{order_intent:'NEW'}:{})}],
   documents:[{artifact_name:source.artifact_ref,copies:settings.copies,duplex:settings.duplex,paper:'A4'}],
   sealed_source:{format:source.format,sha256:source.sha256,size_bytes:dbSafeInteger(source.size_bytes,'pilot.source_size_bytes'),
    provider_event_id:source.event_id},pilot_settings:safeSettings,
@@ -142,10 +143,12 @@ export function createIncomingBatchPort(options:{
   return selected.map(event=>({event_id:event.event_id,customer_id:event.customer_id,conversation_id:event.conversation_id,
    occurred_at:event.received_at,received_at:event.received_at,kind:event.kind,source_text:event.source_text}));
  }
- async function pilotIntakeBindings(db:SqlConnection,input:ApplyIncomingBatchInput,customer:string,conversation:string):Promise<IntakeBinding[]>{
+ async function pilotIntakeBindings(db:SqlConnection,input:ApplyIncomingBatchInput,customer:string,conversation:string):Promise<{
+  bindings:IntakeBinding[];new_order_requested:boolean;opened_at:Date
+ }>{
   const batch=(await db.query<{id:string;shop_id:string;oa_id:string;customer_id:string;conversation_id:string;
-   purpose:string;status:string;expires_at:Date;order_id:string|null;revision:number|null}>(
-   'SELECT id,shop_id,oa_id,customer_id,conversation_id,purpose,status,expires_at,order_id,revision '+
+   purpose:string;status:string;opened_at:Date;expires_at:Date;order_id:string|null;revision:number|null;new_order_requested:boolean}>(
+   'SELECT id,shop_id,oa_id,customer_id,conversation_id,purpose,status,opened_at,expires_at,order_id,revision,new_order_requested '+
    'FROM core_oa_intake_batches WHERE id=$1 FOR UPDATE',[input.intake_batch_id])).rows[0];
   if(!batch||batch.shop_id!==shop||batch.oa_id!==oa||batch.customer_id!==customer||
      batch.conversation_id!==conversation||batch.purpose!=='PILOT')
@@ -177,7 +180,7 @@ export function createIncomingBatchPort(options:{
      new Date(row.received_at).getTime()!==new Date(row.event_received_at).getTime()||
      !['text','image','file'].includes(row.kind)||!['CONTEXT','CODE','SOURCE','SETTINGS'].includes(row.role)))
    throw new DomainError('INCOMING_EVENT_MEMBERSHIP_DENIED','Pilot intake membership is incomplete or changed',403);
-  return bindings;
+  return {bindings,new_order_requested:batch.new_order_requested,opened_at:batch.opened_at};
  }
  async function readPilotSource(db:SqlConnection,bindings:IntakeBinding[],customer:string,conversation:string):Promise<PilotSourceRow>{
   if(!sealedSourceReader||typeof sealedSourceReader.read_sealed!=='function')
@@ -208,18 +211,20 @@ export function createIncomingBatchPort(options:{
   return {...row,size_bytes:size};
  }
  async function recheckPilotFence(db:SqlConnection,input:ApplyIncomingBatchInput,customer:string,conversation:string,
-  generation:number,orders:OrderMatch[],source?:PilotSourceRow):Promise<void>{
+  generation:number,orders:OrderMatch[],newOrderRequested:boolean,source?:PilotSourceRow):Promise<void>{
   const queue=(await db.query<{status:string;lease_token:string|null;lease_until:Date|null;now:Date}>(
    'SELECT status,lease_token::text,lease_until,clock_timestamp() AS now FROM zalo_batches WHERE id=$1',[input.queue_batch_id])).rows[0];
   if(!queue||queue.status!=='LEASED'||queue.lease_token!==input.lease_token||!queue.lease_until||
      new Date(queue.lease_until).getTime()<=new Date(queue.now).getTime())
    throw new DomainError('INCOMING_BATCH_LEASE_LOST','Queue lease expired or changed during source read',409);
-  const intake=(await db.query<{status:string;expires_at:Date;order_id:string|null;revision:number|null}>(
-   'SELECT status,expires_at,order_id::text,revision FROM core_oa_intake_batches WHERE id=$1 AND shop_id=$2 AND oa_id=$3 '+
+  const intake=(await db.query<{status:string;expires_at:Date;order_id:string|null;revision:number|null;new_order_requested:boolean}>(
+   'SELECT status,expires_at,order_id::text,revision,new_order_requested FROM core_oa_intake_batches WHERE id=$1 AND shop_id=$2 AND oa_id=$3 '+
    'AND customer_id=$4 AND conversation_id=$5 FOR UPDATE',
    [input.intake_batch_id,shop,oa,customer,conversation])).rows[0];
   if(!intake||!['OPEN','BOUND'].includes(intake.status)||new Date(intake.expires_at).getTime()<=new Date(queue.now).getTime())
    throw new DomainError('INCOMING_BATCH_EXPIRED','Pilot intake expired during source read',409);
+  if(intake.new_order_requested!==newOrderRequested)
+   throw new DomainError('INCOMING_REVISION_CHANGED','Persisted intake order intent changed during private source read',409);
   if(intake.order_id){
    if(intake.revision===null)throw new DomainError('INCOMING_BATCH_ORDER_CONFLICT','Pilot intake revision binding is incomplete',409);
    const order=(await db.query<{active_revision:number}>('SELECT active_revision FROM core_orders WHERE id=$1 AND shop_id=$2 FOR SHARE',
@@ -307,8 +312,13 @@ export function createIncomingBatchPort(options:{
    let pilotSource:PilotSourceRow|undefined;
    let pilotSettingsEventIds:string[]=[];
    let pilotEventIds:string[]=[];
+   let newOrderRequested=false;
+   let newOrderRequestedAt:Date|undefined;
    if(purpose==='PILOT'){
-    const intakeBindings=await pilotIntakeBindings(db,input,customer,conv);
+    const intake=await pilotIntakeBindings(db,input,customer,conv);
+    const intakeBindings=intake.bindings;
+    newOrderRequested=intake.new_order_requested;
+    newOrderRequestedAt=intake.opened_at;
     const settingsBindings=intakeBindings.filter(row=>row.role==='SETTINGS');
     if(settingsBindings.length===0||settingsBindings.some(row=>row.kind!=='text'))
      throw new DomainError('INCOMING_PILOT_SETTINGS_NOT_READY','Pilot intake requires bound text settings events',409);
@@ -317,13 +327,27 @@ export function createIncomingBatchPort(options:{
     pilotSource=await readPilotSource(db,intakeBindings,customer,conv);
     // Recheck the queue lease and the locked order/revision/generation after
     // private file I/O. No source bytes escape this transaction boundary.
-    await recheckPilotFence(db,input,customer,conv,input.expected_generation,matches,pilotSource);
+    await recheckPilotFence(db,input,customer,conv,input.expected_generation,matches,newOrderRequested,pilotSource);
     fingerprint=sha(canonical({conversation_id:conv,intake_batch_id:batch.intake_batch_id,event_ids:pilotEventIds}));
     contentHash=sha(canonical({schema:'ai1.pilot_incoming_revision.v1',conversation_id:conv,
-     customer_id:customer,expected_generation:input.expected_generation,intent:input.intent,
+     customer_id:customer,expected_generation:input.expected_generation,
+     intent:newOrderRequested?'NEW':input.intent,
      changes:input.changes,
      source:{provider_event_id:pilotSource.event_id,format:pilotSource.format,sha256:pilotSource.sha256,
       size_bytes:pilotSource.size_bytes},settings:pilotSettings,settings_event_ids:pilotSettingsEventIds}));
+   }else{
+    const intake=(await db.query<{new_order_requested:boolean;status:string;opened_at:Date;expires_at:Date}>(
+     'SELECT new_order_requested,status,opened_at,expires_at FROM core_oa_intake_batches WHERE id=$1 AND shop_id=$2 AND oa_id=$3 '+
+     'AND customer_id=$4 AND conversation_id=$5 AND purpose=$6 FOR UPDATE',
+     [batch.intake_batch_id,shop,oa,customer,conv,purpose])).rows[0];
+    if(!intake)throw new DomainError('INCOMING_BATCH_SCOPE_DENIED','Incoming intake scope mismatch',403);
+    const now=(await db.query<{now:Date}>('SELECT clock_timestamp() AS now')).rows[0]?.now;
+    if(!now||!['OPEN','BOUND'].includes(intake.status)||new Date(intake.expires_at).getTime()<=new Date(now).getTime())
+     throw new DomainError('INCOMING_BATCH_EXPIRED','Incoming intake is closed or expired',409);
+    newOrderRequested=intake.new_order_requested;
+    newOrderRequestedAt=intake.opened_at;
+    contentHash=sha(canonical({conversation_id:conv,customer_id:customer,text,expected_generation:input.expected_generation,
+     intent:newOrderRequested?'NEW':input.intent}));
    }
    const oldProposal=await db.query<{order_id:string;content_hash:string;event_fingerprint:string}>(
     'SELECT order_id,content_hash,event_fingerprint FROM core_ai_draft_proposals WHERE shop_id=$1 AND oa_id=$2 AND (event_fingerprint=$3 OR idempotency_key=$4) FOR UPDATE',
@@ -346,24 +370,26 @@ export function createIncomingBatchPort(options:{
     return {status:'existing',order_id:old.order_id,active_revision:old.revision};
    }
    const open=matches.filter(x=>!x.approved&&!x.print_closed&&!x.manual_lock);
-   if(input.intent==='append_or_create'&&open.length>1)return {status:'ambiguous'};
+   if(!newOrderRequested&&input.intent==='append_or_create'&&open.length>1)return {status:'ambiguous'};
    const closed=matches.filter(x=>x.approved||x.print_closed||x.manual_lock);
    // A delayed provider message received BEFORE staff approval belongs to the
    // old order, never to a newly fabricated post-approval order.
-   if(input.intent==='append_or_create'&&open.length===0&&closed.length){
+   if(open.length===0&&closed.length&&(input.intent==='append_or_create'||newOrderRequested)){
     const latest=closed.map(x=>x.approved_at).filter((v):v is Date=>v!==null);
     if(latest.length===0)return {status:'closed'};
     const threshold=Math.max(...latest.map(x=>new Date(x).getTime()));
-    if(events.some(e=>new Date(e.received_at).getTime()<=threshold||
-       new Date(e.occurred_at).getTime()<=threshold))return {status:'closed'};
+    const delayed=newOrderRequested&&newOrderRequestedAt
+     ?new Date(newOrderRequestedAt).getTime()<=threshold
+     :events.some(e=>new Date(e.received_at).getTime()<=threshold||new Date(e.occurred_at).getTime()<=threshold);
+    if(delayed)return {status:'closed'};
    }
-   if(input.intent==='explicit_separate'){
+   if(!newOrderRequested&&input.intent==='explicit_separate'){
     const source=events.filter(e=>e.kind==='text'&&typeof e.source_text==='string')
       .map(e=>e.source_text??'').join(' ');
     if(!separateEvidence.test(source)||negatedSeparate.test(source))
      return {status:'needs_human'}; // classification alone isn't customer proof
    }
-   if(input.intent==='append_or_create'&&open.length===1){
+   if(!newOrderRequested&&input.intent==='append_or_create'&&open.length===1){
     const target=open[0];
     if(!target)return {status:'ambiguous'};
     const eventIdsForRevision=purpose==='PILOT'?pilotEventIds:ids;
@@ -404,13 +430,14 @@ export function createIncomingBatchPort(options:{
    }
    // When there is no open order, or customer *explicitly* requested a
    // separate one, create exactly ONE draft under the conversation lock.
-   if(input.intent==='append_or_create'&&open.length!==0)return {status:'ambiguous'};
+   if(!newOrderRequested&&input.intent==='append_or_create'&&open.length!==0)return {status:'ambiguous'};
    const orderId=newId();
    const data=purpose==='PILOT'
     ?pilotRequestData(pilotSource!,pilotSettings!,pilotSettingsEventIds,pilotEventIds,
-      {source:'zalo_ai_suggestion',conversation_id:conv,text:'[PILOT_SOURCE_AND_SETTINGS_BOUND]'},input.changes)
+      {source:'zalo_ai_suggestion',conversation_id:conv,text:'[PILOT_SOURCE_AND_SETTINGS_BOUND]'},input.changes,newOrderRequested)
     :{source:'zalo_ai_suggestion',conversation_id:conv,event_ids:ids,
-      text,incoming_batches:[{event_ids:ids,changes:input.changes,source:'verified_inbound'}]};
+      text,incoming_batches:[{event_ids:ids,changes:input.changes,source:'verified_inbound',
+       ...(newOrderRequested?{order_intent:'NEW'}:{})}]};
    const hash=sha(canonical(data));
    await db.query('INSERT INTO core_orders(id,shop_id,customer_id,conversation_id) VALUES($1,$2,$3,$4)',
     [orderId,shop,customer,conv]);
