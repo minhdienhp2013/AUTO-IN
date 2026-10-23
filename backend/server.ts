@@ -6,6 +6,7 @@ import { createCoreModule } from './core/factory.js';
 import { createSyntheticZaloRuntime } from './composition/zalo-simulation.js';
 import { createPilotPrivateSourcePorts } from './composition/pilot-private-source.js';
 import { createPilotIngressResolvers } from './composition/pilot-ingress.js';
+import { createPilotCoreBatchPort } from './composition/pilot-core-batch.js';
 if ((process.env.AUTO_IN_MODE ?? 'simulation') !== 'simulation') throw new Error('Only simulation is available');
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL required; run db:migrate and db:bootstrap first');
@@ -25,11 +26,6 @@ const registry = process.env.AUTOIN_ZALO_SYNTHETIC_REGISTRY
   ? JSON.parse(await readFile(process.env.AUTOIN_ZALO_SYNTHETIC_REGISTRY, 'utf8')) as unknown : undefined;
 const pool = new pg.Pool({ connectionString: url, connectionTimeoutMillis: 5000 });
 const core = createCoreModule({ pool: asSqlPool(pool) });
-const zaloRuntime = registry === undefined ? undefined : createSyntheticZaloRuntime(pool, registry, {
-  store: core.store,
-  ...(process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT
-    ? { artifactRoot: process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT } : {})
-});
 const documentArtifactRoot = process.env.AUTOIN_DOCUMENT_ARTIFACT_ROOT;
 const reviewMode = process.env.AUTOIN_SIMULATION_REVIEW_ENABLED ?? '0';
 if (reviewMode !== '0' && reviewMode !== '1') throw new Error('AUTOIN_SIMULATION_REVIEW_ENABLED must be 0 or 1');
@@ -52,6 +48,16 @@ if(pilotEnabled){
 }
 const pilotPorts=pilotEnabled?createPilotPrivateSourcePorts(asSqlPool(pool),
   process.env.AUTOIN_PILOT_PRIVATE_SOURCE_ROOT!):undefined;
+const zaloRuntime = registry === undefined ? undefined : createSyntheticZaloRuntime(pool, registry, {
+  store: core.store,
+  ...(documentArtifactRoot ? { artifactRoot: documentArtifactRoot } : {}),
+  ...(pilotPorts ? {pilotIntake:trusted=>createPilotCoreBatchPort({
+    service:core.service,trusted,
+    processor:{id:'synthetic:zalo:'+trusted.oa_id,role:'processor',
+      shop_id:trusted.shop_id,verified:true},
+    custody:pilotPorts.custody
+  })} : {})
+});
 const pilotIngress=pilotPorts&&pilotToken?createPilotIngressResolvers(asSqlPool(pool),pilotToken,
   pilotPorts.binding,input=>pilotPorts.custody.read_sealed(input)):undefined;
 const reviewArtifactRoot = process.env.AUTOIN_SIMULATION_REVIEW_ROOT;

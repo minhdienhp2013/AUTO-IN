@@ -14,6 +14,7 @@ import {createVerifiedSyntheticTn005Outbox} from './tn005-sealed-outbox-port.js'
 import {createFirstPageCoreCasAdapter} from './first-page-core-cas-adapter.js';
 import type {FirstPageQuestionReadPort} from '../conversation/first-page-question.js';
 import type {FirstPageCoreCasPort} from '../conversation/first-page-core-cas.js';
+import type {CorePilotIntakeIntegration} from '../conversation/core-pilot-intake.js';
 
 /** Local test registry. Never populate these values from webhook bytes or headers. */
 export interface SyntheticZaloRegistry {
@@ -40,13 +41,15 @@ function parseRegistry(input: unknown): SyntheticZaloRegistry {
 
 function compose(pool: pg.Pool, registry: SyntheticZaloRegistry,
   orders: OrderDraftPort, documents: DocumentFactsPort,
-  firstPage?:{questions:FirstPageQuestionReadPort;core:FirstPageCoreCasPort}) {
+  firstPage?:{questions:FirstPageQuestionReadPort;core:FirstPageCoreCasPort},
+  pilotIntake?:CorePilotIntakeIntegration) {
   const pipeline = createZaloComposition({
     pool,
     trusted_shop_id: registry.shop_id,
     trusted_oa_id: registry.oa_id,
     mode: 'simulation',
     orders, documents,
+    ...(pilotIntake ? {pilot_intake:pilotIntake} : {}),
     schedule: { allowed() { return false; } },
     clock: { now: () => new Date() },
     synthetic_provider: {
@@ -74,9 +77,14 @@ export function createSyntheticZaloIngress(pool: pg.Pool, input: unknown) {
 
 /** The only scheduled composition: server-owned scope, real AI1/AI3 Ports, synthetic transport. */
 export function createSyntheticZaloRuntime(pool: pg.Pool, input: unknown, options: {
-  store: PgStore; artifactRoot?: string; python?: string
+  store: PgStore; artifactRoot?: string; python?: string;
+  pilotIntake?: (trusted:{readonly shop_id:string;readonly oa_id:string})=>CorePilotIntakeIntegration
 }) {
   const registry = parseRegistry(input);
+  const trusted={shop_id:registry.shop_id,oa_id:registry.oa_id};
+  const pilotIntake=options.pilotIntake?.(trusted);
+  if(pilotIntake&&(pilotIntake.trusted_shop_id!==trusted.shop_id||
+     pilotIntake.trusted_oa_id!==trusted.oa_id))throw new Error('PILOT_INTAKE_SCOPE_MISMATCH');
   const orders = createAiOrderPort({ store: options.store,
     trusted: { shop_id: registry.shop_id, oa_id: registry.oa_id } });
   const supplements = createOrderSupplementPort({store: options.store,
@@ -127,7 +135,6 @@ export function createSyntheticZaloRuntime(pool: pg.Pool, input: unknown, option
   };
   const guardedOrders = guardedSyntheticConversationOrders(pool,
     {shop_id:registry.shop_id,oa_id:registry.oa_id},safeOrders);
-  const trusted={shop_id:registry.shop_id,oa_id:registry.oa_id};
   const firstPage=options.artifactRoot?{
     questions:firstPageQuestionReadPort(asSqlPool(pool),options.artifactRoot,trusted),
     core:createFirstPageCoreCasAdapter({
@@ -138,7 +145,7 @@ export function createSyntheticZaloRuntime(pool: pg.Pool, input: unknown, option
       })
     })
   }:undefined;
-  const pipeline = compose(pool, registry,guardedOrders,documents,firstPage);
+  const pipeline = compose(pool, registry,guardedOrders,documents,firstPage,pilotIntake);
   return { trustedScope: { shop_id: registry.shop_id, oa_id: registry.oa_id },
     webhook: createZaloRawWebhook(pipeline), tick_inbound: pipeline.tick_inbound,
     tick_outbound: pipeline.tick_outbound,
