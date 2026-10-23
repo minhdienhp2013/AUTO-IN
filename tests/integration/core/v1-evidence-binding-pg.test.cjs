@@ -20,6 +20,7 @@ test('V1-CORE-02 REAL PG two pools: PR150 evidence bound at confirmation, approv
  try{
   await a.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/011_print_evidence_binding.sql'),'utf8'));
   await a.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/012_preview_review_receipts.sql'),'utf8'));
+  await a.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/017_controlled_test_scopes.sql'),'utf8'));
   const shop=key('v1-evidence-shop');
   await a.query("INSERT INTO core_shop_settings(shop_id,open_at,close_at) VALUES($1,'00:00','24:00')",[shop]);
   const staffId=uid();

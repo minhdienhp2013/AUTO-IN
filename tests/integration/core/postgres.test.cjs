@@ -32,10 +32,11 @@ const run=async()=>{
     "EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' "+
     "AND table_name='core_print_jobs' AND column_name='mode_at_send') AS send_mode,"+
     "EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' "+
-    "AND table_name='core_print_jobs' AND column_name='confirmed_at') AS queue"
+    "AND table_name='core_print_jobs' AND column_name='confirmed_at') AS queue,"+
+    "to_regclass('public.core_print_controlled_test_scopes') IS NOT NULL AS controlled_test_scope"
   )).rows[0];
   assert.deepEqual(schema,{orders:true,jobs:true,conversations:true,
-   send_mode:true,queue:true},'Run npm run db:migrate on the isolated test database before Core tests');
+   send_mode:true,queue:true,controlled_test_scope:true},'Run npm run db:migrate on the isolated test database before Core tests');
   // Clock must be aligned with the live PostgreSQL lease clock, not a future fixed date.
   const dbNow=(await pool.query('SELECT clock_timestamp() AS moment')).rows[0].moment;
   const local=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(dbNow);

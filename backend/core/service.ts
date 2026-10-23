@@ -15,6 +15,7 @@ import {canonicalPilotCode,derivePilotShopCode,pilotCodeHash,pilotCoreIdempotenc
  type PilotSourceFormat,type PilotSourceSnapshot,type PilotWordPdfCandidate} from './pilot-shop-code.js';
 import {acceptIncomingQueueBatch,bindIntakeBatchToRevision,closeIncomingQueueBatch,expireIncomingQueueBatches,
  verifyIntakeEventRole,type CloseIncomingQueueBatchInput,type IncomingQueueBatchInput,type IncomingQueueBatchSnapshot} from './oa-intake-batches.js';
+import {controlledTestScopeExistsSql,enforceModeScope} from './controlled-test-scope.js';
 
 type PilotProvenance={candidate:PilotWordPdfCandidate;authorization:PilotPrintAuthorization;source:PilotSourceSnapshot};
 type PilotJobContext={o:OrderRow;j:JobRow;rev:RevisionRow;
@@ -245,8 +246,11 @@ export class OrderService {
   if(!printingAllowed(settings,this.now()))
    throw new DomainError('PRINT_CLOSED','Đang ngoài lịch/ngày nghỉ/khóa vận hành',409,true);
   if(settings.mode==='safe')throw new DomainError('PRINT_CLOSED','Cửa hàng đang ở chế độ an toàn',409);
-  if(settings.mode!=='simulation'&&!config.allow_real_print)
+  await enforceModeScope(db,settings.mode,{shop_id:o.shop_id,order_id:o.id,printer_id:j.printer_id});
+  if(settings.mode==='production'&&!config.allow_real_print)
    throw new DomainError('PILOT_REAL_PRINT_CLOSED','Chưa cho phép chế độ in này trong cấu hình pilot',409);
+  else if(settings.mode!=='simulation'&&settings.mode!=='production'&&settings.mode!=='controlled_test')
+   throw new DomainError('PILOT_REAL_PRINT_CLOSED','Chế độ này chưa được mở cho lane pilot',409);
   return {o,j,rev,settings:settings as PilotJobContext['settings'],provenance:await this.pilotProvenance(db,o,j,rev)};
  }
  private async validatePilotJob(db:SqlConnection,p:Principal,jobId:string,leaseToken:string,
@@ -1009,6 +1013,7 @@ export class OrderService {
   await this.assertJobBinding(db,o,j,rev);
   const s=await this.store.one<SettingsRow>(db,'SELECT * FROM core_shop_settings WHERE shop_id=$1 FOR UPDATE',[o.shop_id]);
   if(!printingAllowed(s,this.now()))throw new DomainError('PRINT_CLOSED','Đang ngoài lịch/ngày nghỉ/khóa vận hành',409,true);
+  await enforceModeScope(db,s.mode,{shop_id:o.shop_id,order_id:o.id,printer_id:j.printer_id});
   return s;
  }
  async claim(p:Principal,input:{printer_id:string;idempotency_key:string}){
@@ -1017,20 +1022,22 @@ export class OrderService {
   return this.store.tx(db=>this.store.once(db,p,'jobs.claim',input.idempotency_key,input,async()=>{
    // Lock order first for consistent lock ordering with revise/approve/manual/mark-sending.
    const candidates=await db.query<{id:string}>(`SELECT o.id FROM core_orders o JOIN core_print_jobs j ON j.order_id=o.id
+    JOIN core_shop_settings ss ON ss.shop_id=o.shop_id
     WHERE o.shop_id=$1 AND o.active_revision=j.revision AND NOT o.manual_lock AND NOT o.print_closed
     AND j.printer_id=$2 AND j.state='NOT_SENT' AND j.cancelled_at IS NULL
     AND j.confirmed_at IS NOT NULL
+    AND (ss.mode<>'controlled_test' OR ${controlledTestScopeExistsSql('j')})
     AND (j.lease_until IS NULL OR j.lease_until<now())
     ORDER BY j.confirmed_at,j.id FOR UPDATE OF o SKIP LOCKED LIMIT 1`,[p.shop_id,input.printer_id]);
    if(!candidates.rows[0])return {job:null};
    const o=await this.order(db,candidates.rows[0].id,p);
    const jobs=await db.query<JobRow>("SELECT * FROM core_print_jobs WHERE order_id=$1 AND printer_id=$2 AND revision=$3 AND state='NOT_SENT' AND confirmed_at IS NOT NULL AND cancelled_at IS NULL AND (lease_until IS NULL OR lease_until<now()) ORDER BY confirmed_at,id FOR UPDATE SKIP LOCKED LIMIT 1",[o.id,input.printer_id,o.active_revision]);
    const job=jobs.rows[0];if(!job)return {job:null};
-   const rev=await this.revision(db,o);await this.checkGates(db,o,job,rev);
+   const rev=await this.revision(db,o);const settings=await this.checkGates(db,o,job,rev);
    const secret=randomBytes(32).toString('base64url');
    await db.query("UPDATE core_print_jobs SET claimed_by=$2,lease_secret_hash=$3,lease_until=now()+interval '90 seconds' WHERE id=$1",[job.id,p.id,sha(secret)]);
    await this.audit(db,p,'job.claim',o.id,{job_id:job.id});
-   return {job:{job_id:job.id,order_id:o.id,revision:o.active_revision,request_hash:job.request_hash,approval_id:job.approval_id,printer_id:job.printer_id,lease_token:secret,lease_seconds:90,mode:(await this.store.one<SettingsRow>(db,'SELECT * FROM core_shop_settings WHERE shop_id=$1',[o.shop_id])).mode}};
+   return {job:{job_id:job.id,order_id:o.id,revision:o.active_revision,request_hash:job.request_hash,approval_id:job.approval_id,printer_id:job.printer_id,lease_token:secret,lease_seconds:90,mode:settings.mode}};
   }));
  }
  async preflight(p:Principal,job_id:string,input:{expected_revision:number;lease_token:string}){
@@ -1092,9 +1099,11 @@ export class OrderService {
     'SELECT o.id FROM core_orders o JOIN core_print_jobs j ON j.order_id=o.id '+
     'JOIN core_pilot_print_authorizations a ON a.id=j.pilot_authorization_id '+
     'JOIN core_pilot_shop_config pc ON pc.shop_id=o.shop_id '+
+    'JOIN core_shop_settings ss ON ss.shop_id=o.shop_id '+
     'WHERE o.shop_id=$1 AND o.active_revision=j.revision AND NOT o.manual_lock AND NOT o.print_closed '+
     "AND j.printer_id=$2 AND j.state='NOT_SENT' AND j.approval_id IS NULL AND j.cancelled_at IS NULL "+
     'AND pc.enabled AND pc.tested_at IS NOT NULL AND pc.agent_id=$3 AND pc.printer_id=$2 '+
+    `AND (ss.mode<>'controlled_test' OR ${controlledTestScopeExistsSql('j')}) `+
     'AND (j.lease_until IS NULL OR j.lease_until<now()) '+
     'ORDER BY a.authorized_at,j.id FOR UPDATE OF o SKIP LOCKED LIMIT 1',
     [p.shop_id,request.printer_id,p.id]);

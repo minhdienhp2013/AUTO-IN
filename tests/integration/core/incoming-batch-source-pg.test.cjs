@@ -29,7 +29,8 @@ const migrations=[
  '../../../backend/composition/migrations/005_official_zalo_shop_registry.sql',
  '../../../backend/composition/migrations/008_pilot_private_sources.sql',
  '../../../backend/storage/migrations/015_oa_intake_batches.sql',
- '../../../backend/storage/migrations/016_persist_intake_new_order_intent.sql'
+ '../../../backend/storage/migrations/016_persist_intake_new_order_intent.sql',
+ '../../../backend/storage/migrations/017_controlled_test_scopes.sql'
 ];
 const settings={copies:2,duplex:true,paper:'A4',color:'black_white'};
 const err=code=>error=>error&&error.code===code;

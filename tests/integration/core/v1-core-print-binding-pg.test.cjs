@@ -16,6 +16,8 @@ test('V1-CORE-01 real PG two-pool: confirmed source/quote/plan, concurrent appro
  assert.match(parsed.pathname,/test/i);
  const a=new pg.Pool({connectionString:url,max:8}),b=new pg.Pool({connectionString:url,max:8});
  try{
+  assert.equal((await a.query("SELECT to_regclass('public.core_print_controlled_test_scopes') IS NOT NULL AS present")).rows[0].present,true,
+   'Run Core migrations through 017 before this PostgreSQL test');
   const [pa,pb]=await Promise.all([a.query('SELECT pg_backend_pid() pid'),b.query('SELECT pg_backend_pid() pid')]);
   assert.notEqual(pa.rows[0].pid,pb.rows[0].pid);
   const shop=k('v1-shop'),other=k('v1-other'),ownerId=uid(),staffId=uid();

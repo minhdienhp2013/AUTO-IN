@@ -28,8 +28,9 @@ test('CODE501 real PostgreSQL 18 two pools and Fastify owner/shop/race contract'
  try {
   const migrated=(await poolA.query(
     "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='core_shop_settings' AND column_name='schedule_version') AS version,"+
-    "to_regclass('public.core_shop_schedule_audit') IS NOT NULL AS audit")).rows[0];
-  assert.deepEqual(migrated,{version:true,audit:true},'Run Core migration 008 in CI first');
+    "to_regclass('public.core_shop_schedule_audit') IS NOT NULL AS audit,"+
+    "to_regclass('public.core_print_controlled_test_scopes') IS NOT NULL AS controlled_test_scope")).rows[0];
+  assert.deepEqual(migrated,{version:true,audit:true,controlled_test_scope:true},'Run Core migrations through 017 in CI first');
   const storeA=new PgStore(poolA),storeB=new PgStore(poolB);
   const auth=new AuthService(storeA),sa=new ShopScheduleService(storeA),sb=new ShopScheduleService(storeB);
   const core=new OrderService(storeB);

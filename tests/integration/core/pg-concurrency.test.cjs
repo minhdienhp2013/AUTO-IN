@@ -20,6 +20,7 @@ async function migrate(pool){
     const file=['001_core.sql','002_send_mode.sql','003_confirmed_queue.sql','004_conversation_generation.sql'][i-1];
     await pool.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations',file),'utf8'));
   }
+  await pool.query(fs.readFileSync(path.resolve(__dirname,'../../../backend/storage/migrations/017_controlled_test_scopes.sql'),'utf8'));
 }
 async function prepare(svc,staff,processor,customer,shop,n){
   const draft=await svc.createDraft(staff,{customer_id:customer.customer_id,conversation_id:'conv-'+randomUUID(),request_data:request(n),idempotency_key:key('draft')});
