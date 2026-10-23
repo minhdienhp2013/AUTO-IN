@@ -16,8 +16,8 @@ function lease(batch_id,events,lease_token=`lease-${batch_id}`,order=events.map(
     events,server_received_event_ids:order};
 }
 function harness({applyResult={status:"created",order_id:"order-1",active_revision:1},
-  acceptStatus="OPEN",throwAccept,throwApply}={}){
-  const seen={accept:[],apply:[],reads:[]},intakes=new Map();let nextIntake=0;
+  acceptStatus="OPEN",readiness:readinessOverride,throwAccept,throwApply}={}){
+  const seen={accept:[],apply:[],reads:[],snapshots:[]},intakes=new Map();let nextIntake=0;
   const core={trusted_shop_id:SHOP,trusted_oa_id:OA,
     async acceptIncomingQueueBatch(input){
       seen.accept.push(structuredClone(input));
@@ -34,13 +34,15 @@ function harness({applyResult={status:"created",order_id:"order-1",active_revisi
       if(roles.source_event_id)intake.events.get(roles.source_event_id).role="SOURCE";
       for(const id of roles.settings_event_ids??[])intake.events.get(id).role="SETTINGS";
       const rows=[...intake.events.values()];
-      return {schema:"ai1.oa_intake_batch.v1",status:acceptStatus,
-        readiness:!rows.some(e=>e.role==="SOURCE")?"WAITING_FOR_FILE":
-          !rows.some(e=>e.role==="SETTINGS")?"WAITING_FOR_SETTINGS":"READY",
+      const snapshot={schema:"ai1.oa_intake_batch.v1",status:acceptStatus,
+        readiness:readinessOverride??(!rows.some(e=>e.role==="SOURCE")?"WAITING_FOR_FILE":
+          !rows.some(e=>e.role==="SETTINGS")?"WAITING_FOR_SETTINGS":"READY"),
         intake_batch_id:intake.id,queue_batch_id:input.queue_batch_id,shop_id:SHOP,oa_id:OA,
         customer_id:CUSTOMER,conversation_id:CHAT,purpose:"PILOT",opened_at:"2026-10-22T00:00:00Z",
         expires_at:"2026-10-22T00:30:00Z",order_id:null,revision:null,
         events:rows.map(({event_id,kind,role})=>({event_id,kind,role,received_at:"2026-10-22T00:00:00Z"}))};
+      seen.snapshots.push(structuredClone(snapshot));
+      return snapshot;
     },
     async read_settings_events(input){
       seen.reads.push(structuredClone(input));
@@ -109,12 +111,64 @@ test("explicit new order opens a new intake and cannot carry the old code event"
   const old=lease("31",[code()]);h.setLease(old);
   assert.equal(await h.adapter.consume(old,1),"processed");
   const next=lease("32",[file("new-file"),settings("new-settings",
-    "Tạo đơn riêng, A4, in 3 bản, một mặt, đen trắng")]);h.setLease(next);
+    "Đơn mới, A4, in 2 bản, hai mặt, đen trắng")]);h.setLease(next);
   assert.equal(await h.adapter.consume(next,1),"processed");
   assert.equal(h.seen.accept[1].boundary,"NEW");
   assert.equal(h.seen.accept[1].selection.code_event_id,undefined);
   assert.equal(h.seen.apply[0].intake_batch_id,"intake-2");
   assert.deepEqual(h.seen.apply[0].event_ids,["new-file","new-settings"]);
+  assert.equal(h.seen.snapshots[1].events.some(e=>e.event_id==="old-code"),false);
+});
+
+test("standalone NEW boundary between leases separates old CODE from later file and settings",async()=>{
+  const h=harness();
+  const old=lease("33",[code("old-code")]);h.setLease(old);
+  assert.equal(await h.adapter.consume(old,1),"processed");
+  assert.equal(h.seen.snapshots[0].events.find(e=>e.event_id==="old-code")?.role,"CODE");
+
+  const boundary=lease("34",[event("new-order-boundary","text","Đơn mới")]);h.setLease(boundary);
+  assert.equal(await h.adapter.consume(boundary,1),"processed");
+  assert.equal(h.seen.accept[1].boundary,"NEW");
+  assert.equal(h.seen.accept[1].selection.code_event_id,undefined);
+  assert.equal(h.seen.snapshots[1].intake_batch_id,"intake-2");
+
+  const later=lease("35",[file("new-file"),settings("new-settings")]);h.setLease(later);
+  assert.equal(await h.adapter.consume(later,1),"processed");
+  assert.equal(h.seen.accept[2].boundary,"CONTINUE");
+  assert.equal(h.seen.snapshots[2].intake_batch_id,"intake-2");
+  assert.deepEqual(h.seen.snapshots[2].events.map(e=>e.event_id).sort(),
+    ["new-file","new-order-boundary","new-settings"]);
+  assert.equal(h.seen.snapshots[2].events.some(e=>e.event_id==="old-code"),false);
+  assert.equal(h.seen.apply[0].intake_batch_id,"intake-2");
+  assert.deepEqual(h.seen.apply[0].event_ids,["new-file","new-settings"]);
+});
+
+test("negated or conflicting boundary signal holds the leased batch for human review",async()=>{
+  for(const message of [
+    "Không tạo đơn mới",
+    "Đơn mới nhưng tiếp tục đơn cũ",
+    "Đơn mới, gửi thêm file vào đơn cũ",
+    "Làm một đơn rồi gửi file"
+  ]){
+    const h=harness(),candidate=lease("36",[file("ambiguous-file"),
+      settings("ambiguous-settings"),event("boundary-text","text",message)]);
+    h.setLease(candidate);
+    assert.equal(await h.adapter.consume(candidate,1),"held",message);
+    assert.equal(h.seen.accept.length,0,message);
+    assert.equal(h.seen.apply.length,0,message);
+  }
+});
+
+test("unknown Core readiness is held; only the declared waiting states are processed",async()=>{
+  const unknown=harness({readiness:"WAITING_FOR_ARBITRARY_STATE"}),candidate=lease("37",[code()]);
+  unknown.setLease(candidate);
+  assert.equal(await unknown.adapter.consume(candidate,1),"held");
+  assert.equal(unknown.seen.apply.length,0);
+
+  const waiting=harness({readiness:"WAITING_FOR_CODE"}),known=lease("38",[code()]);
+  waiting.setLease(known);
+  assert.equal(await waiting.adapter.consume(known,1),"processed");
+  assert.equal(waiting.seen.apply.length,0);
 });
 
 test("duplicate or forged lease event IDs fail closed before any Core call",async()=>{

@@ -114,6 +114,7 @@ export class PostgresConversationQueue {
     event_ids:readonly string[]}):Promise<InboundEvent[]> {
     if(!input||!input.intake_batch_id||!input.queue_batch_id||!input.lease_token||
        !input.oa_id||!input.customer_id||!input.conversation_id||
+       !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.intake_batch_id)||
        !Array.isArray(input.event_ids)||input.event_ids.length<1||input.event_ids.length>100||
        input.event_ids.some(id=>typeof id!=="string"||!id||id.length>256)||
        new Set(input.event_ids).size!==input.event_ids.length)
@@ -125,10 +126,16 @@ export class PostgresConversationQueue {
         [input.queue_batch_id,input.oa_id,input.lease_token]);
       if(lease.rows.length!==1)throw new Error("BATCH_LEASE_LOST");
       const selected=await tx.query<{event_id:string;payload_json:unknown}>(
-        "SELECT e.event_id,e.payload_json FROM zalo_inbound_events e "+
-        "WHERE e.oa_id=$1 AND e.event_id=ANY($2::text[]) AND e.customer_id=$3 AND e.conversation_id=$4 "+
+        "SELECT e.event_id,e.payload_json FROM core_oa_intake_event_bindings b "+
+        "JOIN core_oa_intake_batches i ON i.id=b.intake_batch_id "+
+        "JOIN zalo_inbound_events e ON e.oa_id=b.oa_id AND e.event_id=b.event_id "+
+        "WHERE b.intake_batch_id=$1::uuid AND b.role='SETTINGS' "+
+        "AND i.status IN ('OPEN','BOUND') AND i.expires_at>clock_timestamp() "+
+        "AND i.oa_id=$3 AND i.customer_id=$4 AND i.conversation_id=$5 "+
+        "AND b.oa_id=$3 AND b.event_id=ANY($2::text[]) "+
+        "AND e.customer_id=$4 AND e.conversation_id=$5 "+
         "ORDER BY e.received_at,e.event_id FOR SHARE OF e",
-        [input.oa_id,[...input.event_ids],input.customer_id,input.conversation_id]);
+        [input.intake_batch_id,[...input.event_ids],input.oa_id,input.customer_id,input.conversation_id]);
       if(selected.rows.length!==input.event_ids.length||
          new Set(selected.rows.map(row=>row.event_id)).size!==input.event_ids.length)
         throw new Error("PILOT_SETTINGS_EVENTS_UNVERIFIED");

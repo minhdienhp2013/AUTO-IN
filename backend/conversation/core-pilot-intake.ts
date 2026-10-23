@@ -4,7 +4,7 @@ import type {IncomingQueueBatchInput,IncomingQueueBatchSnapshot} from "../core/o
 import type {LeasedBatch} from "../integrations/zalo/postgres-durable.ts";
 import type {InboundEvent} from "../integrations/zalo/protocol.ts";
 import {extractPilotPrintIntent} from "./pilot-print-intent.ts";
-import {classifyIncomingOrderBatch} from "./order-batch-intent.ts";
+import {classifyIncomingOrderBatch,classifyIncomingOrderBoundary} from "./order-batch-intent.ts";
 import type {Batch} from "./batch.ts";
 
 const permanentCoreErrors=new Set([
@@ -91,7 +91,8 @@ function hasSettingsEvidence(event:InboundEvent):boolean {
 }
 export function isCorePilotIntakeBatch(batch:Batch):boolean {
   if(batch.events.some(event=>event.kind==="file"))return true;
-  return batch.events.some(event=>labelledCode(event)||hasSettingsEvidence(event));
+  return batch.events.some(event=>labelledCode(event)||hasSettingsEvidence(event))||
+    classifyIncomingOrderBoundary(batch)!=="CONTINUE";
 }
 function hardSettingsReasons(reasons:readonly string[]):boolean {
   return reasons.some(reason=>reason!=="MISSING_CODE"&&
@@ -121,6 +122,7 @@ function validSnapshot(value:IncomingQueueBatchSnapshot,batch:LeasedBatch,ids:st
     value.queue_batch_id===batch.batch_id&&value.shop_id===shop&&value.oa_id===oa&&
     value.customer_id===first.customer_id&&value.conversation_id===first.conversation_id&&
     value.purpose==="PILOT"&&typeof value.intake_batch_id==="string"&&
+    ["WAITING_FOR_FILE","WAITING_FOR_SETTINGS","WAITING_FOR_CODE","READY"].includes(value.readiness)&&
     value.events.every(event=>event&&typeof event.event_id==="string"&&
       ["text","image","file"].includes(event.kind)&&
       ["CONTEXT","CODE","SOURCE","SETTINGS"].includes(event.role))&&
@@ -180,7 +182,9 @@ export function createCorePilotIntakeAdapter(options:CorePilotIntakeOptions) {
       const settingsEventIds=textEvents.filter(event=>event.event_id!==currentCodeId&&
         !labelledCode(event)&&hasSettingsEvidence(event)).map(event=>event.event_id);
       const incoming=classifyIncomingOrderBatch({ ...lease,events:ordered });
-      if(incoming.reason==="CONFLICTING_INTENTS")return "held";
+      const boundary=classifyIncomingOrderBoundary({ ...lease,events:ordered });
+      if(boundary==="AMBIGUOUS"||incoming.reason==="CONFLICTING_INTENTS"||
+         incoming.reason==="AMBIGUOUS_ORDER_BOUNDARY")return "held";
       const selection:NonNullable<IncomingQueueBatchInput["selection"]>={
         ...(currentCodeId?{code_event_id:currentCodeId}:{}),
         ...(sourceEventId?{source_event_id:sourceEventId}:{}),
@@ -189,7 +193,7 @@ export function createCorePilotIntakeAdapter(options:CorePilotIntakeOptions) {
       const acceptInput:IncomingQueueBatchInput={
         queue_batch_id:lease.batch_id,lease_token:lease.lease_token,purpose:"PILOT",
         event_ids:ids,
-        ...(incoming.intent==="explicit_separate"?{boundary:"NEW" as const}:{boundary:"CONTINUE" as const}),
+        boundary:boundary==="NEW"?"NEW":"CONTINUE",
         selection
       };
       let snapshot:IncomingQueueBatchSnapshot;
@@ -202,7 +206,9 @@ export function createCorePilotIntakeAdapter(options:CorePilotIntakeOptions) {
          (snapshot.status!=="OPEN"&&snapshot.status!=="BOUND"))return "held";
       if(expectedCodeEvents(snapshot.events).length>1||
          snapshot.events.filter(event=>event.role==="SOURCE").length>1)return "held";
-      if(snapshot.readiness!=="READY")return "processed";
+      if(snapshot.readiness==="WAITING_FOR_FILE"||snapshot.readiness==="WAITING_FOR_SETTINGS"||
+         snapshot.readiness==="WAITING_FOR_CODE")return "processed";
+      if(snapshot.readiness!=="READY")return "held";
       const settingsBindings=snapshot.events.filter(event=>event.role==="SETTINGS");
       const sourceBindings=snapshot.events.filter(event=>event.role==="SOURCE");
       if(settingsBindings.length<1||settingsBindings.some(event=>event.kind!=="text")||
