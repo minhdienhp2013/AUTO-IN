@@ -98,7 +98,7 @@ test('late shop A 401 cannot clear shop B credentials or order data',async()=>{
  assert.ok(requests.some(request=>request.url.endsWith('/api/v1/orders')&&
   request.authorization==='Bearer token-shop-A'));
 });
-test('current-session 401 clears the bearer and authenticated shop',async()=>{
+test('selected-order current-session 401 clears the bearer and authenticated shop',async()=>{
  let denyOrders=false;
  const fetcher=async(url:RequestInfo|URL,init?:RequestInit):Promise<Response>=>{
   const path=String(url);
@@ -106,7 +106,7 @@ test('current-session 401 clears the bearer and authenticated shop',async()=>{
    {status:200,headers:{'Content-Type':'application/json'}});
   if(path.endsWith('/api/v1/auth/me'))return new Response(JSON.stringify({principal:{id:'staff-current',shop_id:'shop-current',role:'staff',verified:true}}),
    {status:200,headers:{'Content-Type':'application/json'}});
-  if(path.endsWith('/api/v1/orders')&&denyOrders){
+  if(path.endsWith('/api/v1/orders/order-current')&&denyOrders){
    assert.equal(new Headers(init?.headers).get('Authorization'),'Bearer token-current');
    return new Response(JSON.stringify({error:{code:'EXPIRED'}}),{status:401,headers:{'Content-Type':'application/json'}});
   }
@@ -116,7 +116,7 @@ test('current-session 401 clears the bearer and authenticated shop',async()=>{
  await port.login('shop-current','staff','secret');
  assert.equal(port.authenticatedShopId(),'shop-current');
  denyOrders=true;
- await assertFault(()=>port.listOrders(),'EXPIRED');
+ await assertFault(()=>port.getOrder('order-current'),'EXPIRED');
  assert.equal(port.authenticatedShopId(),null);
  await assertFault(()=>port.loadCurrentShopCode(),'UNAUTHENTICATED');
 });

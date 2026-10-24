@@ -194,11 +194,19 @@ function App() {
         if (navRevision !== null && navRevision !== latest.revision) setError(`Thông báo thuộc phiên bản ${navRevision}; đơn hiện tại đã ở phiên bản ${latest.revision}. Cần đọc lại trước khi thao tác.`);
       }
     }).catch((e: ApiFault) => {
-      if (!cancelled && expected.epoch === requestEpoch.current &&
-          expected.sessionVersion === sessionVersion.current && expected.shopId === port.authenticatedShopId()) {
-        if(e.status===401) clearStaffSession();
-        setError(e.message || 'Không tải được đơn từ API.'); setApiHealthy(false);
+      const current = sessionScope(requestEpoch.current);
+      const disposition = classifySessionFailure(e.status, expected, current);
+      if (disposition === 'stale') return;
+      if (disposition === 'unauthorized') {
+        // A current 401 clears the API shop ID before this catch runs. Clear
+        // React state by authenticated-session identity, even if this detail
+        // effect was cancelled by a selection change in the same session.
+        clearStaffSession();
+        setError(e.message || 'Phiên đăng nhập hết hạn.');
+        return;
       }
+      if (cancelled) return;
+      setError(e.message || 'Không tải được đơn từ API.'); setApiHealthy(false);
     });
     return () => { cancelled = true; };
   }, [selected, session?.actor_id, session?.role, clearStaffSession, sessionScope]);

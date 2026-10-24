@@ -8,7 +8,7 @@ const shopA: SessionRequestScope = {
 };
 
 test('current 401 is handled after the API clears its shop identity', () => {
-  const afterCredentialClear = { ...shopA, shopId: null };
+  const afterCredentialClear = { ...shopA, epoch: shopA.epoch + 1, shopId: null };
   assert.equal(sameRequestScope(shopA, afterCredentialClear), false);
   assert.equal(sameSessionGeneration(shopA, afterCredentialClear), true);
   assert.equal(classifySessionFailure(401, shopA, afterCredentialClear), 'unauthorized');
@@ -26,4 +26,16 @@ test('App clears current unauthorized session but discards stale request failure
   assert.match(app, /classifySessionFailure\(fault\.status, expectedScope, current\)/);
   assert.match(app, /if \(disposition === 'stale'\) return false;[\s\S]*?if \(disposition === 'unauthorized'\)[\s\S]*?clearStaffSession\(\);[\s\S]*?setError\(fault\.message/);
   assert.match(app, /setSession\(null\);setOrders\(\[\]\);setSelected\(null\)/);
+});
+
+test('selected-order current 401 clears the session before cancellation or shop mismatch can suppress it', async () => {
+  const afterGetOrder401 = { ...shopA, epoch: shopA.epoch + 1, shopId: null };
+  assert.equal(classifySessionFailure(401, shopA, afterGetOrder401), 'unauthorized');
+  const app = await readFile(new URL('../../web/src/App.tsx', import.meta.url), 'utf8');
+  const effectStart = app.indexOf('resolveForSession(port.getOrder(selected)');
+  const effectEnd = app.indexOf('return () => { cancelled = true; };', effectStart);
+  assert.ok(effectStart >= 0 && effectEnd > effectStart, 'selected-order effect is present');
+  const effect = app.slice(effectStart, effectEnd);
+  assert.match(effect, /classifySessionFailure\(e\.status, expected, current\)/);
+  assert.match(effect, /if \(disposition === 'stale'\) return;[\s\S]*?if \(disposition === 'unauthorized'\)[\s\S]*?clearStaffSession\(\);[\s\S]*?if \(cancelled\) return;/);
 });

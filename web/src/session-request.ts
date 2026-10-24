@@ -11,14 +11,13 @@ export type SessionRequestResult<T> =
   | { readonly current: false };
 
 export function sameSessionGeneration(left: SessionRequestScope, right: SessionRequestScope): boolean {
-  return left.epoch === right.epoch &&
-    left.sessionVersion === right.sessionVersion &&
+  return left.sessionVersion === right.sessionVersion &&
     left.actorId === right.actorId &&
     left.role === right.role;
 }
 
 export function sameRequestScope(left: SessionRequestScope, right: SessionRequestScope): boolean {
-  return sameSessionGeneration(left, right) && left.shopId === right.shopId;
+  return left.epoch === right.epoch && sameSessionGeneration(left, right) && left.shopId === right.shopId;
 }
 
 export type SessionFailureDisposition = 'unauthorized' | 'current-error' | 'stale';
