@@ -5,7 +5,8 @@ import {admitAgentRoute} from '../../../dist/backend/composition/controlled-pilo
 const scope={shop_id:'shop-public',order_id:'order-public',printer_id:'RMP7000'};
 const agent={id:'agent-public',role:'print_agent',verified:true,shop_id:scope.shop_id,
   printer_ids:[scope.printer_id]};
-function pool(mode='controlled_test',jobs=[{order_id:scope.order_id,printer_id:scope.printer_id}]) {
+function pool(mode='controlled_test',jobs=[{order_id:scope.order_id,printer_id:scope.printer_id,
+  mode_at_send:'controlled_test',state:'SENDING'}]) {
   const calls=[];
   return {calls,async query(sql,args){
     calls.push({sql,args});
@@ -21,8 +22,23 @@ test('controlled pilot admits only server scope while Core owns the grant',async
   await admitAgentRoute({pool:db,agent,pilotRoute:true,scope,jobId:'job-public'});
   assert.deepEqual(db.calls.at(-1).args,['job-public','shop-public']);
   assert.match(db.calls.at(-1).sql,/pilot_authorization_id IS NOT NULL/);
-  // Reports remain possible after grant expiry; no re-send is implied.
   assert.equal(db.calls.length,3);
+});
+
+test('a safe-mode flip preserves only controlled send reconciliation',async()=>{
+  await admitAgentRoute({pool:pool('safe'),agent,pilotRoute:true,reportRoute:true,
+    scope,jobId:'job-public'});
+  await admitAgentRoute({pool:pool('safe',[{order_id:scope.order_id,printer_id:scope.printer_id,
+    mode_at_send:'controlled_test',state:'UNKNOWN'}]),agent,pilotRoute:true,reportRoute:true,
+    scope,jobId:'job-public'});
+  await blocked({pool:pool('safe'),agent,pilotRoute:true,scope,
+    jobId:'job-public'},'SIMULATION_REQUIRED');
+  await blocked({pool:pool('safe',[{order_id:scope.order_id,printer_id:scope.printer_id,
+    mode_at_send:'simulation',state:'SENDING'}]),agent,pilotRoute:true,reportRoute:true,
+    scope,jobId:'job-public'},'CONTROLLED_PILOT_SCOPE');
+  await blocked({pool:pool('safe',[{order_id:scope.order_id,printer_id:scope.printer_id,
+    mode_at_send:'controlled_test',state:'NOT_SENT'}]),agent,pilotRoute:true,reportRoute:true,
+    scope,jobId:'job-public'},'CONTROLLED_PILOT_SCOPE');
 });
 
 test('wrong shop, order, printer, job kind and missing opt-in fail closed',async()=>{

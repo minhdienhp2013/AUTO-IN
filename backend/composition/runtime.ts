@@ -189,6 +189,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
         : undefined;
       if (printAgent) {
         await admitAgentRoute({pool:options.pool,agent:printAgent,pilotRoute:pilotAgentRoute,
+          reportRoute:pilotAgentRoute && path.endsWith('/reports'),
           ...(controlled ? {scope:controlled} : {}),
           ...((request.params as {job_id?:string}).job_id ?
             {jobId:(request.params as {job_id:string}).job_id} : {}),

@@ -16,6 +16,7 @@ export async function admitAgentRoute(input: {
   pool: SqlPool;
   agent: Principal;
   pilotRoute: boolean;
+  reportRoute?: boolean;
   scope?: ControlledPilotScope;
   jobId?: string;
   requestedPrinterId?: unknown;
@@ -24,17 +25,20 @@ export async function admitAgentRoute(input: {
     'SELECT mode FROM core_shop_settings WHERE shop_id=$1', [input.agent.shop_id]);
   if (settings.rows.length !== 1) throw new DomainError('SIMULATION_REQUIRED','Shop mode unavailable',409);
   const controlled=input.scope;
-  if (settings.rows[0]?.mode === 'controlled_test' && input.pilotRoute && controlled) {
+  if (input.pilotRoute && controlled &&
+      (settings.rows[0]?.mode === 'controlled_test' || input.reportRoute === true)) {
     if (input.agent.shop_id !== controlled.shop_id ||
         !input.agent.printer_ids?.includes(controlled.printer_id))
       throw new DomainError('CONTROLLED_PILOT_SCOPE','Pilot scope denied',403);
     if (input.jobId) {
-      const rows = await input.pool.query<{order_id:string;printer_id:string}>(
-        'SELECT j.order_id,j.printer_id FROM core_print_jobs j JOIN core_orders o ON o.id=j.order_id '+
+      const rows = await input.pool.query<{order_id:string;printer_id:string;mode_at_send:string|null;state:string}>(
+        'SELECT j.order_id,j.printer_id,j.mode_at_send,j.state FROM core_print_jobs j JOIN core_orders o ON o.id=j.order_id '+
         'WHERE j.id=$1 AND o.shop_id=$2 AND j.pilot_authorization_id IS NOT NULL AND j.approval_id IS NULL',
         [input.jobId,controlled.shop_id]);
       if (rows.rows.length !== 1 || rows.rows[0]?.order_id !== controlled.order_id ||
-          rows.rows[0]?.printer_id !== controlled.printer_id)
+          rows.rows[0]?.printer_id !== controlled.printer_id ||
+          (input.reportRoute === true && (rows.rows[0]?.mode_at_send !== 'controlled_test' ||
+            !['SENDING','UNKNOWN','SENT_UNVERIFIED'].includes(rows.rows[0]?.state ?? '')))
         throw new DomainError('CONTROLLED_PILOT_SCOPE','Pilot scope denied',403);
     } else if (input.requestedPrinterId !== controlled.printer_id) {
       throw new DomainError('CONTROLLED_PILOT_SCOPE','Pilot scope denied',403);
