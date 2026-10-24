@@ -1,6 +1,8 @@
 import { createElement as h, useCallback, useEffect, useRef, useState } from 'react';
 import { orderLabels, type OrderView, type StaffSession } from './domain.ts';
 
+export const PILOT_ORDER_STATUS_LIMIT = 10;
+
 /** UI mirror of the authenticated display DTO in the locked AI0 pilot wire. */
 export interface PilotShopCodeDisplay {
   readonly schema: 'ai0.pilot_shop_code_display.v1';
@@ -152,17 +154,19 @@ export function PilotShopCodePanelView({
     codeContent = h('p', { role: 'alert', 'data-testid': 'pilot-code-unavailable' }, 'Chưa xác minh được mã hiện hành. Mã cũ đã được ẩn; cần nhân viên kiểm tra kết nối.');
   }
 
+  const visibleOrders = orders.slice(0, PILOT_ORDER_STATUS_LIMIT);
   const statusContent = !apiHealthy
     ? h('p', { role: 'alert', 'data-testid': 'pilot-orders-unknown' }, 'Chưa xác minh được read model. Trạng thái đơn hiện là UNKNOWN; cần nhân viên kiểm tra.')
-    : orders.length === 0
+    : visibleOrders.length === 0
       ? h('p', { className: 'pilot-code-empty', 'data-testid': 'pilot-orders-empty' }, 'Máy chủ chưa trả đơn nào trong danh sách hiện tại.')
       : h('div', { className: 'pilot-order-list', 'data-testid': 'pilot-order-list' },
-        ...orders.map(order => h('article', { className: 'pilot-order-card', key: order.order_id, 'data-testid': 'pilot-order' },
+        ...visibleOrders.map(order => h('article', { className: 'pilot-order-card', key: order.order_id, 'data-testid': 'pilot-order' },
           (() => { const print = pilotOrderPrintStatus(order); return h('div', { className: 'pilot-order-heading' },
             h('strong', null, order.order_id),
             h('span', { className: print.status === 'UNKNOWN' ? 'pilot-order-unknown' : print.status === 'BLOCKED' ? 'pilot-order-blocked' : 'pilot-order-state', 'data-testid': 'pilot-print-state' }, print.status)); })(),
           h('p', null, 'Đơn: ', orderLabels[order.order_state]),
           h('p', null, 'Lệnh in: ', pilotOrderPrintStatus(order).label),
+          order.detail_loaded !== true ? h('small', null, 'Chưa tải được chi tiết đơn; trạng thái giữ UNKNOWN.') : null,
           order.print_state === 'UNKNOWN' ? h('small', null, 'Cần nhân viên đối soát; không tự gửi lại lệnh.') : null)));
 
   return h('section', { className: 'pilot-code-page', 'data-testid': 'pilot-code-page', 'aria-labelledby': 'pilot-code-title' },
@@ -177,7 +181,7 @@ export function PilotShopCodePanelView({
     h('section', { className: 'pilot-order-status', 'aria-labelledby': 'pilot-order-status-title' },
       h('div', { className: 'pilot-order-status-heading' },
         h('div', null, h('h2', { id: 'pilot-order-status-title' }, 'Trạng thái đơn'),
-          h('p', null, 'Core hiện chỉ trả danh sách tóm tắt; khi thiếu trạng thái in tường minh, UI giữ UNKNOWN.'))),
+          h('p', null, 'Tối đa 10 đơn gần nhất. Trạng thái lấy từ chi tiết đơn hiện hành; khi thiếu chi tiết hoặc bằng chứng, UI giữ UNKNOWN.'))),
       statusContent));
 }
 

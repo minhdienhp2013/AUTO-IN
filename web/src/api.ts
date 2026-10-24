@@ -7,7 +7,7 @@ import { parseShopSchedule, type ShopSchedule, type SchedulePatch, type Schedule
 import { parseInboundReviewItems, type InboundReviewItem } from './inbound-review.ts';
 import { parsePdfReviewPreview, type PdfReviewIdentity, type PdfReviewPreviewV1 } from './pdf-review-panel.ts';
 import { parseWordReviewPreview, type WordReviewIdentity, type WordReviewPreviewV1 } from './word-review-panel.ts';
-import { parsePilotShopCodeDisplay, type PilotShopCodeDisplay, type PilotShopCodePort } from './pilot-shop-code.ts';
+import { parsePilotShopCodeDisplay, PILOT_ORDER_STATUS_LIMIT, type PilotShopCodeDisplay, type PilotShopCodePort } from './pilot-shop-code.ts';
 
 export class ApiFault extends Error {
   readonly status: number; readonly code: string; readonly currentRevision?: number;
@@ -237,6 +237,27 @@ export function mapCoreOrderDetail(raw: unknown): OrderView {
     enriched.warnings.push('Tin/file bổ sung chưa được backend xác nhận xử lý hết; cần AI/nhân viên đối soát trước khi chốt in.');
   return enriched;
 }
+
+/** Load only the recent cards shown on the shop-code page from the staff-scoped
+ * order-detail route. A failed, stale, or cross-order detail falls back to the
+ * summary row, whose print_state is UNKNOWN. */
+export async function loadPilotOrderDetails(
+  summaries: readonly OrderView[],
+  getOrder: (orderId: string) => Promise<OrderView>,
+): Promise<OrderView[]> {
+  const visible = summaries.slice(0, PILOT_ORDER_STATUS_LIMIT);
+  return Promise.all(visible.map(async summary => {
+    try {
+      const detail = await getOrder(summary.order_id);
+      if (detail.order_id !== summary.order_id || detail.detail_loaded !== true) return summary;
+      return detail;
+    } catch (error) {
+      if (error instanceof ApiFault && error.status === 401) throw error;
+      return summary;
+    }
+  }));
+}
+
 const unwrap = (payload: unknown, key: 'order' | 'orders' | 'session'): unknown => {
   const obj = asObject(payload);
   if (key in obj) return obj[key];

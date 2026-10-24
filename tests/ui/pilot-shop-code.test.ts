@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { ApiFault, DemoPrintPort, HttpPrintPort, mapOrderSummary } from '../../web/src/api.ts';
+import { ApiFault, DemoPrintPort, HttpPrintPort, loadPilotOrderDetails, mapOrderSummary } from '../../web/src/api.ts';
 import { demoOrders } from '../../web/src/fixtures.ts';
 import { type StaffSession } from '../../web/src/domain.ts';
 import { listenForPilotConnection, loadPilotShopCode, parsePilotShopCodeDisplay, pilotOrderPrintStatus, PilotShopCodePanelView, type PilotShopCodeDisplay } from '../../web/src/pilot-shop-code.ts';
+import { coreDetail } from './core-fixtures.ts';
 
 const fromWeb = createRequire(new URL('../../web/package.json', import.meta.url));
 const React = fromWeb('react');
@@ -133,6 +134,63 @@ test('Core order summary without explicit print state stays UNKNOWN; manual lock
   assert.equal(pilotOrderPrintStatus(summary).status, 'UNKNOWN');
 });
 
+test('pilot cards use matching staff order details; missing or cross-order detail stays UNKNOWN', async () => {
+  const summaries = ['order-1', 'order-2', 'order-3', ...Array.from({ length: 9 }, (_, i) => `order-${i + 4}`)]
+    .map(id => mapOrderSummary({ id, active_revision: 1 }));
+  const calls: string[] = [];
+  const details = await loadPilotOrderDetails(summaries, async id => {
+    calls.push(id);
+    const detail = { ...structuredClone(demoOrders[0]), order_id: id, detail_loaded: true };
+    if (id === 'order-1') return { ...detail, print_state: 'SENDING' as const };
+    if (id === 'order-2') return { ...detail, order_id: 'other-order', print_state: 'SENT_UNVERIFIED' as const };
+    if (id === 'order-3') throw new ApiFault(503, 'DETAIL_UNAVAILABLE', 'not available');
+    return detail;
+  });
+  assert.equal(details.length, 10, 'only the ten cards shown on the page need detail reads');
+  assert.deepEqual(calls, summaries.slice(0, 10).map(order => order.order_id));
+  assert.equal(details[0].detail_loaded, true);
+  assert.equal(details[0].print_state, 'SENDING');
+  assert.equal(details[1].detail_loaded, undefined);
+  assert.equal(details[1].print_state, 'UNKNOWN');
+  assert.equal(details[2].print_state, 'UNKNOWN');
+  await assert.rejects(
+    loadPilotOrderDetails([summaries[0]], async () => {
+      throw new ApiFault(401, 'SESSION_EXPIRED', 'expired');
+    }),
+    (error: unknown) => error instanceof ApiFault && error.status === 401,
+  );
+});
+
+test('pilot status reads the authenticated order-detail route and maps jobs to UNKNOWN', async () => {
+  const principal = { id: staff.actor_id, shop_id: shopId, role: 'staff', verified: true };
+  const requests: Array<{ url: string; authorization: string | null }> = [];
+  const detailPayload = {
+    ...coreDetail(),
+    jobs: [{ id: 'job-unknown', revision: 3, request_hash: 'req-hash', state: 'UNKNOWN', printer_id: 'RMP7000' }],
+    current: { revision: 3, request_hash: 'req-hash' },
+    print_progress: { planned_sheets: null, verified_sheets: 0, missing_sheets: null,
+      delivered_sheets: 0, fully_verified: false, requires_manual_reconciliation: true },
+  };
+  const port = new HttpPrintPort('', async (input, init = {}) => {
+    const url = String(input);
+    requests.push({ url, authorization: new Headers(init.headers).get('Authorization') });
+    if (url.endsWith('/api/v1/auth/login')) return jsonResponse({ token: 'short-lived-staff-token', principal });
+    if (url.endsWith('/api/v1/auth/me')) return jsonResponse({ principal });
+    if (url.endsWith('/api/v1/orders/order-ai1')) return jsonResponse(detailPayload);
+    return jsonResponse({ error: { code: 'NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await port.login(shopId, 'staff', 'synthetic-password');
+  const [order] = await loadPilotOrderDetails(
+    [mapOrderSummary({ id: 'order-ai1', active_revision: 3 })],
+    orderId => port.getOrder(orderId),
+  );
+  assert.deepEqual(requests.at(-1), {
+    url: '/api/v1/orders/order-ai1', authorization: 'Bearer short-lived-staff-token',
+  });
+  assert.equal(order.detail_loaded, true);
+  assert.equal(order.print_state, 'UNKNOWN');
+});
+
 test('panel renders only authenticated escaped code, hides stale order rows, and marks uncertain print state UNKNOWN', () => {
   const unsafe = { ...validDto, code: '<img src=x onerror=alert(1)>' };
   const ready = { status: 'ready' as const, display: unsafe, receivedAt: 0, remainingAtReceiptMs: 120000 };
@@ -167,6 +225,7 @@ test('panel renders only authenticated escaped code, hides stale order rows, and
   }));
   assert.match(unknownOrderHtml, /UNKNOWN/);
   assert.match(unknownOrderHtml, /không tự gửi lại lệnh/i);
+  assert.match(unknownOrderHtml, /chi tiết đơn; trạng thái giữ UNKNOWN/i);
   assert.doesNotMatch(unknownOrderHtml, /Đã in/);
 
   const sessionExpiredHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
@@ -235,7 +294,10 @@ test('pilot page is gated to a live staff session while the existing order-manag
   assert.ok(/view === 'shop-code' \? <PilotShopCodePanel/.test(app), 'pilot page is part of the authenticated app');
   assert.ok(/view === 'orders'/.test(app), 'existing order-management flow remains');
   assert.ok(/this\.call\('\/api\/v1\/pilot\/shop-code'\)/.test(api), 'uses only the #163 route');
-  assert.ok(/Core hiện chỉ trả danh sách tóm tắt; khi thiếu trạng thái in tường minh, UI giữ UNKNOWN/.test(panel), 'summary rows never manufacture print readiness');
+  assert.ok(/export async function loadPilotOrderDetails/.test(api), 'pilot statuses are loaded through the order detail adapter');
+  assert.ok(/return mapCoreOrderDetail\(raw\)/.test(api), 'detail reads use the existing Core order-detail mapper');
+  assert.ok(/loadPilotOrderDetails\(list, orderId => port\.getOrder\(orderId\)\)/.test(app), 'pilot status refresh requests staff-scoped details');
+  assert.ok(/khi thiếu chi tiết hoặc bằng chứng, UI giữ UNKNOWN/.test(panel), 'missing detail/readiness never becomes print-ready');
   assert.ok(/listenForPilotConnection\(window, onOffline, onOnline\)/.test(panel), 'offline/online events are attached to the pilot page');
   assert.ok(/setState\(\{ status: 'unavailable' \}\);\s*setRefreshing\(false\)/.test(panel), 'offline invalidates the old code immediately');
   assert.ok(/apiHealthy: apiHealthy && browserOnline && ordersFresh/.test(panel), 'offline and stale order data display UNKNOWN');

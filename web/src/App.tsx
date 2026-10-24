@@ -7,7 +7,7 @@ import {
   RefreshCw, Search, Settings2, ShieldAlert, ShieldCheck, SlidersHorizontal, Smartphone, UserRound,
   Wallet, X
 } from 'lucide-react';
-import { ApiFault, isDemo, makePort, newMutationKey, snapshotFromPort, type PrintPort } from './api.ts';
+import { ApiFault, isDemo, loadPilotOrderDetails, makePort, newMutationKey, snapshotFromPort, type PrintPort } from './api.ts';
 import {
   availableVerifiedSheets, confirmationReadiness, conversationLabels, deliveryLabels, depositShortfall, hasValidApprovalInputs, isPrintUncertain, money,
   orderLabels, paymentLabels, printLabels, receivable,
@@ -82,7 +82,7 @@ function App() {
   const selectedOrder = orders.find(o => o.order_id === selected) ?? null;
   const firstWordDocument=selectedOrder?.documents.find(d=>['DOC','DOCX','WORD'].includes(d.format.trim().toUpperCase()))??null;
   useEffect(() => { selectedIdRef.current = selected; }, [selected]);
-  const load = useCallback(async (onlyOrders = false): Promise<boolean> => {
+  const load = useCallback(async (onlyOrders = false, pilotOrderDetails = false): Promise<boolean> => {
     requestEpoch.current++;
     setChatLoaded(false);
     setChatLoading(false);
@@ -92,7 +92,11 @@ function App() {
       const list = snapshot?.orders ?? await port.listOrders();
       if (snapshot) { setSession(snapshot.session); setMode(snapshot.mode); }
       const id = selectedIdRef.current;
-      if (!useDemo && id && (snapshot?.session || onlyOrders)) {
+      if (!useDemo && pilotOrderDetails) {
+        const details = await loadPilotOrderDetails(list, orderId => port.getOrder(orderId));
+        const byId = new Map(details.map(detail => [detail.order_id, detail]));
+        setOrders(list.map(summary => byId.get(summary.order_id) ?? summary));
+      } else if (!useDemo && id && (snapshot?.session || onlyOrders)) {
         const detail = await port.getOrder(id);
         setOrders(list.some(o => o.order_id === id)
           ? list.map(o => o.order_id === id ? detail : o) : [detail, ...list]);
@@ -107,7 +111,7 @@ function App() {
       return false;
     } finally { setLoading(false); }
   }, []);
-  const refreshPilotOrders = useCallback(() => load(true), [load]);
+  const refreshPilotOrders = useCallback(() => load(true, true), [load]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
