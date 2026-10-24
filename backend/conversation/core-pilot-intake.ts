@@ -3,6 +3,7 @@ import type {ApplyIncomingBatchInput,ApplyIncomingBatchResult} from "../core/inc
 import type {IncomingQueueBatchInput,IncomingQueueBatchSnapshot} from "../core/oa-intake-batches.ts";
 import type {LeasedBatch} from "../integrations/zalo/postgres-durable.ts";
 import type {InboundEvent} from "../integrations/zalo/protocol.ts";
+import type {PilotSourceCustodyPort,PilotVerifiedMediaPort,SealedPilotSource} from "./pilot-word-pdf-intake.ts";
 import {extractPilotPrintIntent} from "./pilot-print-intent.ts";
 import {classifyIncomingOrderBatch,classifyIncomingOrderBoundary} from "./order-batch-intent.ts";
 import type {Batch} from "./batch.ts";
@@ -17,6 +18,137 @@ const permanentCoreErrors=new Set([
   "INCOMING_PILOT_SETTINGS_NOT_READY","INCOMING_SOURCE_SELECTOR_CONFLICT",
   "PILOT_SETTINGS_EVENTS_UNVERIFIED"
 ]);
+const maxPilotSourceBytes=25*1024*1024;
+const privateSourceRef=/^doc-[a-f0-9]{32}\/source-000-([a-f0-9]{64})\.(pdf|docx)$/;
+const byteSha256=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
+
+function hasDocxDirectory(bytes:Uint8Array):boolean {
+  const view=Buffer.from(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  const min=Math.max(0,view.length-22-0xffff);
+  let end=-1;
+  for(let offset=view.length-22;offset>=min;offset--){
+    if(view.readUInt32LE(offset)===0x06054b50&&
+       offset+22+view.readUInt16LE(offset+20)===view.length){end=offset;break;}
+  }
+  if(end<0||view.readUInt16LE(end+4)!==0||view.readUInt16LE(end+6)!==0||
+     view.readUInt16LE(end+8)!==view.readUInt16LE(end+10))return false;
+  const count=view.readUInt16LE(end+10),size=view.readUInt32LE(end+12),start=view.readUInt32LE(end+16);
+  if(count<2||count>10_000||count===0xffff||size===0xffffffff||start===0xffffffff||
+     start+size!==end)return false;
+  let offset=start,contentTypes=0,documentXml=0;
+  for(let index=0;index<count;index++){
+    if(offset+46> end||view.readUInt32LE(offset)!==0x02014b50)return false;
+    const flags=view.readUInt16LE(offset+8),nameLength=view.readUInt16LE(offset+28);
+    const extraLength=view.readUInt16LE(offset+30),commentLength=view.readUInt16LE(offset+32);
+    const localOffset=view.readUInt32LE(offset+42),recordEnd=offset+46+nameLength+extraLength+commentLength;
+    if((flags&1)!==0||nameLength<1||recordEnd>end||localOffset+30>start||
+       view.readUInt16LE(offset+34)!==0||view.readUInt32LE(localOffset)!==0x04034b50||
+       view.readUInt16LE(localOffset+6)!==flags||view.readUInt16LE(localOffset+8)!==view.readUInt16LE(offset+10))return false;
+    let name:string;
+    try{name=new TextDecoder("utf-8",{fatal:true}).decode(view.subarray(offset+46,offset+46+nameLength));}
+    catch{return false;}
+    const localNameLength=view.readUInt16LE(localOffset+26),localExtraLength=view.readUInt16LE(localOffset+28);
+    const localNameStart=localOffset+30,localNameEnd=localNameStart+localNameLength;
+    if(localNameEnd+localExtraLength>start||localNameLength!==nameLength||
+       !view.subarray(localNameStart,localNameEnd).equals(view.subarray(offset+46,offset+46+nameLength)))return false;
+    if(name.startsWith("/")||name.includes("\\")||name.split("/").some(part=>part===".."||part==="."))return false;
+    if(name==="[Content_Types].xml")contentTypes++;
+    if(name==="word/document.xml")documentXml++;
+    offset=recordEnd;
+  }
+  return offset===start+size&&contentTypes===1&&documentXml===1;
+}
+
+function sourceFormat(bytes:Uint8Array):"PDF"|"DOCX"|null {
+  if(bytes.byteLength>=5&&bytes[0]===0x25&&bytes[1]===0x50&&bytes[2]===0x44&&
+     bytes[3]===0x46&&bytes[4]===0x2d)return "PDF";
+  // Require the OOXML content-type and document entries, not just a ZIP header.
+  // Core/document processing must still validate the XML and document content.
+  if(bytes.byteLength>=22&&bytes[0]===0x50&&bytes[1]===0x4b&&bytes[2]===0x03&&bytes[3]===0x04&&
+     hasDocxDirectory(bytes))
+    return "DOCX";
+  return null;
+}
+
+export interface PilotPrivateSourceLookupPort {
+  /** Server-only lookup by verified OA/event key; never accepts a caller path/ref. */
+  find_sealed(input:{readonly oa_id:string;readonly provider_event_id:string}):Promise<SealedPilotSource|null>;
+}
+export interface PilotSourceCapturePort {
+  /** Resolve existing private custody or seal bytes returned by a trusted media port. */
+  ensure_sealed_source(input:{readonly oa_id:string;readonly customer_id:string;
+    readonly conversation_id:string;readonly provider_event_id:string}):Promise<SealedPilotSource|null>;
+}
+export interface PilotSourceCaptureOptions {
+  readonly media:PilotVerifiedMediaPort;
+  readonly custody:PilotSourceCustodyPort;
+  readonly lookup:PilotPrivateSourceLookupPort;
+}
+
+function validSealedSource(source:unknown,scope:{oa_id:string;customer_id:string;
+  conversation_id:string;provider_event_id:string}):source is SealedPilotSource {
+  if(!source||typeof source!=="object"||Array.isArray(source))return false;
+  const value=source as Partial<SealedPilotSource>;
+  if(value.schema!=="ai0.pilot_sealed_source.v1"||value.oa_id!==scope.oa_id||
+     value.customer_id!==scope.customer_id||value.conversation_id!==scope.conversation_id||
+     value.provider_event_id!==scope.provider_event_id||
+     (value.format!=="PDF"&&value.format!=="DOCX")||
+     typeof value.sha256!=="string"||!/^[a-f0-9]{64}$/.test(value.sha256)||
+     !Number.isSafeInteger(value.size_bytes)||Number(value.size_bytes)<1||
+     Number(value.size_bytes)>maxPilotSourceBytes||typeof value.artifact_ref!=="string")return false;
+  const match=privateSourceRef.exec(value.artifact_ref);
+  return !!match&&match[1]===value.sha256&&
+    match[2]===(value.format==="PDF"?"pdf":"docx");
+}
+
+/**
+ * Server-side capture bridge for the persistent Core batch adapter. It has no
+ * HTTP/download implementation: media is resolved by OA + event ID through a
+ * trusted injected port. Zalo URL/auth/expiry/redirect semantics remain a
+ * separate provider blocker. A successful synthetic port is not live proof.
+ */
+export function createPilotSourceCaptureAdapter(options:PilotSourceCaptureOptions):PilotSourceCapturePort {
+  if(!options?.media||typeof options.media.read_verified!=="function"||
+     !options.custody||typeof options.custody.seal!=="function"||
+     typeof options.custody.read_sealed!=="function"||
+     !options.lookup||typeof options.lookup.find_sealed!=="function")
+    throw new Error("PILOT_SOURCE_CAPTURE_PORTS_REQUIRED");
+  return {async ensure_sealed_source(scope){
+    if(!scope||!scope.oa_id||!scope.customer_id||!scope.conversation_id||
+       !scope.provider_event_id)return null;
+    const existing=await options.lookup.find_sealed({oa_id:scope.oa_id,
+      provider_event_id:scope.provider_event_id});
+    if(existing){
+      if(!validSealedSource(existing,scope))return null;
+      const priorBytes=await options.custody.read_sealed({oa_id:scope.oa_id,
+        provider_event_id:scope.provider_event_id,artifact_ref:existing.artifact_ref});
+      if(!(priorBytes instanceof Uint8Array)||priorBytes.byteLength!==existing.size_bytes||
+         byteSha256(priorBytes)!==existing.sha256||sourceFormat(priorBytes)!==existing.format)return null;
+      return existing;
+    }
+    const media=await options.media.read_verified({oa_id:scope.oa_id,
+      provider_event_id:scope.provider_event_id});
+    if(!media||media.oa_id!==scope.oa_id||media.customer_id!==scope.customer_id||
+       media.conversation_id!==scope.conversation_id||
+       media.provider_event_id!==scope.provider_event_id||
+       !(media.bytes instanceof Uint8Array)||media.bytes.byteLength<1||
+       media.bytes.byteLength>maxPilotSourceBytes)return null;
+    const bytes=new Uint8Array(media.bytes);
+    const format=sourceFormat(bytes);
+    if(!format)return null;
+    const sha256=byteSha256(bytes);
+    const sealed=await options.custody.seal({oa_id:scope.oa_id,customer_id:scope.customer_id,
+      conversation_id:scope.conversation_id,provider_event_id:scope.provider_event_id,
+      format,bytes:new Uint8Array(bytes),sha256,size_bytes:bytes.byteLength});
+    if(!validSealedSource(sealed,scope)||sealed.format!==format||
+       sealed.sha256!==sha256||sealed.size_bytes!==bytes.byteLength)return null;
+    const readback=await options.custody.read_sealed({oa_id:scope.oa_id,
+      provider_event_id:scope.provider_event_id,artifact_ref:sealed.artifact_ref});
+    if(!(readback instanceof Uint8Array)||readback.byteLength!==bytes.byteLength||
+       byteSha256(readback)!==sha256||sourceFormat(readback)!==format)return null;
+    return sealed;
+  }};
+}
 
 export interface CorePilotSettingsReadInput {
   readonly intake_batch_id:string;
@@ -38,11 +170,15 @@ export interface CorePilotIntakePort extends CorePilotSettingsEventReader {
   /** The server composition must use Core's IncomingBatchPort configured with
    * a private-custody IncomingSealedSourceReader. AI2 never supplies source data. */
   apply_incoming_batch(input:ApplyIncomingBatchInput):Promise<ApplyIncomingBatchResult>;
+  /** Optional until server composition has an approved, event-keyed media port.
+   * Missing capture keeps a file lease held before Core can create an order. */
+  readonly source_capture?:PilotSourceCapturePort;
 }
 export type CorePilotIntakeCalls=Pick<CorePilotIntakePort,
   "acceptIncomingQueueBatch"|"apply_incoming_batch">;
 export type CorePilotIntakeIntegration=CorePilotIntakeCalls&{
   readonly trusted_shop_id:string;readonly trusted_oa_id:string;
+  readonly source_capture?:PilotSourceCapturePort;
 };
 export interface CorePilotIntakeOptions {
   readonly trusted_shop_id:string;
@@ -206,11 +342,48 @@ export function createCorePilotIntakeAdapter(options:CorePilotIntakeOptions) {
          (snapshot.status!=="OPEN"&&snapshot.status!=="BOUND"))return "held";
       if(expectedCodeEvents(snapshot.events).length>1||
          snapshot.events.filter(event=>event.role==="SOURCE").length>1)return "held";
+      const settingsBindings=snapshot.events.filter(event=>event.role==="SETTINGS");
+      const sourceBindings=snapshot.events.filter(event=>event.role==="SOURCE");
+      if(settingsBindings.some(event=>event.kind!=="text")||
+         sourceBindings.some(event=>event.kind!=="file"))return "held";
+      if(sourceBindings.length===1){
+        const sourceEventId=sourceBindings[0]!.event_id;
+        // SOURCE may have arrived in an earlier lease. Its only selector is
+        // the persisted Core role returned for this intake, never a caller ID.
+        if(!core.source_capture)return "held";
+        try{
+          const sealed=await core.source_capture.ensure_sealed_source({oa_id:snapshot.oa_id,
+            customer_id:snapshot.customer_id,conversation_id:snapshot.conversation_id,
+            provider_event_id:sourceEventId});
+          if(!validSealedSource(sealed,{oa_id:snapshot.oa_id,customer_id:snapshot.customer_id,
+            conversation_id:snapshot.conversation_id,provider_event_id:sourceEventId}))return "held";
+        }catch{
+          // Media transport and provider retry semantics are not verified. Keep
+          // this durable lease held; never turn an unknown result into success.
+          return "held";
+        }
+        // A waiting batch has no later apply call to re-check the current lease.
+        // Re-accept the same server lease after I/O before completing it.
+        if(snapshot.readiness!=="READY"){
+          try{
+            const checked=await core.acceptIncomingQueueBatch(acceptInput);
+            const roleSignature=(value:IncomingQueueBatchSnapshot)=>JSON.stringify(
+              value.events.map(event=>[event.event_id,event.kind,event.role]).sort((a,b)=>
+                String(a[0]).localeCompare(String(b[0]))));
+            if(!validSnapshot(checked,lease,ids,shop,oa)||
+               checked.intake_batch_id!==snapshot.intake_batch_id||
+               checked.readiness!==snapshot.readiness||
+               roleSignature(checked)!==roleSignature(snapshot)||
+               (checked.status!=="OPEN"&&checked.status!=="BOUND"))return "held";
+          }catch(error){
+            if(permanentCoreErrors.has(errorCode(error)??""))return "held";
+            return "held";
+          }
+        }
+      }
       if(snapshot.readiness==="WAITING_FOR_FILE"||snapshot.readiness==="WAITING_FOR_SETTINGS"||
          snapshot.readiness==="WAITING_FOR_CODE")return "processed";
       if(snapshot.readiness!=="READY")return "held";
-      const settingsBindings=snapshot.events.filter(event=>event.role==="SETTINGS");
-      const sourceBindings=snapshot.events.filter(event=>event.role==="SOURCE");
       if(settingsBindings.length<1||settingsBindings.some(event=>event.kind!=="text")||
          sourceBindings.length!==1||sourceBindings[0]?.kind!=="file")return "held";
       const settingsIds=settingsBindings.map(event=>event.event_id);

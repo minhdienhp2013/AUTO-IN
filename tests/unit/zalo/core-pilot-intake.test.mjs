@@ -1,10 +1,38 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {createCorePilotIntakeAdapter} from "../../../backend/conversation/core-pilot-intake.ts";
+import {createCorePilotIntakeAdapter,createPilotSourceCaptureAdapter} from "../../../backend/conversation/core-pilot-intake.ts";
 import {ConversationProcessor} from "../../../backend/conversation/processor.ts";
 import {DurableConversationWorker} from "../../../backend/conversation/durable-worker.ts";
+import {createHash} from "node:crypto";
 
 const SHOP="shop-safe",OA="oa-safe",CUSTOMER="customer-1",CHAT="chat-1";
+const PDF_BYTES=Buffer.from("%PDF-1.7\nsynthetic public fixture\n%%EOF\n");
+const PDF_SHA=createHash("sha256").update(PDF_BYTES).digest("hex");
+const PDF_REF=`doc-${"a".repeat(32)}/source-000-${PDF_SHA}.pdf`;
+function makeZip(entries){
+  const localParts=[],centralParts=[];let localOffset=0;
+  for(const [name,contentValue] of entries){
+    const nameBytes=Buffer.from(name),content=Buffer.from(contentValue),local=Buffer.alloc(30),central=Buffer.alloc(46);
+    local.writeUInt32LE(0x04034b50,0);local.writeUInt16LE(20,4);local.writeUInt16LE(0,6);
+    local.writeUInt16LE(0,8);local.writeUInt32LE(0,14);local.writeUInt32LE(content.length,18);
+    local.writeUInt32LE(content.length,22);local.writeUInt16LE(nameBytes.length,26);local.writeUInt16LE(0,28);
+    localParts.push(local,nameBytes,content);
+    central.writeUInt32LE(0x02014b50,0);central.writeUInt16LE(20,4);central.writeUInt16LE(20,6);
+    central.writeUInt16LE(0,8);central.writeUInt16LE(0,10);central.writeUInt32LE(0,16);
+    central.writeUInt32LE(content.length,20);central.writeUInt32LE(content.length,24);
+    central.writeUInt16LE(nameBytes.length,28);central.writeUInt16LE(0,30);central.writeUInt16LE(0,32);
+    central.writeUInt16LE(0,34);central.writeUInt32LE(0,38);central.writeUInt32LE(localOffset,42);
+    centralParts.push(central,nameBytes);
+    localOffset+=local.length+nameBytes.length+content.length;
+  }
+  const central=Buffer.concat(centralParts),local=Buffer.concat(localParts),end=Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50,0);end.writeUInt16LE(entries.length,8);end.writeUInt16LE(entries.length,10);
+  end.writeUInt32LE(central.length,12);end.writeUInt32LE(local.length,16);end.writeUInt16LE(0,20);
+  return Buffer.concat([local,central,end]);
+}
+const DOCX_BYTES=makeZip([["[Content_Types].xml","<Types/>"] , ["word/document.xml","<document/>"]]);
+const DOCX_SHA=createHash("sha256").update(DOCX_BYTES).digest("hex");
+const DOCX_REF=`doc-${"b".repeat(32)}/source-000-${DOCX_SHA}.docx`;
 const code=(id="code-1",text="Mã cửa hàng: 0123456789")=>event(id,"text",text);
 const settings=(id="settings-1",text="A4, in 2 bản, hai mặt, đen trắng")=>event(id,"text",text);
 const file=(id="file-1")=>event(id,"file",undefined);
@@ -17,7 +45,7 @@ function lease(batch_id,events,lease_token=`lease-${batch_id}`,order=events.map(
 }
 function harness({applyResult={status:"created",order_id:"order-1",active_revision:1},
   acceptStatus="OPEN",readiness:readinessOverride,throwAccept,throwApply}={}){
-  const seen={accept:[],apply:[],reads:[],snapshots:[]},intakes=new Map();let nextIntake=0;
+  const seen={accept:[],apply:[],reads:[],snapshots:[],capture:[]},intakes=new Map();let nextIntake=0;
   const core={trusted_shop_id:SHOP,trusted_oa_id:OA,
     async acceptIncomingQueueBatch(input){
       seen.accept.push(structuredClone(input));
@@ -54,6 +82,12 @@ function harness({applyResult={status:"created",order_id:"order-1",active_revisi
       if(throwApply)throw throwApply;
       return applyResult;
     }};
+  core.source_capture={async ensure_sealed_source(input){
+    seen.capture.push(structuredClone(input));
+    return {schema:"ai0.pilot_sealed_source.v1",oa_id:input.oa_id,customer_id:input.customer_id,
+      conversation_id:input.conversation_id,provider_event_id:input.provider_event_id,
+      format:"PDF",artifact_ref:PDF_REF,sha256:PDF_SHA,size_bytes:PDF_BYTES.length};
+  }};
   let currentLease;
   const adapter=createCorePilotIntakeAdapter({trusted_shop_id:SHOP,trusted_oa_id:OA,core});
   return {adapter,core,seen,setLease(value){currentLease=value;},get currentLease(){return currentLease;}};
@@ -79,6 +113,8 @@ test("code-before-file stays in the same persistent intake; source/settings appl
   assert.ok(!Object.keys(h.seen.apply[0]).some(key=>/artifact|sha|path|bytes|source_ref/i.test(key)));
   assert.deepEqual(h.seen.reads[0].event_ids,["settings-1"]);
   assert.equal(h.seen.reads[0].queue_batch_id,"12");
+  assert.deepEqual(h.seen.capture,[{oa_id:OA,customer_id:CUSTOMER,
+    conversation_id:CHAT,provider_event_id:"file-1"}]);
 });
 
 test("settings received before the source are read only from Core's SETTINGS role in the same intake",async()=>{
@@ -92,6 +128,146 @@ test("settings received before the source are read only from Core's SETTINGS rol
     {copies:2,duplex:true,paper:"A4",color:"black_white"});
   assert.deepEqual(h.seen.reads[0].event_ids,["settings-1"]);
   assert.deepEqual(h.seen.apply[0].event_ids,["file-1"]);
+});
+
+test("Core-bound SOURCE bytes are hashed, privately sealed/read back, then applied without artifact fields",async()=>{
+  const h=harness(),stored=new Map(),trace=[],mediaInputs=[];
+  h.core.source_capture=createPilotSourceCaptureAdapter({
+    lookup:{async find_sealed(input){
+      trace.push("lookup");
+      return stored.get(`${input.oa_id}:${input.provider_event_id}`)??null;
+    }},
+    media:{async read_verified(input){
+      trace.push("media");mediaInputs.push(structuredClone(input));
+      return {oa_id:OA,customer_id:CUSTOMER,conversation_id:CHAT,
+        provider_event_id:input.provider_event_id,bytes:new Uint8Array(PDF_BYTES)};
+    }},
+    custody:{async seal(input){
+      trace.push("seal");
+      assert.equal(input.provider_event_id,"file-1");
+      assert.equal(input.sha256,PDF_SHA);
+      assert.equal(input.size_bytes,PDF_BYTES.length);
+      assert.deepEqual(Buffer.from(input.bytes),PDF_BYTES);
+      const sealed={schema:"ai0.pilot_sealed_source.v1",oa_id:input.oa_id,
+        customer_id:input.customer_id,conversation_id:input.conversation_id,
+        provider_event_id:input.provider_event_id,format:input.format,
+        artifact_ref:PDF_REF,sha256:input.sha256,size_bytes:input.size_bytes};
+      stored.set(`${input.oa_id}:${input.provider_event_id}`,sealed);
+      return sealed;
+    },async read_sealed(input){
+      trace.push("readback");
+      const sealed=stored.get(`${input.oa_id}:${input.provider_event_id}`);
+      return sealed?.artifact_ref===input.artifact_ref?new Uint8Array(PDF_BYTES):null;
+    }}
+  });
+  const candidate=lease("12",[file(),settings()]);h.setLease(candidate);
+  const apply=h.core.apply_incoming_batch.bind(h.core);
+  h.core.apply_incoming_batch=async(input)=>{trace.push("core-apply");return apply(input);};
+  assert.equal(await h.adapter.consume(candidate,4),"processed");
+  assert.deepEqual(trace,["lookup","media","seal","readback","core-apply"]);
+  assert.deepEqual(mediaInputs,[{oa_id:OA,provider_event_id:"file-1"}]);
+  assert.equal(h.seen.apply.length,1);
+  assert.doesNotMatch(JSON.stringify(h.seen.apply[0]),/artifact_ref|sha256|bytes|path|url/i);
+});
+
+test("file captured while settings are missing is reused from custody in the later settings lease",async()=>{
+  const h=harness(),stored=new Map();let mediaReads=0,seals=0;
+  h.core.source_capture=createPilotSourceCaptureAdapter({
+    lookup:{async find_sealed(input){return stored.get(`${input.oa_id}:${input.provider_event_id}`)??null;}},
+    media:{async read_verified(input){
+      mediaReads++;
+      return {oa_id:OA,customer_id:CUSTOMER,conversation_id:CHAT,
+        provider_event_id:input.provider_event_id,bytes:new Uint8Array(PDF_BYTES)};
+    }},
+    custody:{async seal(input){
+      seals++;
+      const row={schema:"ai0.pilot_sealed_source.v1",oa_id:input.oa_id,
+        customer_id:input.customer_id,conversation_id:input.conversation_id,
+        provider_event_id:input.provider_event_id,format:input.format,
+        artifact_ref:PDF_REF,sha256:input.sha256,size_bytes:input.size_bytes};
+      stored.set(`${input.oa_id}:${input.provider_event_id}`,row);return row;
+    },async read_sealed(input){
+      const row=stored.get(`${input.oa_id}:${input.provider_event_id}`);
+      return row?.artifact_ref===input.artifact_ref?new Uint8Array(PDF_BYTES):null;
+    }}
+  });
+  const first=lease("91",[file()],"lease-91");h.setLease(first);
+  assert.equal(await h.adapter.consume(first,1),"processed");
+  assert.equal(h.seen.apply.length,0);
+  assert.equal(h.seen.accept.length,2,"waiting lease is rechecked after source I/O");
+  assert.equal(mediaReads,1);assert.equal(seals,1);
+
+  const later=lease("92",[settings()],"lease-92");h.setLease(later);
+  assert.equal(await h.adapter.consume(later,1),"processed");
+  assert.equal(h.seen.apply.length,1);
+  assert.equal(mediaReads,1,"older source is read from private custody, not downloaded again");
+  assert.equal(seals,1);
+});
+
+test("missing, mismatched, corrupt or oversized media holds before Core apply",async()=>{
+  const invalidMedia=[
+    async()=>null,
+    async(input)=>({oa_id:OA,customer_id:"other",conversation_id:CHAT,
+      provider_event_id:input.provider_event_id,bytes:new Uint8Array(PDF_BYTES)}),
+    async(input)=>({oa_id:OA,customer_id:CUSTOMER,conversation_id:CHAT,
+      provider_event_id:input.provider_event_id,bytes:Buffer.from("not PDF or DOCX")}),
+    async(input)=>({oa_id:OA,customer_id:CUSTOMER,conversation_id:CHAT,
+      provider_event_id:input.provider_event_id,bytes:new Uint8Array(25*1024*1024+1)})
+  ];
+  for(const read_verified of invalidMedia){
+    const h=harness();
+    h.core.source_capture=createPilotSourceCaptureAdapter({
+      lookup:{async find_sealed(){return null;}},media:{read_verified},
+      custody:{async seal(){assert.fail("invalid media must not be sealed");},
+        async read_sealed(){return null;}}
+    });
+    const candidate=lease("93",[file(),settings()]);h.setLease(candidate);
+    assert.equal(await h.adapter.consume(candidate,1),"held");
+    assert.equal(h.seen.apply.length,0);
+  }
+  const noPort=harness();noPort.core.source_capture=undefined;
+  const candidate=lease("94",[file(),settings()]);noPort.setLease(candidate);
+  assert.equal(await noPort.adapter.consume(candidate,1),"held");
+  assert.equal(noPort.seen.apply.length,0);
+});
+
+test("capture failure holds the queue lease; it is neither completed nor applied to Core",async()=>{
+  const h=harness(),candidate=lease("95",[file(),settings()]),trace=[];h.setLease(candidate);
+  h.core.source_capture={async ensure_sealed_source(){throw new Error("provider contract unavailable");}};
+  const processor=new ConversationProcessor(
+    {async read(){return {mode:"AI",generation:1,conversation_id:CHAT};}},
+    {async inspect(){assert.fail("pilot must not enter document processing");}},
+    {async suggest_draft(){assert.fail("no legacy draft");},async route_human(){assert.fail("no automatic handoff");}},
+    {async enqueue(){assert.fail("no customer reply");}},undefined,undefined,undefined,h.core);
+  const queue={async ingest_pending(){return 0;},async claim_due(){return [candidate];},
+    async complete(){trace.push("complete");return true;},
+    async hold(){trace.push("hold");return true;},
+    async fail(_batch,error){throw new Error(`unexpected retry path: ${error}`);}};
+  const result=await new DurableConversationWorker(queue,processor).tick();
+  assert.equal(result.held,1);assert.deepEqual(trace,["hold"]);
+  assert.equal(h.seen.apply.length,0);
+});
+
+test("DOCX needs OOXML directory entries; a generic ZIP container is not accepted as DOCX",async()=>{
+  async function capture(bytes,expectedFormat,expectedRef,expectedSha){
+    let sealedInput;
+    const adapter=createPilotSourceCaptureAdapter({
+      lookup:{async find_sealed(){return null;}},
+      media:{async read_verified(input){return {oa_id:OA,customer_id:CUSTOMER,
+        conversation_id:CHAT,provider_event_id:input.provider_event_id,bytes:new Uint8Array(bytes)};}},
+      custody:{async seal(input){sealedInput=input;return {schema:"ai0.pilot_sealed_source.v1",
+        oa_id:OA,customer_id:CUSTOMER,conversation_id:CHAT,provider_event_id:"file-docx",
+        format:input.format,artifact_ref:expectedRef,sha256:input.sha256,size_bytes:input.size_bytes};},
+        async read_sealed(){return new Uint8Array(bytes);}}
+    });
+    const result=await adapter.ensure_sealed_source({oa_id:OA,customer_id:CUSTOMER,
+      conversation_id:CHAT,provider_event_id:"file-docx"});
+    if(expectedFormat===null){assert.equal(sealedInput,undefined);assert.equal(result,null);}
+    else{assert.equal(sealedInput.format,expectedFormat);assert.equal(sealedInput.sha256,expectedSha);
+      assert.equal(result.format,expectedFormat);}
+  }
+  await capture(DOCX_BYTES,"DOCX",DOCX_REF,DOCX_SHA);
+  await capture(makeZip([["notes.txt","not an OOXML document"]]),null,null,null);
 });
 
 test("split SETTINGS events are combined only within the Core intake batch",async()=>{
