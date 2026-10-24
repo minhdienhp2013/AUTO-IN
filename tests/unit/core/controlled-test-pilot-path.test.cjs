@@ -146,6 +146,16 @@ test('server-owned controlled scope is rejected if the shop has returned to simu
  assert.deepEqual(f.writes,[]);
 });
 
+test('legacy generic report cannot bypass the pilot evidence report gate',async()=>{
+ const f=fixture();
+ f.service.validateJob=async()=>({o:order,j:{...f.jobs[orderId],state:'SENDING'}});
+ await assert.rejects(f.service.report(agent,'job-a',{expected_revision:1,lease_token:'lease-a',
+  result:'sent_unverified',evidence_kind:'spooler',idempotency_key:'legacy-pilot-report'}),
+  error=>error.code==='PILOT_REPORT_REQUIRED');
+ assert.deepEqual(f.writes,[]);
+ assert.equal(f.jobs[orderId].state,'NOT_SENT');
+});
+
 test('pilot lane stops before the send boundary when the grant expires or is revoked after claim',async()=>{
  const f=fixture();
  const claimed=await f.service.claimPilot(agent,{printer_id:printerId,idempotency_key:'claim-a'},serverScope);

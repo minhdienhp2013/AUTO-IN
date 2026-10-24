@@ -1087,6 +1087,8 @@ export class OrderService {
  async report(p:Principal,job_id:string,input:{expected_revision:number;lease_token:string;result:'sent_unverified'|'unknown'|'simulated_done';evidence_kind:'spooler'|'agent_uncertain'|'simulated';idempotency_key:string}){
   assertAgent(p);return this.store.tx(db=>this.store.once(db,p,`jobs.${job_id}.report`,input.idempotency_key,input,async()=>{
    const {o,j}=await this.validateJob(db,p,job_id,input.lease_token,input.expected_revision);
+   if(j.pilot_authorization_id)
+    throw new DomainError('PILOT_REPORT_REQUIRED','Pilot job cần report qua cổng pilot chuyên biệt',409);
    if(j.state!=='SENDING')throw new DomainError('INVALID_JOB_STATE','Chỉ có thể report SENDING',409);
    // Evidence must match the immutable send-time mode, not a mutable shop setting.
    const sendMode=j.mode_at_send;
