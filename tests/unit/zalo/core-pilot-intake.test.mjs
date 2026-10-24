@@ -44,7 +44,7 @@ function lease(batch_id,events,lease_token=`lease-${batch_id}`,order=events.map(
     events,server_received_event_ids:order};
 }
 function harness({applyResult={status:"created",order_id:"order-1",active_revision:1},
-  acceptStatus="OPEN",readiness:readinessOverride,throwAccept,throwApply,closeReceipt}={}){
+  acceptStatus="OPEN",acceptCloseReason=null,readiness:readinessOverride,throwAccept,throwApply,closeReceipt}={}){
   const seen={accept:[],apply:[],reads:[],snapshots:[],capture:[],close:[]},intakes=new Map();let nextIntake=0;
   const core={trusted_shop_id:SHOP,trusted_oa_id:OA,
     async acceptIncomingQueueBatch(input){
@@ -62,7 +62,7 @@ function harness({applyResult={status:"created",order_id:"order-1",active_revisi
       if(roles.source_event_id)intake.events.get(roles.source_event_id).role="SOURCE";
       for(const id of roles.settings_event_ids??[])intake.events.get(id).role="SETTINGS";
       const rows=[...intake.events.values()];
-      const snapshot={schema:"ai1.oa_intake_batch.v1",status:acceptStatus,
+      const snapshot={schema:"ai1.oa_intake_batch.v1",status:acceptStatus,close_reason:acceptCloseReason,
         readiness:readinessOverride??(!rows.some(e=>e.role==="SOURCE")?"WAITING_FOR_FILE":
           !rows.some(e=>e.role==="SETTINGS")?"WAITING_FOR_SETTINGS":"READY"),
         intake_batch_id:intake.id,queue_batch_id:input.queue_batch_id,shop_id:SHOP,oa_id:OA,
@@ -130,7 +130,8 @@ test('missing human-close port or unverified settings leaves color lease held',a
 });
 
 test('replay after a committed color close succeeds only with the same durable COLOR_PRINT reason',async()=>{
-  const h=harness({acceptStatus:'NEEDS_HUMAN'}),batch=lease('84',[settings('color-choice','Màu')]),trace=[];h.setLease(batch);
+  const h=harness({acceptStatus:'NEEDS_HUMAN',acceptCloseReason:'COLOR_PRINT'}),
+    batch=lease('84',[settings('color-choice','Màu')]),trace=[];h.setLease(batch);
   const processor=new ConversationProcessor(
     {async read(){return {mode:'AI',generation:4,conversation_id:CHAT};}},
     {async inspect(){assert.fail('pilot intake must not enter document processing');}},
@@ -151,7 +152,8 @@ test('a concurrent different close or an unverified receipt holds rather than co
   const cases=[
     {closeReceipt:input=>({status:'NEEDS_HUMAN',intake_batch_id:input.intake_batch_id,close_reason:'ORDER_ALREADY_AUTHORIZED'})},
     {closeReceipt:input=>({status:'NEEDS_HUMAN',intake_batch_id:input.intake_batch_id})},
-    {acceptStatus:'NEEDS_HUMAN',closeReceipt:input=>({status:'NEEDS_HUMAN',
+    {acceptStatus:'NEEDS_HUMAN',acceptCloseReason:'ORDER_ALREADY_AUTHORIZED',
+      closeReceipt:input=>({status:'NEEDS_HUMAN',
       intake_batch_id:input.intake_batch_id,close_reason:'ORDER_ALREADY_AUTHORIZED'})}
   ];
   for(const closeCase of cases){

@@ -256,6 +256,7 @@ function validSnapshot(value:IncomingQueueBatchSnapshot,batch:LeasedBatch,ids:st
   const first=batch.events[0];
   return !!first&&!!value&&typeof value==="object"&&Array.isArray(value.events)&&
     value.schema==="ai1.oa_intake_batch.v1"&&
+    (value.close_reason===null||typeof value.close_reason==="string")&&
     value.queue_batch_id===batch.batch_id&&value.shop_id===shop&&value.oa_id===oa&&
     value.customer_id===first.customer_id&&value.conversation_id===first.conversation_id&&
     value.purpose==="PILOT"&&typeof value.intake_batch_id==="string"&&
@@ -341,6 +342,7 @@ export function createCorePilotIntakeAdapter(options:CorePilotIntakeOptions) {
       }
       if(!validSnapshot(snapshot,lease,ids,shop,oa)||
          (snapshot.status!=="OPEN"&&snapshot.status!=="BOUND"&&snapshot.status!=="NEEDS_HUMAN"))return "held";
+      if(snapshot.status==="NEEDS_HUMAN"&&snapshot.close_reason!=="COLOR_PRINT")return "held";
       if(expectedCodeEvents(snapshot.events).length>1||
          snapshot.events.filter(event=>event.role==="SOURCE").length>1)return "held";
       const settingsBindings=snapshot.events.filter(event=>event.role==="SETTINGS");

@@ -25,7 +25,7 @@ function dbHarness({bound=true}={}){
   return {db,queries};
 }
 
-test('settings reader binds exact event IDs to the active intake scope and SETTINGS role',async()=>{
+test('settings reader binds exact event IDs to active or closed COLOR_PRINT intake and SETTINGS role',async()=>{
   const h=dbHarness(),queue=new PostgresConversationQueue(h.db,scope.oa_id);
   assert.deepEqual(await queue.read_intake_settings_events(scope),[settings]);
   const query=h.queries.find(item=>item.sql.includes('FROM core_oa_intake_event_bindings'));
@@ -34,6 +34,7 @@ test('settings reader binds exact event IDs to the active intake scope and SETTI
   assert.match(query.sql,/b\.role='SETTINGS'/);
   assert.match(query.sql,/i\.status IN \('OPEN','BOUND'\)/);
   assert.match(query.sql,/i\.expires_at>clock_timestamp\(\)/);
+  assert.match(query.sql,/i\.status='NEEDS_HUMAN' AND i\.close_reason='COLOR_PRINT'/);
   assert.deepEqual(query.params,[scope.intake_batch_id,scope.event_ids,scope.oa_id,
     scope.customer_id,scope.conversation_id]);
 });

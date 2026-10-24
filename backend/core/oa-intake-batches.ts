@@ -15,6 +15,7 @@ export interface CloseIncomingQueueBatchReceipt {
 }
 export interface IncomingQueueBatchSnapshot {
  schema:'ai1.oa_intake_batch.v1';status:'OPEN'|'BOUND'|'CLOSED'|'EXPIRED'|'NEEDS_HUMAN';
+ close_reason:string|null;
  readiness:'WAITING_FOR_FILE'|'WAITING_FOR_SETTINGS'|'WAITING_FOR_CODE'|'READY';intake_batch_id:string;queue_batch_id:string;
  shop_id:string;oa_id:string;customer_id:string;conversation_id:string;purpose:'PILOT'|'ORDER';
  opened_at:string;expires_at:string;order_id:string|null;revision:number|null;
@@ -26,7 +27,7 @@ type QueueLease={id:string;oa_id:string;event_count:number;status:string;lease_t
  lease_until:Date|null;events:QueueEvent[]};
 type IntakeRow={id:string;shop_id:string;oa_id:string;customer_id:string;conversation_id:string;purpose:'PILOT'|'ORDER';
  status:IncomingQueueBatchSnapshot['status'];opened_at:Date;expires_at:Date;order_id:string|null;revision:number|null;
- new_order_requested?:boolean};
+ new_order_requested?:boolean;close_reason?:string|null};
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PG_BIGINT_MAX=9223372036854775807n;
 function invalid():never{throw new DomainError('INCOMING_BATCH_INVALID','Incoming queue batch request is invalid',422);}
@@ -125,7 +126,7 @@ async function replayNewBoundary(db:SqlConnection,queue:QueueLease,shop:string,p
  customer:string,conversation:string):Promise<IncomingQueueBatchSnapshot|undefined>{
  const rows=(await db.query<IntakeRow&{event_id:string;queue_batch_id:string;received_at:Date;event_kind:string}>(
   'SELECT i.id,i.shop_id,i.oa_id,i.customer_id,i.conversation_id,i.purpose,i.status,i.opened_at,i.expires_at,'+
-  'i.order_id,i.revision,i.new_order_requested,b.event_id,b.queue_batch_id::text,b.received_at,b.event_kind '+
+  'i.order_id,i.revision,i.new_order_requested,i.close_reason,b.event_id,b.queue_batch_id::text,b.received_at,b.event_kind '+
   'FROM core_oa_intake_event_bindings b JOIN core_oa_intake_batches i ON i.id=b.intake_batch_id '+
   'WHERE b.oa_id=$1 AND b.event_id=ANY($2::text[]) ORDER BY b.event_id',[queue.oa_id,queue.events.map(event=>event.event_id)])).rows;
  if(rows.length===0)return undefined;
@@ -140,6 +141,38 @@ async function replayNewBoundary(db:SqlConnection,queue:QueueLease,shop:string,p
   });
  if(!matches)throw dbError('INCOMING_EVENT_ALREADY_BOUND','Event is permanently bound to another intake lifecycle');
  return snapshot(db,rows[0]!,queue.id);
+}
+async function replayClosedContinue(db:SqlConnection,queue:QueueLease,shop:string,purpose:'PILOT'|'ORDER',
+ customer:string,conversation:string,selection:IncomingQueueBatchInput['selection']):Promise<IncomingQueueBatchSnapshot|undefined>{
+ // Check both directions: every durable queue member must have the same
+ // immutable binding, and the queue batch must contain no extra bindings.
+ const rows=(await db.query<IntakeRow&{event_id:string;queue_batch_id:string;received_at:Date;
+  event_kind:string;role:IntakeEventRole}>(
+  'SELECT i.id,i.shop_id,i.oa_id,i.customer_id,i.conversation_id,i.purpose,i.status,i.close_reason,'+
+  'i.opened_at,i.expires_at,i.order_id,i.revision,b.event_id,b.queue_batch_id::text,b.received_at,b.event_kind,b.role '+
+  'FROM core_oa_intake_event_bindings b JOIN core_oa_intake_batches i ON i.id=b.intake_batch_id '+
+  'WHERE b.oa_id=$1 AND (b.queue_batch_id=$2::bigint OR b.event_id=ANY($3::text[])) '+
+  'ORDER BY b.event_id FOR UPDATE OF i',
+  [queue.oa_id,queue.id,queue.events.map(event=>event.event_id)])).rows;
+ if(rows.length===0)return undefined;
+ const intake=rows[0]!,byId=new Map(rows.map(row=>[row.event_id,row]));
+ const matches=rows.length===queue.events.length&&byId.size===queue.events.length&&
+  rows.every(row=>row.id===intake.id&&row.shop_id===shop&&row.oa_id===queue.oa_id&&
+   row.customer_id===customer&&row.conversation_id===conversation&&row.purpose===purpose)&&
+  queue.events.every(event=>{
+   const row=byId.get(event.event_id);
+   return !!row&&row.queue_batch_id===queue.id&&row.event_kind===event.kind&&
+    new Date(row.received_at).getTime()===new Date(event.received_at).getTime();
+  });
+ if(!matches)throw dbError('INCOMING_EVENT_ALREADY_BOUND','Event is permanently bound to another intake lifecycle');
+ if(intake.status==='OPEN'||intake.status==='BOUND')return undefined;
+ if(intake.status!=='NEEDS_HUMAN')
+  throw dbError('INCOMING_EVENT_ALREADY_BOUND','Event is permanently bound to another intake lifecycle');
+ const roleMatches=(id:string|undefined,role:IntakeEventRole)=>!id||byId.get(id)?.role===role;
+ if(!roleMatches(selection?.code_event_id,'CODE')||!roleMatches(selection?.source_event_id,'SOURCE')||
+    (selection?.settings_event_ids??[]).some(id=>!roleMatches(id,'SETTINGS')))
+  throw dbError('INCOMING_EVENT_ROLE_CONFLICT','Replay changes an immutable intake role');
+ return snapshot(db,intake,queue.id);
 }
 async function bindEvents(db:SqlConnection,batch:IntakeRow,events:QueueEvent[]):Promise<void>{
  for(const event of events){
@@ -189,7 +222,7 @@ async function snapshot(db:SqlConnection,batch:IntakeRow,queueBatchId:string):Pr
   'SELECT event_id,event_kind,role,received_at FROM core_oa_intake_event_bindings WHERE intake_batch_id=$1 '+
   'ORDER BY received_at,event_id',[batch.id])).rows;
  const hasSource=events.some(event=>event.role==='SOURCE'),hasSettings=events.some(event=>event.role==='SETTINGS');
- return {schema:'ai1.oa_intake_batch.v1',status:batch.status,
+ return {schema:'ai1.oa_intake_batch.v1',status:batch.status,close_reason:batch.close_reason??null,
   // READY means Core has a sealed source and validated settings to bind to a
   // revision. Shop-code authorization remains a separate Core gate.
   readiness:!hasSource?'WAITING_FOR_FILE':!hasSettings?'WAITING_FOR_SETTINGS':'READY',intake_batch_id:batch.id,
@@ -223,6 +256,10 @@ export async function acceptIncomingQueueBatch(store:PgStore,value:unknown):Prom
    [shop,queue.oa_id,selected[0]!.customer_id,selected[0]!.conversation_id]);
   if(input.boundary==='NEW'){
    const replay=await replayNewBoundary(db,queue,shop,input.purpose,selected[0]!.customer_id,selected[0]!.conversation_id);
+   if(replay)return replay;
+  }else if(input.purpose==='PILOT'){
+   const replay=await replayClosedContinue(db,queue,shop,input.purpose,
+    selected[0]!.customer_id,selected[0]!.conversation_id,input.selection);
    if(replay)return replay;
   }
   let batch=await activeIntake(db,shop,queue.oa_id,selected[0]!.customer_id,selected[0]!.conversation_id);

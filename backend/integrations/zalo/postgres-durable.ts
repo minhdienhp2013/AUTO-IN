@@ -105,9 +105,11 @@ export class PostgresConversationQueue {
       return claimed;
     });
   }
-  /** Read only event IDs selected as SETTINGS by a live Core intake snapshot.
+  /** Read only event IDs selected as SETTINGS by a Core intake snapshot.
    * This never scans a conversation; immutable verified ingress rows are read
    * only for the exact IDs/scope returned by Core and supplied by the adapter.
+   * A closed COLOR_PRINT intake may re-read its settings for an idempotent
+   * queue replay, under the current lease and original immutable binding.
    */
   async read_intake_settings_events(input:{intake_batch_id:string;queue_batch_id:string;
     lease_token:string;oa_id:string;customer_id:string;conversation_id:string;
@@ -130,7 +132,8 @@ export class PostgresConversationQueue {
         "JOIN core_oa_intake_batches i ON i.id=b.intake_batch_id "+
         "JOIN zalo_inbound_events e ON e.oa_id=b.oa_id AND e.event_id=b.event_id "+
         "WHERE b.intake_batch_id=$1::uuid AND b.role='SETTINGS' "+
-        "AND i.status IN ('OPEN','BOUND') AND i.expires_at>clock_timestamp() "+
+        "AND ((i.status IN ('OPEN','BOUND') AND i.expires_at>clock_timestamp()) "+
+        "OR (i.status='NEEDS_HUMAN' AND i.close_reason='COLOR_PRINT')) "+
         "AND i.oa_id=$3 AND i.customer_id=$4 AND i.conversation_id=$5 "+
         "AND b.oa_id=$3 AND b.event_id=ANY($2::text[]) "+
         "AND e.customer_id=$4 AND e.conversation_id=$5 "+
