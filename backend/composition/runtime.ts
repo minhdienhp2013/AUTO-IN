@@ -245,7 +245,7 @@ export function buildIntegratedApp(options: RuntimeOptions) {
       resolvePilotCandidate: options.pilotWordPdf.resolveCandidate,
       resolvePilotCodeSubmission: options.pilotWordPdf.resolveCodeSubmission
     } : {})
-  });
+  }, controlled);
   app.get('/health', async () => ({ status: 'ok', mode: controlled ? 'controlled_test' : 'simulation', live_enabled: false,
     auth_configured: true, configured_operations: ['me', 'listOrders', 'approveOrder', 'claimJob', 'markSending', 'reportJob'],
     registered_routes: registered, zalo_webhook_configured: !!options.zaloWebhook || !!options.officialZaloSimulation,

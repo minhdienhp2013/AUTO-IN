@@ -20,6 +20,7 @@
     "test:composition": "node --import tsx --test tests/integration/composition/*.test.ts tests/integration/composition/*.test.mjs",
     "db:migrate": "node --import tsx scripts/database.ts migrate",
     "db:bootstrap": "node --import tsx scripts/database.ts bootstrap",
+    "core:controlled-test-grant": "node --import tsx scripts/controlled-test-grant.ts",
     "process:order": "node --import tsx scripts/process-order.ts"
   },
   "dependencies": {

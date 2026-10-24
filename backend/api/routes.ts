@@ -1,6 +1,6 @@
 import { DomainError, type Principal } from '../core/model.js';
 import type { ShopScheduleService } from '../core/shop-schedule.js';
-import type { OrderService } from '../core/service.js';
+import type { OrderService, PilotClaimScope } from '../core/service.js';
 import type { AuthService } from '../core/auth.js';
 import type { InboundReviewItem } from '../core/inbound-review-items.js';
 
@@ -20,6 +20,8 @@ export interface CoreRouteDependencies {
  // from the verified webhook/event store; never trust identity fields from an arbitrary body.
  resolvePilotCandidate?:(r:HttpRequest)=>Promise<unknown>;
  resolvePilotCodeSubmission?:(r:HttpRequest)=>Promise<unknown>;
+ /** Only supplied by server composition; never read from the Agent request. */
+ pilotClaimScope?:PilotClaimScope;
 }
 const token=(r:HttpRequest)=>r.headers.authorization?.startsWith('Bearer ')?r.headers.authorization.slice(7):'';
 /** Only parsed JSON objects are allowed; do not hide untrusted request bodies behind any. */
@@ -102,7 +104,7 @@ export function registerCoreRoutes(app:RouteRegistrar,d:CoreRouteDependencies):v
  app.post('/internal/v1/print-jobs/:job_id/reports',wrap(async(r)=>d.service.report(await agent(r),job(r),bodyOf<Parameters<OrderService['report']>[2]>(r))));
  app.post('/internal/v1/pilot/print-jobs/claim',wrap(async(r,reply)=>{
   reply.header?.('Cache-Control','no-store');
-  return d.service.claimPilot(await agent(r),bodyOf<Record<string,unknown>>(r));
+  return d.service.claimPilot(await agent(r),bodyOf<Record<string,unknown>>(r),d.pilotClaimScope);
  }));
  app.get('/internal/v1/pilot/print-jobs/:job_id/source',wrap(async(r,reply)=>{
   reply.header?.('Cache-Control','no-store');

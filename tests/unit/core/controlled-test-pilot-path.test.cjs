@@ -8,6 +8,7 @@ const {canonical,sha}=require(path.join(root,'core/model.js'));
 const now=new Date('2026-10-24T04:00:00.000Z');
 const shopId='shop-a';
 const orderId='00000000-0000-4000-8000-000000000001';
+const otherOrderId='00000000-0000-4000-8000-000000000002';
 const printerId='RMP7000';
 const requestData={documents:[{artifact_name:'pilot.pdf'}],copies:1,duplex:false,paper:'A4',color:'black_white'};
 const requestHash=sha(canonical(requestData));
@@ -26,35 +27,51 @@ const config={shop_id:shopId,printer_id:printerId,agent_id:agent.id,enabled:true
 const proof={candidate:{source:{sha256:'b'.repeat(64)},settings_sha256:'c'.repeat(64)},
  authorization:{evidence_sha256:'d'.repeat(64)},source:{}};
 
-function fixture({grant=validGrant,shopSettings=settings}={}){
+function fixture({grant=validGrant,additionalGrant=null,shopSettings=settings}={}){
  let currentGrant=grant;
+ const currentAdditionalGrant=additionalGrant;
  let currentSettings=shopSettings;
- const job={id:'job-a',order_id:orderId,revision:1,request_hash:requestHash,approval_id:null,
+ const jobs={
+  [orderId]:{id:'job-a',order_id:orderId,revision:1,request_hash:requestHash,approval_id:null,
   pilot_authorization_id:'authorization-a',printer_id:printerId,state:'NOT_SENT',claimed_by:null,
   lease_secret_hash:null,lease_until:null,sent_at:null,mode_at_send:null,evidence_sha256:'d'.repeat(64),
-  cancelled_at:null};
+  cancelled_at:null},
+  [otherOrderId]:{id:'job-other',order_id:otherOrderId,revision:1,request_hash:requestHash,approval_id:null,
+   pilot_authorization_id:'authorization-other',printer_id:printerId,state:'NOT_SENT',claimed_by:null,
+   lease_secret_hash:null,lease_until:null,sent_at:null,mode_at_send:null,evidence_sha256:'e'.repeat(64),
+   cancelled_at:null}
+ };
+ const orders={[orderId]:order,[otherOrderId]:{...order,id:otherOrderId}};
+ const revisions={[orderId]:revision,[otherOrderId]:{...revision,order_id:otherOrderId}};
  const scopeChecks=[];
+ const claimQueries=[];
  const writes=[];
  const db={query:async(sql,args=[])=>{
   if(sql.includes('FROM core_print_controlled_test_scopes s JOIN core_orders o')){
    scopeChecks.push(sql);
-   return {rows:currentGrant?[currentGrant]:[],rowCount:currentGrant?1:0};
+   const found=[currentGrant,currentAdditionalGrant].filter(row=>row&&row.shop_id===args[0]&&
+    row.order_id===args[1]&&row.printer_id===args[2]);
+   return {rows:found,rowCount:found.length};
   }
   if(sql.includes('FROM core_pilot_shop_config'))return {rows:[config],rowCount:1};
   if(sql.startsWith('SELECT o.id FROM core_orders o JOIN core_print_jobs j')){
-   const scoped=currentSettings.mode!=='controlled_test'||Boolean(currentGrant&&currentGrant.shop_id===shopId&&
-    currentGrant.order_id===orderId&&currentGrant.printer_id===printerId&&currentGrant.enabled&&
-    currentGrant.active&&currentGrant.duration_valid&&currentGrant.order_shop_id===shopId&&
-    currentGrant.configured_by_role==='owner'&&currentGrant.configured_by_active);
-   const eligible=String(args[0])===shopId&&String(args[1])===printerId&&String(args[2])===agent.id&&
-    scoped&&job.state==='NOT_SENT';
-   return {rows:eligible?[{id:orderId}]:[],rowCount:eligible?1:0};
+   claimQueries.push({sql,args});
+   const orderIds=[otherOrderId,orderId].filter(id=>{
+    const row=[currentGrant,currentAdditionalGrant].find(value=>value&&value.order_id===id);
+    return currentSettings.mode!=='controlled_test'||Boolean(row&&row.shop_id===shopId&&
+     row.printer_id===printerId&&row.enabled&&row.active&&row.duration_valid&&
+     row.order_shop_id===shopId&&row.configured_by_role==='owner'&&row.configured_by_active);
+   });
+   const selected=orderIds.find(id=>!sql.includes('AND o.id=$4')||id===args[3]);
+   return {rows:selected?[{id:selected}]:[],rowCount:selected?1:0};
   }
   if(sql.startsWith('UPDATE core_print_jobs SET claimed_by=')){
+   const job=Object.values(jobs).find(row=>row.id===args[0]);
    job.claimed_by=args[1];job.lease_secret_hash=args[2];job.lease_until=new Date(now.getTime()+90_000);
    writes.push('claim');return {rows:[],rowCount:1};
   }
   if(sql.startsWith("UPDATE core_print_jobs SET state='SENDING'")){
+   const job=Object.values(jobs).find(row=>row.id===args[0]);
    job.state='SENDING';job.mode_at_send=args[1];job.sent_at=now;job.lease_until=null;
    writes.push('mark-sending');return {rows:[],rowCount:1};
   }
@@ -63,11 +80,13 @@ function fixture({grant=validGrant,shopSettings=settings}={}){
  const store={
   tx:async callback=>callback(db),
   once:async(_db,_principal,_action,_key,_payload,callback)=>callback(),
-  one:async(_db,sql)=>{
-   if(sql.startsWith('SELECT order_id FROM core_print_jobs'))return {order_id:orderId};
-   if(sql.startsWith('SELECT * FROM core_orders'))return order;
-   if(sql.startsWith('SELECT * FROM core_print_jobs'))return job;
-   if(sql.startsWith('SELECT * FROM core_revisions'))return revision;
+  one:async(_db,sql,args=[])=>{
+   if(sql.startsWith('SELECT mode FROM core_shop_settings'))return {mode:currentSettings.mode};
+   if(sql.startsWith('SELECT order_id FROM core_print_jobs'))return {order_id:Object.values(jobs).find(row=>row.id===args[0])?.order_id};
+   if(sql.startsWith('SELECT * FROM core_orders'))return orders[args[0]];
+   if(sql.startsWith('SELECT * FROM core_print_jobs'))return sql.includes('WHERE order_id=$1')
+    ?jobs[args[0]]:Object.values(jobs).find(row=>row.id===args[0]);
+   if(sql.startsWith('SELECT * FROM core_revisions'))return revisions[args[0]];
    if(sql.startsWith('SELECT * FROM core_shop_settings'))return currentSettings;
    throw new Error('unexpected Core query: '+sql);
   }
@@ -77,8 +96,10 @@ function fixture({grant=validGrant,shopSettings=settings}={}){
  // remains covered by the existing pilot source and PostgreSQL suites.
  service.pilotProvenance=async()=>proof;
  service.audit=async()=>{};
- return {service,job,scopeChecks,writes,setGrant:value=>{currentGrant=value;},setSettings:value=>{currentSettings=value;}};
+ return {service,jobs,scopeChecks,claimQueries,writes,setGrant:value=>{currentGrant=value;},setSettings:value=>{currentSettings=value;}};
 }
+
+const serverScope={shop_id:shopId,order_id:orderId,printer_id:printerId};
 
 function gate(work){return {expected_revision:work.job.revision,lease_token:work.job.lease_token,
  request_hash:work.job.request_hash,source_sha256:work.candidate.source.sha256,
@@ -87,7 +108,7 @@ function gate(work){return {expected_revision:work.job.revision,lease_token:work
 
 test('pilot lane checks the same active owner grant at claim, preflight and mark-sending',async()=>{
  const f=fixture();
- const claimed=await f.service.claimPilot(agent,{printer_id:printerId,idempotency_key:'claim-a'});
+ const claimed=await f.service.claimPilot(agent,{printer_id:printerId,idempotency_key:'claim-a'},serverScope);
  assert.equal(claimed.work.job.mode,'controlled_test');
  assert.equal(claimed.work.job.order_id,orderId);
  assert.equal(claimed.work.job.printer_id,printerId);
@@ -96,14 +117,38 @@ test('pilot lane checks the same active owner grant at claim, preflight and mark
  assert.equal(preflight.state,'AUTHORIZED');
  const sending=await f.service.markPilotSending(agent,claimed.work.job.job_id,gate(claimed.work));
  assert.equal(sending.state,'SENDING');
- assert.equal(f.job.mode_at_send,'controlled_test');
+ assert.equal(f.jobs[orderId].mode_at_send,'controlled_test');
  assert.equal(f.scopeChecks.length,3);
  assert.deepEqual(f.writes,['claim','mark-sending']);
 });
 
+test('server-owned order scope wins when another order has a valid grant for the same shop and printer',async()=>{
+ const f=fixture({additionalGrant:{...validGrant,order_id:otherOrderId}});
+ const claimed=await f.service.claimPilot(agent,{printer_id:printerId,idempotency_key:'scoped-claim'},serverScope);
+ assert.equal(claimed.work.job.order_id,orderId);
+ assert.match(f.claimQueries[0].sql,/AND o\.id=\$4/);
+ assert.equal(f.claimQueries[0].args[3],orderId);
+});
+
+test('controlled_test refuses Core claims without a server-owned order scope',async()=>{
+ const f=fixture();
+ await assert.rejects(f.service.claimPilot(agent,{printer_id:printerId,idempotency_key:'unscoped'}),
+  error=>error.code==='CONTROLLED_PILOT_SCOPE_REQUIRED');
+ assert.deepEqual(f.claimQueries,[]);
+ assert.deepEqual(f.writes,[]);
+});
+
+test('server-owned controlled scope is rejected if the shop has returned to simulation',async()=>{
+ const f=fixture({shopSettings:{...settings,mode:'simulation'}});
+ await assert.rejects(f.service.claimPilot(agent,{printer_id:printerId,idempotency_key:'stale-mode'},serverScope),
+  error=>error.code==='CONTROLLED_PILOT_MODE_REQUIRED');
+ assert.deepEqual(f.claimQueries,[]);
+ assert.deepEqual(f.writes,[]);
+});
+
 test('pilot lane stops before the send boundary when the grant expires or is revoked after claim',async()=>{
  const f=fixture();
- const claimed=await f.service.claimPilot(agent,{printer_id:printerId,idempotency_key:'claim-a'});
+ const claimed=await f.service.claimPilot(agent,{printer_id:printerId,idempotency_key:'claim-a'},serverScope);
  f.setGrant({...validGrant,active:false});
  await assert.rejects(f.service.preflightPilot(agent,claimed.work.job.job_id,gate(claimed.work)),
   error=>error.code==='CONTROLLED_TEST_SCOPE_REQUIRED');
@@ -112,13 +157,13 @@ test('pilot lane stops before the send boundary when the grant expires or is rev
  f.setGrant({...validGrant,enabled:false});
  await assert.rejects(f.service.markPilotSending(agent,claimed.work.job.job_id,gate(claimed.work)),
   error=>error.code==='CONTROLLED_TEST_SCOPE_REQUIRED');
- assert.equal(f.job.state,'NOT_SENT');
+ assert.equal(f.jobs[orderId].state,'NOT_SENT');
  assert.deepEqual(f.writes,['claim']);
 });
 
 test('overlong or future-dated grant cannot enter the controlled pilot queue',async()=>{
  const f=fixture({grant:{...validGrant,duration_valid:false}});
- const claimed=await f.service.claimPilot(agent,{printer_id:printerId,idempotency_key:'claim-a'});
+ const claimed=await f.service.claimPilot(agent,{printer_id:printerId,idempotency_key:'claim-a'},serverScope);
  assert.equal(claimed.work,null);
  assert.deepEqual(f.writes,[]);
 });

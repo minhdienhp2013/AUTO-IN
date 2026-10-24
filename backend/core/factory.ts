@@ -1,5 +1,5 @@
 import { AuthService } from './auth.js';
-import { OrderService } from './service.js';
+import { OrderService, type PilotClaimScope } from './service.js';
 import { ShopScheduleService } from './shop-schedule.js';
 import { createInboundReviewReader } from './inbound-review-items.js';
 import { DomainError, type Principal } from './model.js';
@@ -21,7 +21,8 @@ export interface CoreModule {
   service: OrderService;
   schedule: ShopScheduleService;
   inboundReviewReader: ReturnType<typeof createInboundReviewReader>;
-  registerRoutes: (app: RouteRegistrar, identities: VerifiedIdentityPorts) => void;
+  registerRoutes: (app: RouteRegistrar, identities: VerifiedIdentityPorts,
+    pilotClaimScope?:PilotClaimScope) => void;
 }
 
 /** These resolvers are server-owned and never read role/actor/shop from body or bare headers. */
@@ -73,7 +74,7 @@ export function createCoreModule(options: CoreModuleOptions): CoreModule {
   const inboundReviewReader = createInboundReviewReader({store});
   return {
     store, auth, service, schedule, inboundReviewReader,
-    registerRoutes(app, identities) {
+    registerRoutes(app, identities, pilotClaimScope) {
       if (typeof identities?.resolveVerifiedCustomer !== 'function' ||
           typeof identities?.resolvePrintAgent !== 'function')
         throw new DomainError('VERIFIED_IDENTITY_PORTS_REQUIRED','Thiếu adapter xác thực kênh khách/agent',503);
@@ -92,6 +93,7 @@ export function createCoreModule(options: CoreModuleOptions): CoreModule {
             throw new DomainError('AGENT_VERIFICATION_REQUIRED','Thiếu scope máy in đã xác minh',403);
           return principal;
         },
+        ...(pilotClaimScope?{pilotClaimScope}:{}),
         ...(typeof identities.resolvePilotCandidate==='function'?{resolvePilotCandidate:identities.resolvePilotCandidate}:{}),
         ...(typeof identities.resolvePilotCodeSubmission==='function'?{resolvePilotCodeSubmission:identities.resolvePilotCodeSubmission}:{})
       });

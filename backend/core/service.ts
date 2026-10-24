@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { assertAgent, assertOwner, assertPlan, assertProcessor, assertStaff, canAccessShop, canonical, checkRevision, dbSafeInteger, DomainError, newId, nonNegativeVnd, printingAllowed, sha, shortage, type JobRow, type OrderRow, type Principal, type PrintPlan, type QuoteRow, type RevisionRow, type SettingsRow } from './model.js';
+import { assertAgent, assertOwner, assertPlan, assertProcessor, assertStaff, canAccessShop, canonical, checkRevision, dbSafeInteger, DomainError, newId, nonNegativeVnd, printingAllowed, sha, shortage, type JobRow, type Mode, type OrderRow, type Principal, type PrintPlan, type QuoteRow, type RevisionRow, type SettingsRow } from './model.js';
 import { PgStore, type SqlConnection } from '../storage/database.js';
 import {createIncomingBatchPort,type IncomingSealedSourceReader} from './incoming-batch-port.js';
 import { readPendingUpdates } from './pending-updates.js';
@@ -20,6 +20,13 @@ import {controlledTestScopeExistsSql,enforceModeScope} from './controlled-test-s
 type PilotProvenance={candidate:PilotWordPdfCandidate;authorization:PilotPrintAuthorization;source:PilotSourceSnapshot};
 type PilotJobContext={o:OrderRow;j:JobRow;rev:RevisionRow;
  settings:Omit<SettingsRow,'mode'> & {mode:PilotPrintMode};provenance:PilotProvenance};
+
+/** Server-owned restriction for the single controlled pilot lane. */
+export interface PilotClaimScope {
+ readonly shop_id:string;
+ readonly order_id:string;
+ readonly printer_id:string;
+}
 
 export class OrderService {
  constructor(private readonly store:PgStore, private readonly now:()=>Date=()=>new Date(),private readonly evidence?:TrustedPrintEvidencePort,
@@ -1090,11 +1097,23 @@ export class OrderService {
    return {job_id,state:map[input.result]};
   }));
  }
- async claimPilot(p:Principal,input:unknown):Promise<PilotAgentClaimResponse>{
+ async claimPilot(p:Principal,input:unknown,pilotScope?:PilotClaimScope):Promise<PilotAgentClaimResponse>{
   assertAgent(p);const request=validatePilotClaimRequest(input);
   if(!p.printer_ids?.includes(request.printer_id))
    throw new DomainError('PRINTER_SCOPE_DENIED','Agent không có quyền máy in này',403);
   return this.store.tx(db=>this.store.once(db,p,'pilot.jobs.claim',request.idempotency_key,request,async()=>{
+   const shopMode=await this.store.one<{mode:Mode}>(db,
+    'SELECT mode FROM core_shop_settings WHERE shop_id=$1',[p.shop_id]);
+   if(shopMode.mode==='controlled_test'&&!pilotScope)
+    throw new DomainError('CONTROLLED_PILOT_SCOPE_REQUIRED','Controlled pilot cần scope order do server cấp',409);
+   if(pilotScope&&shopMode.mode!=='controlled_test')
+    throw new DomainError('CONTROLLED_PILOT_MODE_REQUIRED','Pilot scope chỉ dùng khi shop ở controlled_test',409);
+   if(pilotScope&&(pilotScope.shop_id!==p.shop_id||pilotScope.printer_id!==request.printer_id))
+    throw new DomainError('CONTROLLED_PILOT_SCOPE','Pilot scope không khớp Agent hoặc máy in',403);
+   const orderScopeSql=pilotScope?'AND o.id=$4 ':'';
+   const modeScopeSql=pilotScope?"AND ss.mode='controlled_test' ":"AND ss.mode='simulation' ";
+   const claimArgs=pilotScope?[p.shop_id,request.printer_id,p.id,pilotScope.order_id]:
+    [p.shop_id,request.printer_id,p.id];
    const rows=await db.query<{id:string}>(
     'SELECT o.id FROM core_orders o JOIN core_print_jobs j ON j.order_id=o.id '+
     'JOIN core_pilot_print_authorizations a ON a.id=j.pilot_authorization_id '+
@@ -1103,10 +1122,10 @@ export class OrderService {
     'WHERE o.shop_id=$1 AND o.active_revision=j.revision AND NOT o.manual_lock AND NOT o.print_closed '+
     "AND j.printer_id=$2 AND j.state='NOT_SENT' AND j.approval_id IS NULL AND j.cancelled_at IS NULL "+
     'AND pc.enabled AND pc.tested_at IS NOT NULL AND pc.agent_id=$3 AND pc.printer_id=$2 '+
-    `AND (ss.mode<>'controlled_test' OR ${controlledTestScopeExistsSql('j')}) `+
+    orderScopeSql+modeScopeSql+`AND (ss.mode<>'controlled_test' OR ${controlledTestScopeExistsSql('j')}) `+
     'AND (j.lease_until IS NULL OR j.lease_until<now()) '+
     'ORDER BY a.authorized_at,j.id FOR UPDATE OF o SKIP LOCKED LIMIT 1',
-    [p.shop_id,request.printer_id,p.id]);
+    claimArgs);
    if(!rows.rows[0])return {schema:'ai0.pilot_agent_claim.v1',work:null};
    const o=await this.order(db,rows.rows[0].id,p);
    const j=await this.store.one<JobRow>(db,
@@ -1116,6 +1135,8 @@ export class OrderService {
     [o.id,request.printer_id,o.active_revision]);
    const rev=await this.revision(db,o);
    const context=await this.assertPilotReady(db,p,o,j,rev);
+   if(pilotScope&&context.settings.mode!=='controlled_test')
+    throw new DomainError('CONTROLLED_PILOT_MODE_REQUIRED','Shop đã rời controlled_test trước khi chốt claim',409);
    const leaseToken=randomBytes(32).toString('base64url');
    const updated=await db.query(
     "UPDATE core_print_jobs SET claimed_by=$2,lease_secret_hash=$3,lease_until=now()+interval '90 seconds' "+
