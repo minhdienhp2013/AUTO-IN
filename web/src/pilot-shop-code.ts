@@ -110,9 +110,10 @@ const formatTimestamp = (value: string) => new Date(value).toLocaleString('vi-VN
 });
 
 export function PilotShopCodePanelView({
-  authenticatedStaff, apiHealthy, state, orders, remainingMs, onRefresh, refreshing = false,
+  authenticatedStaff, authenticatedShopId, apiHealthy, state, orders, remainingMs, onRefresh, refreshing = false,
 }: {
   authenticatedStaff: boolean;
+  authenticatedShopId: string | null;
   apiHealthy: boolean;
   state: PilotShopCodeState;
   orders: readonly OrderView[];
@@ -124,9 +125,12 @@ export function PilotShopCodePanelView({
     h('h1', null, 'Mã cửa hàng'),
     h('p', { role: 'alert', 'data-testid': 'pilot-code-locked' }, 'Đăng nhập nhân viên để xem mã cửa hàng.'));
 
-  // Order read-model health is independent from the shop-code route: a failed
-  // order refresh hides old orders without masking a fresh authenticated code.
-  const visibleState = state;
+  // A prior code is hidden as soon as the current shop or any required API
+  // read is unhealthy; recovery must fetch a fresh, authenticated snapshot.
+  const shopMatches = state.status === 'ready' && authenticatedShopId !== null && state.display.shop_id === authenticatedShopId;
+  const visibleState = state.status === 'ready' && (!apiHealthy || !shopMatches)
+    ? { status: 'unavailable' as const }
+    : state;
   let codeContent;
   if (visibleState.status === 'ready') {
     const seconds = Math.max(0, Math.ceil((remainingMs ?? 0) / 1000));
@@ -173,7 +177,7 @@ export function PilotShopCodePanelView({
     h('section', { className: 'pilot-order-status', 'aria-labelledby': 'pilot-order-status-title' },
       h('div', { className: 'pilot-order-status-heading' },
         h('div', null, h('h2', { id: 'pilot-order-status-title' }, 'Trạng thái đơn'),
-          h('p', null, 'Trạng thái chỉ lấy từ read model hiện hành của máy chủ.'))),
+          h('p', null, 'Core hiện chỉ trả danh sách tóm tắt; khi thiếu trạng thái in tường minh, UI giữ UNKNOWN.'))),
       statusContent));
 }
 
@@ -204,9 +208,23 @@ export function PilotShopCodePanel({
       const fresh = await onRefreshOrders();
       const stillCurrentAndOnline = ordersEpoch.current === epoch && (typeof navigator === 'undefined' || navigator.onLine);
       setOrdersFresh(fresh && stillCurrentAndOnline);
+      if (!fresh && ordersEpoch.current === epoch) {
+        // Any failed scoped order/readiness request invalidates the previous
+        // display until a subsequent authenticated refresh succeeds.
+        requestEpoch.current++;
+        setRemainingMs(null);
+        setState({ status: 'unavailable' });
+        setRefreshing(false);
+      }
       return fresh && stillCurrentAndOnline;
     } catch {
-      if (ordersEpoch.current === epoch) setOrdersFresh(false);
+      if (ordersEpoch.current === epoch) {
+        setOrdersFresh(false);
+        requestEpoch.current++;
+        setRemainingMs(null);
+        setState({ status: 'unavailable' });
+        setRefreshing(false);
+      }
       return false;
     }
   }, [onRefreshOrders]);
@@ -250,9 +268,9 @@ export function PilotShopCodePanel({
   useEffect(() => {
     const unsubscribe = listenForPilotConnection(window, onOffline, onOnline);
     if (typeof navigator !== 'undefined' && !navigator.onLine) onOffline();
-    else void refresh();
+    else { void refreshOrders(); void refresh(); }
     return () => { unsubscribe(); requestEpoch.current++; };
-  }, [onOffline, onOnline, refresh]);
+  }, [onOffline, onOnline, refresh, refreshOrders]);
 
   useEffect(() => {
     if (state.status !== 'ready') return;
@@ -261,12 +279,13 @@ export function PilotShopCodePanel({
       if (next <= 0) {
         setRemainingMs(0);
         setState({ status: 'expired' });
+        void refreshOrders();
         void refresh();
       } else setRemainingMs(next);
     };
     const timer = window.setInterval(tick, 1000);
     return () => window.clearInterval(timer);
-  }, [refresh, state]);
+  }, [refresh, refreshOrders, state]);
 
   useEffect(() => {
     if (state.status !== 'ready') return;
@@ -274,10 +293,10 @@ export function PilotShopCodePanel({
       const stillValidMs = state.remainingAtReceiptMs - (performance.now() - state.receivedAt);
       // Revalidate reachability even when the browser does not emit `offline`.
       // Skip the final minute; the expiry timer already requests the next code.
-      if (stillValidMs > 60_000) void refresh();
+      if (stillValidMs > 60_000) { void refreshOrders(); void refresh(); }
     }, 60_000);
     return () => window.clearInterval(timer);
-  }, [refresh, state]);
+  }, [refresh, refreshOrders, state]);
 
   const handleRefresh = () => {
     if (typeof navigator !== 'undefined' && !navigator.onLine) { onOffline(); return; }
@@ -287,6 +306,7 @@ export function PilotShopCodePanel({
   };
   return h(PilotShopCodePanelView, {
     authenticatedStaff,
+    authenticatedShopId,
     apiHealthy: apiHealthy && browserOnline && ordersFresh,
     state,
     orders,

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { ApiFault, DemoPrintPort, HttpPrintPort } from '../../web/src/api.ts';
+import { ApiFault, DemoPrintPort, HttpPrintPort, mapOrderSummary } from '../../web/src/api.ts';
 import { demoOrders } from '../../web/src/fixtures.ts';
 import { type StaffSession } from '../../web/src/domain.ts';
 import { listenForPilotConnection, loadPilotShopCode, parsePilotShopCodeDisplay, pilotOrderPrintStatus, PilotShopCodePanelView, type PilotShopCodeDisplay } from '../../web/src/pilot-shop-code.ts';
@@ -91,7 +91,7 @@ test('each refresh receives the rotated server code and errors produce no displa
   }
   const afterNetworkFailure = await loadPilotShopCode({ async loadCurrentShopCode() { throw new Error('offline'); } }, staff, shopId);
   const unavailable = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
-    authenticatedStaff: true, apiHealthy: true, state: afterNetworkFailure, orders: [], remainingMs: null, onRefresh() {},
+    authenticatedStaff: true, authenticatedShopId: shopId, apiHealthy: true, state: afterNetworkFailure, orders: [], remainingMs: null, onRefresh() {},
   }));
   assert.doesNotMatch(unavailable, /A7KQ2M9R6V|B9M2R6V4KQ/);
   assert.match(unavailable, /pilot-code-unavailable/);
@@ -127,48 +127,59 @@ test('pilot order status maps waiting, sending, sent, blocked and UNKNOWN withou
   assert.doesNotMatch(printState('SENT_UNVERIFIED').label, /đã in/i);
 });
 
+test('Core order summary without explicit print state stays UNKNOWN; manual lock does not infer BLOCKED', () => {
+  const summary = mapOrderSummary({ id: 'order-1', active_revision: 2, manual_lock: true, print_closed: true });
+  assert.equal(summary.print_state, 'UNKNOWN');
+  assert.equal(pilotOrderPrintStatus(summary).status, 'UNKNOWN');
+});
+
 test('panel renders only authenticated escaped code, hides stale order rows, and marks uncertain print state UNKNOWN', () => {
   const unsafe = { ...validDto, code: '<img src=x onerror=alert(1)>' };
   const ready = { status: 'ready' as const, display: unsafe, receivedAt: 0, remainingAtReceiptMs: 120000 };
   const authenticatedHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
-    authenticatedStaff: true, apiHealthy: true, state: ready, orders: [], remainingMs: 120000, onRefresh() {},
+    authenticatedStaff: true, authenticatedShopId: shopId, apiHealthy: true, state: ready, orders: [], remainingMs: 120000, onRefresh() {},
   }));
   assert.match(authenticatedHtml, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.doesNotMatch(authenticatedHtml, /<img src=x/);
   assert.match(authenticatedHtml, /pilot-code-expiry/);
 
   const lockedHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
-    authenticatedStaff: false, apiHealthy: true, state: ready, orders: [], remainingMs: 120000, onRefresh() {},
+    authenticatedStaff: false, authenticatedShopId: shopId, apiHealthy: true, state: ready, orders: [], remainingMs: 120000, onRefresh() {},
   }));
   assert.doesNotMatch(lockedHtml, /A7KQ2M9R6V|pilot-code-ready/);
 
   const staleOrder = { ...structuredClone(demoOrders[0]), order_id: 'old-order' };
   const currentCode = { status: 'ready' as const, display: validDto, receivedAt: 0, remainingAtReceiptMs: 120000 };
   const orderUnavailableHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
-    authenticatedStaff: true, apiHealthy: false, state: currentCode, orders: [staleOrder], remainingMs: 120000, onRefresh() {},
+    authenticatedStaff: true, authenticatedShopId: shopId, apiHealthy: false, state: currentCode, orders: [staleOrder], remainingMs: 120000, onRefresh() {},
   }));
-  assert.match(orderUnavailableHtml, /A7KQ2M9R6V/);
-  assert.doesNotMatch(orderUnavailableHtml, /old-order/);
+  assert.doesNotMatch(orderUnavailableHtml, /A7KQ2M9R6V|old-order/);
   assert.match(orderUnavailableHtml, /pilot-orders-unknown/);
   const codeUnavailableHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
-    authenticatedStaff: true, apiHealthy: true, state: { status: 'unavailable' }, orders: [], remainingMs: null, onRefresh() {},
+    authenticatedStaff: true, authenticatedShopId: shopId, apiHealthy: true, state: { status: 'unavailable' }, orders: [], remainingMs: null, onRefresh() {},
   }));
   assert.doesNotMatch(codeUnavailableHtml, /A7KQ2M9R6V|pilot-code-ready/);
   assert.match(codeUnavailableHtml, /pilot-code-unavailable/);
 
   const unknownOrder = { ...structuredClone(demoOrders[0]), order_id: 'current-order', print_state: 'UNKNOWN' as const };
   const unknownOrderHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
-    authenticatedStaff: true, apiHealthy: true, state: currentCode, orders: [unknownOrder], remainingMs: 120000, onRefresh() {},
+    authenticatedStaff: true, authenticatedShopId: shopId, apiHealthy: true, state: currentCode, orders: [unknownOrder], remainingMs: 120000, onRefresh() {},
   }));
   assert.match(unknownOrderHtml, /UNKNOWN/);
   assert.match(unknownOrderHtml, /không tự gửi lại lệnh/i);
   assert.doesNotMatch(unknownOrderHtml, /Đã in/);
 
   const sessionExpiredHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
-    authenticatedStaff: true, apiHealthy: true, state: { status: 'session-expired' }, orders: [], remainingMs: null, onRefresh() {},
+    authenticatedStaff: true, authenticatedShopId: shopId, apiHealthy: true, state: { status: 'session-expired' }, orders: [], remainingMs: null, onRefresh() {},
   }));
   assert.doesNotMatch(sessionExpiredHtml, /A7KQ2M9R6V|B9M2R6V4KQ/);
   assert.match(sessionExpiredHtml, /pilot-code-unavailable/);
+
+  const otherShopHtml = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
+    authenticatedStaff: true, authenticatedShopId: 'other-shop', apiHealthy: true, state: currentCode, orders: [], remainingMs: 120000, onRefresh() {},
+  }));
+  assert.doesNotMatch(otherShopHtml, /A7KQ2M9R6V|pilot-code-ready/);
+  assert.match(otherShopHtml, /pilot-code-unavailable/);
 });
 
 test('HTTP port calls only the authenticated #163 GET with Bearer and no-store; demo never synthesizes a code', async () => {
@@ -224,11 +235,12 @@ test('pilot page is gated to a live staff session while the existing order-manag
   assert.ok(/view === 'shop-code' \? <PilotShopCodePanel/.test(app), 'pilot page is part of the authenticated app');
   assert.ok(/view === 'orders'/.test(app), 'existing order-management flow remains');
   assert.ok(/this\.call\('\/api\/v1\/pilot\/shop-code'\)/.test(api), 'uses only the #163 route');
+  assert.ok(/Core hiện chỉ trả danh sách tóm tắt; khi thiếu trạng thái in tường minh, UI giữ UNKNOWN/.test(panel), 'summary rows never manufacture print readiness');
   assert.ok(/listenForPilotConnection\(window, onOffline, onOnline\)/.test(panel), 'offline/online events are attached to the pilot page');
   assert.ok(/setState\(\{ status: 'unavailable' \}\);\s*setRefreshing\(false\)/.test(panel), 'offline invalidates the old code immediately');
   assert.ok(/apiHealthy: apiHealthy && browserOnline && ordersFresh/.test(panel), 'offline and stale order data display UNKNOWN');
-  assert.ok(/if \(next <= 0\)[\s\S]*?setState\(\{ status: 'expired' \}\);\s*void refresh\(\)/.test(panel), 'expiry hides the code and triggers a server refresh');
+  assert.ok(/if \(next <= 0\)[\s\S]*?setState\(\{ status: 'expired' \}\);\s*void refreshOrders\(\);\s*void refresh\(\)/.test(panel), 'expiry refreshes orders and requests the next code');
   assert.ok(/window\.setInterval\(tick, 1000\)/.test(panel), 'countdown ticks from the server-derived monotonic deadline');
-  assert.ok(/if \(stillValidMs > 60_000\) void refresh\(\)[\s\S]*?\}, 60_000\)/.test(panel), 'reachability is periodically revalidated before expiry');
+  assert.ok(/if \(stillValidMs > 60_000\) \{ void refreshOrders\(\); void refresh\(\); \}[\s\S]*?\}, 60_000\)/.test(panel), 'orders and code reachability are periodically revalidated before expiry');
   assert.ok(!/localStorage|sessionStorage|URL\(|dangerouslySetInnerHTML|fetch\(/.test(panel), 'panel does not persist, generate, or fetch arbitrary code sources');
 });
