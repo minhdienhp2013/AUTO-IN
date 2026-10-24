@@ -9,6 +9,12 @@ import { createPilotIngressResolvers } from './composition/pilot-ingress.js';
 import { createPilotCoreBatchPort } from './composition/pilot-core-batch.js';
 const serverMode = process.env.AUTO_IN_MODE ?? 'simulation';
 if (serverMode !== 'simulation' && serverMode !== 'controlled_test') throw new Error('Unsupported server mode');
+async function requirePrivateFile(path:string|undefined,label:string,maxBytes:number):Promise<void>{
+  if(!path)throw new Error(`${label} required`);
+  const info=await lstat(path);
+  if(!info.isFile()||info.isSymbolicLink()||(info.mode&0o077)||info.size<1||info.size>maxBytes)
+    throw new Error(`${label} must be a private regular file`);
+}
 const controlledEnabled = process.env.AUTOIN_PILOT_CONTROLLED_TEST_ENABLED ?? '0';
 if (controlledEnabled !== '0' && controlledEnabled !== '1') throw new Error('Invalid controlled pilot switch');
 if ((serverMode === 'controlled_test') !== (controlledEnabled === '1'))
@@ -26,6 +32,10 @@ if (!Array.isArray(identities)) throw new Error('Expected service identity array
 const keyFile = process.env.AUTOIN_TLS_KEY;
 const certFile = process.env.AUTOIN_TLS_CERT;
 if (!!keyFile !== !!certFile) throw new Error('TLS key and certificate required together');
+if(serverMode==='controlled_test'){
+  await requirePrivateFile(process.env.AUTOIN_IDENTITIES_FILE,'Controlled pilot identities',64*1024);
+  await requirePrivateFile(keyFile,'Controlled pilot TLS key',64*1024);
+}
 const tls = keyFile && certFile ? { key: await readFile(keyFile), cert: await readFile(certFile) } : undefined;
 const controlledFile = process.env.AUTOIN_PILOT_CONTROLLED_SCOPE_FILE;
 if (serverMode === 'controlled_test' && (!controlledFile || !tls))
@@ -64,6 +74,10 @@ if (controlledPilot && simulationReviewEnabled)
   throw new Error('Simulation review unavailable in controlled pilot');
 const pilotFiles=[process.env.AUTOIN_PILOT_CODE_KEY_FILE,
   process.env.AUTOIN_PILOT_PRIVATE_SOURCE_ROOT,process.env.AUTOIN_PILOT_INGRESS_TOKEN_FILE];
+if(serverMode==='controlled_test'){
+  await requirePrivateFile(process.env.AUTOIN_PILOT_CODE_KEY_FILE,'Controlled pilot code key',4096);
+  await requirePrivateFile(process.env.AUTOIN_PILOT_INGRESS_TOKEN_FILE,'Controlled pilot ingress token',4096);
+}
 if(pilotFiles.some(Boolean)&&pilotFiles.some(value=>!value))
   throw new Error('Pilot requires code key, private source root, and scoped ingress token files together');
 const pilotEnabled=pilotFiles.every(Boolean);
