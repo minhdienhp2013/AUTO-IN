@@ -51,6 +51,14 @@ test('same code repeated across events is ambiguous; setting conflicts hold',()=
   assert.ok(conflicting?.reasons.includes('CONFLICTING_SIDES'));
 });
 
+test('positive color mention is explicit human intent; a negated mention is not mislabeled as a color choice',()=>{
+  const selected=extractPilotPrintIntent([event('color-selected','text','Mình chọn màu, A4, 2 bản, hai mặt')]);
+  assert.equal(selected?.color_requested,true);
+  assert.equal(selected?.black_white,false);
+  const declined=extractPilotPrintIntent([event('color-declined','text','Không in màu, đen trắng, A4, 2 bản, hai mặt')]);
+  assert.equal(declined?.color_requested,false);
+});
+
 test('unsupported print options and mixed persisted identities never become ready',()=>{
   for(const text of [
     'Mã: 0123456789; In 0 bản A4 một mặt đen trắng',

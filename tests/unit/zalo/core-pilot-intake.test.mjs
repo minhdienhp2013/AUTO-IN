@@ -45,7 +45,7 @@ function lease(batch_id,events,lease_token=`lease-${batch_id}`,order=events.map(
 }
 function harness({applyResult={status:"created",order_id:"order-1",active_revision:1},
   acceptStatus="OPEN",readiness:readinessOverride,throwAccept,throwApply}={}){
-  const seen={accept:[],apply:[],reads:[],snapshots:[],capture:[]},intakes=new Map();let nextIntake=0;
+  const seen={accept:[],apply:[],reads:[],snapshots:[],capture:[],close:[]},intakes=new Map();let nextIntake=0;
   const core={trusted_shop_id:SHOP,trusted_oa_id:OA,
     async acceptIncomingQueueBatch(input){
       seen.accept.push(structuredClone(input));
@@ -77,6 +77,10 @@ function harness({applyResult={status:"created",order_id:"order-1",active_revisi
       const intake=[...intakes.values()].find(x=>x.id===input.intake_batch_id);
       return input.event_ids.map(id=>intake?.events.get(id)?.event);
     },
+    async closeIncomingQueueBatch(input){
+      seen.close.push(structuredClone(input));
+      return {status:'NEEDS_HUMAN',intake_batch_id:input.intake_batch_id};
+    },
     async apply_incoming_batch(input){
       seen.apply.push(structuredClone(input));
       if(throwApply)throw throwApply;
@@ -92,6 +96,37 @@ function harness({applyResult={status:"created",order_id:"order-1",active_revisi
   const adapter=createCorePilotIntakeAdapter({trusted_shop_id:SHOP,trusted_oa_id:OA,core});
   return {adapter,core,seen,setLease(value){currentLease=value;},get currentLease(){return currentLease;}};
 }
+
+test('verified color choice is recorded as human intake before source capture or print order',async()=>{
+  for(const choice of ['In màu, A4, 2 bản, hai mặt','Mình chọn màu, A4, 2 bản, hai mặt','Màu']){
+    const h=harness();
+    const batch=lease('81',[settings('color-choice',choice)]);h.setLease(batch);
+    assert.equal(await h.adapter.consume(batch,0),'processed');
+    assert.equal(h.seen.close.length,1);
+    assert.deepEqual(h.seen.close[0],{intake_batch_id:h.seen.snapshots[0].intake_batch_id,
+      queue_batch_id:'81',lease_token:'lease-81',reason:'COLOR_PRINT'});
+    assert.deepEqual(h.seen.snapshots[0].events.find(x=>x.event_id==='color-choice').role,'SETTINGS');
+    assert.equal(h.seen.capture.length,0);
+    assert.equal(h.seen.apply.length,0);
+  }
+});
+
+test('color in a labelled code event never becomes black-white pilot authority',async()=>{
+  const h=harness();
+  const batch=lease('82',[code('code-color','Mã cửa hàng: 0123456789; in màu')]);h.setLease(batch);
+  assert.equal(await h.adapter.consume(batch,0),'processed');
+  assert.equal(h.seen.close[0].reason,'COLOR_PRINT');
+  assert.equal(h.seen.apply.length,0);
+  assert.equal(h.seen.capture.length,0);
+});
+
+test('missing human-close port or unverified settings leaves color lease held',async()=>{
+  const h=harness();delete h.core.closeIncomingQueueBatch;
+  const batch=lease('83',[settings('color-choice','In màu')]);h.setLease(batch);
+  assert.equal(await h.adapter.consume(batch,0),'held');
+  assert.equal(h.seen.apply.length,0);
+  assert.equal(h.seen.close.length,0);
+});
 
 test("code-before-file stays in the same persistent intake; source/settings apply only under the current lease",async()=>{
   const h=harness();
@@ -276,7 +311,7 @@ test("split SETTINGS events are combined only within the Core intake batch",asyn
   assert.equal(await h.adapter.consume(first,0),"processed");
   const second=lease("26",[file(),settings("final","đen trắng")]);h.setLease(second);
   assert.equal(await h.adapter.consume(second,0),"processed");
-  assert.deepEqual(h.seen.reads[0].event_ids,["partial","final"]);
+  assert.deepEqual(h.seen.reads.at(-1).event_ids,["partial","final"]);
   assert.deepEqual(h.seen.apply[0].pilot_settings,
     {copies:2,duplex:true,paper:"A4",color:"black_white"});
   assert.deepEqual(h.seen.apply[0].event_ids,["file-1","final"]);

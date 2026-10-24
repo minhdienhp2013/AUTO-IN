@@ -1,6 +1,6 @@
 import {createHash} from "node:crypto";
 import type {ApplyIncomingBatchInput,ApplyIncomingBatchResult} from "../core/incoming-batch-port.ts";
-import type {IncomingQueueBatchInput,IncomingQueueBatchSnapshot} from "../core/oa-intake-batches.ts";
+import type {IncomingQueueBatchInput,IncomingQueueBatchSnapshot,CloseIncomingQueueBatchInput} from "../core/oa-intake-batches.ts";
 import type {LeasedBatch} from "../integrations/zalo/postgres-durable.ts";
 import type {InboundEvent} from "../integrations/zalo/protocol.ts";
 import type {PilotSourceCustodyPort,PilotVerifiedMediaPort,SealedPilotSource} from "./pilot-word-pdf-intake.ts";
@@ -167,6 +167,7 @@ export interface CorePilotIntakePort extends CorePilotSettingsEventReader {
   readonly trusted_shop_id:string;
   readonly trusted_oa_id:string;
   acceptIncomingQueueBatch(input:IncomingQueueBatchInput):Promise<IncomingQueueBatchSnapshot>;
+  closeIncomingQueueBatch?(input:CloseIncomingQueueBatchInput):Promise<{status:string;intake_batch_id:string}>;
   /** The server composition must use Core's IncomingBatchPort configured with
    * a private-custody IncomingSealedSourceReader. AI2 never supplies source data. */
   apply_incoming_batch(input:ApplyIncomingBatchInput):Promise<ApplyIncomingBatchResult>;
@@ -175,7 +176,7 @@ export interface CorePilotIntakePort extends CorePilotSettingsEventReader {
   readonly source_capture?:PilotSourceCapturePort;
 }
 export type CorePilotIntakeCalls=Pick<CorePilotIntakePort,
-  "acceptIncomingQueueBatch"|"apply_incoming_batch">;
+  "acceptIncomingQueueBatch"|"closeIncomingQueueBatch"|"apply_incoming_batch">;
 export type CorePilotIntakeIntegration=CorePilotIntakeCalls&{
   readonly trusted_shop_id:string;readonly trusted_oa_id:string;
   readonly source_capture?:PilotSourceCapturePort;
@@ -218,7 +219,7 @@ function labelledCode(event:InboundEvent):boolean {
 }
 function hasSettingsEvidence(event:InboundEvent):boolean {
   if(event.kind!=="text"||typeof event.text!=="string")return false;
-  if(/(?:số\s*bản\s*[:：-]?\s*\d{1,3}|\d{1,3}\s*bản|\bA[345]\b|(?:1|2|một|hai)\s*mặt|đen\s*trắng|trắng\s*đen|\bb\s*\/\s*w\b|\bmàu\b)/iu.test(event.text))return true;
+  if(/(?:số\s*bản\s*[:：-]?\s*\d{1,3}|\d{1,3}\s*bản|\bA[345]\b|(?:1|2|một|hai)\s*mặt|đen\s*trắng|trắng\s*đen|\bb\s*\/\s*w\b|(?:^|[^\p{L}\p{N}])màu(?=$|[^\p{L}\p{N}]))/iu.test(event.text))return true;
   const parsed=extractPilotPrintIntent([event]);
   if(!parsed)return false;
   return parsed.copies!==null||parsed.paper!==null||parsed.sides!==null||parsed.black_white||
@@ -346,6 +347,37 @@ export function createCorePilotIntakeAdapter(options:CorePilotIntakeOptions) {
       const sourceBindings=snapshot.events.filter(event=>event.role==="SOURCE");
       if(settingsBindings.some(event=>event.kind!=="text")||
          sourceBindings.some(event=>event.kind!=="file"))return "held";
+      const closeForColor=async():Promise<"processed"|"held">=>{
+        if(!core.closeIncomingQueueBatch)return "held";
+        try{
+          const closed=await core.closeIncomingQueueBatch({intake_batch_id:snapshot.intake_batch_id,
+            queue_batch_id:lease.batch_id,lease_token:lease.lease_token,reason:"COLOR_PRINT"});
+          return closed.status==="NEEDS_HUMAN"&&closed.intake_batch_id===snapshot.intake_batch_id
+            ?"processed":"held";
+        }catch{return "held";}
+      };
+      // A labelled code can share a text event with the customer's color choice.
+      // Its event is CODE, not SETTINGS, so inspect the verified current lease too.
+      if(parsedCurrent?.color_requested)return closeForColor();
+      const settingsIds=settingsBindings.map(event=>event.event_id);
+      let settingsEvents:readonly InboundEvent[]=[];
+      if(settingsIds.length){
+        try { settingsEvents=await core.read_settings_events({
+            intake_batch_id:snapshot.intake_batch_id,queue_batch_id:lease.batch_id,
+            lease_token:lease.lease_token,oa_id:snapshot.oa_id,customer_id:snapshot.customer_id,
+            conversation_id:snapshot.conversation_id,event_ids:settingsIds
+          });
+        }catch(error){
+          if(permanentCoreErrors.has(errorCode(error)??""))return "held";
+          throw error;
+        }
+        if(!Array.isArray(settingsEvents)||settingsEvents.length!==settingsIds.length||
+           new Set(settingsEvents.map(event=>event.event_id)).size!==settingsEvents.length||
+           settingsEvents.some(event=>!settingsIds.includes(event.event_id)||event.oa_id!==oa||
+             event.customer_id!==snapshot.customer_id||event.conversation_id!==snapshot.conversation_id||
+             event.kind!=="text"||typeof event.text!=="string"))return "held";
+        if(extractPilotPrintIntent(settingsEvents)?.color_requested)return closeForColor();
+      }
       if(sourceBindings.length===1){
         const sourceEventId=sourceBindings[0]!.event_id;
         // SOURCE may have arrived in an earlier lease. Its only selector is
@@ -386,22 +418,6 @@ export function createCorePilotIntakeAdapter(options:CorePilotIntakeOptions) {
       if(snapshot.readiness!=="READY")return "held";
       if(settingsBindings.length<1||settingsBindings.some(event=>event.kind!=="text")||
          sourceBindings.length!==1||sourceBindings[0]?.kind!=="file")return "held";
-      const settingsIds=settingsBindings.map(event=>event.event_id);
-      let settingsEvents:readonly InboundEvent[];
-      try { settingsEvents=await core.read_settings_events({
-          intake_batch_id:snapshot.intake_batch_id,queue_batch_id:lease.batch_id,
-          lease_token:lease.lease_token,oa_id:snapshot.oa_id,customer_id:snapshot.customer_id,
-          conversation_id:snapshot.conversation_id,event_ids:settingsIds
-        });
-      } catch(error) {
-        if(permanentCoreErrors.has(errorCode(error)??""))return "held";
-        throw error;
-      }
-      if(!Array.isArray(settingsEvents)||settingsEvents.length!==settingsIds.length||
-         new Set(settingsEvents.map(event=>event.event_id)).size!==settingsEvents.length||
-         settingsEvents.some(event=>!settingsIds.includes(event.event_id)||event.oa_id!==oa||
-           event.customer_id!==snapshot.customer_id||event.conversation_id!==snapshot.conversation_id||
-           event.kind!=="text"||typeof event.text!=="string"))return "held";
       const settings=isSettingsComplete(settingsEvents);
       if(settings.kind==="invalid")return "held";
       if(settings.kind==="waiting")return "processed";

@@ -78,6 +78,8 @@ export function createZaloPipeline(options:ZaloPipelineOptions) {
       trusted_shop_id:options.pilot_intake.trusted_shop_id,
       trusted_oa_id:options.pilot_intake.trusted_oa_id,
       acceptIncomingQueueBatch(input){return options.pilot_intake!.acceptIncomingQueueBatch(input);},
+      ...(options.pilot_intake.closeIncomingQueueBatch
+        ?{closeIncomingQueueBatch(input){return options.pilot_intake!.closeIncomingQueueBatch!(input);}}:{}),
       apply_incoming_batch(input){return options.pilot_intake!.apply_incoming_batch(input);},
       ...(options.pilot_intake!.source_capture
         ?{source_capture:options.pilot_intake.source_capture}:{}),

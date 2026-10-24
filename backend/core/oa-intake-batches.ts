@@ -8,7 +8,7 @@ export interface IncomingQueueBatchInput {
  selection?:{code_event_id?:string;source_event_id?:string;settings_event_ids?:readonly string[]};
 }
 export interface CloseIncomingQueueBatchInput {
- intake_batch_id:string;queue_batch_id:string;lease_token:string;reason:'ABANDONED'|'NEEDS_HUMAN';
+ intake_batch_id:string;queue_batch_id:string;lease_token:string;reason:'ABANDONED'|'NEEDS_HUMAN'|'COLOR_PRINT';
 }
 export interface IncomingQueueBatchSnapshot {
  schema:'ai1.oa_intake_batch.v1';status:'OPEN'|'BOUND'|'CLOSED'|'EXPIRED'|'NEEDS_HUMAN';
@@ -330,7 +330,7 @@ export async function closeIncomingQueueBatch(store:PgStore,value:unknown):Promi
     typeof value.intake_batch_id!=='string'||!UUID.test(value.intake_batch_id)||
     typeof value.queue_batch_id!=='string'||!/^\d{1,19}$/.test(value.queue_batch_id)||BigInt(value.queue_batch_id)<1n||BigInt(value.queue_batch_id)>PG_BIGINT_MAX||
     typeof value.lease_token!=='string'||!UUID.test(value.lease_token)||
-    (value.reason!=='ABANDONED'&&value.reason!=='NEEDS_HUMAN'))invalid();
+    (value.reason!=='ABANDONED'&&value.reason!=='NEEDS_HUMAN'&&value.reason!=='COLOR_PRINT'))invalid();
  return store.tx(async db=>{
   await db.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
   const queue=await lockIncomingQueueBatch(db,value.queue_batch_id as string,value.lease_token as string);
@@ -344,7 +344,7 @@ export async function closeIncomingQueueBatch(store:PgStore,value:unknown):Promi
   if(!member)throw dbError('INCOMING_BATCH_MEMBERSHIP_DENIED','Lease does not contain a member of this intake batch',403);
   if(batch.status==='EXPIRED'||batch.status==='NEEDS_HUMAN'||batch.status==='CLOSED')
    return {status:batch.status==='EXPIRED'?'EXPIRED':batch.status==='NEEDS_HUMAN'?'NEEDS_HUMAN':'CLOSED',intake_batch_id:batch.id};
-  const next=value.reason==='NEEDS_HUMAN'?'NEEDS_HUMAN':'CLOSED';
+  const next=value.reason==='ABANDONED'?'CLOSED':'NEEDS_HUMAN';
   await db.query('UPDATE core_oa_intake_batches SET status=$2,close_reason=$3,closed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1',
    [batch.id,next,value.reason]);
   return {status:next,intake_batch_id:batch.id};

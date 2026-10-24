@@ -14,6 +14,8 @@ export interface PilotPrintIntent {
   readonly paper:"A4"|null;
   readonly sides:1|2|null;
   readonly black_white:boolean;
+  /** Explicit color request is a human handoff, never pilot settings. */
+  readonly color_requested:boolean;
   readonly status:"ready_for_core_validation"|"needs_clarification";
   readonly reasons:readonly (
     "MISSING_CODE"|"INVALID_CODE_FORMAT"|"MISSING_COPIES"|"MISSING_PAPER"|
@@ -67,6 +69,11 @@ export function extractPilotPrintIntent(events:readonly InboundEvent[]):PilotPri
   if(one&&two)reasons.push("CONFLICTING_SIDES");
   else if(sides===null)reasons.push("MISSING_SIDES");
   const black_white=/(?:^|[^\p{L}\p{N}])(?:đen\s*trắng|trắng\s*đen|b\s*\/\s*w)(?=$|[^\p{L}\p{N}])/iu.test(text);
+  const colorMention=/(?:^|[^\p{L}\p{N}])màu(?=$|[^\p{L}\p{N}])/iu.test(text);
+  const negatedColor=/(?:^|[^\p{L}\p{N}])(?:không|ko|đừng)\s+(?:(?:muốn|chọn|lựa\s+chọn|in)\s+)*(?:in\s+)?màu(?=$|[^\p{L}\p{N}])/iu.test(text);
+  // Any positive color mention is routed to staff; the pilot never infers
+  // black-white from a partial or ambiguous customer choice.
+  const color_requested=colorMention&&!negatedColor;
   if(!black_white)reasons.push("MISSING_BLACK_WHITE");
   if(/(?:^|[^A-Z0-9])A3(?=$|[^A-Z0-9])/.test(upper)||
      /(?:^|[^\p{L}\p{N}])(?:in\s*)?màu(?=$|[^\p{L}\p{N}])/iu.test(text))
@@ -76,7 +83,7 @@ export function extractPilotPrintIntent(events:readonly InboundEvent[]):PilotPri
     scope:{oa_id:first.oa_id,customer_id:first.customer_id,
       conversation_id:first.conversation_id},
     event_ids:textEvents.map(e=>e.event_id).sort(),
-    code_candidate,code_event_id,copies:copiesValue,paper,sides,black_white,
+    code_candidate,code_event_id,copies:copiesValue,paper,sides,black_white,color_requested,
     status:reasons.length===0?"ready_for_core_validation":"needs_clarification",reasons
   };
 }

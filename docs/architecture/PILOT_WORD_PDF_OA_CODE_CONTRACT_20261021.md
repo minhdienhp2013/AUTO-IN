@@ -8,6 +8,8 @@ Khách gửi **DOCX/PDF gốc**, đủ số bản, một/hai mặt, khổ A4 đe
 
 Pilot giới hạn đơn có số tờ tin cậy **không quá 150**; không rõ số tờ, vượt ngưỡng hoặc nhân viên đánh dấu chi phí đáng kể thì chờ người xử lý/giá. Không dùng AI để suy ra số tờ hoặc giá. Mã là dấu hiệu khách biết mã trong cửa hàng, không chứng minh vị trí tuyệt đối vì có thể được chia sẻ.
 
+**Quyết định bổ sung của chủ ngày 24/10/2026:** lựa chọn in màu được ghi nhận từ event thông số đã xác minh vào intake bền vững và đóng `NEEDS_HUMAN` với `close_reason=COLOR_PRINT` để nhân viên xử lý. Không chuyển ngầm thành `black_white`, không lập candidate/authorization/job pilot cho yêu cầu đó. Chỉ lựa chọn đen trắng rõ ràng mới được xét tiếp trong lane pilot; thiếu event hoặc provenance đáng tin cậy thì giữ fail-closed. Điều này không bật webhook/media OA thật hoặc in màu tự động.
+
 ## Wire chung v0.1
 
 Kiểu TypeScript nằm ở [`contracts/pilot-word-pdf.ts`](../../contracts/pilot-word-pdf.ts). Chúng **không cấp quyền** chỉ bằng cách được import. Mọi field `shop_id`, `oa_id`, `customer_id`, `provider_event_id` và source ref phải xuất phát từ webhook OA đã xác minh và storage tin cậy; không lấy identity/role, path, hash hoặc MIME chỉ từ text/filename do khách khai.

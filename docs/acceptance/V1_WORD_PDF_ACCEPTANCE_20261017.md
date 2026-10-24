@@ -62,6 +62,8 @@ do not add or alter product endpoints.
 | V1-015–016 | AI / network fail | File bytes/order persisted independently of DeepSeek and connectivity; failed fetch/worker holds for staff; reconnect must not create another send |
 | V1-017–018 | PNG/JPEG/CCCD | Intake stores source then staff queue with reason "Đã nhận, chuyển nhân viên, chưa tự xử lý"; **0 print jobs** and no OCR/photo processing |
 | V1-019–021 | Color/Excel/ZIP>5 | No silent black/white conversion or unsupported auto-print; six real ZIP document members trigger manual review |
+
+For the shop-code pilot, a verified explicit color choice must remain bound to its intake event and close the Core batch as `NEEDS_HUMAN` with `COLOR_PRINT`; no black-white pilot candidate, authorization or job may be created. A missing close port or unverifiable event holds the lease. This is a synthetic/unit acceptance condition until product-backed and live evidence is available.
 | V1-022–023 | Unverified Word/PDF | Missing Word COM/font/layout, untrusted preview/capability, or unverifiable page/sheet plan => NEEDS_HUMAN/manual hold, no optimistic approval/print |
 | V1-024 | Pending inbound/approval race | New inbound/revision/source during approval must produce 409/rebind and 0 jobs for old tuple |
 | V1-025 | Manifest hash changed at **same manifest_ref** | Keep source byte/path, order, revision and settings fixed; change manifest bytes at same path → new manifest_sha256 and evidence_sha256. Reject previous consent/approval/claim/preflight/send; 0 new print/driver calls |
