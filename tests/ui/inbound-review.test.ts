@@ -31,14 +31,14 @@ test('inbound review response decoder accepts exact quarantine and pilot Core pr
  ])assert.throws(()=>parseInboundReviewItems(bad),/INVALID_INBOUND_REVIEW_ITEMS/);
 });
 
-test('UI names COLOR_PRINT only when Core explicitly projects that reason',()=>{
+test('UI names COLOR_PRINT only when explicit; missing or unprojected reason stays neutral',()=>{
  const colorCopy=inboundReviewItemCopy(colorIntake);
  assert.equal(colorCopy.title,'Yêu cầu in màu cần nhân viên');
  assert.match(colorCopy.message,/Core đã ghi nhận lựa chọn in màu/);
  assert.match(colorCopy.message,/không tạo lệnh in tự động/);
  const genericCopy=inboundReviewItemCopy(genericIntake);
  assert.equal(genericCopy.title,'Yêu cầu cần nhân viên');
- assert.match(genericCopy.message,/chưa có lý do cụ thể được xác minh/);
+ assert.equal(genericCopy.message,'Lý do chi tiết chưa được hiển thị; nhân viên cần đối soát hồ sơ Core.');
  assert.doesNotMatch(genericCopy.message,/màu/i);
 });
 

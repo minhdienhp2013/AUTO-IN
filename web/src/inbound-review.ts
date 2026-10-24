@@ -75,7 +75,7 @@ export function inboundReviewItemCopy(item:InboundReviewItem):{title:string;mess
     };
     return {
       title:'Yêu cầu cần nhân viên',
-      message:'Core giữ yêu cầu ở trạng thái NEEDS_HUMAN; chưa có lý do cụ thể được xác minh.',
+      message:'Lý do chi tiết chưa được hiển thị; nhân viên cần đối soát hồ sơ Core.',
       customer:'Yêu cầu pilot',
     };
   }
