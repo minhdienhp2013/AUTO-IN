@@ -24,8 +24,8 @@ test('late 401 from shop A after login to shop B is stale and ignored', () => {
 test('App clears current unauthorized session but discards stale request failures', async () => {
   const app = await readFile(new URL('../../web/src/App.tsx', import.meta.url), 'utf8');
   assert.match(app, /classifySessionFailure\(fault\.status, expectedScope, current\)/);
-  assert.match(app, /if \(disposition === 'stale'\) return false;[\s\S]*?if \(disposition === 'unauthorized'\)[\s\S]*?clearStaffSession\(\);[\s\S]*?setError\(fault\.message/);
-  assert.match(app, /setSession\(null\);setOrders\(\[\]\);setSelected\(null\)/);
+  assert.match(app, /if \(disposition === 'stale'\) return false;[\s\S]*?if \(disposition === 'unauthorized'\)[\s\S]*?clearStaffSession\(\{ expected: expectedScope, current \}\);[\s\S]*?setError\(fault\.message/);
+  assert.match(app, /staffUi\.clearAfter401\(failure\.expected, failure\.current\)/);
 });
 
 test('selected-order current 401 clears the session before cancellation or shop mismatch can suppress it', async () => {
@@ -37,5 +37,5 @@ test('selected-order current 401 clears the session before cancellation or shop 
   assert.ok(effectStart >= 0 && effectEnd > effectStart, 'selected-order effect is present');
   const effect = app.slice(effectStart, effectEnd);
   assert.match(effect, /classifySessionFailure\(e\.status, expected, current\)/);
-  assert.match(effect, /if \(disposition === 'stale'\) return;[\s\S]*?if \(disposition === 'unauthorized'\)[\s\S]*?clearStaffSession\(\);[\s\S]*?if \(cancelled\) return;/);
+  assert.match(effect, /if \(disposition === 'stale'\) return;[\s\S]*?if \(disposition === 'unauthorized'\)[\s\S]*?clearStaffSession\(\{ expected, current \}\);[\s\S]*?if \(cancelled\) return;/);
 });

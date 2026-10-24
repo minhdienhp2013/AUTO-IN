@@ -27,6 +27,7 @@ import { parsePdfReviewPreview, PdfReviewPanel,
   type PdfReviewIdentity, type PdfReviewPanelState, type PdfReviewPageObjectUrl } from './pdf-review-panel.ts';
 import { PilotShopCodePanel } from './pilot-shop-code.ts';
 import { classifySessionFailure, resolveForSession, type SessionRequestScope } from './session-request.ts';
+import { useStaffSessionUiState } from './session-ui-state.ts';
 
 type View = 'orders' | 'overview' | 'settings' | 'inbound-review' | 'shop-code';
 type DetailTab = 'document' | 'activity';
@@ -39,18 +40,17 @@ const labelMode = (mode: OperationMode) => ({ simulation: 'MÔ PHỎNG · KHÔNG
 const modeTone = (mode: OperationMode) => mode === 'simulation' ? 'demo' : mode === 'unverified' || mode === 'safe' ? 'warn' : 'live';
 
 function App() {
-  const [session, setSession] = useState<StaffSession | null>(null);
+  const staffUi = useStaffSessionUiState();
+  const { session, setSession, orders, setOrders, selected, setSelected,
+    inboundItems, setInboundItems } = staffUi;
   const sessionRef = useRef<StaffSession | null>(null);
   const sessionVersion = useRef(0);
-  const [orders, setOrders] = useState<OrderView[]>([]);
-  const [inboundItems,setInboundItems]=useState<InboundReviewItem[]|null>(null);
   const [inboundLoading,setInboundLoading]=useState(false);
   const [inboundError,setInboundError]=useState<string|null>(null);
   const [mode, setMode] = useState<OperationMode>(useDemo ? 'simulation' : 'unverified');
   const [view, setView] = useState<View>('orders');
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
-  const [selected, setSelected] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<DetailTab>('document');
   const [mobileDetail, setMobileDetail] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -83,14 +83,16 @@ function App() {
     sessionRef.current = next;
     setSession(next);
   }, []);
-  const clearStaffSession = useCallback(() => {
+  const clearStaffSession = useCallback((failure?: { expected: SessionRequestScope; current: SessionRequestScope }) => {
     requestEpoch.current++;
     sessionVersion.current++;
     inboundEpoch.current++;
     sessionRef.current = null;
-    setSession(null);setOrders([]);setSelected(null);setInboundItems(null);setInboundLoading(false);
+    if (failure) staffUi.clearAfter401(failure.expected, failure.current);
+    else staffUi.clearSession();
+    setInboundLoading(false);
     setChatLoaded(false);setChatLoading(false);setLoading(false);setApiHealthy(false);
-  }, []);
+  }, [staffUi.clearAfter401, staffUi.clearSession]);
   const [deliveryValue, setDeliveryValue] = useState('');
   const [verifiedValue, setVerifiedValue] = useState('');
   const [paperNote, setPaperNote] = useState('');
@@ -153,7 +155,7 @@ function App() {
         // so test the request identity before the shop comparison. A stale
         // request from a prior login is ignored without touching the new UI.
         inboundEpoch.current++;
-        clearStaffSession();
+        clearStaffSession({ expected: expectedScope, current });
         setError(fault.message || 'Phiên đăng nhập hết hạn.');
         return false;
       }
@@ -201,7 +203,7 @@ function App() {
         // A current 401 clears the API shop ID before this catch runs. Clear
         // React state by authenticated-session identity, even if this detail
         // effect was cancelled by a selection change in the same session.
-        clearStaffSession();
+        clearStaffSession({ expected, current });
         setError(e.message || 'Phiên đăng nhập hết hạn.');
         return;
       }

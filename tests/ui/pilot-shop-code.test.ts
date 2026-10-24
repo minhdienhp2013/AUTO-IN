@@ -328,7 +328,7 @@ test('pilot page is gated to a live staff session while the existing order-manag
   assert.ok(/!useDemo&&session&&<button[^>]+data-testid="pilot-shop-code-nav"/.test(app), 'navigation is staff-session gated');
   assert.ok(/const nextSession = await port\.login\(loginShop, loginUser, loginPassword\);[\s\S]*?updateSession\(nextSession\);\s*setView\('shop-code'\)/.test(app), 'successful login opens the pilot page only for the current request epoch');
   assert.ok(/const resolveCurrent = <T,>\(request: Promise<T>\) => resolveForSession\(request, expectedScope, currentScope\)/.test(app), 'every order load result is guarded by epoch, actor, role and shop scope');
-  assert.ok(/const clearStaffSession = useCallback\(\(\) => \{[\s\S]*?setOrders\(\[\]\);setSelected\(null\)[\s\S]*?setLoading\(false\)/.test(app), 'logout and shop switch immediately clear prior tenant data');
+  assert.ok(/const clearStaffSession = useCallback\([\s\S]*?staffUi\.clearSession\(\)[\s\S]*?setLoading\(false\)/.test(app), 'logout and shop switch clear prior tenant data through the reducer');
   assert.ok(/resolveForSession\(port\.getOrder\(selected\), expected,/.test(app), 'selected-order detail reads reject late responses from a prior session');
   assert.ok(/view === 'shop-code' \? <PilotShopCodePanel/.test(app), 'pilot page is part of the authenticated app');
   assert.ok(/view === 'orders'/.test(app), 'existing order-management flow remains');
