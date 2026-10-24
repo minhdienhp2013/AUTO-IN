@@ -26,7 +26,7 @@ import { parseWordReviewPreview, WordReviewPanel,
 import { parsePdfReviewPreview, PdfReviewPanel,
   type PdfReviewIdentity, type PdfReviewPanelState, type PdfReviewPageObjectUrl } from './pdf-review-panel.ts';
 import { PilotShopCodePanel } from './pilot-shop-code.ts';
-import { resolveForSession, type SessionRequestScope } from './session-request.ts';
+import { classifySessionFailure, resolveForSession, type SessionRequestScope } from './session-request.ts';
 
 type View = 'orders' | 'overview' | 'settings' | 'inbound-review' | 'shop-code';
 type DetailTab = 'document' | 'activity';
@@ -144,10 +144,19 @@ function App() {
       setApiHealthy(true);
       return true;
     } catch (e) {
-      if (requestEpoch.current !== epoch || sessionVersion.current !== expectedScope.sessionVersion ||
-          port.authenticatedShopId() !== expectedScope.shopId) return false;
       const fault = e as ApiFault;
-      if (fault.status === 401) { inboundEpoch.current++;clearStaffSession(); }
+      const current = currentScope();
+      const disposition = classifySessionFailure(fault.status, expectedScope, current);
+      if (disposition === 'stale') return false;
+      if (disposition === 'unauthorized') {
+        // HttpPrintPort clears its credential/shop on a current-session 401,
+        // so test the request identity before the shop comparison. A stale
+        // request from a prior login is ignored without touching the new UI.
+        inboundEpoch.current++;
+        clearStaffSession();
+        setError(fault.message || 'Phiên đăng nhập hết hạn.');
+        return false;
+      }
       setApiHealthy(false);
       setError(fault.message || 'Không kết nối được.');
       return false;

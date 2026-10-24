@@ -270,14 +270,27 @@ export class HttpPrintPort implements PrintPort {
   // no localStorage and no token in URL: refreshing requires a fresh login.
   private token: string | null = null;
   private shopId: string|null = null;
+  private sessionGeneration = 0;
   constructor(baseUrl = '', fetcher: typeof fetch = globalThis.fetch.bind(globalThis)) { this.baseUrl = baseUrl; this.fetcher = fetcher; }
+  private clearSession(): void {
+    this.token = null;
+    this.shopId = null;
+    this.sessionGeneration++;
+  }
+  private clearSessionIfCurrent(generation: number, token: string | null): boolean {
+    if (this.sessionGeneration !== generation || this.token !== token) return false;
+    this.clearSession();
+    return true;
+  }
   private async call(path: string, options: RequestInit = {}): Promise<unknown> {
+    const requestGeneration = this.sessionGeneration;
+    const requestToken = this.token;
     let response: Response;
     try {
       response = await this.fetcher(`${this.baseUrl}${path}`, {
         ...options, credentials: 'same-origin', cache: 'no-store',
         headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-          ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), ...options.headers },
+          ...(requestToken ? { Authorization: `Bearer ${requestToken}` } : {}), ...options.headers },
       });
     } catch { throw new ApiFault(0, 'NETWORK', 'Mất kết nối API. Không tự xác nhận kết quả; tải lại để đối soát.'); }
     let json: unknown = null;
@@ -285,17 +298,27 @@ export class HttpPrintPort implements PrintPort {
     if (!response.ok) {
       const e = asObject(asObject(json).error);
       const defaults: Record<number, string> = { 401: 'Hết phiên đăng nhập. Vui lòng đăng nhập lại.', 403: 'Tài khoản không có quyền thực hiện.', 409: 'Phiên bản đã thay đổi. Tải lại đơn trước khi thao tác.', 422: 'Dữ liệu nghiệp vụ chưa hợp lệ.', 503: 'Chức năng chưa sẵn sàng.' };
-      if (response.status === 401) { this.token = null; this.shopId = null; }
+      if (response.status === 401 &&
+          !this.clearSessionIfCurrent(requestGeneration, requestToken)) {
+        throw new ApiFault(409, 'STALE_SESSION_RESPONSE', 'Phản hồi thuộc phiên đã đổi; giữ nguyên phiên hiện hành.');
+      }
       throw new ApiFault(response.status, asString(e.code, `HTTP_${response.status}`), asString(e.message, defaults[response.status] ?? 'API không xử lý được yêu cầu.'), asNum(e.current_revision) ?? undefined);
     }
     return json;
   }
-  private session(raw: unknown): StaffSession {
+  private session(raw: unknown, expectedToken: string, expectedGeneration: number): StaffSession {
     const o = asObject(raw);
     if (!asString(o.id) || !asString(o.shop_id) || o.verified !== true || !['staff', 'owner'].includes(String(o.role))) {
       throw new ApiFault(503, 'INVALID_SESSION', 'API chưa trả tài khoản nhân viên/chủ đã xác minh.');
     }
-    this.shopId=asString(o.shop_id);
+    if (this.token !== expectedToken || this.sessionGeneration !== expectedGeneration) {
+      throw new ApiFault(409, 'STALE_SESSION_RESPONSE', 'Phản hồi thuộc phiên đã đổi; giữ nguyên phiên hiện hành.');
+    }
+    const nextShopId = asString(o.shop_id);
+    if (this.shopId !== nextShopId) {
+      this.shopId = nextShopId;
+      this.sessionGeneration++;
+    }
     return { actor_id: asString(o.id), display_name: `${o.role === 'owner' ? 'Chủ' : 'Nhân viên'} · ${asString(o.id).slice(0,8)}`,
       role: o.role as StaffSession['role'], can_approve: true, can_manage_schedule: o.role === 'owner' };
   }
@@ -316,16 +339,29 @@ export class HttpPrintPort implements PrintPort {
     return display;
   }
   async login(shopId: string, username: string, password: string): Promise<StaffSession> {
-    this.token = null; this.shopId=null;
+    this.clearSession();
+    const loginGeneration = this.sessionGeneration;
     const result = asObject(await this.call('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ shop_id: shopId, username, password }) }));
+    if (this.sessionGeneration !== loginGeneration || this.token !== null) {
+      throw new ApiFault(409, 'STALE_SESSION_RESPONSE', 'Phản hồi đăng nhập thuộc yêu cầu đã cũ.');
+    }
     if (typeof result.token !== 'string' || !result.token || !result.principal) throw new ApiFault(503,'INVALID_LOGIN','API chưa cấp phiên xác minh.');
     this.token = result.token;
-    try { return await this.me(); } catch(e) { this.token = null; this.shopId=null; throw e; }
+    this.sessionGeneration++;
+    const token = this.token, generation = this.sessionGeneration;
+    try { return await this.me(); }
+    catch(e) { this.clearSessionIfCurrent(generation, token); throw e; }
   }
-  async logout() { try { if(this.token) await this.call('/api/v1/auth/logout', { method: 'POST' }); } finally { this.token = null; this.shopId=null; } }
+  async logout() {
+    const token = this.token, generation = this.sessionGeneration;
+    try { if(token) await this.call('/api/v1/auth/logout', { method: 'POST' }); }
+    finally { this.clearSessionIfCurrent(generation, token); }
+  }
   async me(): Promise<StaffSession> {
     if (!this.token) throw new ApiFault(401, 'UNAUTHENTICATED', 'Vui lòng đăng nhập để xem đơn.');
-    return this.session(asObject(await this.call('/api/v1/auth/me')).principal);
+    const token = this.token, generation = this.sessionGeneration;
+    const raw = await this.call('/api/v1/auth/me');
+    return this.session(asObject(raw).principal, token, generation);
   }
   async listOrders() {
     const raw = asObject(await this.call('/api/v1/orders')).orders;
@@ -363,10 +399,11 @@ export class HttpPrintPort implements PrintPort {
         !Number.isSafeInteger(revision) || revision < 1 ||
         !/^[0-9a-f]{64}$/.test(request_hash))
       throw new ApiFault(409,'PREVIEW_UNVERIFIED','Không xác minh được phiên bản và hash để xem trước.');
-    const sessionToken=this.token;
+    const sessionToken=this.token, sessionGeneration=this.sessionGeneration;
     const root=`/api/v1/orders/${order_id}/revisions/${revision}/previews`;
     const catalog=asObject(await this.call(root));
-    if(this.token!==sessionToken) throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
+    if(this.token!==sessionToken||this.sessionGeneration!==sessionGeneration)
+      throw new ApiFault(409,'PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; không dùng dữ liệu xem trước cũ.');
     const entries=catalog.previews;
     if (catalog.preview_verified!==true || catalog.order_id!==order_id ||
         catalog.revision!==revision || catalog.request_hash!==request_hash ||
@@ -403,7 +440,8 @@ export class HttpPrintPort implements PrintPort {
     const pages:Blob[]=[];
     const signature=[137,80,78,71,13,10,26,10];
     for(let index=0;index<entries.length;index++) {
-      if(this.token!==token) throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
+      if(this.token!==token||this.sessionGeneration!==sessionGeneration)
+        throw new ApiFault(409,'PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; không dùng dữ liệu xem trước cũ.');
       const entry=asObject(entries[index]);
       const exactUrl=`${root}/${index}`;
       if(entry.index!==index || entry.url!==exactUrl || entry.content_type!=='image/png')
@@ -417,7 +455,10 @@ export class HttpPrintPort implements PrintPort {
       } catch {
         throw new ApiFault(0,'PREVIEW_NETWORK','Không tải được ảnh xác minh; cần kiểm tra lại.');
       }
-      if(response.status===401) this.token=null;
+      if(response.status===401) {
+        if(!this.clearSessionIfCurrent(sessionGeneration,token))
+          throw new ApiFault(409,'PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; giữ nguyên phiên hiện hành.');
+      }
       if(!response.ok || response.headers.get('content-type')?.split(';')[0]?.trim()!=='image/png')
         throw new ApiFault(response.status,'PREVIEW_UNAVAILABLE','Ảnh xem trước không còn hợp lệ; cần đối chiếu bản gốc.');
       const claimed=Number(response.headers.get('content-length'));
@@ -428,11 +469,12 @@ export class HttpPrintPort implements PrintPort {
       if(bytes.length<8 || bytes.length>8*1024*1024 ||
           !signature.every((value,n)=>bytes[n]===value))
         throw new ApiFault(409,'PREVIEW_INVALID_PNG','Nội dung ảnh xem trước không được xác minh.');
-      if(this.token!==token) throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
+      if(this.token!==token||this.sessionGeneration!==sessionGeneration)
+        throw new ApiFault(409,'PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; không dùng dữ liệu xem trước cũ.');
       pages.push(new Blob([buffer],{type:'image/png'}));
     }
-    if(this.token!==token)
-      throw new ApiFault(401,'PREVIEW_SESSION_CHANGED','Phiên đã thay đổi trong lúc tải xem trước.');
+    if(this.token!==token||this.sessionGeneration!==sessionGeneration)
+      throw new ApiFault(409,'PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; không dùng dữ liệu xem trước cũ.');
     return {pages,files};
   }
   async loadPdfReviewPreview(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{projection:PdfReviewPreviewV1;pages:Blob[]}> {
@@ -442,12 +484,12 @@ export class HttpPrintPort implements PrintPort {
     if(!/^[0-9a-f-]{36}$/i.test(order_id)||!Number.isSafeInteger(revision)||revision<1||! /^[0-9a-f]{64}$/.test(request_hash))
       throw new ApiFault(409,'PDF_PREVIEW_SCOPE_INVALID','Đơn, revision hoặc request hash hiện hành chưa hợp lệ.');
 
-    const token=this.token,shopId=this.shopId;
+    const token=this.token,shopId=this.shopId,sessionGeneration=this.sessionGeneration;
     const identity:PdfReviewIdentity={shopId,orderId:order_id,revision,requestHash:request_hash,authenticatedStaff:true};
     const path=`/api/v1/orders/${encodeURIComponent(order_id)}/revisions/${revision}/pdf-review-previews`;
     const raw=await this.call(path,{method:'POST',redirect:'error'});
-    if(this.token!==token||this.shopId!==shopId)
-      throw new ApiFault(401,'PDF_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng phản hồi preview cũ.');
+    if(this.token!==token||this.shopId!==shopId||this.sessionGeneration!==sessionGeneration)
+      throw new ApiFault(409,'PDF_PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; không dùng preview cũ.');
     const projection=parsePdfReviewPreview(raw,identity);
     if(!projection)
       throw new ApiFault(409,'PDF_PREVIEW_STALE','Preview không khớp shop/order/revision/request hash hiện hành.');
@@ -455,8 +497,8 @@ export class HttpPrintPort implements PrintPort {
     const pages:Blob[]=[];
     const signature=[137,80,78,71,13,10,26,10];
     for(const page of projection.pages){
-      if(this.token!==token||this.shopId!==shopId)
-        throw new ApiFault(401,'PDF_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng ảnh preview cũ.');
+      if(this.token!==token||this.shopId!==shopId||this.sessionGeneration!==sessionGeneration)
+        throw new ApiFault(409,'PDF_PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; không dùng preview cũ.');
       let response:Response;
       try{
         response=await this.fetcher(`${this.baseUrl}${page.url}`,{
@@ -466,7 +508,9 @@ export class HttpPrintPort implements PrintPort {
       }catch{
         throw new ApiFault(0,'PDF_PREVIEW_NETWORK','Không tải được trang preview PDF; giữ đơn để nhân viên xử lý.');
       }
-      if(response.status===401){if(this.token===token){this.token=null;this.shopId=null;}
+      if(response.status===401){
+        if(!this.clearSessionIfCurrent(sessionGeneration,token))
+          throw new ApiFault(409,'PDF_PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; giữ nguyên phiên hiện hành.');
         throw new ApiFault(401,'PDF_PREVIEW_UNAUTHENTICATED','Phiên nhân viên hết hạn khi tải preview PDF.');}
       if(!response.ok)
         throw new ApiFault(response.status||503,'PDF_PREVIEW_PAGE_UNAVAILABLE','Trang preview PDF không hợp lệ hoặc chưa sẵn sàng.');
@@ -514,8 +558,8 @@ export class HttpPrintPort implements PrintPort {
         throw new ApiFault(409,'PDF_PREVIEW_HASH_MISMATCH','SHA-256 trang preview PDF không khớp biên nhận.');
       pages.push(new Blob([bytes],{type:'image/png'}));
     }
-    if(this.token!==token||this.shopId!==shopId)
-      throw new ApiFault(401,'PDF_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng phản hồi preview cũ.');
+    if(this.token!==token||this.shopId!==shopId||this.sessionGeneration!==sessionGeneration)
+      throw new ApiFault(409,'PDF_PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; không dùng preview cũ.');
     return {projection,pages};
   }
   async loadWordReviewPreview(order: Pick<OrderView,'order_id'|'revision'|'request_hash'>): Promise<{projection:WordReviewPreviewV1;pages:Blob[]}> {
@@ -525,12 +569,12 @@ export class HttpPrintPort implements PrintPort {
     if(!/^[0-9a-f-]{36}$/i.test(order_id)||!Number.isSafeInteger(revision)||revision<1||! /^[0-9a-f]{64}$/.test(request_hash))
       throw new ApiFault(409,'WORD_PREVIEW_SCOPE_INVALID','Đơn, revision hoặc request hash hiện hành chưa hợp lệ.');
 
-    const token=this.token,shopId=this.shopId;
+    const token=this.token,shopId=this.shopId,sessionGeneration=this.sessionGeneration;
     const identity:WordReviewIdentity={shopId,orderId:order_id,revision,requestHash:request_hash,authenticatedStaff:true};
     const path=`/api/v1/orders/${encodeURIComponent(order_id)}/revisions/${revision}/word-review-previews`;
     const raw=await this.call(path,{method:'POST',body:JSON.stringify({}),redirect:'error'});
-    if(this.token!==token||this.shopId!==shopId)
-      throw new ApiFault(401,'WORD_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng phản hồi preview cũ.');
+    if(this.token!==token||this.shopId!==shopId||this.sessionGeneration!==sessionGeneration)
+      throw new ApiFault(409,'WORD_PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; không dùng preview cũ.');
     const projection=parseWordReviewPreview(raw,identity);
     if(!projection)
       throw new ApiFault(409,'WORD_PREVIEW_STALE','Preview Word không khớp shop/order/revision/request hash hiện hành.');
@@ -539,8 +583,8 @@ export class HttpPrintPort implements PrintPort {
     const pages:Blob[]=[];
     const signature=[137,80,78,71,13,10,26,10];
     for(const page of projection.pages){
-      if(this.token!==token||this.shopId!==shopId)
-        throw new ApiFault(401,'WORD_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng ảnh preview cũ.');
+      if(this.token!==token||this.shopId!==shopId||this.sessionGeneration!==sessionGeneration)
+        throw new ApiFault(409,'WORD_PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; không dùng preview cũ.');
       let response:Response;
       try{
         response=await this.fetcher(`${this.baseUrl}${page.url}`,{
@@ -550,7 +594,9 @@ export class HttpPrintPort implements PrintPort {
       }catch{
         throw new ApiFault(0,'WORD_PREVIEW_NETWORK','Không tải được trang preview Word; giữ đơn để nhân viên xử lý.');
       }
-      if(response.status===401){if(this.token===token){this.token=null;this.shopId=null;}
+      if(response.status===401){
+        if(!this.clearSessionIfCurrent(sessionGeneration,token))
+          throw new ApiFault(409,'WORD_PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; giữ nguyên phiên hiện hành.');
         throw new ApiFault(401,'WORD_PREVIEW_UNAUTHENTICATED','Phiên nhân viên hết hạn khi tải preview Word.');}
       if(!response.ok)
         throw new ApiFault(response.status||503,'WORD_PREVIEW_PAGE_UNAVAILABLE','Trang preview Word không hợp lệ hoặc chưa sẵn sàng.');
@@ -598,8 +644,8 @@ export class HttpPrintPort implements PrintPort {
         throw new ApiFault(409,'WORD_PREVIEW_HASH_MISMATCH','SHA-256 trang preview Word không khớp biên nhận.');
       pages.push(new Blob([bytes],{type:'image/png'}));
     }
-    if(this.token!==token||this.shopId!==shopId)
-      throw new ApiFault(401,'WORD_PREVIEW_SESSION_CHANGED','Phiên nhân viên đã đổi; không dùng phản hồi preview cũ.');
+    if(this.token!==token||this.shopId!==shopId||this.sessionGeneration!==sessionGeneration)
+      throw new ApiFault(409,'WORD_PREVIEW_SESSION_CHANGED','Phản hồi thuộc phiên đã đổi; không dùng preview cũ.');
     return {projection,pages};
   }
   async reviewPreview(order: OrderView, expectedEvidenceSha256: string, key: string): Promise<OrderView> {

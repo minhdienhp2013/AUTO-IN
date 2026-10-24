@@ -60,6 +60,66 @@ test('http port 401, 403, 409, 503 never substitutes demo',async()=>{
   await assertFault(()=>port.getOrder('anything'),'ERR');
  }
 });
+test('late shop A 401 cannot clear shop B credentials or order data',async()=>{
+ let resolveShopA!:(value:Response)=>void;
+ const shopAResponse=new Promise<Response>(resolve=>{resolveShopA=resolve;});
+ const requests:Array<{url:string,authorization:string|null}> = [];
+ const fetcher=async(url:RequestInfo|URL,init?:RequestInit):Promise<Response>=>{
+  const path=String(url);
+  const authorization=new Headers(init?.headers).get('Authorization');
+  requests.push({url:path,authorization});
+  if(path.endsWith('/api/v1/auth/login')){
+   const body=JSON.parse(String(init?.body));
+   return new Response(JSON.stringify({token:`token-${body.shop_id}`,principal:{id:'staff',shop_id:body.shop_id}}),
+    {status:200,headers:{'Content-Type':'application/json'}});
+  }
+  if(path.endsWith('/api/v1/auth/me')){
+   const shop=authorization==='Bearer token-shop-A'?'shop-A':'shop-B';
+   return new Response(JSON.stringify({principal:{id:`staff-${shop}`,shop_id:shop,role:'staff',verified:true}}),
+    {status:200,headers:{'Content-Type':'application/json'}});
+  }
+  if(path.endsWith('/api/v1/orders')&&authorization==='Bearer token-shop-A')return shopAResponse;
+  if(path.endsWith('/api/v1/orders')&&authorization==='Bearer token-shop-B'){
+   return new Response(JSON.stringify({orders:[{id:'order-from-shop-B',active_revision:1}]}),
+    {status:200,headers:{'Content-Type':'application/json'}});
+  }
+  throw new Error('Unexpected synthetic request');
+ };
+ const port=new HttpPrintPort('',fetcher as typeof fetch);
+ await port.login('shop-A','staff','secret-A');
+ const staleA=port.listOrders();
+ await port.login('shop-B','staff','secret-B');
+ resolveShopA(new Response(JSON.stringify({error:{code:'EXPIRED'}}),
+  {status:401,headers:{'Content-Type':'application/json'}}));
+ await assertFault(()=>staleA,'STALE_SESSION_RESPONSE');
+ assert.equal(port.authenticatedShopId(),'shop-B');
+ const orders=await port.listOrders();
+ assert.deepEqual(orders.map(order=>order.order_id),['order-from-shop-B']);
+ assert.ok(requests.some(request=>request.url.endsWith('/api/v1/orders')&&
+  request.authorization==='Bearer token-shop-A'));
+});
+test('current-session 401 clears the bearer and authenticated shop',async()=>{
+ let denyOrders=false;
+ const fetcher=async(url:RequestInfo|URL,init?:RequestInit):Promise<Response>=>{
+  const path=String(url);
+  if(path.endsWith('/api/v1/auth/login'))return new Response(JSON.stringify({token:'token-current',principal:{id:'staff',shop_id:'shop-current'}}),
+   {status:200,headers:{'Content-Type':'application/json'}});
+  if(path.endsWith('/api/v1/auth/me'))return new Response(JSON.stringify({principal:{id:'staff-current',shop_id:'shop-current',role:'staff',verified:true}}),
+   {status:200,headers:{'Content-Type':'application/json'}});
+  if(path.endsWith('/api/v1/orders')&&denyOrders){
+   assert.equal(new Headers(init?.headers).get('Authorization'),'Bearer token-current');
+   return new Response(JSON.stringify({error:{code:'EXPIRED'}}),{status:401,headers:{'Content-Type':'application/json'}});
+  }
+  return new Response(JSON.stringify({orders:[]}),{status:200,headers:{'Content-Type':'application/json'}});
+ };
+ const port=new HttpPrintPort('',fetcher as typeof fetch);
+ await port.login('shop-current','staff','secret');
+ assert.equal(port.authenticatedShopId(),'shop-current');
+ denyOrders=true;
+ await assertFault(()=>port.listOrders(),'EXPIRED');
+ assert.equal(port.authenticatedShopId(),null);
+ await assertFault(()=>port.loadCurrentShopCode(),'UNAUTHENTICATED');
+});
 test('untrusted JSON defaults to UNKNOWN, not NOT_SENT or trusted preview',()=>{
  const parsed=mapOrder({order_id:'abc',revision:1,documents:[{filename:'x.pdf',preview_url:'https://example.com/fake.png'}]});
  assert.equal(parsed.print_state,'UNKNOWN');
