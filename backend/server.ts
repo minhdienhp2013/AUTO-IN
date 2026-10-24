@@ -103,7 +103,7 @@ const zaloRuntime = registry === undefined ? undefined : createSyntheticZaloRunt
     service:core.service,trusted,
     processor:{id:'synthetic:zalo:'+trusted.oa_id,role:'processor',
       shop_id:trusted.shop_id,verified:true},
-    custody:pilotPorts.custody
+    custody:pilotPorts.custody,source_capture:pilotPorts.source_capture
   })} : {})
 });
 const pilotIngress=pilotPorts&&pilotToken?createPilotIngressResolvers(asSqlPool(pool),pilotToken,

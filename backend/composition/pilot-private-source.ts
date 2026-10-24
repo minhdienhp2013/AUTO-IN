@@ -5,11 +5,13 @@ import {join} from 'node:path';
 import type {SqlPool,SqlConnection} from '../storage/database.js';
 import {canonical,sha} from '../core/model.js';
 import {pilotSettingsHash,type PilotWordPdfCandidate} from '../core/pilot-shop-code.js';
-import type {PilotSourceCustodyPort,PilotCandidateBindingPort,SealedPilotSource} from '../conversation/pilot-word-pdf-intake.js';
+import type {PilotSourceCustodyPort,PilotCandidateBindingPort,SealedPilotSource,PilotVerifiedMediaPort} from '../conversation/pilot-word-pdf-intake.js';
+import {createPilotSourceCaptureAdapter,type PilotPrivateSourceLookupPort} from '../conversation/core-pilot-intake.js';
 import type {TrustedPdfReviewSourceReader} from '../core/pdf-review-source.js';
 import type {TrustedWordReviewSourceReader} from '../core/word-review-source.js';
 
 const digest=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
+const noVerifiedMedia: PilotVerifiedMediaPort={async read_verified(){return null;}};
 const refPattern=/^doc-[a-f0-9]{32}\/source-000-([a-f0-9]{64})\.(pdf|docx)$/;
 const fail=()=>new Error('PILOT_PRIVATE_SOURCE_UNVERIFIED');
 type Row={shop_id:string;oa_id:string;event_id:string;customer_id:string;conversation_id:string;
@@ -21,8 +23,11 @@ const equal=(a:unknown,b:unknown)=>canonical(a)===canonical(b);
 
 /** Server-owned custody: only a trusted media port may call seal. The durable
  * verified event and OA/shop registry must already exist before bytes are written. */
-export function createPilotPrivateSourcePorts(db:SqlPool,root:string):{
- custody:PilotSourceCustodyPort;binding:PilotCandidateBindingPort;
+export function createPilotPrivateSourcePorts(db:SqlPool,root:string,
+ verifiedMedia?:PilotVerifiedMediaPort):{
+ custody:PilotSourceCustodyPort;lookup:PilotPrivateSourceLookupPort;
+ source_capture:ReturnType<typeof createPilotSourceCaptureAdapter>;
+ binding:PilotCandidateBindingPort;
  pdfSource:TrustedPdfReviewSourceReader;wordSource:TrustedWordReviewSourceReader
 }{
  if(!root||!root.startsWith('/'))throw fail();
@@ -42,6 +47,13 @@ export function createPilotPrivateSourcePorts(db:SqlPool,root:string):{
  };
  const lookup=async(oa:string,event:string)=>
   (await db.query<Row>('SELECT * FROM ai0_pilot_private_sources WHERE oa_id=$1 AND event_id=$2',[oa,event])).rows[0];
+ const sourceLookup:PilotPrivateSourceLookupPort={async find_sealed(input){
+  const row=await lookup(input.oa_id,input.provider_event_id);
+  if(!row||row.oa_id!==input.oa_id||row.event_id!==input.provider_event_id)return null;
+  return {schema:'ai0.pilot_sealed_source.v1',oa_id:row.oa_id,customer_id:row.customer_id,
+   conversation_id:row.conversation_id,provider_event_id:row.event_id,format:row.format,
+   artifact_ref:row.artifact_ref,sha256:row.sha256,size_bytes:Number(row.size_bytes)};
+ }};
  const read=async(row:Row):Promise<Uint8Array>=>{
   await checkedRoot();
   const match=refPattern.exec(row.artifact_ref);
@@ -192,6 +204,11 @@ export function createPilotPrivateSourcePorts(db:SqlPool,root:string):{
   return {source:{artifact_ref:row.artifact_ref,bytes},manifest:{ref:manifestRef,bytes:manifest},
    provider_event_id:row.event_id};
  }};
- return {custody,binding,pdfSource:reader as TrustedPdfReviewSourceReader,
+ // Production server omits verifiedMedia until an approved provider adapter is
+ // available. The closed stub only returns unavailable; it never performs I/O.
+ // Synthetic tests may inject a port keyed only by OA/event ID.
+ const source_capture=createPilotSourceCaptureAdapter({custody,lookup:sourceLookup,
+  media:verifiedMedia??noVerifiedMedia});
+ return {custody,lookup:sourceLookup,source_capture,binding,pdfSource:reader as TrustedPdfReviewSourceReader,
   wordSource:reader as TrustedWordReviewSourceReader};
 }

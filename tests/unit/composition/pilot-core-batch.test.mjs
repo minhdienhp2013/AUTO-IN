@@ -40,3 +40,16 @@ test('pilot Core bridge supplies custody reader and propagates missing bytes as 
  await assert.rejects(port.apply_incoming_batch({}),/INCOMING_SOURCE_NOT_VERIFIED/);
  assert.equal(reads,1);
 });
+
+test('pilot Core bridge exposes only the explicitly server-composed source capture port',()=>{
+ const service={async acceptIncomingQueueBatch(){return {status:'OPEN'};},
+  async closeIncomingQueueBatch(){return {status:'NEEDS_HUMAN'};},
+  createIncomingBatchPort(){return {async apply_incoming_batch(){return {status:'created'};}};}};
+ const custody={async read_sealed(){return null;}};
+ const source_capture={async ensure_sealed_source(){return null;}};
+ const port=createPilotCoreBatchPort({service,trusted,processor,custody,source_capture});
+ assert.equal(port.source_capture,source_capture);
+ const closed=createPilotCoreBatchPort({service,trusted,processor,custody});
+ assert.equal(closed.source_capture,undefined,
+  'no implicit media or custody capture authority is created when composition omits the port');
+});
