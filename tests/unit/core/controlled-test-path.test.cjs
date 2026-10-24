@@ -15,7 +15,7 @@ const revision={order_id:orderId,revision:1,request_hash:'a'.repeat(64),request_
  plan:{request_hash:'a'.repeat(64),physical_sheets:1,document_pages:1,printed_faces:1,ready:true,
   status:'READY',printer_id:printerId,artifact_ref:'opaque',verified_by:'processor'}};
 const validGrant={shop_id:shopId,order_id:orderId,printer_id:printerId,enabled:true,active:true,
- order_shop_id:shopId,configured_by_role:'owner',configured_by_active:true};
+ duration_valid:true,order_shop_id:shopId,configured_by_role:'owner',configured_by_active:true};
 const settings={shop_id:shopId,mode:'controlled_test',printing_enabled:true,manual_lock:false,
  holiday_dates:[],open_at:'00:00',close_at:'24:00',timezone:'Asia/Ho_Chi_Minh'};
 
@@ -37,7 +37,7 @@ function fixture({grant=validGrant,shopSettings=settings}={}){
    const exact=String(args[0])===shopId&&String(args[1])===printerId&&job.state==='NOT_SENT'&&
     (!sql.includes("ss.mode<>'controlled_test'")||currentSettings.mode!=='controlled_test'||Boolean(currentGrant&&
       currentGrant.shop_id===shopId&&currentGrant.order_id===orderId&&currentGrant.printer_id===printerId&&
-      currentGrant.enabled&&currentGrant.active&&currentGrant.order_shop_id===shopId&&
+      currentGrant.enabled&&currentGrant.active&&currentGrant.duration_valid&&currentGrant.order_shop_id===shopId&&
       currentGrant.configured_by_role==='owner'&&currentGrant.configured_by_active));
    return {rows:exact?[{id:orderId}]:[],rowCount:exact?1:0};
   }
@@ -100,6 +100,7 @@ test('claim returns no work when the grant is missing, expired, disabled, mis-sc
  const cases=[
   ['missing',null],
   ['expired',{...validGrant,active:false}],
+  ['long duration',{...validGrant,duration_valid:false}],
   ['disabled',{...validGrant,enabled:false}],
   ['wrong shop',{...validGrant,shop_id:'shop-other'}],
   ['wrong order',{...validGrant,order_id:'00000000-0000-4000-8000-000000000002'}],
@@ -127,6 +128,23 @@ test('grant expiry/revocation after claim blocks preflight and mark-sending with
   {expected_revision:1,lease_token:claim.job.lease_token});
  assert.equal(allowed.allowed,true);
  f.setGrant({...validGrant,configured_by_role:'staff'});
+ await assert.rejects(f.service.markSending(agent,claim.job.job_id,
+  {expected_revision:1,lease_token:claim.job.lease_token,idempotency_key:'send-a'}),
+  e=>e.code==='CONTROLLED_TEST_SCOPE_REQUIRED');
+ assert.equal(f.job.state,'NOT_SENT');
+ assert.deepEqual(f.writes,['claim']);
+});
+
+test('a grant longer than 30 minutes is blocked at the live preflight and mark-sending gates',async()=>{
+ const f=fixture();
+ const claim=await f.service.claim(agent,{printer_id:printerId,idempotency_key:'claim-a'});
+ f.setGrant({...validGrant,duration_valid:false});
+ await assert.rejects(f.service.preflight(agent,claim.job.job_id,
+  {expected_revision:1,lease_token:claim.job.lease_token}),e=>e.code==='CONTROLLED_TEST_SCOPE_REQUIRED');
+ f.setGrant(validGrant);
+ await f.service.preflight(agent,claim.job.job_id,
+  {expected_revision:1,lease_token:claim.job.lease_token});
+ f.setGrant({...validGrant,duration_valid:false});
  await assert.rejects(f.service.markSending(agent,claim.job.job_id,
   {expected_revision:1,lease_token:claim.job.lease_token,idempotency_key:'send-a'}),
   e=>e.code==='CONTROLLED_TEST_SCOPE_REQUIRED');
