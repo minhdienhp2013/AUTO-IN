@@ -211,6 +211,11 @@ class CrashAfterNativeCallPrinter(FakeNativePrinter):
         raise SimulatedProcessCrash()
 
 
+class CrashAfterNativeResultAgent(PilotPrintAgent):
+    def _persist_and_submit_report(self, _work, _state, _evidence):
+        raise SimulatedProcessCrash()
+
+
 class PilotNativePrintTests(unittest.TestCase):
     def make_agent(self, folder, work, backend=None, printer=None):
         backend = backend or FakeBackend(work)
@@ -269,8 +274,10 @@ class PilotNativePrintTests(unittest.TestCase):
             journal = PilotJournal(path)
             self.assertEqual(journal.get("legacy-job")["state"], "UNKNOWN")
             self.assertEqual(journal.pending_reports(), [])
-            self.assertIn("report_pending", {
-                row[1] for row in journal.db.execute("PRAGMA table_info(pilot_jobs)")})
+            columns = {row[1] for row in
+                       journal.db.execute("PRAGMA table_info(pilot_jobs)")}
+            self.assertIn("report_pending", columns)
+            self.assertIn("recovery_report", columns)
             journal.close()
 
     def test_journal_refuses_shared_directory_before_creating_credential_store(self):
@@ -506,6 +513,7 @@ class PilotNativePrintTests(unittest.TestCase):
                              "Core idempotency must see the same report key")
             self.assertEqual(reopened.pending_reports(), [],
                              "pending is cleared only after the confirmed receipt")
+            self.assertEqual(reopened.recovery_reports(), [])
             reopened.close()
 
     def test_pilot_dry_run_reports_simulated_done_without_native_calls(self):
@@ -633,6 +641,52 @@ class PilotNativePrintTests(unittest.TestCase):
             self.assertEqual(len(printer.send_calls), 1)
             self.assertEqual(reopened.get("job-public-test")["state"], "UNKNOWN")
             self.assertEqual(backend.reports[-1][0], "UNKNOWN")
+            reopened.close()
+
+    def test_crash_after_native_result_before_report_persistence_recovers_unknown(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = make_work("PDF")
+            backend = FakeBackend(work)
+            printer = FakeNativePrinter(spooler_ack=True)
+            journal_path = Path(folder) / "pilot.sqlite"
+            journal = PilotJournal(journal_path)
+            agent = CrashAfterNativeResultAgent(
+                backend=backend, journal=journal, printer=printer, dry_run=False,
+                configured_shop_id="pilot-shop-public-test",
+                configured_order_id="order-public-test")
+
+            with self.assertRaises(SimulatedProcessCrash):
+                agent.run_once()
+
+            self.assertEqual(len(printer.send_calls), 1)
+            self.assertEqual(journal.pending_reports(), [])
+            recovery = journal.recovery_reports()
+            self.assertEqual(len(recovery), 1)
+            job_id, report = recovery[0]
+            self.assertEqual(job_id, "job-public-test")
+            self.assertEqual(report["state"], "UNKNOWN")
+            self.assertEqual(report["evidence"], {
+                "reason_code": "RESTART_AT_SEND_BOUNDARY"})
+            self.assertNotIn("driver_called", report["evidence"])
+            self.assertNotIn("spooler_ack", report["evidence"])
+            journal.close()
+
+            reopened = PilotJournal(journal_path)
+            restarted = PilotPrintAgent(
+                backend=backend, journal=reopened, printer=printer, dry_run=False,
+                configured_shop_id="pilot-shop-public-test",
+                configured_order_id="order-public-test")
+            recovered = restarted.run_once()
+
+            self.assertEqual(recovered["status"], "UNKNOWN")
+            self.assertTrue(recovered["reconciled"])
+            self.assertEqual(backend.claim_calls, 1,
+                             "restart report recovery must not claim the SENDING job")
+            self.assertEqual(len(printer.send_calls), 1,
+                             "restart report recovery must never call the driver again")
+            self.assertEqual(backend.report_attempts, [(job_id, report)])
+            self.assertEqual(reopened.recovery_reports(), [])
+            self.assertEqual(reopened.get(job_id)["state"], "UNKNOWN")
             reopened.close()
 
     def test_word_worker_opens_original_docx_and_checks_pages_before_print(self):

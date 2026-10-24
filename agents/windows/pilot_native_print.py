@@ -243,10 +243,12 @@ class PilotJournal:
                         "source_sha256 TEXT NOT NULL, settings_sha256 TEXT NOT NULL, "
                         "evidence_sha256 TEXT NOT NULL, printer_id TEXT NOT NULL, "
                         "revision INTEGER NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL, "
-                        "report_pending TEXT)")
+                        "report_pending TEXT, recovery_report TEXT)")
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(pilot_jobs)")}
         if "report_pending" not in columns:
             self.db.execute("ALTER TABLE pilot_jobs ADD COLUMN report_pending TEXT")
+        if "recovery_report" not in columns:
+            self.db.execute("ALTER TABLE pilot_jobs ADD COLUMN recovery_report TEXT")
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         row = self.db.execute(
@@ -306,8 +308,37 @@ class PilotJournal:
             if previous is not None and previous != encoded:
                 raise PilotPrintBlocked("JOURNAL_REPORT_PENDING_CONFLICT")
             self.db.execute(
-                "UPDATE pilot_jobs SET state=?,evidence=?,report_pending=? WHERE job_id=?",
+                "UPDATE pilot_jobs SET state=?,evidence=?,report_pending=?,recovery_report=NULL "
+                "WHERE job_id=?",
                 (state, evidence_json, encoded, job_id))
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
+    def set_recovery_report(self, job_id: str, report: dict[str, Any]) -> None:
+        """Persist a conservative UNKNOWN envelope before entering native I/O."""
+        normalized = _validate_pending_report(report)
+        if (normalized["state"] != "UNKNOWN" or
+                set(normalized["evidence"]) != {"reason_code"} or
+                normalized["evidence"].get("reason_code") != "RESTART_AT_SEND_BOUNDARY"):
+            raise PilotPrintBlocked("JOURNAL_RECOVERY_REPORT_INVALID")
+        encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False, allow_nan=False)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT report_pending,recovery_report FROM pilot_jobs WHERE job_id=?",
+                (job_id,)).fetchone()
+            if row is None:
+                raise PilotPrintBlocked("JOURNAL_BOUNDARY_MISSING")
+            pending, previous = row
+            if pending is not None:
+                raise PilotPrintBlocked("JOURNAL_REPORT_ALREADY_PENDING")
+            if previous is not None and previous != encoded:
+                raise PilotPrintBlocked("JOURNAL_RECOVERY_REPORT_CONFLICT")
+            self.db.execute("UPDATE pilot_jobs SET recovery_report=? WHERE job_id=?",
+                             (encoded, job_id))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
@@ -323,6 +354,23 @@ class PilotJournal:
                 report = _validate_pending_report(json.loads(encoded))
             except Exception as exc:
                 raise PilotPrintBlocked("JOURNAL_PENDING_REPORT_INVALID") from exc
+            result.append((job_id, report))
+        return result
+
+    def recovery_reports(self) -> list[tuple[str, dict[str, Any]]]:
+        rows = self.db.execute(
+            "SELECT job_id,recovery_report FROM pilot_jobs "
+            "WHERE recovery_report IS NOT NULL ORDER BY rowid").fetchall()
+        result = []
+        for job_id, encoded in rows:
+            try:
+                report = _validate_pending_report(json.loads(encoded))
+                if (report["state"] != "UNKNOWN" or
+                        set(report["evidence"]) != {"reason_code"} or
+                        report["evidence"].get("reason_code") != "RESTART_AT_SEND_BOUNDARY"):
+                    raise ValueError("invalid recovery envelope")
+            except Exception as exc:
+                raise PilotPrintBlocked("JOURNAL_RECOVERY_REPORT_INVALID") from exc
             result.append((job_id, report))
         return result
 
@@ -346,6 +394,33 @@ class PilotJournal:
                 raise PilotPrintBlocked("JOURNAL_PENDING_REPORT_CHANGED")
             self.db.execute("UPDATE pilot_jobs SET report_pending=NULL WHERE job_id=?",
                              (job_id,))
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
+    def clear_recovery_report(self, job_id: str, report: dict[str, Any]) -> None:
+        """Clear the conservative envelope only after Core confirms its receipt."""
+        normalized = _validate_pending_report(report)
+        encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False, allow_nan=False)
+        evidence_json = json.dumps(normalized["evidence"], sort_keys=True,
+                                   separators=(",", ":"), ensure_ascii=False,
+                                   allow_nan=False)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT recovery_report FROM pilot_jobs WHERE job_id=?", (job_id,)).fetchone()
+            if row is None:
+                raise PilotPrintBlocked("JOURNAL_RECOVERY_REPORT_CHANGED")
+            if row[0] is None:
+                self.db.execute("COMMIT")
+                return
+            if row[0] != encoded:
+                raise PilotPrintBlocked("JOURNAL_RECOVERY_REPORT_CHANGED")
+            self.db.execute(
+                "UPDATE pilot_jobs SET state='UNKNOWN',evidence=?,recovery_report=NULL "
+                "WHERE job_id=?", (evidence_json, job_id))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
@@ -508,6 +583,10 @@ class PilotPrintAgent:
         """Retry one durable envelope and end this poll without claiming work."""
         try:
             pending = self.journal.pending_reports()
+            is_recovery = False
+            if not pending:
+                pending = self.journal.recovery_reports()
+                is_recovery = bool(pending)
         except Exception:
             return {"status": "UNKNOWN", "reason": "REPORT_JOURNAL_UNAVAILABLE"}
         if not pending:
@@ -515,7 +594,10 @@ class PilotPrintAgent:
         job_id, report = pending[0]
         try:
             self.backend.submit_report(job_id, report)
-            self.journal.clear_pending_report(job_id, report)
+            if is_recovery:
+                self.journal.clear_recovery_report(job_id, report)
+            else:
+                self.journal.clear_pending_report(job_id, report)
         except Exception:
             return {"status": report["state"], "job_id": job_id,
                     "report_pending": True}
@@ -650,6 +732,16 @@ class PilotPrintAgent:
             _close_prepared(prepared)
             return {"status": "UNKNOWN", "job_id": verified.job_id,
                     "reason": "CORE_SEND_ACK_AMBIGUOUS"}
+
+        try:
+            recovery_report = _validate_pending_report(
+                self.backend.prepare_report(
+                    work, "UNKNOWN", {"reason_code": "RESTART_AT_SEND_BOUNDARY"}))
+            self.journal.set_recovery_report(verified.job_id, recovery_report)
+        except Exception:
+            _close_prepared(prepared)
+            return {"status": "UNKNOWN", "job_id": verified.job_id,
+                    "reason": "REPORT_RECOVERY_CONTEXT_UNAVAILABLE"}
 
         try:
             self.journal.state(verified.job_id, "ARMED")
