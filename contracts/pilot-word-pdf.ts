@@ -79,6 +79,17 @@ export type PilotReadiness = 'WAITING_FOR_FILE' | 'WAITING_FOR_SETTINGS' |
   'WAITING_FOR_CODE' | 'NEEDS_HUMAN' | 'AUTHORIZED' | 'SENDING' |
   'SIMULATED_DONE' | 'SENT_UNVERIFIED' | 'VERIFIED_DONE' | 'UNKNOWN';
 
+/**
+ * Core sets this from the locked shop settings in the server-issued claim.
+ * An Agent/OA/browser caller cannot request or upgrade a mode. For
+ * `controlled_test`, Core rechecks the persisted, unexpired shop/order/printer
+ * grant (`core_print_controlled_test_scopes`: enabled, expires_at after the
+ * database clock, exact shop/order/printer; configured_by is an active owner
+ * in that shop) at claim, preflight, and mark-sending. Missing/mismatched
+ * grants fail with CONTROLLED_TEST_SCOPE_REQUIRED; lookup failure is 503
+ * CONTROLLED_TEST_SCOPE_UNAVAILABLE. The grant is internal authority and is
+ * never serialized into the Agent DTO.
+ */
 export type PilotPrintMode = 'simulation' | 'controlled_test' | 'production';
 
 /** Distinct pilot claim ticket; it has no legacy approval field. */
