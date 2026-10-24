@@ -38,7 +38,7 @@ export async function admitAgentRoute(input: {
       if (rows.rows.length !== 1 || rows.rows[0]?.order_id !== controlled.order_id ||
           rows.rows[0]?.printer_id !== controlled.printer_id ||
           (input.reportRoute === true && (rows.rows[0]?.mode_at_send !== 'controlled_test' ||
-            !['SENDING','UNKNOWN','SENT_UNVERIFIED'].includes(rows.rows[0]?.state ?? '')))
+            !['SENDING','UNKNOWN','SENT_UNVERIFIED'].includes(rows.rows[0]?.state ?? ''))))
         throw new DomainError('CONTROLLED_PILOT_SCOPE','Pilot scope denied',403);
     } else if (input.requestedPrinterId !== controlled.printer_id) {
       throw new DomainError('CONTROLLED_PILOT_SCOPE','Pilot scope denied',403);
