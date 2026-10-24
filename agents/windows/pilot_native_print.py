@@ -206,7 +206,12 @@ def _assert_private_windows_acl(path: Path) -> None:
 
 
 class PilotJournal:
-    """Durable per-job boundary. Stores hashes/IDs only; never raw code/bytes."""
+    """Durable send boundary and private report-recovery envelope journal.
+
+    Pending reports contain a short-lived lease token. The journal file and its
+    directory must therefore remain private; raw shop codes and source bytes
+    are never stored here.
+    """
 
     def __init__(self, filename: str | Path):
         self.filename = Path(filename)
@@ -217,12 +222,15 @@ class PilotJournal:
             if not self.filename.is_absolute() or str(self.filename).startswith("\\\\"):
                 raise PilotPrintBlocked("JOURNAL_MUST_BE_LOCAL_ABSOLUTE_PATH")
             _assert_private_windows_acl(self.filename.parent)
-        elif self.filename.exists():
-            if self.filename.stat().st_mode & 0o077:
-                raise PilotPrintBlocked("JOURNAL_PERMISSIONS_TOO_BROAD")
         else:
-            fd = os.open(self.filename, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-            os.close(fd)
+            if self.filename.parent.stat().st_mode & 0o077:
+                raise PilotPrintBlocked("JOURNAL_DIRECTORY_PERMISSIONS_TOO_BROAD")
+            if self.filename.exists():
+                if self.filename.stat().st_mode & 0o077:
+                    raise PilotPrintBlocked("JOURNAL_PERMISSIONS_TOO_BROAD")
+            else:
+                fd = os.open(self.filename, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+                os.close(fd)
         if self.filename.exists():
             _assert_private_windows_acl(self.filename)
         self.db = sqlite3.connect(str(self.filename), isolation_level=None, timeout=10)
@@ -234,7 +242,11 @@ class PilotJournal:
                         "job_id TEXT PRIMARY KEY, ticket_sha256 TEXT NOT NULL, "
                         "source_sha256 TEXT NOT NULL, settings_sha256 TEXT NOT NULL, "
                         "evidence_sha256 TEXT NOT NULL, printer_id TEXT NOT NULL, "
-                        "revision INTEGER NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL)")
+                        "revision INTEGER NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL, "
+                        "report_pending TEXT)")
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(pilot_jobs)")}
+        if "report_pending" not in columns:
+            self.db.execute("ALTER TABLE pilot_jobs ADD COLUMN report_pending TEXT")
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         row = self.db.execute(
@@ -272,6 +284,73 @@ class PilotJournal:
         self.db.execute("UPDATE pilot_jobs SET state=?,evidence=? WHERE job_id=?",
                         (value, json.dumps(evidence or {}, sort_keys=True), job_id))
 
+    def set_pending_report(self, job_id: str, state: str, evidence: dict[str, Any],
+                           report: dict[str, Any]) -> None:
+        """Durably bind report state/evidence and exact retry envelope before POST."""
+        normalized = _validate_pending_report(report)
+        normalized_evidence = _safe_report_evidence(evidence, "INVALID_REPORT_EVIDENCE")
+        if (normalized["state"] != state or normalized["evidence"] != normalized_evidence):
+            raise PilotPrintBlocked("JOURNAL_REPORT_BINDING_MISMATCH")
+        encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False, allow_nan=False)
+        evidence_json = json.dumps(normalized_evidence, sort_keys=True,
+                                   separators=(",", ":"), ensure_ascii=False,
+                                   allow_nan=False)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT report_pending FROM pilot_jobs WHERE job_id=?", (job_id,)).fetchone()
+            if row is None:
+                raise PilotPrintBlocked("JOURNAL_BOUNDARY_MISSING")
+            previous = row[0]
+            if previous is not None and previous != encoded:
+                raise PilotPrintBlocked("JOURNAL_REPORT_PENDING_CONFLICT")
+            self.db.execute(
+                "UPDATE pilot_jobs SET state=?,evidence=?,report_pending=? WHERE job_id=?",
+                (state, evidence_json, encoded, job_id))
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
+    def pending_reports(self) -> list[tuple[str, dict[str, Any]]]:
+        rows = self.db.execute(
+            "SELECT job_id,report_pending FROM pilot_jobs "
+            "WHERE report_pending IS NOT NULL ORDER BY rowid").fetchall()
+        result = []
+        for job_id, encoded in rows:
+            try:
+                report = _validate_pending_report(json.loads(encoded))
+            except Exception as exc:
+                raise PilotPrintBlocked("JOURNAL_PENDING_REPORT_INVALID") from exc
+            result.append((job_id, report))
+        return result
+
+    def clear_pending_report(self, job_id: str, report: dict[str, Any]) -> None:
+        """Clear only the exact envelope whose Core receipt was confirmed."""
+        normalized = _validate_pending_report(report)
+        encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False, allow_nan=False)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT report_pending FROM pilot_jobs WHERE job_id=?", (job_id,)).fetchone()
+            if row is None:
+                raise PilotPrintBlocked("JOURNAL_PENDING_REPORT_CHANGED")
+            if row[0] is None:
+                # Another local worker may already have cleared the same
+                # envelope after receiving its confirmed Core receipt.
+                self.db.execute("COMMIT")
+                return
+            if row[0] != encoded:
+                raise PilotPrintBlocked("JOURNAL_PENDING_REPORT_CHANGED")
+            self.db.execute("UPDATE pilot_jobs SET report_pending=NULL WHERE job_id=?",
+                             (job_id,))
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
     def unresolved(self) -> list[str]:
         rows = self.db.execute(
             "SELECT job_id FROM pilot_jobs WHERE state IN ('BOUNDARY','ARMED','DRIVER_CALLED')")
@@ -295,7 +374,9 @@ class PilotBackendPort(Protocol):
     def claim(self) -> PilotPrintWork | None: ...
     def preflight(self, work: PilotPrintWork) -> dict[str, Any]: ...
     def mark_sending(self, work: PilotPrintWork) -> dict[str, Any]: ...
-    def report(self, work: PilotPrintWork, state: str, evidence: dict[str, Any]) -> None: ...
+    def prepare_report(self, work: PilotPrintWork, state: str,
+                       evidence: dict[str, Any]) -> dict[str, Any]: ...
+    def submit_report(self, job_id: str, report: dict[str, Any]) -> None: ...
 
 
 class PreparedPrint(Protocol):
@@ -350,6 +431,29 @@ def _safe_report_evidence(value: object, fallback: str) -> dict[str, Any]:
     return dict(value)
 
 
+def _validate_pending_report(value: object) -> dict[str, Any]:
+    """Validate the closed Core report wire before persisting or replaying it."""
+    if (not isinstance(value, dict) or
+            set(value) != {"schema", "lease_token", "idempotency_key", "state", "evidence"} or
+            value.get("schema") != "ai0.pilot_agent_report.v1"):
+        raise PilotPrintBlocked("PILOT_REPORT_ENVELOPE_INVALID")
+    lease_token = value.get("lease_token")
+    key = value.get("idempotency_key")
+    state = value.get("state")
+    if (type(lease_token) is not str or not 1 <= len(lease_token) <= 4096 or
+            any(ord(char) < 0x20 or ord(char) == 0x7f for char in lease_token) or
+            type(key) is not str or HEX.fullmatch(key) is None or
+            type(state) is not str or
+            state not in {"SIMULATED_DONE", "SENT_UNVERIFIED", "UNKNOWN"}):
+        raise PilotPrintBlocked("PILOT_REPORT_ENVELOPE_INVALID")
+    evidence = value.get("evidence")
+    safe_evidence = _safe_report_evidence(evidence, "INVALID_REPORT_EVIDENCE")
+    if safe_evidence != evidence:
+        raise PilotPrintBlocked("PILOT_REPORT_ENVELOPE_INVALID")
+    return {"schema": "ai0.pilot_agent_report.v1", "lease_token": lease_token,
+            "idempotency_key": key, "state": state, "evidence": safe_evidence}
+
+
 class PilotPrintAgent:
     """Core-authorized pilot flow. DryRun is the safe default and never touches a printer."""
 
@@ -380,7 +484,50 @@ class PilotPrintAgent:
                                {"reason_code": "RESTART_AT_SEND_BOUNDARY"})
         return pending
 
+    def _persist_and_submit_report(self, work: PilotPrintWork, state: str,
+                                   evidence: dict[str, Any]) -> str:
+        """Persist an exact retry envelope before any report network request."""
+        job_id = work.job.get("job_id")
+        if (type(job_id) is not str or not job_id or len(job_id) > 256 or
+                any(ord(char) < 0x20 or ord(char) == 0x7f for char in job_id)):
+            return "NOT_STORED"
+        try:
+            report = _validate_pending_report(
+                self.backend.prepare_report(work, state, evidence))
+            self.journal.set_pending_report(job_id, state, evidence, report)
+        except Exception:
+            return "NOT_STORED"
+        try:
+            self.backend.submit_report(job_id, report)
+            self.journal.clear_pending_report(job_id, report)
+        except Exception:
+            return "PENDING"
+        return "CONFIRMED"
+
+    def _retry_one_pending_report(self) -> dict[str, Any] | None:
+        """Retry one durable envelope and end this poll without claiming work."""
+        try:
+            pending = self.journal.pending_reports()
+        except Exception:
+            return {"status": "UNKNOWN", "reason": "REPORT_JOURNAL_UNAVAILABLE"}
+        if not pending:
+            return None
+        job_id, report = pending[0]
+        try:
+            self.backend.submit_report(job_id, report)
+            self.journal.clear_pending_report(job_id, report)
+        except Exception:
+            return {"status": report["state"], "job_id": job_id,
+                    "report_pending": True}
+        return {"status": report["state"], "job_id": job_id,
+                "reconciled": True}
+
     def run_once(self) -> dict[str, Any]:
+        # A report ACK can be lost after Core commits. Retry that exact durable
+        # envelope first; this poll never claims another job or calls a driver.
+        pending_result = self._retry_one_pending_report()
+        if pending_result is not None:
+            return pending_result
         # A process restart must classify every unfinished side-effect boundary
         # before it asks Core for work again.
         self.recover()
@@ -440,10 +587,12 @@ class PilotPrintAgent:
             saved_evidence = _safe_report_evidence(
                 json.loads(self.journal.get(verified.job_id)["evidence"]),
                 "PREVIOUS_SEND_UNCERTAIN")
-            try:
-                self.backend.report(work, state, saved_evidence)
-            except Exception:
+            outcome = self._persist_and_submit_report(work, state, saved_evidence)
+            if outcome == "PENDING":
                 return {"status": state, "job_id": verified.job_id, "report_pending": True}
+            if outcome == "NOT_STORED":
+                return {"status": "UNKNOWN", "job_id": verified.job_id,
+                        "reason": "REPORT_NOT_DURABLY_STORED"}
             return {"status": state, "job_id": verified.job_id, "reconciled": True}
 
         if self.dry_run:
@@ -548,11 +697,12 @@ class PilotPrintAgent:
             except Exception:
                 # Closing Word after PrintOut cannot prove the send did not happen.
                 pass
-        self.journal.state(verified.job_id, state, evidence)
-        try:
-            self.backend.report(work, state, evidence)
-        except Exception:
+        outcome = self._persist_and_submit_report(work, state, evidence)
+        if outcome == "PENDING":
             return {"status": state, "job_id": verified.job_id, "report_pending": True}
+        if outcome == "NOT_STORED":
+            return {"status": "UNKNOWN", "job_id": verified.job_id,
+                    "reason": "REPORT_NOT_DURABLY_STORED"}
         return {"status": state, "job_id": verified.job_id, "evidence": evidence}
 
     def _run_dry_run(self, work: PilotPrintWork,
@@ -595,22 +745,14 @@ class PilotPrintAgent:
 
         evidence = {"driver_called": False, "spooler_ack": False,
                     "reason_code": "PILOT_DRY_RUN"}
-        try:
-            self.journal.state(verified.job_id, "SIMULATED_DONE", evidence)
-        except Exception:
-            try:
-                self.journal.state(verified.job_id, "UNKNOWN",
-                                   {"driver_called": False, "spooler_ack": False,
-                                    "reason_code": "JOURNAL_SIMULATION_RESULT_AMBIGUOUS"})
-            except Exception:
-                pass
-            return {"status": "UNKNOWN", "job_id": verified.job_id,
-                    "reason": "JOURNAL_SIMULATION_RESULT_AMBIGUOUS"}
-        try:
-            self.backend.report(work, "SIMULATED_DONE", evidence)
-        except Exception:
+        outcome = self._persist_and_submit_report(work, "SIMULATED_DONE", evidence)
+        if outcome == "PENDING":
             return {"status": "SIMULATED_DONE", "job_id": verified.job_id,
                     "driver_called": False, "report_pending": True}
+        if outcome == "NOT_STORED":
+            return {"status": "UNKNOWN", "job_id": verified.job_id,
+                    "driver_called": False,
+                    "reason": "REPORT_NOT_DURABLY_STORED"}
         return {"status": "SIMULATED_DONE", "job_id": verified.job_id,
                 "driver_called": False, "evidence": evidence}
 

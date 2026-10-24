@@ -19,7 +19,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
-from .pilot_native_print import PilotPrintWork
+from .pilot_native_print import PilotPrintWork, _validate_pending_report
 from workers.documents.pilot_source_ticket import MAX_PUBLIC_SOURCE_BYTES
 
 
@@ -301,7 +301,7 @@ class PilotHttpBackendClient:
     def mark_sending(self, work) -> dict[str, Any]:
         return self._gate(work, "mark-sending", "SENDING")
 
-    def report(self, work, state: str, evidence: dict[str, Any]) -> None:
+    def prepare_report(self, work, state: str, evidence: dict[str, Any]) -> dict[str, Any]:
         job, _, _ = self._assert_claimed(work)
         if state not in {"SIMULATED_DONE", "SENT_UNVERIFIED", "UNKNOWN"}:
             raise ValueError("Agent cannot assert verified paper completion")
@@ -312,7 +312,22 @@ class PilotHttpBackendClient:
             "state": state,
             "evidence": _plain_evidence(evidence),
         }
-        with self._request("POST", self._job_suffix(job, "reports"), body=request) as response:
+        return _validate_pending_report(request)
+
+    def submit_report(self, job_id: str, request: dict[str, Any]) -> None:
+        """Submit an exact saved report without requiring an in-memory claim."""
+        if (type(job_id) is not str or not job_id or len(job_id) > 256 or
+                any(ord(char) < 0x20 or ord(char) == 0x7f for char in job_id)):
+            raise ValueError("Pilot report job identity is invalid")
+        request = _validate_pending_report(request)
+        suffix = "/internal/v1/pilot/print-jobs/" + quote(job_id, safe="") + "/reports"
+        with self._request("POST", suffix, body=request) as response:
             receipt = self._read_json(response)
-        if receipt.get("job_id") != job["job_id"] or receipt.get("state") != state:
+        if (receipt.get("job_id") != job_id or
+                receipt.get("state") != request["state"]):
             raise RuntimeError("Pilot report receipt was not confirmed")
+
+    def report(self, work, state: str, evidence: dict[str, Any]) -> None:
+        """Compatibility wrapper; new Agent flow persists before submitting."""
+        job, _, _ = self._assert_claimed(work)
+        self.submit_report(job["job_id"], self.prepare_report(work, state, evidence))

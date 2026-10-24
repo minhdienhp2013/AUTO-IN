@@ -56,6 +56,35 @@ def _fixture():
 
 
 class PilotBackendHttpTests(unittest.TestCase):
+    def test_saved_report_can_be_retried_without_in_memory_claim(self):
+        class Receipt:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return b'{"job_id":"synthetic-job","state":"UNKNOWN"}'
+
+        client = PilotHttpBackendClient("https://core.example.test", "S" * 24)
+        report = {
+            "schema": "ai0.pilot_agent_report.v1",
+            "lease_token": "saved-private-lease",
+            "idempotency_key": "a" * 64,
+            "state": "UNKNOWN",
+            "evidence": {"driver_called": True, "spooler_ack": False,
+                         "reason_code": "NATIVE_SEND_AMBIGUOUS"},
+        }
+        self.assertIsNone(client._claimed_snapshot)
+        with patch.object(client, "_request", return_value=Receipt()) as request:
+            client.submit_report("synthetic-job", report)
+        request.assert_called_once_with(
+            "POST", "/internal/v1/pilot/print-jobs/synthetic-job/reports",
+            body=report)
+
     def test_native_local_scope_and_mode_reject_before_source_download(self):
         class ClaimResponse:
             status = 200

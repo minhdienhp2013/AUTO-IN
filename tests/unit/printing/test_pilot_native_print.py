@@ -4,8 +4,10 @@ from __future__ import annotations
 import hashlib
 from copy import deepcopy
 from dataclasses import replace
+import os
 from pathlib import Path
 import sys
+import sqlite3
 import tempfile
 from types import ModuleType, SimpleNamespace
 import unittest
@@ -97,9 +99,14 @@ class FakeBackend:
         self.preflight_state = "AUTHORIZED"
         self.mark_state = "SENDING"
         self.mark_raises = False
+        self.claim_calls = 0
         self.reports = []
+        self.report_attempts = []
+        self.accepted_report_keys = set()
+        self.lose_first_report_ack = False
 
     def claim(self):
+        self.claim_calls += 1
         return self.work
 
     def _ack(self, state):
@@ -123,8 +130,29 @@ class FakeBackend:
             raise TimeoutError("synthetic mark ACK timeout")
         return self._ack(self.mark_state)
 
-    def report(self, _work, state, evidence):
-        self.reports.append((state, evidence))
+    def prepare_report(self, work, state, evidence):
+        job = work.job
+        key = hashlib.sha256(
+            f"fake-pilot-report:{job['job_id']}:{job['revision']}:{job['lease_token']}:{state}".encode()
+        ).hexdigest()
+        return {
+            "schema": "ai0.pilot_agent_report.v1",
+            "lease_token": job["lease_token"],
+            "idempotency_key": key,
+            "state": state,
+            "evidence": deepcopy(evidence),
+        }
+
+    def submit_report(self, job_id, report):
+        self.report_attempts.append((job_id, deepcopy(report)))
+        key = report["idempotency_key"]
+        first_accept = key not in self.accepted_report_keys
+        self.accepted_report_keys.add(key)
+        if first_accept:
+            self.reports.append((report["state"], deepcopy(report["evidence"])))
+        if self.lose_first_report_ack:
+            self.lose_first_report_ack = False
+            raise TimeoutError("synthetic Core committed report but response ACK was lost")
 
 
 class FakePrepared:
@@ -221,6 +249,42 @@ class PilotNativePrintTests(unittest.TestCase):
         for file_format, path in PUBLIC_FILES.items():
             with self.subTest(file_format=file_format):
                 self.assertEqual(sha(path.read_bytes()), EXPECTED_SHA256[file_format])
+
+    def test_existing_private_journal_schema_upgrades_without_losing_rows(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "pilot.sqlite"
+            db = sqlite3.connect(path)
+            db.execute("CREATE TABLE pilot_jobs ("
+                       "job_id TEXT PRIMARY KEY, ticket_sha256 TEXT NOT NULL, "
+                       "source_sha256 TEXT NOT NULL, settings_sha256 TEXT NOT NULL, "
+                       "evidence_sha256 TEXT NOT NULL, printer_id TEXT NOT NULL, "
+                       "revision INTEGER NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL)")
+            db.execute("INSERT INTO pilot_jobs VALUES(?,?,?,?,?,?,?,?,?)",
+                       ("legacy-job", "t" * 64, "s" * 64, "c" * 64, "e" * 64,
+                        "RMP7000", 1, "UNKNOWN", '{"reason_code":"LEGACY"}'))
+            db.commit()
+            db.close()
+            os.chmod(path, 0o600)
+
+            journal = PilotJournal(path)
+            self.assertEqual(journal.get("legacy-job")["state"], "UNKNOWN")
+            self.assertEqual(journal.pending_reports(), [])
+            self.assertIn("report_pending", {
+                row[1] for row in journal.db.execute("PRAGMA table_info(pilot_jobs)")})
+            journal.close()
+
+    def test_journal_refuses_shared_directory_before_creating_credential_store(self):
+        if os.name == "nt":
+            self.skipTest("Windows ACL path is covered by the platform-specific guard")
+        with tempfile.TemporaryDirectory() as folder:
+            shared = Path(folder) / "shared"
+            shared.mkdir()
+            os.chmod(shared, 0o755)
+            path = shared / "pilot.sqlite"
+            with self.assertRaisesRegex(PilotPrintBlocked,
+                                       "JOURNAL_DIRECTORY_PERMISSIONS_TOO_BROAD"):
+                PilotJournal(path)
+            self.assertFalse(path.exists())
 
     def test_exact_public_docx_and_pdf_bytes_bind_to_core_authorization(self):
         for file_format in ("PDF", "DOCX"):
@@ -397,6 +461,51 @@ class PilotNativePrintTests(unittest.TestCase):
             self.assertEqual(restarted.run_once()["status"], "UNKNOWN")
             self.assertEqual(len(printer.send_calls), 1)
             self.assertEqual(backend.reports[-1][1], first["evidence"])
+            reopened.close()
+
+    def test_report_ack_loss_is_retried_after_restart_without_claim_or_driver(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = make_work("PDF")
+            backend = FakeBackend(work)
+            backend.lose_first_report_ack = True
+            printer = FakeNativePrinter()
+            journal_path = Path(folder) / "pilot.sqlite"
+            agent, journal, _backend, _printer = self.make_agent(
+                folder, work, backend=backend, printer=printer)
+
+            first = agent.run_once()
+            self.assertEqual(first["status"], "SENT_UNVERIFIED")
+            self.assertTrue(first["report_pending"])
+            self.assertEqual(backend.claim_calls, 1)
+            self.assertEqual(len(printer.send_calls), 1)
+            pending = journal.pending_reports()
+            self.assertEqual(len(pending), 1)
+            job_id, persisted_report = pending[0]
+            first_attempt = deepcopy(backend.report_attempts[0][1])
+            self.assertEqual(job_id, work.job["job_id"])
+            self.assertEqual(persisted_report, first_attempt)
+            self.assertEqual(journal.get(job_id)["state"], "SENT_UNVERIFIED")
+            journal.close()
+
+            reopened = PilotJournal(journal_path)
+            restarted = PilotPrintAgent(
+                backend=backend, journal=reopened, printer=printer, dry_run=False,
+                configured_shop_id="pilot-shop-public-test",
+                configured_order_id="order-public-test")
+            recovered = restarted.run_once()
+
+            self.assertEqual(recovered["status"], "SENT_UNVERIFIED")
+            self.assertTrue(recovered["reconciled"])
+            self.assertEqual(backend.claim_calls, 1,
+                             "pending-report recovery must not claim another job")
+            self.assertEqual(len(printer.send_calls), 1,
+                             "a report retry must never call the print driver")
+            self.assertEqual(len(backend.report_attempts), 2)
+            self.assertEqual(backend.report_attempts[1], backend.report_attempts[0])
+            self.assertEqual(len(backend.accepted_report_keys), 1,
+                             "Core idempotency must see the same report key")
+            self.assertEqual(reopened.pending_reports(), [],
+                             "pending is cleared only after the confirmed receipt")
             reopened.close()
 
     def test_pilot_dry_run_reports_simulated_done_without_native_calls(self):
