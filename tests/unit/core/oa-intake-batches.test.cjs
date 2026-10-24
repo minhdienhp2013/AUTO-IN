@@ -29,7 +29,7 @@ test('event_ids are selectors verified against durable leased membership and are
   error=>'INCOMING_EVENT_SELECTOR_DUPLICATE'===error.code);
 });
 
-test('COLOR_PRINT closes only the verified leased intake as NEEDS_HUMAN',async()=>{
+function closeFixture({status='OPEN',closeReason=null,updateReceipt={status:'NEEDS_HUMAN',close_reason:'COLOR_PRINT'}}={}){
  const calls=[];
  const db={async query(sql,args=[]){
   calls.push({sql,args});
@@ -44,19 +44,42 @@ test('COLOR_PRINT closes only the verified leased intake as NEEDS_HUMAN',async()
    event_id:'code-1',oa_id:'oa-a',customer_id:'customer-a',conversation_id:'chat-a',kind:'text',
    source_text:'Mã cửa hàng: ABCDEFGHJK',received_at:new Date('2026-10-24T08:20:00.000Z'),queue_batch_id:'41'
   }],rowCount:1};
-  if(sql.startsWith('SELECT id,shop_id,oa_id,customer_id,conversation_id,purpose,status,opened_at,expires_at,order_id,revision FROM core_oa_intake_batches'))
+  if(sql.startsWith('SELECT id,shop_id,oa_id,customer_id,conversation_id,purpose,status,opened_at,expires_at,order_id,revision,close_reason FROM core_oa_intake_batches'))
    return {rows:[{id:'00000000-0000-4000-8000-000000000099',shop_id:'shop-a',oa_id:'oa-a',
-    customer_id:'customer-a',conversation_id:'chat-a',purpose:'PILOT',status:'OPEN',
+    customer_id:'customer-a',conversation_id:'chat-a',purpose:'PILOT',status,close_reason:closeReason,
     opened_at:new Date('2026-10-24T08:00:00.000Z'),expires_at:new Date('2026-10-24T08:30:00.000Z'),
     order_id:null,revision:null}],rowCount:1};
   if(sql.startsWith('SELECT 1 FROM zalo_batch_items q JOIN core_oa_intake_event_bindings'))return {rows:[{}],rowCount:1};
-  if(sql.startsWith('UPDATE core_oa_intake_batches SET status=$2,close_reason=$3'))return {rows:[],rowCount:1};
+  if(sql.startsWith('UPDATE core_oa_intake_batches SET status=$2,close_reason=$3'))
+   return {rows:updateReceipt?[updateReceipt]:[],rowCount:updateReceipt?1:0};
   return {rows:[],rowCount:0};
  }};
- const store={async tx(fn){return fn(db)}};
- const receipt=await closeIncomingQueueBatch(store,{intake_batch_id:'00000000-0000-4000-8000-000000000099',
-  queue_batch_id:'41',lease_token:lease.lease_token,reason:'COLOR_PRINT'});
- assert.deepEqual(receipt,{status:'NEEDS_HUMAN',intake_batch_id:'00000000-0000-4000-8000-000000000099'});
+ return {calls,store:{async tx(fn){return fn(db)}}};
+}
+const colorCloseInput={intake_batch_id:'00000000-0000-4000-8000-000000000099',
+ queue_batch_id:'41',lease_token:lease.lease_token,reason:'COLOR_PRINT'};
+
+test('COLOR_PRINT closes only the verified leased intake as NEEDS_HUMAN',async()=>{
+ const {store,calls}=closeFixture();
+ const receipt=await closeIncomingQueueBatch(store,colorCloseInput);
+ assert.deepEqual(receipt,{status:'NEEDS_HUMAN',intake_batch_id:colorCloseInput.intake_batch_id,close_reason:'COLOR_PRINT'});
  const update=calls.find(call=>call.sql.startsWith('UPDATE core_oa_intake_batches SET status=$2,close_reason=$3'));
- assert.deepEqual(update.args,['00000000-0000-4000-8000-000000000099','NEEDS_HUMAN','COLOR_PRINT']);
+ assert.deepEqual(update.args,[colorCloseInput.intake_batch_id,'NEEDS_HUMAN','COLOR_PRINT']);
+});
+
+test('pre-closed intake receipt exposes its existing reason without overwriting it',async()=>{
+ for(const closeReason of ['ORDER_ALREADY_AUTHORIZED','COLOR_PRINT']){
+  const {store,calls}=closeFixture({status:'NEEDS_HUMAN',closeReason});
+  const receipt=await closeIncomingQueueBatch(store,colorCloseInput);
+  assert.deepEqual(receipt,{status:'NEEDS_HUMAN',intake_batch_id:colorCloseInput.intake_batch_id,close_reason:closeReason});
+  assert.equal(calls.some(call=>call.sql.startsWith('UPDATE core_oa_intake_batches SET status=$2,close_reason=$3')),false);
+ }
+});
+
+test('close receipt fails if the persisted status/reason cannot be verified',async()=>{
+ for(const updateReceipt of [null,{status:'NEEDS_HUMAN',close_reason:'ORDER_ALREADY_AUTHORIZED'}]){
+  const {store}=closeFixture({updateReceipt});
+  await assert.rejects(closeIncomingQueueBatch(store,colorCloseInput),
+   error=>error.code==='INCOMING_BATCH_CLOSE_FAILED');
+ }
 });

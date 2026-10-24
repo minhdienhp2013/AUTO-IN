@@ -10,6 +10,9 @@ export interface IncomingQueueBatchInput {
 export interface CloseIncomingQueueBatchInput {
  intake_batch_id:string;queue_batch_id:string;lease_token:string;reason:'ABANDONED'|'NEEDS_HUMAN'|'COLOR_PRINT';
 }
+export interface CloseIncomingQueueBatchReceipt {
+ status:'CLOSED'|'EXPIRED'|'NEEDS_HUMAN';intake_batch_id:string;close_reason:string|null;
+}
 export interface IncomingQueueBatchSnapshot {
  schema:'ai1.oa_intake_batch.v1';status:'OPEN'|'BOUND'|'CLOSED'|'EXPIRED'|'NEEDS_HUMAN';
  readiness:'WAITING_FOR_FILE'|'WAITING_FOR_SETTINGS'|'WAITING_FOR_CODE'|'READY';intake_batch_id:string;queue_batch_id:string;
@@ -325,7 +328,7 @@ export async function verifyIntakeEventRole(db:SqlConnection,input:{intake_batch
  if(!allowed)throw dbError('INCOMING_BATCH_CLOSED','Pilot intake batch is closed');
  return {status:row.status,order_id:row.order_id,revision:row.revision,received_at:row.received_at};
 }
-export async function closeIncomingQueueBatch(store:PgStore,value:unknown):Promise<{status:'CLOSED'|'EXPIRED'|'NEEDS_HUMAN';intake_batch_id:string}>{
+export async function closeIncomingQueueBatch(store:PgStore,value:unknown):Promise<CloseIncomingQueueBatchReceipt>{
  if(!plain(value)||!exact(value,['intake_batch_id','queue_batch_id','lease_token','reason'])||
     typeof value.intake_batch_id!=='string'||!UUID.test(value.intake_batch_id)||
     typeof value.queue_batch_id!=='string'||!/^\d{1,19}$/.test(value.queue_batch_id)||BigInt(value.queue_batch_id)<1n||BigInt(value.queue_batch_id)>PG_BIGINT_MAX||
@@ -334,8 +337,8 @@ export async function closeIncomingQueueBatch(store:PgStore,value:unknown):Promi
  return store.tx(async db=>{
   await db.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
   const queue=await lockIncomingQueueBatch(db,value.queue_batch_id as string,value.lease_token as string);
-  const batch=(await db.query<IntakeRow>(
-   'SELECT id,shop_id,oa_id,customer_id,conversation_id,purpose,status,opened_at,expires_at,order_id,revision '+
+  const batch=(await db.query<IntakeRow&{close_reason:string|null}>(
+   'SELECT id,shop_id,oa_id,customer_id,conversation_id,purpose,status,opened_at,expires_at,order_id,revision,close_reason '+
    'FROM core_oa_intake_batches WHERE id=$1 FOR UPDATE',[value.intake_batch_id])).rows[0];
   if(!batch||batch.oa_id!==queue.oa_id)throw dbError('INCOMING_BATCH_NOT_FOUND','Intake batch not found',404);
   const member=(await db.query(
@@ -343,11 +346,16 @@ export async function closeIncomingQueueBatch(store:PgStore,value:unknown):Promi
    'WHERE q.batch_id=$1 AND e.queue_batch_id=q.batch_id AND e.intake_batch_id=$2 LIMIT 1',[queue.id,batch.id])).rows[0];
   if(!member)throw dbError('INCOMING_BATCH_MEMBERSHIP_DENIED','Lease does not contain a member of this intake batch',403);
   if(batch.status==='EXPIRED'||batch.status==='NEEDS_HUMAN'||batch.status==='CLOSED')
-   return {status:batch.status==='EXPIRED'?'EXPIRED':batch.status==='NEEDS_HUMAN'?'NEEDS_HUMAN':'CLOSED',intake_batch_id:batch.id};
+   return {status:batch.status==='EXPIRED'?'EXPIRED':batch.status==='NEEDS_HUMAN'?'NEEDS_HUMAN':'CLOSED',
+    intake_batch_id:batch.id,close_reason:batch.close_reason??null};
   const next=value.reason==='ABANDONED'?'CLOSED':'NEEDS_HUMAN';
-  await db.query('UPDATE core_oa_intake_batches SET status=$2,close_reason=$3,closed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1',
-   [batch.id,next,value.reason]);
-  return {status:next,intake_batch_id:batch.id};
+  const updated=(await db.query<{status:string;close_reason:string|null}>(
+   'UPDATE core_oa_intake_batches SET status=$2,close_reason=$3,closed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1 RETURNING status,close_reason',
+   [batch.id,next,value.reason])).rows;
+  const persisted=updated[0];
+  if(!persisted||persisted.status!==next||persisted.close_reason!==value.reason)
+   throw dbError('INCOMING_BATCH_CLOSE_FAILED','Core could not verify the intake close reason',503);
+  return {status:next,intake_batch_id:batch.id,close_reason:persisted.close_reason};
  });
 }
 export async function expireIncomingQueueBatches(store:PgStore,limit=100,shopId?:string):Promise<number>{

@@ -44,7 +44,7 @@ function lease(batch_id,events,lease_token=`lease-${batch_id}`,order=events.map(
     events,server_received_event_ids:order};
 }
 function harness({applyResult={status:"created",order_id:"order-1",active_revision:1},
-  acceptStatus="OPEN",readiness:readinessOverride,throwAccept,throwApply}={}){
+  acceptStatus="OPEN",readiness:readinessOverride,throwAccept,throwApply,closeReceipt}={}){
   const seen={accept:[],apply:[],reads:[],snapshots:[],capture:[],close:[]},intakes=new Map();let nextIntake=0;
   const core={trusted_shop_id:SHOP,trusted_oa_id:OA,
     async acceptIncomingQueueBatch(input){
@@ -79,7 +79,8 @@ function harness({applyResult={status:"created",order_id:"order-1",active_revisi
     },
     async closeIncomingQueueBatch(input){
       seen.close.push(structuredClone(input));
-      return {status:'NEEDS_HUMAN',intake_batch_id:input.intake_batch_id};
+      return typeof closeReceipt==="function"?closeReceipt(input):
+        closeReceipt??{status:'NEEDS_HUMAN',intake_batch_id:input.intake_batch_id,close_reason:'COLOR_PRINT'};
     },
     async apply_incoming_batch(input){
       seen.apply.push(structuredClone(input));
@@ -126,6 +127,50 @@ test('missing human-close port or unverified settings leaves color lease held',a
   assert.equal(await h.adapter.consume(batch,0),'held');
   assert.equal(h.seen.apply.length,0);
   assert.equal(h.seen.close.length,0);
+});
+
+test('replay after a committed color close succeeds only with the same durable COLOR_PRINT reason',async()=>{
+  const h=harness({acceptStatus:'NEEDS_HUMAN'}),batch=lease('84',[settings('color-choice','Màu')]),trace=[];h.setLease(batch);
+  const processor=new ConversationProcessor(
+    {async read(){return {mode:'AI',generation:4,conversation_id:CHAT};}},
+    {async inspect(){assert.fail('pilot intake must not enter document processing');}},
+    {async suggest_draft(){assert.fail('no legacy draft');},async route_human(){assert.fail('color replay is Core-owned');}},
+    {async enqueue(){assert.fail('no OA reply');}},undefined,undefined,undefined,h.core);
+  const queue={async ingest_pending(){return 0;},async claim_due(){return [batch];},
+    async complete(){trace.push('complete');return true;},async hold(){trace.push('hold');return true;},
+    async fail(_batch,error){throw new Error(`unexpected queue failure: ${error}`);}};
+  const result=await new DurableConversationWorker(queue,processor).tick();
+  assert.equal(result.processed,1);
+  assert.deepEqual(trace,['complete']);
+  assert.equal(h.seen.close.length,1);
+  assert.equal(h.seen.apply.length,0);
+  assert.equal(h.seen.capture.length,0);
+});
+
+test('a concurrent different close or an unverified receipt holds rather than completing the queue lease',async()=>{
+  const cases=[
+    {closeReceipt:input=>({status:'NEEDS_HUMAN',intake_batch_id:input.intake_batch_id,close_reason:'ORDER_ALREADY_AUTHORIZED'})},
+    {closeReceipt:input=>({status:'NEEDS_HUMAN',intake_batch_id:input.intake_batch_id})},
+    {acceptStatus:'NEEDS_HUMAN',closeReceipt:input=>({status:'NEEDS_HUMAN',
+      intake_batch_id:input.intake_batch_id,close_reason:'ORDER_ALREADY_AUTHORIZED'})}
+  ];
+  for(const closeCase of cases){
+    const h=harness(closeCase),batch=lease('85',[settings('color-choice','In màu')]),trace=[];h.setLease(batch);
+    const processor=new ConversationProcessor(
+      {async read(){return {mode:'AI',generation:4,conversation_id:CHAT};}},
+      {async inspect(){assert.fail('pilot intake must not enter document processing');}},
+      {async suggest_draft(){assert.fail('no legacy draft');},async route_human(){assert.fail('Core close receipt is not verified');}},
+      {async enqueue(){assert.fail('no OA reply');}},undefined,undefined,undefined,h.core);
+    const queue={async ingest_pending(){return 0;},async claim_due(){return [batch];},
+      async complete(){trace.push('complete');return true;},
+      async hold(){trace.push('hold');return true;},
+      async fail(_batch,error){throw new Error(`unexpected queue failure: ${error}`);}};
+    const result=await new DurableConversationWorker(queue,processor).tick();
+    assert.equal(result.held,1);
+    assert.deepEqual(trace,['hold']);
+    assert.equal(h.seen.apply.length,0);
+    assert.equal(h.seen.capture.length,0);
+  }
 });
 
 test("code-before-file stays in the same persistent intake; source/settings apply only under the current lease",async()=>{

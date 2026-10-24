@@ -1,6 +1,6 @@
 import {createHash} from "node:crypto";
 import type {ApplyIncomingBatchInput,ApplyIncomingBatchResult} from "../core/incoming-batch-port.ts";
-import type {IncomingQueueBatchInput,IncomingQueueBatchSnapshot,CloseIncomingQueueBatchInput} from "../core/oa-intake-batches.ts";
+import type {IncomingQueueBatchInput,IncomingQueueBatchSnapshot,CloseIncomingQueueBatchInput,CloseIncomingQueueBatchReceipt} from "../core/oa-intake-batches.ts";
 import type {LeasedBatch} from "../integrations/zalo/postgres-durable.ts";
 import type {InboundEvent} from "../integrations/zalo/protocol.ts";
 import type {PilotSourceCustodyPort,PilotVerifiedMediaPort,SealedPilotSource} from "./pilot-word-pdf-intake.ts";
@@ -167,7 +167,7 @@ export interface CorePilotIntakePort extends CorePilotSettingsEventReader {
   readonly trusted_shop_id:string;
   readonly trusted_oa_id:string;
   acceptIncomingQueueBatch(input:IncomingQueueBatchInput):Promise<IncomingQueueBatchSnapshot>;
-  closeIncomingQueueBatch?(input:CloseIncomingQueueBatchInput):Promise<{status:string;intake_batch_id:string}>;
+  closeIncomingQueueBatch?(input:CloseIncomingQueueBatchInput):Promise<CloseIncomingQueueBatchReceipt>;
   /** The server composition must use Core's IncomingBatchPort configured with
    * a private-custody IncomingSealedSourceReader. AI2 never supplies source data. */
   apply_incoming_batch(input:ApplyIncomingBatchInput):Promise<ApplyIncomingBatchResult>;
@@ -340,7 +340,7 @@ export function createCorePilotIntakeAdapter(options:CorePilotIntakeOptions) {
         throw error;
       }
       if(!validSnapshot(snapshot,lease,ids,shop,oa)||
-         (snapshot.status!=="OPEN"&&snapshot.status!=="BOUND"))return "held";
+         (snapshot.status!=="OPEN"&&snapshot.status!=="BOUND"&&snapshot.status!=="NEEDS_HUMAN"))return "held";
       if(expectedCodeEvents(snapshot.events).length>1||
          snapshot.events.filter(event=>event.role==="SOURCE").length>1)return "held";
       const settingsBindings=snapshot.events.filter(event=>event.role==="SETTINGS");
@@ -352,7 +352,8 @@ export function createCorePilotIntakeAdapter(options:CorePilotIntakeOptions) {
         try{
           const closed=await core.closeIncomingQueueBatch({intake_batch_id:snapshot.intake_batch_id,
             queue_batch_id:lease.batch_id,lease_token:lease.lease_token,reason:"COLOR_PRINT"});
-          return closed.status==="NEEDS_HUMAN"&&closed.intake_batch_id===snapshot.intake_batch_id
+          return closed.status==="NEEDS_HUMAN"&&closed.close_reason==="COLOR_PRINT"&&
+            closed.intake_batch_id===snapshot.intake_batch_id
             ?"processed":"held";
         }catch{return "held";}
       };
@@ -378,6 +379,10 @@ export function createCorePilotIntakeAdapter(options:CorePilotIntakeOptions) {
              event.kind!=="text"||typeof event.text!=="string"))return "held";
         if(extractPilotPrintIntent(settingsEvents)?.color_requested)return closeForColor();
       }
+      // A replay may arrive after the durable color handoff committed but its
+      // queue acknowledgement was lost. Re-confirm the exact reason through
+      // Core; any other human-close reason leaves the lease held.
+      if(snapshot.status==="NEEDS_HUMAN")return "held";
       if(sourceBindings.length===1){
         const sourceEventId=sourceBindings[0]!.event_id;
         // SOURCE may have arrived in an earlier lease. Its only selector is
