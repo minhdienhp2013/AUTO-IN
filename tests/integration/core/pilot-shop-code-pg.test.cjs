@@ -228,7 +228,8 @@ test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code
     const claim=await w.A.claimPilot(w.agent,{printer_id:'RMP7000',idempotency_key:idempotency()});
     const gate={expected_revision:1,lease_token:claim.work.job.lease_token,request_hash:claim.work.job.request_hash,
      source_sha256:claim.work.authorization.source_sha256,settings_sha256:claim.work.authorization.settings_sha256,
-     evidence_sha256:claim.work.authorization.evidence_sha256,printer_id:claim.work.job.printer_id};
+     evidence_sha256:claim.work.authorization.evidence_sha256,printer_id:claim.work.job.printer_id,
+     idempotency_key:idempotency()};
     await w.A.markPilotSending(w.agent,claim.work.job.job_id,gate);
     await w.B.reportPilot(w.agent,claim.work.job.job_id,{schema:'ai0.pilot_agent_report.v1',
      lease_token:claim.work.job.lease_token,state:'UNKNOWN',idempotency_key:idempotency(),evidence:{}});

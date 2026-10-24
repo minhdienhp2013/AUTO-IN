@@ -85,6 +85,39 @@ class PilotBackendHttpTests(unittest.TestCase):
             "POST", "/internal/v1/pilot/print-jobs/synthetic-job/reports",
             body=report)
 
+    def test_saved_mark_sending_request_can_be_replayed_without_claim(self):
+        class Receipt:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps({
+                    "schema": "ai0.pilot_agent_gate_receipt.v1", "state": "SENDING",
+                    "job_id": "synthetic-job", "order_id": "synthetic-order", "revision": 3,
+                    "request_hash": "a" * 64, "source_sha256": "b" * 64,
+                    "settings_sha256": "c" * 64, "evidence_sha256": "d" * 64,
+                    "printer_id": "RMP7000",
+                }).encode()
+
+        client = PilotHttpBackendClient("https://core.example.test", "S" * 24)
+        request_body = {
+            "expected_revision": 3, "lease_token": "saved-private-lease",
+            "request_hash": "a" * 64, "source_sha256": "b" * 64,
+            "settings_sha256": "c" * 64, "evidence_sha256": "d" * 64,
+            "printer_id": "RMP7000", "idempotency_key": "e" * 64,
+        }
+        self.assertIsNone(client._claimed_snapshot)
+        with patch.object(client, "_request", return_value=Receipt()) as request:
+            client.submit_mark_sending("synthetic-job", request_body)
+        request.assert_called_once_with(
+            "POST", "/internal/v1/pilot/print-jobs/synthetic-job/mark-sending",
+            body=request_body)
+
     def test_native_local_scope_and_mode_reject_before_source_download(self):
         class ClaimResponse:
             status = 200
@@ -182,10 +215,15 @@ class PilotBackendHttpTests(unittest.TestCase):
                 suffix = self.path.rsplit("/", 1)[-1]
                 calls.append((suffix, body))
                 if suffix in ("preflight", "mark-sending"):
-                    assert set(body) == {"expected_revision", "lease_token", "request_hash",
-                                         "source_sha256", "settings_sha256", "evidence_sha256",
-                                         "printer_id"}
+                    expected_fields = {"expected_revision", "lease_token", "request_hash",
+                                       "source_sha256", "settings_sha256", "evidence_sha256",
+                                       "printer_id"}
+                    if suffix == "mark-sending":
+                        expected_fields.add("idempotency_key")
+                    assert set(body) == expected_fields
                     assert body["lease_token"] == job["lease_token"]
+                    if suffix == "mark-sending":
+                        assert len(body["idempotency_key"]) == 64
                     state = "AUTHORIZED" if suffix == "preflight" else "SENDING"
                     return self._json({
                         "schema": "ai0.pilot_agent_gate_receipt.v1", "state": state,

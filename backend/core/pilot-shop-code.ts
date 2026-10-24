@@ -49,6 +49,10 @@ export interface PilotAgentGateRequest {
  readonly expected_revision:number;readonly lease_token:string;readonly request_hash:string;
  readonly source_sha256:string;readonly settings_sha256:string;readonly evidence_sha256:string;readonly printer_id:string;
 }
+/** mark-sending is the only gate mutation retried after an ambiguous transport ACK. */
+export interface PilotAgentMarkSendingRequest extends PilotAgentGateRequest {
+ readonly idempotency_key:string;
+}
 export interface PilotAgentGateReceipt {
  readonly schema:'ai0.pilot_agent_gate_receipt.v1';readonly state:'AUTHORIZED'|'SENDING';
  readonly job_id:string;readonly order_id:string;readonly revision:number;readonly request_hash:string;
@@ -191,6 +195,13 @@ export function validatePilotGateRequest(value:unknown):PilotAgentGateRequest{
     typeof value.evidence_sha256!=='string'||!/^[0-9a-f]{64}$/.test(value.evidence_sha256))
   throw new DomainError('INVALID_INPUT','Pilot gate request không hợp lệ',422);
  return value as unknown as PilotAgentGateRequest;
+}
+export function validatePilotMarkSendingRequest(value:unknown):PilotAgentMarkSendingRequest{
+ if(!isObject(value)||plainObjectKeys(value)!=='evidence_sha256,expected_revision,idempotency_key,lease_token,printer_id,request_hash,settings_sha256,source_sha256'||
+    typeof value.idempotency_key!=='string'||!/^[0-9a-f]{64}$/.test(value.idempotency_key))
+  throw new DomainError('INVALID_INPUT','Pilot mark-sending input không hợp lệ',422);
+ const {idempotency_key,...gate}=value;
+ return {...validatePilotGateRequest(gate),idempotency_key};
 }
 const pilotReportEvidenceKeys=new Set(['driver_called','spooler_ack','reason_code']);
 export function validatePilotAgentReport(value:unknown):PilotAgentReport{

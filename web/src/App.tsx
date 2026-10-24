@@ -26,6 +26,7 @@ import { parseWordReviewPreview, WordReviewPanel,
 import { parsePdfReviewPreview, PdfReviewPanel,
   type PdfReviewIdentity, type PdfReviewPanelState, type PdfReviewPageObjectUrl } from './pdf-review-panel.ts';
 import { PilotShopCodePanel } from './pilot-shop-code.ts';
+import { resolveForSession, type SessionRequestScope } from './session-request.ts';
 
 type View = 'orders' | 'overview' | 'settings' | 'inbound-review' | 'shop-code';
 type DetailTab = 'document' | 'activity';
@@ -39,6 +40,8 @@ const modeTone = (mode: OperationMode) => mode === 'simulation' ? 'demo' : mode 
 
 function App() {
   const [session, setSession] = useState<StaffSession | null>(null);
+  const sessionRef = useRef<StaffSession | null>(null);
+  const sessionVersion = useRef(0);
   const [orders, setOrders] = useState<OrderView[]>([]);
   const [inboundItems,setInboundItems]=useState<InboundReviewItem[]|null>(null);
   const [inboundLoading,setInboundLoading]=useState(false);
@@ -68,9 +71,26 @@ function App() {
   const [significantCost, setSignificantCost] = useState(false);
   const [manualReason, setManualReason] = useState('');
   const [apiHealthy, setApiHealthy] = useState(true);
-  const clearExpiredStaffSession = useCallback(() => {
-    setSession(null);setOrders([]);setSelected(null);setInboundItems(null);setApiHealthy(false);
-  },[]);
+  const sessionScope = useCallback((epoch: number): SessionRequestScope => ({
+    epoch, sessionVersion: sessionVersion.current,
+    actorId: sessionRef.current?.actor_id ?? null,
+    role: sessionRef.current?.role ?? null,
+    shopId: port.authenticatedShopId(),
+  }), []);
+  const updateSession = useCallback((next: StaffSession | null) => {
+    const before = sessionRef.current;
+    if (before?.actor_id !== next?.actor_id || before?.role !== next?.role) sessionVersion.current++;
+    sessionRef.current = next;
+    setSession(next);
+  }, []);
+  const clearStaffSession = useCallback(() => {
+    requestEpoch.current++;
+    sessionVersion.current++;
+    inboundEpoch.current++;
+    sessionRef.current = null;
+    setSession(null);setOrders([]);setSelected(null);setInboundItems(null);setInboundLoading(false);
+    setChatLoaded(false);setChatLoading(false);setLoading(false);setApiHealthy(false);
+  }, []);
   const [deliveryValue, setDeliveryValue] = useState('');
   const [verifiedValue, setVerifiedValue] = useState('');
   const [paperNote, setPaperNote] = useState('');
@@ -83,34 +103,59 @@ function App() {
   const firstWordDocument=selectedOrder?.documents.find(d=>['DOC','DOCX','WORD'].includes(d.format.trim().toUpperCase()))??null;
   useEffect(() => { selectedIdRef.current = selected; }, [selected]);
   const load = useCallback(async (onlyOrders = false, pilotOrderDetails = false): Promise<boolean> => {
-    requestEpoch.current++;
+    const epoch = ++requestEpoch.current;
+    let expectedScope = sessionScope(epoch);
+    const currentScope = () => sessionScope(requestEpoch.current);
+    const resolveCurrent = <T,>(request: Promise<T>) => resolveForSession(request, expectedScope, currentScope);
     setChatLoaded(false);
     setChatLoading(false);
     setError(null);
     try {
-      const snapshot = onlyOrders ? null : await snapshotFromPort(port);
-      const list = snapshot?.orders ?? await port.listOrders();
-      if (snapshot) { setSession(snapshot.session); setMode(snapshot.mode); }
+      let snapshot = null;
+      if (!onlyOrders) {
+        const loaded = await resolveCurrent(snapshotFromPort(port));
+        if (!loaded.current) return false;
+        snapshot = loaded.value;
+      }
+      if (snapshot) {
+        updateSession(snapshot.session);
+        expectedScope = sessionScope(epoch);
+        setMode(snapshot.mode);
+      }
+      const listed = snapshot ? { current: true as const, value: snapshot.orders } : await resolveCurrent(port.listOrders());
+      if (!listed.current) return false;
+      const list = listed.value;
       const id = selectedIdRef.current;
       if (!useDemo && pilotOrderDetails) {
-        const details = await loadPilotOrderDetails(list, orderId => port.getOrder(orderId));
+        const loaded = await resolveCurrent(loadPilotOrderDetails(list, orderId => port.getOrder(orderId)));
+        if (!loaded.current) return false;
+        const details = loaded.value;
         const byId = new Map(details.map(detail => [detail.order_id, detail]));
         setOrders(list.map(summary => byId.get(summary.order_id) ?? summary));
       } else if (!useDemo && id && (snapshot?.session || onlyOrders)) {
-        const detail = await port.getOrder(id);
+        const loaded = await resolveCurrent(port.getOrder(id));
+        if (!loaded.current) return false;
+        const detail = loaded.value;
         setOrders(list.some(o => o.order_id === id)
           ? list.map(o => o.order_id === id ? detail : o) : [detail, ...list]);
       } else setOrders(list);
+      if (requestEpoch.current !== epoch || sessionVersion.current !== expectedScope.sessionVersion ||
+          port.authenticatedShopId() !== expectedScope.shopId) return false;
       setApiHealthy(true);
       return true;
     } catch (e) {
+      if (requestEpoch.current !== epoch || sessionVersion.current !== expectedScope.sessionVersion ||
+          port.authenticatedShopId() !== expectedScope.shopId) return false;
       const fault = e as ApiFault;
-      if (fault.status === 401) { inboundEpoch.current++;setSession(null);setOrders([]);setSelected(null);setInboundItems(null); }
+      if (fault.status === 401) { inboundEpoch.current++;clearStaffSession(); }
       setApiHealthy(false);
       setError(fault.message || 'Không kết nối được.');
       return false;
-    } finally { setLoading(false); }
-  }, []);
+    } finally {
+      if (requestEpoch.current === epoch && sessionVersion.current === expectedScope.sessionVersion &&
+          port.authenticatedShopId() === expectedScope.shopId) setLoading(false);
+    }
+  }, [clearStaffSession, sessionScope, updateSession]);
   const refreshPilotOrders = useCallback(() => load(true, true), [load]);
 
   useEffect(() => { void load(); }, [load]);
@@ -128,8 +173,10 @@ function App() {
   useEffect(() => {
     if (!selected || !session || useDemo) return;
     let cancelled = false;
-    void port.getOrder(selected).then(latest => {
-      if (!cancelled) {
+    const expected = sessionScope(requestEpoch.current);
+    void resolveForSession(port.getOrder(selected), expected, () => sessionScope(requestEpoch.current)).then(result => {
+      if (!cancelled && result.current) {
+        const latest = result.value;
         setApiHealthy(true);
         setOrders(prev => prev.some(o => o.order_id === latest.order_id)
           ? prev.map(o => o.order_id === latest.order_id ? latest : o)
@@ -138,10 +185,14 @@ function App() {
         if (navRevision !== null && navRevision !== latest.revision) setError(`Thông báo thuộc phiên bản ${navRevision}; đơn hiện tại đã ở phiên bản ${latest.revision}. Cần đọc lại trước khi thao tác.`);
       }
     }).catch((e: ApiFault) => {
-      if (!cancelled) { if(e.status===401) {setSession(null);setOrders([]);setSelected(null);} setError(e.message || 'Không tải được đơn từ API.'); setApiHealthy(false); }
+      if (!cancelled && expected.epoch === requestEpoch.current &&
+          expected.sessionVersion === sessionVersion.current && expected.shopId === port.authenticatedShopId()) {
+        if(e.status===401) clearStaffSession();
+        setError(e.message || 'Không tải được đơn từ API.'); setApiHealthy(false);
+      }
     });
     return () => { cancelled = true; };
-  }, [selected, session?.actor_id]);
+  }, [selected, session?.actor_id, session?.role, clearStaffSession, sessionScope]);
   const filtered = useMemo(() => orders.filter(o => {
     const term = query.trim().toLocaleLowerCase('vi-VN');
     if (term && !`${o.order_id} ${o.customer_name} ${o.conversation_id??''} ${o.documents.map(d => d.filename).join(' ')}`.toLocaleLowerCase('vi-VN').includes(term)) return false;
@@ -164,7 +215,7 @@ function App() {
       if(epoch!==inboundEpoch.current)return;
       const fault=error as ApiFault;
       setInboundError(inboundReviewErrorMessage(fault));
-      if(fault.status===401){setSession(null);setOrders([]);setSelected(null);setInboundItems(null);}
+      if(fault.status===401)clearStaffSession();
     }finally{if(epoch===inboundEpoch.current)setInboundLoading(false);}
   };
   const loadChatGroups = async () => {
@@ -197,7 +248,7 @@ function App() {
       const fault=e as ApiFault;
       setChatLoaded(false);
       setApiHealthy(false);
-      if(fault.status===401){setSession(null);setOrders([]);setSelected(null);}
+      if(fault.status===401)clearStaffSession();
       setError(fault.message||'Không thể đọc đủ đơn theo khách và chat; không nhóm dữ liệu thiếu.');
     } finally {
       if(requestEpoch.current===epoch)setChatLoading(false);
@@ -226,7 +277,7 @@ function App() {
       setValue(''); setDeliveryValue(''); setDepositAck(false);
     } catch (e) {
       const fault = e as ApiFault;
-      if (fault.status === 401) { setSession(null); setOrders([]); setSelected(null); }
+      if (fault.status === 401) clearStaffSession();
       if (fault.status === 0 || fault.status === 503 || fault.status === 409) setApiHealthy(false);
       setError((fault.message ?? 'Không thể thực hiện.') + (fault.status === 409 ? ' Không tự thực hiện lại; đang tải dữ liệu mới.' : ''));
       if (fault.status === 409) {
@@ -237,21 +288,31 @@ function App() {
   };
   const doLogin = async (ev: FormEvent) => {
     inboundEpoch.current++;setInboundItems(null);setInboundError(null);
-    requestEpoch.current++;
+    clearStaffSession();
+    const loginEpoch = requestEpoch.current;
     setChatLoaded(false);setChatLoading(false);
     ev.preventDefault(); setBusy(true); setError(null);
-    try { setSession(await port.login(loginShop, loginUser, loginPassword)); setView('shop-code'); await load(true); setLoginPassword(''); }
-    catch (e) { setError((e as Error).message); }
+    try {
+      const nextSession = await port.login(loginShop, loginUser, loginPassword);
+      if (requestEpoch.current !== loginEpoch) return;
+      updateSession(nextSession);
+      setView('shop-code');
+      await load(true);
+      setLoginPassword('');
+    }
+    catch (e) { if (requestEpoch.current === loginEpoch) setError((e as Error).message); }
     finally { setBusy(false); }
   };
   const doLogout = async () => {
     inboundEpoch.current++;setInboundItems(null);setInboundError(null);
-    requestEpoch.current++;
+    clearStaffSession();
+    const logoutEpoch = requestEpoch.current;
     setChatLoaded(false);setChatLoading(false);
     setError(null);
     try { await port.logout(); }
-    catch (e) { setError('Phiên cục bộ đã hủy. Có thể chưa thông báo được server: ' + (e as Error).message); }
-    finally { setSession(null); setOrders([]); setSelected(null); }
+    catch (e) {
+      if (requestEpoch.current === logoutEpoch) setError('Phiên cục bộ đã hủy. Có thể chưa thông báo được server: ' + (e as Error).message);
+    }
   };
   const doSelect = (id: string) => {
     setSelected(id); setMobileDetail(true); setDetailTab('document');
@@ -301,7 +362,7 @@ function App() {
         {toast && <div className="banner success" role="status"><Check size={19}/><span>{toast}</span><button aria-label="Đóng thông báo" onClick={()=>setToast(null)}><X size={17}/></button></div>}
         {!useDemo && !session && !loading ? <section className="login-card"><div className="login-icon"><LockKeyhole/></div><h1>Đăng nhập nhân viên</h1><p>Đăng nhập bằng tài khoản cấp từ máy chủ AUTO-IN. Quyền được kiểm tra tại server.</p><form data-testid="staff-login" onSubmit={doLogin}><label>Mã cửa hàng<input autoComplete="organization" required value={loginShop} onChange={e=>setLoginShop(e.target.value)} /></label><label>Tên đăng nhập<input autoComplete="username" required value={loginUser} onChange={e=>setLoginUser(e.target.value)}/></label><label>Mật khẩu<input autoComplete="current-password" type="password" required value={loginPassword} onChange={e=>setLoginPassword(e.target.value)}/></label><button className="primary" disabled={busy}>Đăng nhập an toàn</button></form></section>
           : loading ? <div className="empty-center"><RefreshCw className="spin" size={26}/> Đang tải dữ liệu…</div>
-          : view === 'shop-code' ? <PilotShopCodePanel key={`${port.authenticatedShopId()??''}:${session?.actor_id??''}:${session?.role??''}`} port={port} session={session} authenticatedShopId={port.authenticatedShopId()} apiHealthy={apiHealthy} orders={orders} onUnauthorized={clearExpiredStaffSession} onRefreshOrders={refreshPilotOrders}/>
+          : view === 'shop-code' ? <PilotShopCodePanel key={`${port.authenticatedShopId()??''}:${session?.actor_id??''}:${session?.role??''}`} port={port} session={session} authenticatedShopId={port.authenticatedShopId()} apiHealthy={apiHealthy} orders={orders} onUnauthorized={clearStaffSession} onRefreshOrders={refreshPilotOrders}/>
           : view === 'settings' ? <SettingsView mode={mode} session={session} onLogout={()=>void doLogout()}/>
           : view === 'inbound-review' ? <InboundReviewQueue items={inboundItems} loading={inboundLoading} error={inboundError} refresh={()=>void loadInboundReviewQueue()}/>
           : view === 'overview' ? <Overview totals={totals} orders={orders} open={(id)=>{doSelect(id);setView('orders')}}/>
@@ -428,11 +489,11 @@ function App() {
                       {!useDemo && session && authenticatedStaff && isWord && d===firstWordDocument && <WordReviewClient
                         key={`${selectedOrder.order_id}:${selectedOrder.revision}:${selectedOrder.request_hash}:${session.actor_id}:${session.role}`}
                         port={port} order={selectedOrder} session={session} apiHealthy={apiHealthy}
-                        onUnauthorized={clearExpiredStaffSession}/>}
+                        onUnauthorized={clearStaffSession}/>}
                       {!useDemo && session && authenticatedStaff && isPdf && <PdfReviewClient
                         key={`${selectedOrder.order_id}:${selectedOrder.revision}:${selectedOrder.request_hash}:${d.document_id}`}
                         port={port} order={selectedOrder} session={session} apiHealthy={apiHealthy}
-                        onUnauthorized={clearExpiredStaffSession}/>}
+                        onUnauthorized={clearStaffSession}/>}
                     </div>;
                   })}
                   {selectedOrder.documents.length===0 && <div className="empty-panel">API chưa cấp dữ liệu phân tách theo từng file; ảnh raster xác minh (nếu có) không phải bằng chứng khách đã xác nhận. Kế hoạch in tổng hợp: {selectedOrder.total_sheets??'chưa xác minh'} tờ; không dùng số này thay preview để duyệt.</div>}

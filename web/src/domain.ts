@@ -2,7 +2,7 @@
 export type OperationMode = 'simulation' | 'controlled_test' | 'production' | 'safe' | 'unverified';
 export type PrintState = 'NOT_SENT' | 'SENDING' | 'SENT_UNVERIFIED' | 'UNKNOWN' | 'VERIFIED_DONE' | 'SIMULATED_DONE';
 export type StaffRole = 'owner' | 'staff';
-export type OrderState = 'draft' | 'awaiting_customer' | 'confirmed' | 'approved' | 'abandoned' | 'closed';
+export type OrderState = 'UNKNOWN' | 'draft' | 'awaiting_customer' | 'confirmed' | 'approved' | 'abandoned' | 'closed';
 export type ConversationState = 'ai' | 'needs_human' | 'staff';
 export type DeliveryState = 'not_ready' | 'quality_check' | 'ready' | 'partial' | 'delivered' | 'exception_closed';
 export type PaymentState = 'unpaid' | 'deposit_requested' | 'partial' | 'paid' | 'refund_pending' | 'refunded';
@@ -80,7 +80,7 @@ export const printLabels: Record<PrintState, string> = {
   NOT_SENT: 'Chưa gửi máy', SENDING: 'Đang gửi lệnh', SENT_UNVERIFIED: 'Đã gửi · chưa kiểm giấy',
   UNKNOWN: 'Chưa rõ · cần đối soát', VERIFIED_DONE: 'Đã xác minh giấy thật', SIMULATED_DONE: 'Mô phỏng xong · chưa in giấy',
 };
-export const orderLabels: Record<OrderState, string> = { draft: 'Đang chuẩn bị', awaiting_customer: 'Chờ khách xác nhận', confirmed: 'Chờ nhân viên duyệt', approved: 'Đã duyệt', abandoned: 'Bỏ dở', closed: 'Đã đóng' };
+export const orderLabels: Record<OrderState, string> = { UNKNOWN: 'Chưa xác minh', draft: 'Đang chuẩn bị', awaiting_customer: 'Chờ khách xác nhận', confirmed: 'Chờ nhân viên duyệt', approved: 'Đã duyệt', abandoned: 'Bỏ dở', closed: 'Đã đóng' };
 export const conversationLabels: Record<ConversationState, string> = { ai: 'AI hỗ trợ', needs_human: 'Cần nhân viên', staff: 'Nhân viên tiếp quản' };
 export const deliveryLabels: Record<DeliveryState, string> = { not_ready: 'Chưa sẵn sàng', quality_check: 'Chờ kiểm giấy', ready: 'Sẵn sàng giao', partial: 'Giao một phần', delivered: 'Đã giao đủ', exception_closed: 'Đóng phần in ngoại lệ' };
 export const paymentLabels: Record<PaymentState, string> = { unpaid: 'Chưa thu', deposit_requested: 'Đang yêu cầu cọc', partial: 'Còn phải thu', paid: 'Đã thu đủ', refund_pending: 'Chờ hoàn tiền', refunded: 'Đã hoàn thực tế' };

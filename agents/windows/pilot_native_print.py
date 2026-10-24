@@ -239,16 +239,20 @@ class PilotJournal:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("CREATE TABLE IF NOT EXISTS pilot_jobs ("
-                        "job_id TEXT PRIMARY KEY, ticket_sha256 TEXT NOT NULL, "
+                        "job_id TEXT PRIMARY KEY, ticket_sha256 TEXT NOT NULL, request_hash TEXT, "
                         "source_sha256 TEXT NOT NULL, settings_sha256 TEXT NOT NULL, "
                         "evidence_sha256 TEXT NOT NULL, printer_id TEXT NOT NULL, "
                         "revision INTEGER NOT NULL, state TEXT NOT NULL, evidence TEXT NOT NULL, "
-                        "report_pending TEXT, recovery_report TEXT)")
+                        "report_pending TEXT, recovery_report TEXT, mark_sending_pending TEXT)")
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(pilot_jobs)")}
+        if "request_hash" not in columns:
+            self.db.execute("ALTER TABLE pilot_jobs ADD COLUMN request_hash TEXT")
         if "report_pending" not in columns:
             self.db.execute("ALTER TABLE pilot_jobs ADD COLUMN report_pending TEXT")
         if "recovery_report" not in columns:
             self.db.execute("ALTER TABLE pilot_jobs ADD COLUMN recovery_report TEXT")
+        if "mark_sending_pending" not in columns:
+            self.db.execute("ALTER TABLE pilot_jobs ADD COLUMN mark_sending_pending TEXT")
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         row = self.db.execute(
@@ -269,10 +273,10 @@ class PilotJournal:
                 self.db.execute("COMMIT")
                 return previous
             self.db.execute(
-                "INSERT INTO pilot_jobs(job_id,ticket_sha256,source_sha256,settings_sha256,"
-                "evidence_sha256,printer_id,revision,state,evidence) VALUES(?,?,?,?,?,?,?,?,?)",
-                (verified.job_id, verified.ticket_sha256, verified.source_sha256,
-                 verified.settings_sha256, verified.evidence_sha256, verified.printer_id,
+                "INSERT INTO pilot_jobs(job_id,ticket_sha256,request_hash,source_sha256,settings_sha256,"
+                "evidence_sha256,printer_id,revision,state,evidence) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (verified.job_id, verified.ticket_sha256, verified.request_hash,
+                 verified.source_sha256, verified.settings_sha256, verified.evidence_sha256, verified.printer_id,
                  verified.revision, "BOUNDARY", "{}"))
             self.db.execute("COMMIT")
             return None
@@ -339,6 +343,90 @@ class PilotJournal:
                 raise PilotPrintBlocked("JOURNAL_RECOVERY_REPORT_CONFLICT")
             self.db.execute("UPDATE pilot_jobs SET recovery_report=? WHERE job_id=?",
                              (encoded, job_id))
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
+    def set_recovery_intent(self, job_id: str, mark_request: dict[str, Any],
+                            report: dict[str, Any]) -> None:
+        """Durably bind idempotent mark-sending and conservative UNKNOWN before its POST."""
+        mark = _validate_pending_mark_sending(mark_request)
+        normalized = _validate_pending_report(report)
+        if (normalized["state"] != "UNKNOWN" or
+                set(normalized["evidence"]) != {"reason_code"} or
+                normalized["evidence"].get("reason_code") != "RESTART_AT_SEND_BOUNDARY" or
+                mark["lease_token"] != normalized["lease_token"]):
+            raise PilotPrintBlocked("JOURNAL_RECOVERY_INTENT_INVALID")
+        encoded_mark = json.dumps(mark, sort_keys=True, separators=(",", ":"),
+                                  ensure_ascii=False, allow_nan=False)
+        encoded_report = json.dumps(normalized, sort_keys=True, separators=(",", ":"),
+                                    ensure_ascii=False, allow_nan=False)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT revision,request_hash,source_sha256,settings_sha256,evidence_sha256,printer_id,"
+                "report_pending,recovery_report,mark_sending_pending FROM pilot_jobs WHERE job_id=?",
+                (job_id,)).fetchone()
+            if row is None:
+                raise PilotPrintBlocked("JOURNAL_BOUNDARY_MISSING")
+            revision, request_hash, source_sha, settings_sha, evidence_sha, printer_id, pending, recovery, mark_pending = row
+            if (mark["expected_revision"] != revision or mark["request_hash"] != request_hash or
+                    mark["source_sha256"] != source_sha or
+                    mark["settings_sha256"] != settings_sha or mark["evidence_sha256"] != evidence_sha or
+                    mark["printer_id"] != printer_id or pending is not None):
+                raise PilotPrintBlocked("JOURNAL_RECOVERY_INTENT_SCOPE_MISMATCH")
+            if recovery is not None and recovery != encoded_report:
+                raise PilotPrintBlocked("JOURNAL_RECOVERY_REPORT_CONFLICT")
+            if mark_pending is not None and mark_pending != encoded_mark:
+                raise PilotPrintBlocked("JOURNAL_MARK_SENDING_CONFLICT")
+            self.db.execute(
+                "UPDATE pilot_jobs SET recovery_report=?,mark_sending_pending=? WHERE job_id=?",
+                (encoded_report, encoded_mark, job_id))
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
+    def pending_mark_sending(self) -> list[tuple[str, dict[str, Any]]]:
+        rows = self.db.execute(
+            "SELECT job_id,mark_sending_pending FROM pilot_jobs "
+            "WHERE mark_sending_pending IS NOT NULL ORDER BY rowid").fetchall()
+        result = []
+        for job_id, encoded in rows:
+            try:
+                mark = _validate_pending_mark_sending(json.loads(encoded))
+                row = self.db.execute(
+                    "SELECT revision,request_hash,source_sha256,settings_sha256,evidence_sha256,printer_id,recovery_report "
+                    "FROM pilot_jobs WHERE job_id=?", (job_id,)).fetchone()
+                if row is None:
+                    raise ValueError("missing job row")
+                revision, request_hash, source_sha, settings_sha, evidence_sha, printer_id, recovery = row
+                report = _validate_pending_report(json.loads(recovery)) if recovery else None
+                if (mark["expected_revision"] != revision or mark["request_hash"] != request_hash or
+                        mark["source_sha256"] != source_sha or
+                        mark["settings_sha256"] != settings_sha or mark["evidence_sha256"] != evidence_sha or
+                        mark["printer_id"] != printer_id or report is None or
+                        mark["lease_token"] != report["lease_token"] or report["state"] != "UNKNOWN"):
+                    raise ValueError("recovery intent binding mismatch")
+            except Exception as exc:
+                raise PilotPrintBlocked("JOURNAL_MARK_SENDING_INVALID") from exc
+            result.append((job_id, mark))
+        return result
+
+    def clear_pending_mark_sending(self, job_id: str, mark_request: dict[str, Any]) -> None:
+        """Clear only after Core returned the idempotent SENDING receipt."""
+        mark = _validate_pending_mark_sending(mark_request)
+        encoded = json.dumps(mark, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False, allow_nan=False)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT mark_sending_pending FROM pilot_jobs WHERE job_id=?", (job_id,)).fetchone()
+            if row is None or row[0] != encoded:
+                raise PilotPrintBlocked("JOURNAL_MARK_SENDING_CHANGED")
+            self.db.execute("UPDATE pilot_jobs SET mark_sending_pending=NULL WHERE job_id=?",
+                             (job_id,))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
@@ -448,7 +536,9 @@ class PilotPrintWork:
 class PilotBackendPort(Protocol):
     def claim(self) -> PilotPrintWork | None: ...
     def preflight(self, work: PilotPrintWork) -> dict[str, Any]: ...
-    def mark_sending(self, work: PilotPrintWork) -> dict[str, Any]: ...
+    def prepare_mark_sending(self, work: PilotPrintWork) -> dict[str, Any]: ...
+    def mark_sending(self, work: PilotPrintWork, request: dict[str, Any]) -> dict[str, Any]: ...
+    def submit_mark_sending(self, job_id: str, request: dict[str, Any]) -> None: ...
     def prepare_report(self, work: PilotPrintWork, state: str,
                        evidence: dict[str, Any]) -> dict[str, Any]: ...
     def submit_report(self, job_id: str, report: dict[str, Any]) -> None: ...
@@ -529,6 +619,30 @@ def _validate_pending_report(value: object) -> dict[str, Any]:
             "idempotency_key": key, "state": state, "evidence": safe_evidence}
 
 
+def _validate_pending_mark_sending(value: object) -> dict[str, Any]:
+    """Validate the exact Core mark-sending request persisted for replay after restart."""
+    fields = {"expected_revision", "lease_token", "request_hash", "source_sha256",
+              "settings_sha256", "evidence_sha256", "printer_id", "idempotency_key"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise PilotPrintBlocked("PILOT_MARK_SENDING_ENVELOPE_INVALID")
+    lease = value.get("lease_token")
+    revision = value.get("expected_revision")
+    printer = value.get("printer_id")
+    if (type(lease) is not str or not 1 <= len(lease) <= 4096 or
+            any(ord(char) < 0x20 or ord(char) == 0x7f for char in lease) or
+            type(revision) is not int or revision < 1 or
+            type(printer) is not str or not 1 <= len(printer) <= 128 or
+            printer != printer.strip() or any(ord(char) <= 0x20 for char in printer)):
+        raise PilotPrintBlocked("PILOT_MARK_SENDING_ENVELOPE_INVALID")
+    for key in ("request_hash", "source_sha256", "settings_sha256", "evidence_sha256",
+                "idempotency_key"):
+        if type(value.get(key)) is not str or HEX.fullmatch(value[key]) is None:
+            raise PilotPrintBlocked("PILOT_MARK_SENDING_ENVELOPE_INVALID")
+    return {key: value[key] for key in (
+        "expected_revision", "lease_token", "request_hash", "source_sha256",
+        "settings_sha256", "evidence_sha256", "printer_id", "idempotency_key")}
+
+
 class PilotPrintAgent:
     """Core-authorized pilot flow. DryRun is the safe default and never touches a printer."""
 
@@ -583,15 +697,39 @@ class PilotPrintAgent:
         """Retry one durable envelope and end this poll without claiming work."""
         try:
             pending = self.journal.pending_reports()
-            is_recovery = False
-            if not pending:
-                pending = self.journal.recovery_reports()
-                is_recovery = bool(pending)
+            recovery = self.journal.recovery_reports()
+            mark_pending = self.journal.pending_mark_sending()
         except Exception:
             return {"status": "UNKNOWN", "reason": "REPORT_JOURNAL_UNAVAILABLE"}
+        if mark_pending and (pending or not recovery):
+            return {"status": "UNKNOWN", "reason": "RECOVERY_INTENT_INCONSISTENT"}
+        if mark_pending:
+            job_id, mark_request = mark_pending[0]
+            report_by_job = dict(recovery)
+            report = report_by_job.get(job_id)
+            if report is None:
+                return {"status": "UNKNOWN", "job_id": job_id,
+                        "reason": "RECOVERY_REPORT_MISSING"}
+            try:
+                # Replay the exact Core idempotency key. This only reconciles
+                # SENDING; this recovery branch never reaches a native driver.
+                self.backend.submit_mark_sending(job_id, mark_request)
+                self.journal.clear_pending_mark_sending(job_id, mark_request)
+                self.backend.submit_report(job_id, report)
+                self.journal.clear_recovery_report(job_id, report)
+            except Exception:
+                return {"status": "UNKNOWN", "job_id": job_id,
+                        "report_pending": True}
+            return {"status": "UNKNOWN", "job_id": job_id, "reconciled": True}
         if not pending:
+            reports = recovery
+            is_recovery = True
+        else:
+            reports = pending
+            is_recovery = False
+        if not reports:
             return None
-        job_id, report = pending[0]
+        job_id, report = reports[0]
         try:
             self.backend.submit_report(job_id, report)
             if is_recovery:
@@ -719,29 +857,36 @@ class PilotPrintAgent:
             return {"status": "UNKNOWN", "job_id": verified.job_id,
                     "reason": "JOURNAL_ALREADY_CONTAINS_JOB_NO_RESEND"}
         try:
-            marked = self.backend.mark_sending(work)
+            mark_request = _validate_pending_mark_sending(
+                self.backend.prepare_mark_sending(work))
+            recovery_report = _validate_pending_report(
+                self.backend.prepare_report(
+                    work, "UNKNOWN", {"reason_code": "RESTART_AT_SEND_BOUNDARY"}))
+            self.journal.set_recovery_intent(verified.job_id, mark_request, recovery_report)
+        except Exception:
+            _close_prepared(prepared)
+            return {"status": "UNKNOWN", "job_id": verified.job_id,
+                    "reason": "REPORT_RECOVERY_CONTEXT_UNAVAILABLE"}
+
+        try:
+            marked = self.backend.mark_sending(work, mark_request)
             if not _server_binding_matches(marked, verified, "SENDING"):
                 raise PilotPrintBlocked("CORE_MARK_SENDING_NOT_CONFIRMED")
         except Exception:
             try:
                 self.journal.state(verified.job_id, "UNKNOWN",
-                                   {"driver_called": False, "spooler_ack": False,
-                                    "reason_code": "CORE_SEND_ACK_AMBIGUOUS"})
+                                   {"reason_code": "CORE_SEND_ACK_AMBIGUOUS"})
             except Exception:
                 pass
             _close_prepared(prepared)
             return {"status": "UNKNOWN", "job_id": verified.job_id,
-                    "reason": "CORE_SEND_ACK_AMBIGUOUS"}
-
+                    "reason": "CORE_SEND_ACK_AMBIGUOUS", "report_pending": True}
         try:
-            recovery_report = _validate_pending_report(
-                self.backend.prepare_report(
-                    work, "UNKNOWN", {"reason_code": "RESTART_AT_SEND_BOUNDARY"}))
-            self.journal.set_recovery_report(verified.job_id, recovery_report)
+            self.journal.clear_pending_mark_sending(verified.job_id, mark_request)
         except Exception:
             _close_prepared(prepared)
             return {"status": "UNKNOWN", "job_id": verified.job_id,
-                    "reason": "REPORT_RECOVERY_CONTEXT_UNAVAILABLE"}
+                    "reason": "JOURNAL_MARK_SENDING_ACK_NOT_DURABLE", "report_pending": True}
 
         try:
             self.journal.state(verified.job_id, "ARMED")
@@ -822,18 +967,28 @@ class PilotPrintAgent:
                     "reason": "JOURNAL_ALREADY_CONTAINS_JOB_NO_RESEND"}
 
         try:
-            marked = self.backend.mark_sending(work)
+            mark_request = _validate_pending_mark_sending(
+                self.backend.prepare_mark_sending(work))
+            recovery_report = _validate_pending_report(
+                self.backend.prepare_report(
+                    work, "UNKNOWN", {"reason_code": "RESTART_AT_SEND_BOUNDARY"}))
+            self.journal.set_recovery_intent(verified.job_id, mark_request, recovery_report)
+        except Exception:
+            return {"status": "UNKNOWN", "job_id": verified.job_id,
+                    "reason": "REPORT_RECOVERY_CONTEXT_UNAVAILABLE"}
+        try:
+            marked = self.backend.mark_sending(work, mark_request)
             if not _server_binding_matches(marked, verified, "SENDING"):
                 raise PilotPrintBlocked("CORE_MARK_SENDING_NOT_CONFIRMED")
+            self.journal.clear_pending_mark_sending(verified.job_id, mark_request)
         except Exception:
             try:
                 self.journal.state(verified.job_id, "UNKNOWN",
-                                   {"driver_called": False, "spooler_ack": False,
-                                    "reason_code": "CORE_SEND_ACK_AMBIGUOUS"})
+                                   {"reason_code": "CORE_SEND_ACK_AMBIGUOUS"})
             except Exception:
                 pass
             return {"status": "UNKNOWN", "job_id": verified.job_id,
-                    "reason": "CORE_SEND_ACK_AMBIGUOUS"}
+                    "reason": "CORE_SEND_ACK_AMBIGUOUS", "report_pending": True}
 
         evidence = {"driver_called": False, "spooler_ack": False,
                     "reason_code": "PILOT_DRY_RUN"}

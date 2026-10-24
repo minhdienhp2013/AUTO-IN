@@ -10,6 +10,7 @@ import {readPdfReviewSnapshot,pdfReviewPrincipalScope,type TrustedPdfReviewSourc
 import {canonicalPilotCode,derivePilotShopCode,pilotCodeHash,pilotCoreIdempotencyKey,pilotEvidenceHash,pilotRequestHmac,pilotSettingsHash,
  readPilotSourceSnapshot,safeEqualPilotCodeHash,validatePilotCandidateShape,validatePilotStoredSettings,
  validatePilotSubmissionShape,validatePilotClaimRequest,validatePilotGateRequest,validatePilotAgentReport,validPilotCode,
+ validatePilotMarkSendingRequest,
  type PilotAgentClaimResponse,type PilotAgentGateReceipt,type PilotAgentReport,type PilotCodeSubmission,
  type PilotPrintAuthorization,type PilotPrintMode,type PilotReadiness,type PilotResult,type PilotShopCodeDisplay,
  type PilotSourceFormat,type PilotSourceSnapshot,type PilotWordPdfCandidate} from './pilot-shop-code.js';
@@ -1174,8 +1175,8 @@ export class OrderService {
   });
  }
  async markPilotSending(p:Principal,job_id:string,input:unknown):Promise<PilotAgentGateReceipt>{
-  assertAgent(p);const request=validatePilotGateRequest(input);
-  return this.store.tx(async db=>{
+  assertAgent(p);const request=validatePilotMarkSendingRequest(input);
+  return this.store.tx(db=>this.store.once(db,p,`pilot.jobs.${job_id}.sending`,request.idempotency_key,request,async()=>{
    const context=await this.validatePilotJob(db,p,job_id,request.lease_token,request.expected_revision,true);
    if(context.j.state!=='NOT_SENT')throw new DomainError('PILOT_NOT_SENDABLE','Pilot job không còn chắc chắn chưa gửi',409);
    this.assertPilotGateTuple(context,request);
@@ -1186,7 +1187,7 @@ export class OrderService {
    if(updated.rowCount!==1)throw new DomainError('PILOT_NOT_SENDABLE','Pilot job không còn chắc chắn chưa gửi',409);
    await this.audit(db,p,'pilot.job.mark_sending',context.o.id,{job_id,mode:context.settings.mode});
    return this.pilotGateReceipt(context,'SENDING');
-  });
+  }));
  }
  async reportPilot(p:Principal,job_id:string,input:unknown){
   assertAgent(p);const report=validatePilotAgentReport(input);

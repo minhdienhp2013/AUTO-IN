@@ -15,7 +15,7 @@ test('PDF document rows mount the staff client for the current order snapshot on
   assert.match(documentRows, /const authenticatedStaff=Boolean\(session&&\['staff','owner'\]\.includes\(session\.role\)\);/);
   assert.match(documentRows, /!useDemo && session && authenticatedStaff && isPdf && <PdfReviewClient/);
   assert.match(documentRows, /port=\{port\} order=\{selectedOrder\} session=\{session\} apiHealthy=\{apiHealthy\}/);
-  assert.match(documentRows, /onUnauthorized=\{clearExpiredStaffSession\}/);
+  assert.match(documentRows, /onUnauthorized=\{clearStaffSession\}/);
   assert.match(appSource, /port\.authenticatedShopId\(\)\?\?''/);
   assert.match(appSource, /order\.detail_loaded!==true/);
   assert.match(appSource, /port\.loadPdfReviewPreview\(order\)/);

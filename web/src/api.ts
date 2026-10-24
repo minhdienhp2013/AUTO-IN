@@ -70,7 +70,7 @@ export function mapOrder(raw: unknown): OrderView {
     order_id: asString(o.order_id), job_id: typeof o.job_id === 'string' ? o.job_id : null, customer_name: asString(o.customer_name, 'Khách hàng'), conversation_id: typeof o.conversation_id === 'string' ? o.conversation_id : null,
     conversation_generation: asNum(o.conversation_generation), conversation_claimed_by: typeof o.conversation_claimed_by === 'string' ? o.conversation_claimed_by : null,
     revision: asNum(o.revision) ?? 0, request_hash: asString(o.request_hash), quote_revision: asNum(o.quote_revision),
-    order_state: knownState(o.order_state, ['draft','awaiting_customer','confirmed','approved','abandoned','closed'] as const, 'draft'),
+    order_state: knownState(o.order_state, ['draft','awaiting_customer','confirmed','approved','abandoned','closed'] as const, 'UNKNOWN'),
     conversation_state: knownState(o.conversation_state, ['ai','needs_human','staff'] as const, 'needs_human'),
     print_state: knownState(o.print_state, ['NOT_SENT','SENDING','SENT_UNVERIFIED','UNKNOWN','VERIFIED_DONE','SIMULATED_DONE'] as const, 'UNKNOWN'),
     delivery_state: knownState(o.delivery_state, ['not_ready','quality_check','ready','partial','delivered','exception_closed'] as const, 'not_ready'),
@@ -95,7 +95,7 @@ export function mapOrderSummary(raw: unknown): OrderView {
     order_id: r.id, customer_name: `Mã khách: ${asString(r.customer_id, 'chưa rõ')}`,
     conversation_id: r.conversation_id, revision: r.active_revision,
     manual_lock: r.manual_lock, delivered_sheets: r.delivered_sheets,
-    order_state: r.print_closed === true ? 'closed' : 'draft', created_at: r.created_at,
+    order_state: r.order_state, created_at: r.created_at,
     warnings: ['Danh sách chỉ là dữ liệu tổng hợp; mở đơn để tải trạng thái từ server.'],
   });
 }

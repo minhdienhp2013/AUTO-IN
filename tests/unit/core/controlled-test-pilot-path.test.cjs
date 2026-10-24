@@ -4,6 +4,7 @@ const path=require('node:path');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../../dist/backend');
 const {OrderService}=require(path.join(root,'core/service.js'));
 const {canonical,sha}=require(path.join(root,'core/model.js'));
+const {DomainError}=require(path.join(root,'core/model.js'));
 
 const now=new Date('2026-10-24T04:00:00.000Z');
 const shopId='shop-a';
@@ -46,6 +47,7 @@ function fixture({grant=validGrant,additionalGrant=null,shopSettings=settings}={
  const scopeChecks=[];
  const claimQueries=[];
  const writes=[];
+ const idempotency=new Map();
  const db={query:async(sql,args=[])=>{
   if(sql.includes('FROM core_print_controlled_test_scopes s JOIN core_orders o')){
    scopeChecks.push(sql);
@@ -79,7 +81,18 @@ function fixture({grant=validGrant,additionalGrant=null,shopSettings=settings}={
  }};
  const store={
   tx:async callback=>callback(db),
-  once:async(_db,_principal,_action,_key,_payload,callback)=>callback(),
+  once:async(_db,principal,action,key,payload,callback)=>{
+   const identity=`${principal.shop_id}:${principal.id}:${action}:${key}`;
+   const payloadHash=sha(canonical({actor_id:principal.id,action,data:payload}));
+   const previous=idempotency.get(identity);
+   if(previous){
+    if(previous.payload_hash!==payloadHash)throw new DomainError('IDEMPOTENCY_CONFLICT','Cùng khóa nhưng dữ liệu khác nhau',409);
+    return previous.response;
+   }
+   const response=await callback();
+   idempotency.set(identity,{payload_hash:payloadHash,response});
+   return response;
+  },
   one:async(_db,sql,args=[])=>{
    if(sql.startsWith('SELECT mode FROM core_shop_settings'))return {mode:currentSettings.mode};
    if(sql.startsWith('SELECT order_id FROM core_print_jobs'))return {order_id:Object.values(jobs).find(row=>row.id===args[0])?.order_id};
@@ -105,6 +118,9 @@ function gate(work){return {expected_revision:work.job.revision,lease_token:work
  request_hash:work.job.request_hash,source_sha256:work.candidate.source.sha256,
  settings_sha256:work.candidate.settings_sha256,evidence_sha256:work.authorization.evidence_sha256,
  printer_id:work.job.printer_id};}
+function markRequest(work,key='mark-sending-idempotency-key'){
+ return {...gate(work),idempotency_key:key};
+}
 
 test('pilot lane checks the same active owner grant at claim, preflight and mark-sending',async()=>{
  const f=fixture();
@@ -115,11 +131,17 @@ test('pilot lane checks the same active owner grant at claim, preflight and mark
  assert.equal(claimed.work.job.approval_id,undefined);
  const preflight=await f.service.preflightPilot(agent,claimed.work.job.job_id,gate(claimed.work));
  assert.equal(preflight.state,'AUTHORIZED');
- const sending=await f.service.markPilotSending(agent,claimed.work.job.job_id,gate(claimed.work));
+ const request=markRequest(claimed.work,'a'.repeat(64));
+ const sending=await f.service.markPilotSending(agent,claimed.work.job.job_id,request);
  assert.equal(sending.state,'SENDING');
  assert.equal(f.jobs[orderId].mode_at_send,'controlled_test');
+ f.jobs[orderId].state='UNKNOWN';
+ const replay=await f.service.markPilotSending(agent,claimed.work.job.job_id,request);
+ assert.deepEqual(replay,sending,'same request returns the original Core receipt after ACK loss');
  assert.equal(f.scopeChecks.length,3);
  assert.deepEqual(f.writes,['claim','mark-sending']);
+ await assert.rejects(f.service.markPilotSending(agent,claimed.work.job.job_id,
+  {...request,printer_id:'OTHER-PRINTER'}),error=>error.code==='IDEMPOTENCY_CONFLICT');
 });
 
 test('server-owned order scope wins when another order has a valid grant for the same shop and printer',async()=>{
@@ -165,7 +187,7 @@ test('pilot lane stops before the send boundary when the grant expires or is rev
  f.setGrant(validGrant);
  await f.service.preflightPilot(agent,claimed.work.job.job_id,gate(claimed.work));
  f.setGrant({...validGrant,enabled:false});
- await assert.rejects(f.service.markPilotSending(agent,claimed.work.job.job_id,gate(claimed.work)),
+ await assert.rejects(f.service.markPilotSending(agent,claimed.work.job.job_id,markRequest(claimed.work,'b'.repeat(64))),
   error=>error.code==='CONTROLLED_TEST_SCOPE_REQUIRED');
  assert.equal(f.jobs[orderId].state,'NOT_SENT');
  assert.deepEqual(f.writes,['claim']);

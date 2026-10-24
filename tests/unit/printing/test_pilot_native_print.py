@@ -99,7 +99,12 @@ class FakeBackend:
         self.preflight_state = "AUTHORIZED"
         self.mark_state = "SENDING"
         self.mark_raises = False
+        self.lose_first_mark_ack = False
         self.claim_calls = 0
+        self.mark_attempts = []
+        self.mark_replay_attempts = []
+        self.mark_requests = {}
+        self.mark_commits = 0
         self.reports = []
         self.report_attempts = []
         self.accepted_report_keys = set()
@@ -125,10 +130,43 @@ class FakeBackend:
     def preflight(self, _work):
         return self._ack(self.preflight_state)
 
-    def mark_sending(self, _work):
-        if self.mark_raises:
-            raise TimeoutError("synthetic mark ACK timeout")
+    def prepare_mark_sending(self, work):
+        job = work.job
+        request = {
+            "expected_revision": job["revision"],
+            "lease_token": job["lease_token"],
+            "request_hash": job["request_hash"],
+            "source_sha256": work.candidate["source"]["sha256"],
+            "settings_sha256": work.candidate["settings_sha256"],
+            "evidence_sha256": work.authorization["evidence_sha256"],
+            "printer_id": job["printer_id"],
+        }
+        request["idempotency_key"] = hashlib.sha256(
+            f"fake-pilot-mark:{job['job_id']}:{job['revision']}:{job['lease_token']}".encode()
+        ).hexdigest()
+        return request
+
+    def _mark_once(self, job_id, request):
+        self.mark_attempts.append((job_id, deepcopy(request)))
+        key = request["idempotency_key"]
+        previous = self.mark_requests.get(key)
+        if previous is not None and previous != request:
+            raise ValueError("synthetic idempotency conflict")
+        if previous is None:
+            self.mark_requests[key] = deepcopy(request)
+            self.mark_commits += 1
+        if self.mark_raises or self.lose_first_mark_ack:
+            self.mark_raises = False
+            self.lose_first_mark_ack = False
+            raise TimeoutError("synthetic mark ACK timeout after Core commit")
         return self._ack(self.mark_state)
+
+    def mark_sending(self, work, request):
+        return self._mark_once(work.job["job_id"], request)
+
+    def submit_mark_sending(self, job_id, request):
+        self.mark_replay_attempts.append((job_id, deepcopy(request)))
+        self._mark_once(job_id, request)
 
     def prepare_report(self, work, state, evidence):
         job = work.job
@@ -278,6 +316,8 @@ class PilotNativePrintTests(unittest.TestCase):
                        journal.db.execute("PRAGMA table_info(pilot_jobs)")}
             self.assertIn("report_pending", columns)
             self.assertIn("recovery_report", columns)
+            self.assertIn("mark_sending_pending", columns)
+            self.assertIn("request_hash", columns)
             journal.close()
 
     def test_journal_refuses_shared_directory_before_creating_credential_store(self):
@@ -421,7 +461,29 @@ class PilotNativePrintTests(unittest.TestCase):
             self.assertEqual(result["status"], "UNKNOWN")
             self.assertEqual(printer.send_calls, [])
             self.assertEqual(journal.get("job-public-test")["state"], "UNKNOWN")
+            self.assertEqual(len(journal.pending_mark_sending()), 1)
+            self.assertEqual(len(journal.recovery_reports()), 1)
             journal.close()
+
+            reopened = PilotJournal(Path(folder) / "pilot.sqlite")
+            restarted = PilotPrintAgent(backend=backend, journal=reopened, printer=printer,
+                                        dry_run=False, configured_shop_id="pilot-shop-public-test",
+                                        configured_order_id="order-public-test")
+            recovered = restarted.run_once()
+            self.assertEqual(recovered["status"], "UNKNOWN")
+            self.assertTrue(recovered["reconciled"])
+            self.assertEqual(backend.claim_calls, 1,
+                             "ambiguous mark recovery must not claim again")
+            self.assertEqual(backend.mark_commits, 1,
+                             "Core idempotency must apply the send boundary once")
+            self.assertEqual(len(backend.mark_attempts), 2)
+            self.assertEqual(backend.mark_attempts[0], backend.mark_attempts[1])
+            self.assertEqual(len(printer.send_calls), 0,
+                             "ambiguous mark recovery must never call the driver")
+            self.assertEqual(backend.reports[-1][0], "UNKNOWN")
+            self.assertEqual(reopened.pending_mark_sending(), [])
+            self.assertEqual(reopened.recovery_reports(), [])
+            reopened.close()
 
     def test_success_is_sent_unverified_and_duplicate_never_resends(self):
         with tempfile.TemporaryDirectory() as folder:

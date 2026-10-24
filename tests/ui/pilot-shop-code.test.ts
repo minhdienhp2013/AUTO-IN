@@ -7,6 +7,7 @@ import { demoOrders } from '../../web/src/fixtures.ts';
 import { type StaffSession } from '../../web/src/domain.ts';
 import { listenForPilotConnection, loadPilotShopCode, parsePilotShopCodeDisplay, pilotOrderPrintStatus, PilotShopCodePanelView, type PilotShopCodeDisplay } from '../../web/src/pilot-shop-code.ts';
 import { coreDetail } from './core-fixtures.ts';
+import { resolveForSession, type SessionRequestScope } from '../../web/src/session-request.ts';
 
 const fromWeb = createRequire(new URL('../../web/package.json', import.meta.url));
 const React = fromWeb('react');
@@ -115,6 +116,35 @@ test('offline invalidates the displayed code and order snapshot; online requests
   assert.equal(handlers.size, 0);
 });
 
+test('late shop A order response is discarded after the session switches to shop B', async () => {
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>(done => { resolve = done; });
+    return { promise, resolve };
+  };
+  const scopeA: SessionRequestScope = { epoch: 4, sessionVersion: 2, actorId: 'staff-a', role: 'staff', shopId: 'shop-A' };
+  const scopeB: SessionRequestScope = { epoch: 6, sessionVersion: 3, actorId: 'staff-b', role: 'staff', shopId: 'shop-B' };
+  let current = scopeA;
+  const visibleOrders: string[] = ['stale-order-from-shop-A'];
+  const shopA = deferred<string[]>();
+  const shopB = deferred<string[]>();
+  const applyWhenCurrent = async (scope: SessionRequestScope, request: Promise<string[]>) => {
+    const result = await resolveForSession(request, scope, () => current);
+    if (result.current) visibleOrders.push(...result.value);
+  };
+  const requestA = applyWhenCurrent(scopeA, shopA.promise);
+  // App clears tenant data synchronously when it logs out or starts a new login.
+  visibleOrders.length = 0;
+  current = scopeB;
+  const requestB = applyWhenCurrent(scopeB, shopB.promise);
+  shopB.resolve(['order-from-shop-B']);
+  await requestB;
+  shopA.resolve(['private-order-from-shop-A']);
+  await requestA;
+  assert.deepEqual(visibleOrders, ['order-from-shop-B']);
+  assert.equal(visibleOrders.includes('private-order-from-shop-A'), false);
+});
+
 test('pilot order status maps waiting, sending, sent, blocked and UNKNOWN without treating ACK as print proof', () => {
   const printState = (state: 'NOT_SENT'|'SENDING'|'SENT_UNVERIFIED'|'UNKNOWN', manual_lock = false) =>
     pilotOrderPrintStatus({ print_state: state, manual_lock });
@@ -131,7 +161,13 @@ test('pilot order status maps waiting, sending, sent, blocked and UNKNOWN withou
 test('Core order summary without explicit print state stays UNKNOWN; manual lock does not infer BLOCKED', () => {
   const summary = mapOrderSummary({ id: 'order-1', active_revision: 2, manual_lock: true, print_closed: true });
   assert.equal(summary.print_state, 'UNKNOWN');
+  assert.equal(summary.order_state, 'UNKNOWN');
   assert.equal(pilotOrderPrintStatus(summary).status, 'UNKNOWN');
+  const html = renderToStaticMarkup(React.createElement(PilotShopCodePanelView, {
+    authenticatedStaff: true, authenticatedShopId: shopId, apiHealthy: true,
+    state: { status: 'loading' }, orders: [summary], remainingMs: null, onRefresh() {},
+  }));
+  assert.match(html, /Đơn: Chưa xác minh/);
 });
 
 test('pilot cards use matching staff order details; missing or cross-order detail stays UNKNOWN', async () => {
@@ -290,7 +326,10 @@ test('pilot page is gated to a live staff session while the existing order-manag
   const api = await readFile(new URL('../../web/src/api.ts', import.meta.url), 'utf8');
   const panel = await readFile(new URL('../../web/src/pilot-shop-code.ts', import.meta.url), 'utf8');
   assert.ok(/!useDemo&&session&&<button[^>]+data-testid="pilot-shop-code-nav"/.test(app), 'navigation is staff-session gated');
-  assert.ok(/setSession\(await port\.login\(loginShop,\s*loginUser,\s*loginPassword\)\);\s*setView\('shop-code'\)/.test(app), 'successful login opens the pilot page');
+  assert.ok(/const nextSession = await port\.login\(loginShop, loginUser, loginPassword\);[\s\S]*?updateSession\(nextSession\);\s*setView\('shop-code'\)/.test(app), 'successful login opens the pilot page only for the current request epoch');
+  assert.ok(/const resolveCurrent = <T,>\(request: Promise<T>\) => resolveForSession\(request, expectedScope, currentScope\)/.test(app), 'every order load result is guarded by epoch, actor, role and shop scope');
+  assert.ok(/const clearStaffSession = useCallback\(\(\) => \{[\s\S]*?setOrders\(\[\]\);setSelected\(null\)[\s\S]*?setLoading\(false\)/.test(app), 'logout and shop switch immediately clear prior tenant data');
+  assert.ok(/resolveForSession\(port\.getOrder\(selected\), expected,/.test(app), 'selected-order detail reads reject late responses from a prior session');
   assert.ok(/view === 'shop-code' \? <PilotShopCodePanel/.test(app), 'pilot page is part of the authenticated app');
   assert.ok(/view === 'orders'/.test(app), 'existing order-management flow remains');
   assert.ok(/this\.call\('\/api\/v1\/pilot\/shop-code'\)/.test(api), 'uses only the #163 route');

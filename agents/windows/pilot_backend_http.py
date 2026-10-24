@@ -19,7 +19,8 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
-from .pilot_native_print import PilotPrintWork, _validate_pending_report
+from .pilot_native_print import (PilotPrintWork, _validate_pending_mark_sending,
+                                 _validate_pending_report)
 from workers.documents.pilot_source_ticket import MAX_PUBLIC_SOURCE_BYTES
 
 
@@ -284,10 +285,11 @@ class PilotHttpBackendClient:
                 "evidence_sha256": work.authorization["evidence_sha256"],
                 "printer_id": work.job["printer_id"]}
 
-    def _gate(self, work, action: str, expected_state: str) -> dict[str, Any]:
+    def _gate(self, work, action: str, expected_state: str,
+              body: dict[str, Any] | None = None) -> dict[str, Any]:
         job, _, _ = self._assert_claimed(work)
         with self._request("POST", self._job_suffix(job, action),
-                           body=self._gate_request(work)) as response:
+                           body=self._gate_request(work) if body is None else body) as response:
             value = self._read_json(response)
         if (set(value) != self._GATE_FIELDS or
                 value.get("schema") != "ai0.pilot_agent_gate_receipt.v1" or
@@ -298,8 +300,44 @@ class PilotHttpBackendClient:
     def preflight(self, work) -> dict[str, Any]:
         return self._gate(work, "preflight", "AUTHORIZED")
 
-    def mark_sending(self, work) -> dict[str, Any]:
-        return self._gate(work, "mark-sending", "SENDING")
+    def prepare_mark_sending(self, work) -> dict[str, Any]:
+        job, _, _ = self._assert_claimed(work)
+        request = self._gate_request(work)
+        request["idempotency_key"] = self._action_idempotency(job, "mark-sending")
+        return _validate_pending_mark_sending(request)
+
+    @staticmethod
+    def _validate_mark_receipt(value: dict[str, Any], job_id: str,
+                               request: dict[str, Any]) -> None:
+        if (set(value) != PilotHttpBackendClient._GATE_FIELDS or
+                value.get("schema") != "ai0.pilot_agent_gate_receipt.v1" or
+                value.get("state") != "SENDING" or value.get("job_id") != job_id or
+                type(value.get("order_id")) is not str or not value["order_id"] or
+                value.get("revision") != request["expected_revision"] or
+                value.get("request_hash") != request["request_hash"] or
+                value.get("source_sha256") != request["source_sha256"] or
+                value.get("settings_sha256") != request["settings_sha256"] or
+                value.get("evidence_sha256") != request["evidence_sha256"] or
+                value.get("printer_id") != request["printer_id"]):
+            raise ValueError("Invalid pilot mark-sending receipt")
+
+    def mark_sending(self, work, request: dict[str, Any]) -> dict[str, Any]:
+        job, _, _ = self._assert_claimed(work)
+        request = _validate_pending_mark_sending(request)
+        value = self._gate(work, "mark-sending", "SENDING", body=request)
+        self._validate_mark_receipt(value, job["job_id"], request)
+        return value
+
+    def submit_mark_sending(self, job_id: str, request: dict[str, Any]) -> None:
+        """Replay a saved mark-sending key after restart; never claims work or prints."""
+        if (type(job_id) is not str or not job_id or len(job_id) > 256 or
+                any(ord(char) < 0x20 or ord(char) == 0x7f for char in job_id)):
+            raise ValueError("Pilot mark-sending job identity is invalid")
+        request = _validate_pending_mark_sending(request)
+        suffix = "/internal/v1/pilot/print-jobs/" + quote(job_id, safe="") + "/mark-sending"
+        with self._request("POST", suffix, body=request) as response:
+            receipt = self._read_json(response)
+        self._validate_mark_receipt(receipt, job_id, request)
 
     def prepare_report(self, work, state: str, evidence: dict[str, Any]) -> dict[str, Any]:
         job, _, _ = self._assert_claimed(work)

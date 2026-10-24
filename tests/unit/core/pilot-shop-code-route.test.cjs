@@ -91,8 +91,9 @@ test('pilot Agent uses separate claim/source/gate/report paths with no approval 
  assert.equal(preflight.payload.schema,'ai0.pilot_agent_gate_receipt.v1');
  assert.equal(preflight.payload.state,'AUTHORIZED');
  const sending=await invoke('POST','/internal/v1/pilot/print-jobs/:job_id/mark-sending',
-  {headers:{},params:{job_id:'job-a'},body:tuple});
+  {headers:{},params:{job_id:'job-a'},body:{...tuple,idempotency_key:'f'.repeat(64)}});
  assert.equal(sending.payload.state,'SENDING');
+ assert.equal(calls.find(x=>x[0]==='mark-sending')[3].idempotency_key,'f'.repeat(64));
  const reportBody={schema:'ai0.pilot_agent_report.v1',lease_token:'lease-a',idempotency_key:'report-a',
   state:'SIMULATED_DONE',evidence:{driver_called:false}};
  const reported=await invoke('POST','/internal/v1/pilot/print-jobs/:job_id/reports',

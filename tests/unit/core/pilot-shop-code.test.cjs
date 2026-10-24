@@ -4,7 +4,7 @@ const path=require('node:path');
 const root=process.env.AI1_BUILD_DIR||path.resolve(__dirname,'../../../dist/backend');
 const {derivePilotShopCode,pilotCodeHash,safeEqualPilotCodeHash,validPilotCode,
  validatePilotCandidateShape,validatePilotSubmissionShape,pilotSettingsHash,validatePilotClaimRequest,
- validatePilotGateRequest,validatePilotAgentReport}=require(path.join(root,'core/pilot-shop-code.js'));
+ validatePilotGateRequest,validatePilotMarkSendingRequest,validatePilotAgentReport}=require(path.join(root,'core/pilot-shop-code.js'));
 
 const key=Buffer.from('synthetic-only-pilot-hmac-key-material-32-bytes-plus');
 const candidate={shop_id:'shop-a',oa_id:'oa-a',customer_id:'customer-a',conversation_id:'chat-a',
@@ -56,6 +56,11 @@ test('pilot Agent claim and gate inputs enforce the locked wire shape and source
   settings_sha256:'c'.repeat(64),evidence_sha256:'d'.repeat(64),printer_id:'RMP7000'};
  assert.deepEqual(validatePilotGateRequest(gate),gate);
  assert.throws(()=>validatePilotGateRequest({...gate,approval_id:'x'}),e=>e.code==='INVALID_INPUT');
+ const mark={...gate,idempotency_key:'a'.repeat(64)};
+ assert.deepEqual(validatePilotMarkSendingRequest(mark),mark);
+ assert.throws(()=>validatePilotMarkSendingRequest(gate),e=>e.code==='INVALID_INPUT');
+ assert.throws(()=>validatePilotMarkSendingRequest({...mark,idempotency_key:'caller-key'}),e=>e.code==='INVALID_INPUT');
+ assert.throws(()=>validatePilotMarkSendingRequest({...mark,approval_id:'x'}),e=>e.code==='INVALID_INPUT');
 });
 
 test('pilot Agent report is sanitized to status evidence and DryRun requires a boolean no-driver fact',()=>{
