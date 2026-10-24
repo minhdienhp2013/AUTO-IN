@@ -20,6 +20,7 @@ test('controlled_test allows only an active owner-configured exact shop/order/pr
  await enforceModeScope(db,'controlled_test',scope);
  assert.equal(db.calls.length,1);
  assert.deepEqual(db.calls[0].args,[scope.shop_id,scope.order_id,scope.printer_id]);
+ assert.match(db.calls[0].sql,/s\.updated_at<=clock_timestamp\(\) AND s\.expires_at<=s\.updated_at\+interval '30 minutes'/);
  assert.match(db.calls[0].sql,/FOR UPDATE OF s,u$/);
 });
 
