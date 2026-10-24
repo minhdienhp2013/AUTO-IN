@@ -9,11 +9,17 @@ const {PgStore}=require(path.join(root,'storage/database.js'));
 const {sha,canonical}=require(path.join(root,'core/model.js'));
 const {pilotSettingsHash}=require(path.join(root,'core/pilot-shop-code.js'));
 let pg;try{pg=require('pg')}catch{}
-const databaseUrl=process.env.TEST_DATABASE_URL,uid=()=>randomUUID(),idempotency=()=>`pilot-${uid()}`;
+const databaseUrl=process.env.TEST_DATABASE_URL,uid=()=>randomUUID(),
+ idempotency=()=>createHash('sha256').update(uid()).digest('hex');
 const skip=!(pg&&databaseUrl)&&'NOT RUN - isolated PostgreSQL TEST_DATABASE_URL and pg are required';
 const codeKey=Buffer.from('synthetic-only-pilot-HMAC-secret-key-32-bytes-minimum');
 const fixedNow=()=>new Date();
 const error=code=>e=>e&&e.code===code;
+
+test('PG fixture mark-sending idempotency key matches Core 64-character lowercase hex contract',()=>{
+ const key=idempotency();
+ assert.match(key,/^[0-9a-f]{64}$/);
+});
 
 test('AI1 pilot shop code REAL PG: order/revision/source binding, 30-minute code, rate limit, replay/race and one job',
  {skip,timeout:120000},async t=>{
