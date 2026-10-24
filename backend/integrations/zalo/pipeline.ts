@@ -79,6 +79,8 @@ export function createZaloPipeline(options:ZaloPipelineOptions) {
       trusted_oa_id:options.pilot_intake.trusted_oa_id,
       acceptIncomingQueueBatch(input){return options.pilot_intake!.acceptIncomingQueueBatch(input);},
       apply_incoming_batch(input){return options.pilot_intake!.apply_incoming_batch(input);},
+      ...(options.pilot_intake!.source_capture
+        ?{source_capture:options.pilot_intake.source_capture}:{}),
       read_settings_events(input){return queue.read_intake_settings_events(input);}
     }:undefined;
   const processor=new ConversationProcessor(gate,options.documents,options.orders,outbox,
