@@ -4,24 +4,42 @@ import {ApiFault,HttpPrintPort} from '../../web/src/api.ts';
 import {inboundReviewErrorMessage,inboundReviewItemCopy,parseInboundReviewItems} from '../../web/src/inbound-review.ts';
 
 const id='e950c833-9b4b-49a5-94c8-9f2a72100001';
-const item={id,kind:'image',status:'NEEDS_HUMAN',media_state:'AWAITING_MEDIA',
+const item={source:'quarantine',id,kind:'image',status:'NEEDS_HUMAN',media_state:'AWAITING_MEDIA',
   raw_event_sha256:'a'.repeat(64),received_at:'2026-10-18T08:15:00.000Z',mapped_customer:false};
+const colorIntake={source:'pilot_intake',id:'e950c833-9b4b-49a5-94c8-9f2a72100002',kind:'pilot_intake',
+  status:'NEEDS_HUMAN',received_at:'2026-10-18T08:16:00.000Z',reason_code:'COLOR_PRINT'};
+const genericIntake={source:'pilot_intake',id:'e950c833-9b4b-49a5-94c8-9f2a72100003',kind:'pilot_intake',
+  status:'NEEDS_HUMAN',received_at:'2026-10-18T08:17:00.000Z'};
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,
   headers:{'Content-Type':'application/json'}});
 const isFault=(status:number,code:string)=>(error:unknown)=>error instanceof ApiFault&&error.status===status&&error.code===code;
 
-test('inbound review response decoder accepts only bounded exact server metadata',()=>{
- assert.deepEqual(parseInboundReviewItems({items:[item]}),[item]);
+test('inbound review response decoder accepts exact quarantine and pilot Core projections',()=>{
+ assert.deepEqual(parseInboundReviewItems({items:[item,colorIntake,genericIntake]}),[item,colorIntake,genericIntake]);
  assert.deepEqual(parseInboundReviewItems({items:[]}),[]);
  for(const bad of [
   null,{items:'not-an-array'},{items:[{...item,kind:'pdf'}]},
+  {items:[{...item,source:'unknown'}]},
   {items:[{...item,status:'RECEIVED'}]},{items:[{...item,media_state:'SAVED'}]},
   {items:[{...item,raw_event_sha256:'A'.repeat(64)}]},
   {items:[{...item,received_at:'yesterday'}]},{items:[{...item,mapped_customer:0}]},
   {items:[{...item,filename:'customer-secret.docx'}]},
+  {items:[{...colorIntake,reason_code:'ORDER_LOCKED'}]},
+  {items:[{...genericIntake,reason_code:null}]},
   {items:[item,item]},{items:Array.from({length:101},(_,n)=>({...item,id:`e950c833-9b4b-49a5-94c8-9f2a72${String(n).padStart(6,'0')}`}))},
   {items:[item],shop_id:'client-selected-shop'},
  ])assert.throws(()=>parseInboundReviewItems(bad),/INVALID_INBOUND_REVIEW_ITEMS/);
+});
+
+test('UI names COLOR_PRINT only when Core explicitly projects that reason',()=>{
+ const colorCopy=inboundReviewItemCopy(colorIntake);
+ assert.equal(colorCopy.title,'Yêu cầu in màu cần nhân viên');
+ assert.match(colorCopy.message,/Core đã ghi nhận lựa chọn in màu/);
+ assert.match(colorCopy.message,/không tạo lệnh in tự động/);
+ const genericCopy=inboundReviewItemCopy(genericIntake);
+ assert.equal(genericCopy.title,'Yêu cầu cần nhân viên');
+ assert.match(genericCopy.message,/chưa có lý do cụ thể được xác minh/);
+ assert.doesNotMatch(genericCopy.message,/màu/i);
 });
 
 test('AWAITING_MEDIA copy states that source bytes are not available and requires staff',()=>{

@@ -3,13 +3,21 @@ import {assertStaff,DomainError,type Principal} from './model.js';
 import type {PgStore,SqlConnection} from '../storage/database.js';
 
 export interface TrustedOfficialInboundScope {readonly shop_id:string;readonly oa_id:string}
-export interface InboundReviewItem {
- id:string;raw_event_sha256:string;
+export interface QuarantinedInboundReviewItem {
+ source:'quarantine';id:string;raw_event_sha256:string;
  kind:'image'|'file';mapped_customer:boolean;status:'NEEDS_HUMAN';
- media_state:'AWAITING_MEDIA';received_at:Date|string;
+ media_state:'AWAITING_MEDIA';received_at:string;
 }
+export interface PilotIntakeReviewItem {
+ source:'pilot_intake';id:string;kind:'pilot_intake';status:'NEEDS_HUMAN';
+ received_at:string;reason_code?:'COLOR_PRINT';
+}
+export type InboundReviewItem=QuarantinedInboundReviewItem|PilotIntakeReviewItem;
 type QuarantineRow={id:string;raw_sha256:string;kind:string;status:string;
  customer_id:string|null;conversation_id:string|null;received_at:Date|string};
+type QuarantineReviewRow={id:string;raw_event_sha256:string;kind:'image'|'file';
+ mapped_customer:boolean;status:'NEEDS_HUMAN';media_state:'AWAITING_MEDIA';received_at:Date|string};
+type PilotIntakeReviewRow={id:string;status:'NEEDS_HUMAN';close_reason:string|null;opened_at:Date|string};
 
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const digest=/^[0-9a-f]{64}$/;
@@ -95,12 +103,33 @@ export function createInboundReviewReader(options:{store:PgStore}){
  async function list_for_staff(actor:Principal):Promise<InboundReviewItem[]>{
   assertStaff(actor);
   try{
-   const result=await store.pool.query<InboundReviewItem>(
+   const [quarantine,intakes]=await Promise.all([
+    store.pool.query<QuarantineReviewRow>(
     "SELECT id::text,item.raw_event_sha256,item.kind, "+
     "(item.customer_id IS NOT NULL) AS mapped_customer,item.status,item.media_state,item.received_at "+
     'FROM core_inbound_review_items item WHERE item.shop_id=$1 '+
-    'ORDER BY item.received_at,item.id LIMIT 100',[actor.shop_id]);
-   return result.rows;
+    'ORDER BY item.received_at,item.id LIMIT 100',[actor.shop_id]),
+    store.pool.query<PilotIntakeReviewRow>(
+     "SELECT id::text,status,close_reason,opened_at FROM core_oa_intake_batches "+
+     "WHERE shop_id=$1 AND purpose='PILOT' AND status='NEEDS_HUMAN' "+
+     'ORDER BY opened_at,id LIMIT 100',[actor.shop_id]),
+   ]);
+   const timestamp=(value:Date|string)=>{
+    const parsed=value instanceof Date?value:new Date(value);
+    if(!Number.isFinite(parsed.getTime()))throw unavailable();
+    return parsed.toISOString();
+   };
+   const rows:InboundReviewItem[]=[
+    ...quarantine.rows.map(row=>({source:'quarantine' as const,id:row.id,
+     raw_event_sha256:row.raw_event_sha256,kind:row.kind,mapped_customer:row.mapped_customer,
+     status:row.status,media_state:row.media_state,received_at:timestamp(row.received_at)})),
+    ...intakes.rows.map(row=>({source:'pilot_intake' as const,id:row.id,kind:'pilot_intake' as const,
+     status:row.status,received_at:timestamp(row.opened_at),
+     ...(row.close_reason==='COLOR_PRINT'?{reason_code:'COLOR_PRINT' as const}:{})})),
+   ];
+   rows.sort((a,b)=>Date.parse(a.received_at)-Date.parse(b.received_at)||
+    a.source.localeCompare(b.source)||a.id.localeCompare(b.id));
+   return rows.length<=100?rows:rows.slice(-100);
   }catch{throw unavailable();}
  }
  return {list_for_staff};

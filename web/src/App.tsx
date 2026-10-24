@@ -551,21 +551,21 @@ function App() {
 }
 function InboundReviewQueue({items,loading,error,refresh}:{items:InboundReviewItem[]|null;loading:boolean;error:string|null;refresh:()=>void}){
   return <section className="inbound-review-page" data-testid="inbound-review-queue" aria-labelledby="inbound-review-title">
-    <div className="inbound-review-heading"><div><p className="eyebrow">HÀNG CHỜ NHÂN VIÊN</p><h1 id="inbound-review-title">Sự kiện đến cần xử lý</h1><p className="subtext">Danh sách chỉ chứa metadata sự kiện đã được máy chủ ghi nhận.</p></div>
+    <div className="inbound-review-heading"><div><p className="eyebrow">HÀNG CHỜ NHÂN VIÊN</p><h1 id="inbound-review-title">Hàng chờ cần xử lý</h1><p className="subtext">Danh sách chỉ hiển thị metadata do máy chủ ghi nhận.</p></div>
       <button className="outline-btn" onClick={refresh} disabled={loading}><RefreshCw size={16}/>{loading?'Đang tải…':'Tải lại hàng chờ'}</button></div>
     <div className="inbound-review-disclaimer" data-testid="inbound-review-media-disclaimer">
-      Hàng chờ này không chứng minh byte ảnh/tệp đã được lưu hoặc xử lý. Với trạng thái AWAITING_MEDIA, chưa có file để xem preview, xác nhận khách, duyệt hoặc in.
+      Hàng chờ này không chứng minh file đã sẵn sàng để in. Với trạng thái AWAITING_MEDIA, chưa có byte nguồn để xem preview, xác nhận khách, duyệt hoặc in; lý do không có trong dữ liệu Core sẽ không được suy đoán.
     </div>
     {error&&<p className="inbound-review-error" role="alert" data-testid="inbound-review-error">{error}</p>}
     {loading&&<p role="status" data-testid="inbound-review-loading">Đang tải trạng thái hiện hành từ máy chủ…</p>}
     {!loading&&!error&&items===null&&<p className="inbound-review-error" role="alert">Chưa xác minh được hàng chờ. Tải lại để đọc dữ liệu từ máy chủ.</p>}
     {!loading&&!error&&items?.length===0&&<p className="inbound-review-empty" data-testid="inbound-review-empty">Máy chủ xác nhận hiện không có sự kiện đang chờ.</p>}
     {!loading&&!error&&items&&items.length>0&&<div className="inbound-review-list" data-testid="inbound-review-list">
-      {items.map(item=>{const copy=inboundReviewItemCopy(item);return <article className="inbound-review-card" key={item.id} data-testid="inbound-review-item">
+      {items.map(item=>{const copy=inboundReviewItemCopy(item);return <article className="inbound-review-card" key={`${item.source}:${item.id}`} data-testid="inbound-review-item">
         <div className="inbound-review-card-head"><strong>{copy.title}</strong><span>CẦN NHÂN VIÊN</span></div>
         <p className="inbound-review-awaiting">{copy.message}</p>
-        <div className="inbound-review-meta"><span>Mã sự kiện: <code>{item.id}</code></span><span>{copy.customer}</span><time dateTime={item.received_at}>{time(item.received_at)}</time></div>
-        <small>Trạng thái máy chủ: {item.status} · {item.media_state}</small>
+        <div className="inbound-review-meta"><span>{item.source==='quarantine'?'Mã sự kiện':'Mã intake Core'}: <code>{item.id}</code></span><span>{copy.customer}</span><time dateTime={item.received_at}>{time(item.received_at)}</time></div>
+        <small>Trạng thái máy chủ: {item.status}{item.source==='quarantine'?` · ${item.media_state}`:item.reason_code?` · ${item.reason_code}`:''}</small>
       </article>;})}
     </div>}
   </section>;

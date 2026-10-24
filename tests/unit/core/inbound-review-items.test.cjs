@@ -10,7 +10,11 @@ const staff={id:'staff-a',shop_id:'shop-a',role:'staff',verified:true};
 
 function fakeStore({known=true,fail=false,trustedScope=trusted}={}){
  const state={items:new Map(),audits:[],quarantine:{id:qid,shop_id:'shop-a',oa_id:'oa-a',raw_sha256:sha,kind:'image',status:'NEEDS_HUMAN',
-  customer_id:'customer-a',conversation_id:'conversation-a',received_at:new Date('2026-10-18T00:00:00Z')}};
+  customer_id:'customer-a',conversation_id:'conversation-a',received_at:new Date('2026-10-18T00:00:00Z')},intakes:[
+   {id:'123e4567-e89b-42d3-a456-426614174001',shop_id:'shop-a',purpose:'PILOT',status:'NEEDS_HUMAN',close_reason:'COLOR_PRINT',opened_at:new Date('2026-10-18T00:01:00Z')},
+   {id:'123e4567-e89b-42d3-a456-426614174002',shop_id:'shop-a',purpose:'PILOT',status:'NEEDS_HUMAN',close_reason:null,opened_at:new Date('2026-10-18T00:02:00Z')},
+   {id:'123e4567-e89b-42d3-a456-426614174003',shop_id:'shop-a',purpose:'PILOT',status:'NEEDS_HUMAN',close_reason:'PLAN_NOT_READY',opened_at:new Date('2026-10-18T00:03:00Z')},
+  ]};
  const db={async query(sql,args=[]){
   if(fail)throw Error('database unavailable');
   if(sql.includes('to_regclass'))return {rows:[{registry:'registry',quarantine:'quarantine',scopes:'scopes',items:'items'}],rowCount:1};
@@ -33,10 +37,18 @@ function fakeStore({known=true,fail=false,trustedScope=trusted}={}){
   throw Error('unexpected SQL '+sql);
  },release(){}};
  const store={async tx(fn){return fn(db)},pool:{async query(sql,args){
-  const rows=[...state.items.values()].filter(x=>x.shop_id===args[0]).map(x=>({id:x.id,
-   raw_event_sha256:x.raw_event_sha256,kind:x.kind,mapped_customer:x.customer_id!==null,
-   status:x.status,media_state:x.media_state,received_at:x.received_at}));
-  return {rows,rowCount:rows.length};
+  if(sql.includes('FROM core_inbound_review_items item')){
+   const rows=[...state.items.values()].filter(x=>x.shop_id===args[0]).map(x=>({source:'quarantine',id:x.id,
+    raw_event_sha256:x.raw_event_sha256,kind:x.kind,mapped_customer:x.customer_id!==null,
+    status:x.status,media_state:x.media_state,received_at:x.received_at}));
+   return {rows,rowCount:rows.length};
+  }
+  if(sql.includes('FROM core_oa_intake_batches')){
+   const rows=state.intakes.filter(x=>x.shop_id===args[0]&&x.purpose==='PILOT'&&x.status==='NEEDS_HUMAN')
+    .map(({id,status,close_reason,opened_at})=>({id,status,close_reason,opened_at}));
+   return {rows,rowCount:rows.length};
+  }
+  throw Error('unexpected read SQL '+sql);
  }}};
  return {store,state};
 }
@@ -51,11 +63,20 @@ test('official file/image quarantine becomes one auditable staff item; replay ne
  assert.equal([...state.items.values()][0].media_state,'AWAITING_MEDIA');
  assert.equal(state.quarantine.status,'NEEDS_HUMAN');
  const queued=await reader.list_for_staff(staff);
- assert.equal(queued.length,1);assert.equal(queued[0].id,first.item_id);
- assert.equal(queued[0].kind,'image');
- assert.equal(queued[0].mapped_customer,true);assert.equal(queued[0].status,'NEEDS_HUMAN');
- assert.equal(queued[0].media_state,'AWAITING_MEDIA');
- assert.deepEqual(Object.keys(queued[0]).sort(),['id','kind','mapped_customer','media_state','raw_event_sha256','received_at','status'].sort());
+ assert.equal(queued.length,4);
+ const quarantine=queued.find(x=>x.source==='quarantine');
+ assert.equal(quarantine.id,first.item_id);assert.equal(quarantine.kind,'image');
+ assert.equal(quarantine.mapped_customer,true);assert.equal(quarantine.status,'NEEDS_HUMAN');
+ assert.equal(quarantine.media_state,'AWAITING_MEDIA');
+ assert.deepEqual(Object.keys(quarantine).sort(),['source','id','kind','mapped_customer','media_state','raw_event_sha256','received_at','status'].sort());
+ const color=queued.find(x=>x.id==='123e4567-e89b-42d3-a456-426614174001');
+ assert.deepEqual(color,{source:'pilot_intake',id:'123e4567-e89b-42d3-a456-426614174001',kind:'pilot_intake',
+  status:'NEEDS_HUMAN',received_at:'2026-10-18T00:01:00.000Z',reason_code:'COLOR_PRINT'});
+ for(const id of ['123e4567-e89b-42d3-a456-426614174002','123e4567-e89b-42d3-a456-426614174003']){
+  const generic=queued.find(x=>x.id===id);
+  assert.equal(generic.source,'pilot_intake');assert.equal(generic.reason_code,undefined);
+  assert.deepEqual(Object.keys(generic).sort(),['source','id','kind','status','received_at'].sort());
+ }
  assert.ok(!('order_id' in [...state.items.values()][0]));
 });
 
