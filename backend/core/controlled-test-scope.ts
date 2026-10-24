@@ -10,6 +10,7 @@ export interface ControlledTestScope {
 interface ScopeRow extends ControlledTestScope {
  enabled:boolean;
  active:boolean;
+ duration_valid:boolean;
  order_shop_id:string;
  configured_by_role:string;
  configured_by_active:boolean;
@@ -24,6 +25,7 @@ export async function hasControlledTestScope(db:SqlConnection,scope:ControlledTe
  try{
   row=(await db.query<ScopeRow>(
    'SELECT s.shop_id,s.order_id,s.printer_id,s.enabled,(s.expires_at>clock_timestamp()) AS active,'+
+   '(s.updated_at<=clock_timestamp() AND s.expires_at<=s.updated_at+interval \'30 minutes\') AS duration_valid,'+
    'o.shop_id AS order_shop_id,u.role AS configured_by_role,u.active AS configured_by_active '+
    'FROM core_print_controlled_test_scopes s JOIN core_orders o ON o.id=s.order_id '+
    'JOIN core_users u ON u.id=s.configured_by AND u.shop_id=s.shop_id '+
@@ -34,6 +36,7 @@ export async function hasControlledTestScope(db:SqlConnection,scope:ControlledTe
  }
  return Boolean(row&&row.shop_id===scope.shop_id&&row.order_id===scope.order_id&&
   row.printer_id===scope.printer_id&&row.order_shop_id===scope.shop_id&&row.enabled===true&&row.active===true&&
+  row.duration_valid===true&&
   row.configured_by_role==='owner'&&row.configured_by_active===true);
 }
 
@@ -53,5 +56,6 @@ export function controlledTestScopeExistsSql(alias='j'):string{
   'JOIN core_orders co ON co.id=c.order_id AND co.shop_id=c.shop_id '+
   "JOIN core_users cu ON cu.id=c.configured_by AND cu.shop_id=c.shop_id AND cu.role='owner' AND cu.active "+
   `WHERE c.shop_id=o.shop_id AND c.order_id=o.id AND c.printer_id=${alias}.printer_id `+
-  'AND c.enabled AND c.expires_at>clock_timestamp())';
+  'AND c.enabled AND c.expires_at>clock_timestamp() '+
+  'AND c.updated_at<=clock_timestamp() AND c.expires_at<=c.updated_at+interval \'30 minutes\')';
 }
