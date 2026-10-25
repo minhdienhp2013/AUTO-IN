@@ -55,6 +55,13 @@ jobs:
         run: npm test
       - name: Root build
         run: npm run build
+      - name: Inbound review Core unit tests
+        shell: bash
+        run: |
+          AI1_BUILD_DIR="$GITHUB_WORKSPACE/dist/backend" \
+            node --test --test-concurrency=1 \
+              tests/unit/core/inbound-review-items.test.cjs \
+              tests/unit/core/inbound-review-route.test.cjs
       - name: Install locked web dependencies
         run: npm ci --prefix web
       - name: Web UI unit tests, typecheck, and production build
