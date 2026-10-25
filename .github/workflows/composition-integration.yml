@@ -4,6 +4,7 @@ on:
     branches-ignore:
       - ai0/v1-claim-error-proof-20261020
       - ai0/v1-word-pdf-dryrun-integration-20261021
+      - ai0/v1-color-intake-nodb-ci-20261025
     tags:
       - '**'
   pull_request:
@@ -12,8 +13,10 @@ permissions:
 jobs:
   composition-postgres:
     if: >-
-      (github.event_name != 'pull_request' || github.head_ref != 'ai0/v1-claim-error-proof-20261020') &&
+      (github.event_name != 'pull_request' || (github.head_ref != 'ai0/v1-claim-error-proof-20261020' &&
+      github.head_ref != 'ai0/v1-color-intake-nodb-ci-20261025')) &&
       (github.event_name != 'push' || (github.ref != 'refs/heads/ai0/v1-claim-error-proof-20261020' &&
+      github.ref != 'refs/heads/ai0/v1-color-intake-nodb-ci-20261025' &&
       !startsWith(github.ref, 'refs/tags/v1-claim-diagnostic-')))
     runs-on: ubuntu-latest
     services:

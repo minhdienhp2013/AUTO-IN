@@ -1,0 +1,61 @@
+name: AI0 V1 color intake non-DB checks
+on:
+  push:
+    branches:
+      - ai0/v1-color-intake-nodb-ci-20261025
+  pull_request:
+    branches:
+      - main
+permissions:
+  contents: read
+concurrency:
+  group: ai0-v1-color-intake-nodb-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  pilot-nodb:
+    if: github.event_name != 'pull_request' || github.head_ref == 'ai0/v1-color-intake-nodb-ci-20261025'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - name: Verify exact pilot branch and commit
+        env:
+          PILOT_BRANCH: ai0/v1-color-intake-nodb-ci-20261025
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == 'pull_request' ]]; then
+            test "$GITHUB_HEAD_REF" = "$PILOT_BRANCH"
+            expected_sha="$PR_HEAD_SHA"
+          else
+            test "$GITHUB_REF_NAME" = "$PILOT_BRANCH"
+            expected_sha="$GITHUB_SHA"
+          fi
+          test -n "$expected_sha"
+          test "$(git rev-parse HEAD)" = "$expected_sha"
+          test -z "$(git status --porcelain)"
+      - name: Install locked root dependencies
+        run: npm ci
+      - name: Check contracts
+        run: npm run contracts:check
+      - name: Root typecheck
+        run: npm run typecheck
+      - name: Root contract unit tests
+        run: npm test
+      - name: Root build
+        run: npm run build
+      - name: Install locked web dependencies
+        run: npm ci --prefix web
+      - name: Web UI unit tests, typecheck, and production build
+        run: npm --prefix web run build
