@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readFile, readdir } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
-const branch = 'ai0/v1-expanded-nodb-ci-parser-20261026';
+const branch = 'ai0/v1-expanded-nodb-ci-guard-20261026';
 const root = process.cwd();
 const fail = message => { throw new Error(`AI0 no-DB CI guard: ${message}`); };
 const read = path => readFile(join(root, path), 'utf8');

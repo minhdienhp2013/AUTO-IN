@@ -6,6 +6,7 @@ on:
       - ai0/v1-word-pdf-dryrun-integration-20261021
       - ai0/v1-color-intake-nodb-ci-20261025
       - ai0/v1-expanded-nodb-ci-parser-20261026
+      - ai0/v1-expanded-nodb-ci-guard-20261026
     tags-ignore:
       - v1-claim-diagnostic-*
   pull_request:
@@ -17,9 +18,11 @@ jobs:
       (github.event_name != 'pull_request' || (github.head_ref != 'ai0/v1-claim-error-proof-20261020' &&
       github.head_ref != 'ai0/v1-color-intake-nodb-ci-20261025')) &&
       (github.event_name != 'pull_request' || github.head_ref != 'ai0/v1-expanded-nodb-ci-parser-20261026') &&
+      (github.event_name != 'pull_request' || github.head_ref != 'ai0/v1-expanded-nodb-ci-guard-20261026') &&
       (github.event_name != 'push' || (github.ref != 'refs/heads/ai0/v1-claim-error-proof-20261020' &&
       github.ref != 'refs/heads/ai0/v1-color-intake-nodb-ci-20261025' &&
       github.ref != 'refs/heads/ai0/v1-expanded-nodb-ci-parser-20261026' &&
+      github.ref != 'refs/heads/ai0/v1-expanded-nodb-ci-guard-20261026' &&
       !startsWith(github.ref, 'refs/tags/v1-claim-diagnostic-')))
     runs-on: ubuntu-latest
     steps:

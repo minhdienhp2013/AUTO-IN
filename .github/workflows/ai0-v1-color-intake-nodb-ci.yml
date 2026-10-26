@@ -2,7 +2,7 @@ name: AI0 V1 color intake non-DB checks
 on:
   push:
     branches:
-      - ai0/v1-expanded-nodb-ci-parser-20261026
+      - ai0/v1-expanded-nodb-ci-guard-20261026
   pull_request:
     branches:
       - main
@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   pilot-nodb:
-    if: github.event_name != 'pull_request' || github.head_ref == 'ai0/v1-expanded-nodb-ci-parser-20261026'
+    if: github.event_name != 'pull_request' || github.head_ref == 'ai0/v1-expanded-nodb-ci-guard-20261026'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
