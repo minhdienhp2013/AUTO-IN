@@ -2,7 +2,7 @@ name: AI0 V1 color intake non-DB checks
 on:
   push:
     branches:
-      - ai0/v1-color-intake-nodb-ci-20261025
+      - ai0/v1-expanded-nodb-ci-parser-20261026
   pull_request:
     branches:
       - main
@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   pilot-nodb:
-    if: github.event_name != 'pull_request' || github.head_ref == 'ai0/v1-color-intake-nodb-ci-20261025'
+    if: github.event_name != 'pull_request' || github.head_ref == 'ai0/v1-expanded-nodb-ci-parser-20261026'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -29,22 +29,13 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             web/package-lock.json
-      - name: Verify exact pilot branch and commit
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Guard candidate branch, tests, and no-DB isolation
         env:
-          PILOT_BRANCH: ai0/v1-color-intake-nodb-ci-20261025
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
-        shell: bash
-        run: |
-          if [[ "$GITHUB_EVENT_NAME" == 'pull_request' ]]; then
-            test "$GITHUB_HEAD_REF" = "$PILOT_BRANCH"
-            expected_sha="$PR_HEAD_SHA"
-          else
-            test "$GITHUB_REF_NAME" = "$PILOT_BRANCH"
-            expected_sha="$GITHUB_SHA"
-          fi
-          test -n "$expected_sha"
-          test "$(git rev-parse HEAD)" = "$expected_sha"
-          test -z "$(git status --porcelain)"
+        run: node scripts/ai0-v1-nodb-ci-guard.mjs --ci
       - name: Install locked root dependencies
         run: npm ci
       - name: Check contracts
@@ -58,10 +49,81 @@ jobs:
       - name: Inbound review Core unit tests
         shell: bash
         run: |
-          AI1_BUILD_DIR="$GITHUB_WORKSPACE/dist/backend" \
-            node --test --test-concurrency=1 \
-              tests/unit/core/inbound-review-items.test.cjs \
-              tests/unit/core/inbound-review-route.test.cjs
+          AI1_BUILD_DIR="$PWD/dist/backend" node --test --test-concurrency=1 tests/unit/core/*.test.cjs
+      - name: Zalo isolated unit tests
+        run: >-
+          node --experimental-strip-types --test --test-concurrency=1
+          tests/unit/zalo/batch-schedule.test.mjs
+          tests/unit/zalo/confirmation-candidates.test.mjs
+          tests/unit/zalo/core-gate.test.mjs
+          tests/unit/zalo/core-pilot-intake.test.mjs
+          tests/unit/zalo/deepseek.test.mjs
+          tests/unit/zalo/durable-worker.test.mjs
+          tests/unit/zalo/first-page-core-cas.test.mjs
+          tests/unit/zalo/first-page-delivery-intent.test.mjs
+          tests/unit/zalo/first-page-question.test.mjs
+          tests/unit/zalo/gate-processor.test.mjs
+          tests/unit/zalo/generation-port.test.mjs
+          tests/unit/zalo/ingress.test.mjs
+          tests/unit/zalo/intake-settings-role-query.test.mjs
+          tests/unit/zalo/oa-scope.test.mjs
+          tests/unit/zalo/official-quarantine.test.mjs
+          tests/unit/zalo/official-webhook.test.mjs
+          tests/unit/zalo/order-batch-intent.test.mjs
+          tests/unit/zalo/order-batch-processor.test.mjs
+          tests/unit/zalo/order-supplement-result.test.mjs
+          tests/unit/zalo/pilot-print-intent.test.mjs
+          tests/unit/zalo/pilot-word-pdf-intake.test.mjs
+          tests/unit/zalo/pipeline.test.mjs
+          tests/unit/zalo/postgres-durable.test.mjs
+          tests/unit/zalo/rules.test.mjs
+          tests/unit/zalo/structured-postback.test.mjs
+          tests/unit/zalo/typecheck-strict.test.mjs
+          tests/unit/zalo/v1-file-intake-routing.test.mjs
+          tests/unit/zalo/wiring.test.mjs
+      - name: Composition isolated unit and fixture tests
+        run: >-
+          node --import tsx --test --test-concurrency=1
+          tests/unit/composition/pilot-core-batch.test.mjs
+          tests/unit/composition/pilot-private-source.test.mjs
+          tests/integration/composition/controlled-pilot-admission.test.mjs
+          tests/integration/composition/pdf-review-preview-cleanup.test.ts
+          tests/integration/composition/pdf-review-source-reader.test.ts
+          tests/integration/composition/pending-review-errors.test.ts
+          tests/integration/composition/preview.test.ts
+          tests/integration/composition/processor.test.ts
+          tests/integration/composition/synthetic-ingest.test.ts
+          tests/integration/composition/synthetic-zalo-file-event.test.mjs
+          tests/integration/composition/trusted-print-evidence.test.ts
+          tests/integration/composition/word-review-preview.test.ts
+          tests/integration/composition/word-review-source-reader.test.ts
+      - name: Install locked Python unit-test dependencies
+        run: python -m pip install --disable-pip-version-check -r workers/documents/requirements-test.txt
+      - name: Validate documents and agent Python syntax
+        run: python -m compileall -q workers/documents agents/windows tests/unit/documents
+      - name: Documents, custody, and fake-agent unit tests
+        run: >-
+          python -m pytest -q
+          tests/unit/documents/test_bridge.py
+          tests/unit/documents/test_fact_inspect.py
+          tests/unit/documents/test_native_pdf_review.py
+          tests/unit/documents/test_native_pdf_review_cli.py
+          tests/unit/documents/test_native_word_pdf_v1.py
+          tests/unit/documents/test_native_word_review.py
+          tests/unit/documents/test_native_word_review_cli.py
+          tests/unit/documents/test_print_evidence_v1.py
+          tests/unit/documents/test_source_snapshots.py
+          tests/unit/documents/test_processor.py
+          tests/unit/printing/test_agent.py
+          tests/unit/printing/test_backend_simulation.py
+          tests/unit/printing/test_cli303.py
+          tests/unit/printing/test_controlled_spooler_403.py
+          tests/unit/printing/test_evidence_gate_403.py
+          tests/unit/printing/test_native_queue_plan_v1.py
+          tests/unit/printing/test_native_word_preflight.py
+          tests/unit/printing/test_native_word_watchdog.py
+          tests/unit/printing/test_pilot_native_print.py
+          tests/unit/printing/test_pilot_native_cli.py
       - name: Install locked web dependencies
         run: npm ci --prefix web
       - name: Web UI unit tests, typecheck, and production build
