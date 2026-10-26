@@ -61,6 +61,11 @@ const python = [
 const workflow = await read('.github/workflows/ai0-v1-color-intake-nodb-ci.yml');
 const checkWorkflow = await read('.github/workflows/check.yml');
 const compositionWorkflow = await read('.github/workflows/composition-integration.yml');
+const core = (await readdir(join(root, 'tests/unit/core')))
+  .filter(file => file.endsWith('.test.cjs'))
+  .sort()
+  .map(file => `tests/unit/core/${file}`);
+if (core.length === 0) fail('Core wildcard has no matching unit tests to audit');
 for (const [source, label] of [[workflow, 'dedicated workflow'], [checkWorkflow, 'CODE workflow'],
   [compositionWorkflow, 'composition workflow']]) {
   requireText(source, branch, label);
@@ -93,10 +98,30 @@ for (const forbidden of [
   'tests/unit/printing/test_pilot_backend_http.py'
 ]) if (workflow.includes(forbidden)) fail(`dedicated workflow contains forbidden gate: ${forbidden}`);
 
-const databaseLike = /\b(?:DATABASE_URL|TEST_DATABASE_URL|AUTOIN_TEST_DATABASE_URL)\b|postgresql:\/\/|from\s+['"]pg['"]|require\(['"]pg['"]\)|\bnew\s+Pool\s*\(/;
-for (const path of [...zalo, ...composition]) {
+const serviceDatabaseLike = /\b(?:DATABASE_URL|TEST_DATABASE_URL|AUTOIN_TEST_DATABASE_URL|PGHOST|PGPORT|PGUSER|PGPASSWORD|PGDATABASE|POSTGRES_(?:HOST|PORT|USER|PASSWORD|DB|DATABASE|URL)|MYSQL_(?:HOST|PORT|USER|PASSWORD|DATABASE|URL))\b|postgres(?:ql)?:\/\/|from\s+['"]pg['"]|require\(['"]pg['"]\)|\bnew\s+Pool\s*\(|\bpsycopg\b|\bsqlalchemy\b|\bcreate_engine\s*\(|\bMongoClient\b|\bredis\b/i;
+for (const path of [...core, ...zalo, ...composition, ...python]) {
   const source = await read(path);
-  if (databaseLike.test(source)) fail(`DB-backed source found in allowlist: ${path}`);
+  if (serviceDatabaseLike.test(source)) fail(`service-database access found in test allowlist: ${path}`);
+}
+
+// Agent journal tests may use throwaway SQLite files. Keep that exception
+// explicit and require a temporary test fixture; these are not app DB tests.
+const localJournalTests = new Set([
+  'tests/unit/printing/test_agent.py',
+  'tests/unit/printing/test_backend_simulation.py',
+  'tests/unit/printing/test_cli303.py',
+  'tests/unit/printing/test_controlled_spooler_403.py',
+  'tests/unit/printing/test_evidence_gate_403.py',
+  'tests/unit/printing/test_pilot_native_print.py',
+  'tests/unit/printing/test_pilot_native_cli.py'
+]);
+const localSqliteLike = /\bsqlite3\b|\.sqlite\b|sqlite:\/\//i;
+const temporaryFixtureLike = /\btmp_path\b|TemporaryDirectory|mkdtemp/;
+for (const path of python) {
+  const source = await read(path);
+  if (localSqliteLike.test(source) &&
+      (!localJournalTests.has(path) || !temporaryFixtureLike.test(source)))
+    fail(`SQLite use must be an explicit temporary agent-journal fixture: ${path}`);
 }
 for (const path of [
   'tests/unit/zalo/ai1-real-port-pg.test.mjs', 'tests/unit/zalo/confirmation-candidates-pg.test.mjs',
@@ -144,4 +169,4 @@ if (process.argv.includes('--ci')) {
     fail('checkout is not clean before dependency installation');
 }
 
-console.log('AI0 no-DB CI static guard passed.');
+console.log(`AI0 no-DB CI static guard passed (${core.length} Core, ${zalo.length} Zalo, ${composition.length} composition, ${python.length} Python tests audited).`);
