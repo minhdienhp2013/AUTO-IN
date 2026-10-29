@@ -8,10 +8,20 @@ The signature adapter implements Zalo support's stated MAC-SHA256 formula but st
 
 ## Windows PowerShell setup
 
-Run these commands from the checked-out candidate root in an ordinary PowerShell window. Use Node.js 24.19.x and npm 11.9.x as specified by `package.json` / `package-lock.json`. Docker Desktop is needed only if using the repository's local PostgreSQL Compose service.
+Start with a **new folder** so an older checkout or local changes are left untouched. Run these commands in an ordinary PowerShell window. They check out the exact reviewed GitHub candidate; stop if the SHA differs. Use Node.js 24.19.x and npm 11.9.x as specified by `package.json` / `package-lock.json`. Docker Desktop is needed only if using the repository's local PostgreSQL Compose service.
 
 ```powershell
-Set-Location C:\Users\Admin\Documents\AUTO-IN-v1-764486
+Set-Location $HOME\Documents
+git clone --branch ai0/v1-color-intake-nodb-ci-20261025 https://github.com/minhdienhp2013/AUTO-IN.git AUTO-IN-V1
+if ($LASTEXITCODE -ne 0) { throw 'Could not clone the reviewed V1 candidate' }
+git -C .\AUTO-IN-V1 checkout --detach 42e66de190a521daf6da44765ddef119cec7bbe1
+if ($LASTEXITCODE -ne 0) { throw 'Could not check out the reviewed V1 candidate' }
+Set-Location .\AUTO-IN-V1
+$expectedCandidate = '42e66de190a521daf6da44765ddef119cec7bbe1'
+$actualCandidate = (git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $actualCandidate -ne $expectedCandidate) {
+  throw "Wrong candidate SHA: $actualCandidate"
+}
 node --version
 npm --version
 npm ci
