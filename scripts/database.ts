@@ -2,18 +2,31 @@ import pg from 'pg';
 import { readFile } from 'node:fs/promises';
 import { createCoreModule } from '../backend/core/factory.js';
 import { CORE_MIGRATIONS } from '../backend/storage/migrations.js';
-import { asSqlPool } from '../backend/composition/postgres.js';
+import { asSqlPool, assertIsolatedSimulationDatabase } from '../backend/composition/postgres.js';
+import {
+  assertNoPostgresEnvironmentOverrides,
+  assertStagingDatabaseTarget
+} from '../backend/staging/config.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error('DATABASE_URL required');
-const parsed = new URL(url);
-if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || parsed.search || parsed.hash ||
-    !/^\/(?:auto_in_test|autoin_test)[a-zA-Z0-9_-]*$/.test(parsed.pathname) ||
-    process.env.AUTOIN_ALLOW_PG_ACCEPTANCE !== 'YES_ISOLATED_TEST_DB')
-  throw new Error('Explicit isolated localhost test database required');
+const mode = process.argv[2];
+if (mode === 'migrate-staging') {
+  assertStagingDatabaseTarget(url, process.env);
+} else {
+  assertNoPostgresEnvironmentOverrides(process.env);
+  try { assertIsolatedSimulationDatabase(url); }
+  catch {
+    throw new Error('Explicit isolated numeric-loopback PostgreSQL test database required');
+  }
+  if (process.env.AUTOIN_ALLOW_PG_ACCEPTANCE !== 'YES_ISOLATED_TEST_DB')
+    throw new Error('Explicit isolated localhost test database required');
+}
+if (!['migrate', 'migrate-staging', 'bootstrap'].includes(mode ?? ''))
+  throw new Error('Expected migrate, migrate-staging, or bootstrap');
 const pool = new pg.Pool({ connectionString: url });
 try {
-  if (process.argv[2] === 'migrate') {
+  if (mode === 'migrate' || mode === 'migrate-staging') {
     const connection = await pool.connect();
     try {
       await connection.query('BEGIN');

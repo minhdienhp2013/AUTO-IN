@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "node --import tsx --watch backend/server.ts",
     "start": "node dist/backend/server.js",
+    "start:staging": "node dist/backend/staging/server.js",
+    "staging:db:migrate": "node --import tsx scripts/database.ts migrate-staging",
     "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.ai2.json",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.ai2.json",
     "test": "node --import tsx --test tests/unit/contracts/*.test.ts",

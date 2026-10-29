@@ -25,6 +25,10 @@ docker compose up -d postgres
 
 Compose là cấu hình phát triển (mật khẩu mẫu, bind localhost), chưa phải triển khai production. AI1 sở hữu migration và nghiệp vụ transaction; CODE-000 không tự chạy migration hoặc bootstrap tài khoản. `DATABASE_URL` chưa được CLI scaffold sử dụng trước CODE-006.
 
+## Webhook staging cục bộ trên Windows
+
+Để thử nhận webhook inbound bằng OA/user thử nghiệm trên máy Windows, xem [hướng dẫn PowerShell staging cục bộ](docs/architecture/LOCAL_WINDOWS_STAGING_20261030.md). Chế độ này chỉ nhận webhook được ký và allow-list, dùng database PostgreSQL test riêng trên loopback, không mở API nhân viên, không gửi tin, không tải file và không in. Mặc định không chạy; cần bật đủ biến opt-in trong phiên PowerShell hiện tại. Tunnel công khai chỉ là bước thủ công riêng và không được khởi động bởi ứng dụng.
+
 ## Hợp đồng và điểm nối
 
 - `contracts/schemas.ts`: nguồn schema và types; `generated/schema.json` cho Python, `generated/openapi.json` cho API.

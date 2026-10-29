@@ -77,6 +77,10 @@ AI1–AI5 bắt đầu phần độc lập ngay. Ca phụ thuộc CODE-006 chờ
 ## CODE-006 — điểm nối được cấp cho AI0
 AI0 sở hữu thêm backend/composition/**, scripts/** và tests/integration/composition/** để nối runtime, migration, processor và kiểm thử tích hợp. Các module AI1–AI5 được nhập nguyên trạng từ SHA đã bàn giao; không đổi chủ file.
 
+### CODE-006 local webhook staging (2026-10-30)
+
+AI0 owns `backend/staging/**`, `tests/unit/contracts/local-staging.test.ts`, `README.md`, root package scripts, `scripts/database.ts`, and `docs/architecture/LOCAL_WINDOWS_STAGING_20261030.md` for the opt-in local Windows test listener. This is inbound-only: loopback bind, isolated local test PostgreSQL, signed event plus explicit test OA/user allow-list. Do not add staff/Core routes, media fetching, outbound messages, workers, real printing, tunnel startup, or remote DB deployment here. AI2 still owns `backend/integrations/zalo/**`; only its existing adapter/ports may be consumed. The raw-body signature formula still lacks an official signed golden-vector check.
+
 
 ## Đợt 4 — CODE-401–405 + AI0 CODE-007 (giao 12/10/2026)
 
