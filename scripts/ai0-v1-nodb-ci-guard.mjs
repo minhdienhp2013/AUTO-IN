@@ -70,17 +70,34 @@ const compositionWorkflow = await read('.github/workflows/composition-integratio
 const packageJson = JSON.parse(await read('package.json'));
 if (packageJson.scripts?.test !== 'node --import tsx --test tests/unit/contracts/*.test.ts')
   fail('root npm test script changed; update the reviewed no-DB contract test allowlist');
+const webPackageJson = JSON.parse(await read('web/package.json'));
+if (webPackageJson.scripts?.test !== 'node --experimental-strip-types --test ../tests/ui/*.test.ts' ||
+    webPackageJson.scripts?.prebuild !== 'npm test' ||
+    webPackageJson.scripts?.build !== 'tsc --noEmit -p tsconfig.json && vite build')
+  fail('web build/test lifecycle changed; update the reviewed no-DB UI test allowlist');
+for (const [label, manifest] of [['root', packageJson], ['web', webPackageJson]]) {
+  for (const lifecycle of ['preinstall', 'install', 'postinstall', 'prepare']) {
+    if (manifest.scripts?.[lifecycle]) fail(`${label} npm ${lifecycle} lifecycle script is not reviewed`);
+  }
+}
 const contract = (await readdir(join(root, 'tests/unit/contracts')))
   .filter(file => file.endsWith('.test.ts'))
   .sort()
   .map(file => `tests/unit/contracts/${file}`);
 if (contract.length === 0) fail('root npm test script has no contract unit tests to audit');
+const policyTest = 'scripts/ai0-v1-nodb-ci-policy.test.mjs';
 const core = (await readdir(join(root, 'tests/unit/core')))
   .filter(file => file.endsWith('.test.cjs'))
   .sort()
   .map(file => `tests/unit/core/${file}`);
 if (core.length === 0) fail('Core wildcard has no matching unit tests to audit');
-const reviewedWorkflowTests = [...contract, ...core, ...zalo, ...composition, ...python];
+const webUi = (await readdir(join(root, 'tests/ui')))
+  .filter(file => file.endsWith('.test.ts'))
+  .sort()
+  .map(file => `tests/ui/${file}`);
+if (webUi.length === 0) fail('web npm test script has no UI unit tests to audit');
+const reviewedWorkflowTests = [policyTest, ...contract, ...core, ...zalo, ...composition, ...python];
+reviewedWorkflowTests.push(...webUi);
 for (const [source, label] of [[workflow, 'dedicated workflow'], [checkWorkflow, 'CODE workflow'],
   [compositionWorkflow, 'composition workflow']]) {
   requireText(source, branch, label);
@@ -91,10 +108,12 @@ if (workflow.includes('ai0/v1-color-intake-nodb-ci-20261025'))
   fail('dedicated workflow still targets the previous candidate branch');
 requireText(workflow, 'AI1_BUILD_DIR="$PWD/dist/backend" node --test --test-concurrency=1 tests/unit/core/*.test.cjs',
   'direct Core unit command');
+requireText(workflow, 'run: npm --prefix web run build', 'web build with reviewed prebuild tests');
 for (const path of [...zalo, ...composition, ...python]) requireText(workflow, path, 'explicit test allowlist');
 try {
   const workflowTests = extractWorkflowTestPaths(workflow, core);
   if (/^\s+run:\s*npm test\s*$/m.test(workflow)) workflowTests.push(...contract);
+  if (/^\s+run:\s*npm --prefix web run build\s*$/m.test(workflow)) workflowTests.push(...webUi);
   assertExactWorkflowTestPaths(workflowTests, reviewedWorkflowTests);
 } catch (error) {
   fail(error.message);
@@ -120,7 +139,7 @@ for (const forbidden of [
   'tests/unit/printing/test_pilot_backend_http.py'
 ]) if (workflow.includes(forbidden)) fail(`dedicated workflow contains forbidden gate: ${forbidden}`);
 
-for (const path of [...contract, ...core, ...zalo, ...composition, ...python]) {
+for (const path of reviewedWorkflowTests) {
   const source = await read(path);
   const databaseFindings = findServiceDatabaseAccess(source, path);
   if (databaseFindings.length)
@@ -189,4 +208,4 @@ if (process.argv.includes('--ci')) {
     fail('checkout is not clean before dependency installation');
 }
 
-console.log(`AI0 no-DB CI static guard passed (${contract.length} contracts, ${core.length} Core, ${zalo.length} Zalo, ${composition.length} composition, ${python.length} Python tests audited).`);
+console.log(`AI0 no-DB CI static guard passed (${contract.length} contracts, ${core.length} Core, ${zalo.length} Zalo, ${composition.length} composition, ${python.length} Python, ${webUi.length} UI tests audited).`);

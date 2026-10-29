@@ -19,6 +19,12 @@ const fakePoolAdapterFiles = new Set([
   'tests/unit/core/word-review-source.test.cjs'
 ]);
 
+const reviewedWebReactRequireFiles = new Set([
+  'tests/ui/pdf-review-panel.test.ts',
+  'tests/ui/pilot-shop-code.test.ts',
+  'tests/ui/word-review-panel.test.ts'
+]);
+
 function callArgument(source, openParen) {
   let depth = 1;
   let quote = '';
@@ -78,12 +84,50 @@ function removeReviewedCoreLoadHelper(source, file, findings) {
   return reviewedSource.replace(/\bload\s*\(([^)]*)\)/g, '');
 }
 
+function removeReviewedWebReactRequire(source, file, findings) {
+  if (!reviewedWebReactRequireFiles.has(file)) return source;
+  const importPattern = /^import\s*\{\s*createRequire\s*\}\s*from\s*(['"])node:module\1\s*;?\s*$/gm;
+  const helperPattern = /^\s*const\s+fromWeb\s*=\s*createRequire\s*\(\s*new\s+URL\s*\(\s*(['"])\.\.\/\.\.\/web\/package\.json\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*;?\s*$/gm;
+  const imports = [...source.matchAll(importPattern)];
+  const helpers = [...source.matchAll(helperPattern)];
+  if (imports.length !== 1 || helpers.length !== 1) {
+    findings.add('unreviewed computed module loader');
+    return source;
+  }
+
+  let reviewedSource = source.replace(importPattern, '').replace(helperPattern, '');
+  const calls = [...reviewedSource.matchAll(/\bfromWeb\s*\(([^)]*)\)/g)];
+  if (!calls.length) findings.add('React module loader has no reviewed literal targets');
+  for (const call of calls) {
+    const target = call[1].trim().match(/^(['"])(react|react-dom\/server)\1$/);
+    if (!target) findings.add('React module loader target is not an approved package');
+  }
+  reviewedSource = reviewedSource.replace(/\bfromWeb\s*\(([^)]*)\)/g, '');
+  if (/\bfromWeb\b|\bcreateRequire\s*\(/.test(reviewedSource))
+    findings.add('unreviewed computed module loader');
+  return reviewedSource;
+}
+
 function addImportFindings(source, findings, file) {
   source = removeReviewedCoreLoadHelper(source, file, findings);
+  source = removeReviewedWebReactRequire(source, file, findings);
   const pythonSource = file.endsWith('.py');
   const literalImports = /\b(?:from\s*|import\s*|(?:module\s*\.\s*)?require\s*(?:\?\.)?\s*\(\s*)(['"])([^'"]+)\1/g;
   for (const match of source.matchAll(literalImports)) {
     if (databaseModules.has(packageName(match[2]))) findings.add(`database module ${match[2]}`);
+  }
+
+  if (pythonSource) {
+    const pythonImports = /^\s*(?:from\s+([A-Za-z_][\w.]*)\s+import\b|import\s+([A-Za-z_][\w.]*(?:\s+as\s+[A-Za-z_]\w*)?(?:\s*,\s*[A-Za-z_][\w.]*(?:\s+as\s+[A-Za-z_]\w*)?)*))/gm;
+    const normalizedSource = source.replace(/\\\r?\n[ \t]*/g, ' ');
+    for (const match of normalizedSource.matchAll(pythonImports)) {
+      const modules = match[1] ? [match[1]] : match[2].split(',').map(item => item.trim().split(/\s+as\s+/)[0]);
+      for (const module of modules) {
+        const name = module.split('.')[0];
+        if (databaseModules.has(name) && !['sqlite', 'sqlite3'].includes(name))
+          findings.add(`database module ${module}`);
+      }
+    }
   }
 
   // Dynamic import can resolve to any package or file at runtime, so the
@@ -125,8 +169,31 @@ export function findServiceDatabaseAccess(source, file = '') {
   return [...findings];
 }
 
+function loopTargetNames(source) {
+  const names = new Set();
+  const loops = /\bfor\s+([A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*|\([^)]*\))\s+in\b/g;
+  for (const match of source.matchAll(loops)) {
+    for (const name of match[1].match(/[A-Za-z_$][\w$]*/g) ?? []) names.add(name);
+  }
+  return names;
+}
+
+function loopTargetOccurrences(source) {
+  const occurrences = new Map();
+  const loops = /\bfor\s+([A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*|\([^)]*\))\s+in\b/g;
+  for (const match of source.matchAll(loops)) {
+    for (const name of match[1].match(/[A-Za-z_$][\w$]*/g) ?? []) {
+      const indices = occurrences.get(name) ?? [];
+      indices.push(match.index);
+      occurrences.set(name, indices);
+    }
+  }
+  return occurrences;
+}
+
 function tempRootNames(source) {
   const roots = new Set();
+  const loopTargets = loopTargetNames(source);
   const functionParameters = /\bdef\s+([A-Za-z_][\w]*)\s*\(([^)]*)\)/g;
   for (const match of source.matchAll(functionParameters)) {
     const parameters = match[2].split(',').map(parameter => parameter.trim().split('=')[0].trim());
@@ -135,8 +202,9 @@ function tempRootNames(source) {
   const folderBinding = /(?:\btempfile\.)?TemporaryDirectory\s*\([^)]*\)\s+as\s+([A-Za-z_$][\w$]*)/g;
   for (const match of source.matchAll(folderBinding)) roots.add(match[1]);
   for (const name of [...roots]) {
-    const shadowingAssignment = new RegExp(`^\\s*${name}\\s*=`, 'm');
-    if (shadowingAssignment.test(source)) roots.delete(name);
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rebinding = new RegExp(`^\\s*${escaped}\\s*(?:\\*\\*=|//=|=|[+\\-*/%&|^]=|:=)`, 'm');
+    if (loopTargets.has(name) || rebinding.test(source)) roots.delete(name);
   }
   return roots;
 }
@@ -199,21 +267,36 @@ function hasRootedSqlitePathOnLine(line, roots, safePaths, safeVariables) {
 }
 
 function safeTemporarySqlitePaths(source) {
+  source = source.replace(/\r\n/g, '\n');
   const roots = tempRootNames(source);
+  const loopOccurrences = loopTargetOccurrences(source);
   const safeVariables = safeEnumeratedLoopVariables(source);
   const safePaths = new Set();
   const lines = source.split(/\r?\n/);
+  let offset = 0;
   const assignments = lines.flatMap(line => {
+    const lineOffset = offset;
+    offset += line.length + 1;
     const assignment = line.match(/^\s*(?:self\.)?([A-Za-z_$][\w$]*)\s*=\s*(.+)$/);
-    return assignment ? [[assignment[1], assignment[2]]] : [];
+    return assignment ? [[assignment[1], assignment[2], lineOffset]] : [];
   });
+  const mutatedPaths = new Set();
+  for (const [name, indices] of loopOccurrences) {
+    if (indices.some(index => assignments.some(([assignedName, , assignmentIndex]) =>
+      assignedName === name && assignmentIndex < index))) mutatedPaths.add(name);
+  }
+  for (const line of lines) {
+    const mutation = line.match(/^\s*(?:self\.)?([A-Za-z_$][\w$]*)\s*(?:\*\*=|\/\/=|[+\-*\/%&|^]=|:=)/);
+    if (mutation) mutatedPaths.add(mutation[1]);
+  }
 
   // A path alias is safe only when every assignment to it stays rooted in a
   // pytest temporary fixture or TemporaryDirectory. An unsafe reassignment
-  // invalidates the alias instead of inheriting an earlier safe value.
+  // or mutation invalidates the alias instead of inheriting an earlier safe value.
   for (let pass = 0; pass < lines.length; pass++) {
     let changed = false;
     for (const name of new Set(assignments.map(([assignedName]) => assignedName))) {
+      if (mutatedPaths.has(name)) continue;
       const expressions = assignments.filter(([assignedName]) => assignedName === name).map(([, expression]) => expression);
       if (expressions.every(expression => tempPathExpression(expression, roots, safePaths, safeVariables)) && !safePaths.has(name)) {
         safePaths.add(name);
@@ -274,9 +357,18 @@ export function extractWorkflowTestPaths(workflow, coreFiles) {
 
   const paths = [];
   for (const body of runBodies) {
-    for (const match of body.matchAll(/\btests\/[A-Za-z0-9_./*-]+/g)) {
-      const path = match[0].replace(/[),;]+$/, '');
-      if (!path.split('/').at(-1)?.includes('.')) continue;
+    const testRunner = /\bnode\b[^\n]*\s--test\b|\bnpm\b[^\n]*\b(?:run\s+)?test(?:[:\w-]+)?\b|\b(?:pnpm|yarn)\b[^\n]*\b(?:run\s+)?test(?:[:\w-]+)?\b|\b(?:python(?:\d+(?:\.\d+)?)?\s+-m\s+)?pytest\b|\bplaywright\s+test\b/;
+    const testPaths = [...body.matchAll(/\b(?:tests|scripts)\/[A-Za-z0-9_./*-]+/g)]
+      .map(match => match[0].replace(/[),;]+$/, ''));
+    if (!testRunner.test(body)) {
+      if (/\bpython(?:\d+(?:\.\d+)?)?\s+-m\s+compileall\b/.test(body)) continue;
+      const unrecognized = testPaths.filter(path => path.startsWith('tests/') ||
+        /(?:^|[./_-])(?:test|tests)(?:[./_-]|$)/i.test(path));
+      if (unrecognized.length)
+        throw new Error(`test paths use an unrecognized runner: ${unrecognized.join(', ')}`);
+      continue;
+    }
+    for (const path of testPaths) {
       if (path === 'tests/unit/core/*.test.cjs') paths.push(...coreFiles);
       else if (path.includes('*')) throw new Error(`unsupported workflow test glob: ${path}`);
       else paths.push(path);
