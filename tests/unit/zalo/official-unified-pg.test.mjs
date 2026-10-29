@@ -21,18 +21,18 @@ test("REAL PostgreSQL AI2 unified verified official ingress: text/held image-fil
  const customer="trusted-customer-"+unique,conversation="trusted-conversation-"+unique;
  const secret="fixture-secret-for-isolated-pg-not-live",now=Date.now();
  const config={app_id:app,oa_id:oa,oa_secret_key:secret,now:()=>now,
-  resolve_verified_user:uid=>uid===user?{customer_id:customer,conversation_id:conversation}:null};
+  resolve_verified_user:userIdByApp=>userIdByApp===user?{customer_id:customer,conversation_id:conversation}:null};
  const ingressA=createOfficialZaloVerifiedIngress(config,
   new PostgresInboundEventRepository(createZaloTransactions(a)),createZaloTransactions(a));
  const ingressB=createOfficialZaloVerifiedIngress(config,
   new PostgresInboundEventRepository(createZaloTransactions(b)),createZaloTransactions(b));
- const create=(name,msg,sender=user,extra={})=>{
-  const payload={app_id:app,timestamp:now,event_name:name,sender:{id:sender},
-   recipient:{id:oa},message:msg,...extra};
+ const sign=bytes=>({"x-zevent-signature":"mac="+createHash("sha256")
+  .update(app,"utf8").update(bytes).update(String(now),"utf8").update(secret,"utf8").digest("hex")});
+ const create=(name,msg,userIdByApp=user,extra={})=>{
+  const payload={app_id:app,timestamp:now,event_id:extra.event_id??`event-${name}-${msg.msg_id??unique}`,
+   user_id_by_app:userIdByApp,event_name:name,recipient:{id:oa},message:msg,...extra};
   const bytes=new TextEncoder().encode(JSON.stringify(payload));
-  const sig="mac="+createHash("sha256").update(app).update(bytes)
-    .update(String(now)).update(secret).digest("hex");
-  return {bytes,headers:{"x-zevent-signature":sig}};
+  return {bytes,headers:sign(bytes)};
  };
  const count=async(table)=>Number((await a.query("SELECT count(*)::int AS n FROM "+table+" WHERE oa_id=$1",[oa])).rows[0].n);
  try{
@@ -42,6 +42,7 @@ test("REAL PostgreSQL AI2 unified verified official ingress: text/held image-fil
   // Only the OWNED AI2 migration is applied within this isolated test.
   // The AI0 production migration runner and approval trigger are NOT modified.
   await a.query(await readFile(new URL("../../../backend/integrations/zalo/migrations/004_official_quarantine.sql",import.meta.url),"utf8"));
+  await a.query(await readFile(new URL("../../../backend/integrations/zalo/migrations/005_official_event_idempotency.sql",import.meta.url),"utf8"));
   const t=create("user_send_text",{msg_id:"text-"+unique,text:"In A4 2 ban"});
   const [ta,tb]=await Promise.all([ingressA.receive(t.bytes,t.headers),ingressB.receive(t.bytes,t.headers)]);
   assert.deepEqual([ta.status,tb.status].sort(),["accepted","duplicate"]);
@@ -62,13 +63,21 @@ test("REAL PostgreSQL AI2 unified verified official ingress: text/held image-fil
    assert.equal(first.receipt_id,retry.receipt_id);
    assert.equal(first.pending,true);
    assert.equal(first.kind,kind);
-   assert.equal(first.provider_claimed_event_id,id);
+   const eventId=`event-${name}-${id}`;
+   assert.equal(first.provider_claimed_event_id,eventId);
+   const reformatted=new TextEncoder().encode(JSON.stringify(
+    JSON.parse(new TextDecoder().decode(w.bytes)),null,2));
+   assert.notEqual(createHash("sha256").update(w.bytes).digest("hex"),
+    createHash("sha256").update(reformatted).digest("hex"));
+   const byteDifferentRetry=await ingressB.receive(reformatted,sign(reformatted));
+   assert.equal(byteDifferentRetry.status,"duplicate");
+   assert.equal(byteDifferentRetry.receipt_id,first.receipt_id);
    const rows=await a.query("SELECT kind,status,received_at,provider_claimed_event_id,customer_id,conversation_id FROM zalo_official_quarantine WHERE id=$1",[first.receipt_id]);
    assert.equal(rows.rowCount,1);
    assert.equal(rows.rows[0].kind,kind);
    assert.equal(rows.rows[0].status,"NEEDS_HUMAN");
    assert.ok(rows.rows[0].received_at);
-   assert.equal(rows.rows[0].provider_claimed_event_id,id);
+   assert.equal(rows.rows[0].provider_claimed_event_id,eventId);
    assert.equal(rows.rows[0].customer_id,customer);
    assert.equal(rows.rows[0].conversation_id,conversation);
    assert.equal(await count("zalo_inbound_events"),1,"unknowns MUST NOT become trusted normal inbox events");
@@ -106,7 +115,7 @@ test("REAL PostgreSQL AI2 unified verified official ingress: text/held image-fil
   assert.equal(q.rows[0].customer_id,null);
   assert.equal(q.rows[0].conversation_id,null);
   assert.ok(q.rows[0].received_at);
-  assert.equal(q.rows[0].provider_claimed_event_id,"unmapped-text-"+unique);
+  assert.equal(q.rows[0].provider_claimed_event_id,"event-user_send_text-unmapped-text-"+unique);
   assert.equal(await count("zalo_inbound_events"),1);
   assert.equal(await count("zalo_process_queue"),1);
   assert.equal((await a.query(

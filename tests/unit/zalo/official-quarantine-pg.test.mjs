@@ -20,15 +20,16 @@ test("REAL PostgreSQL AI2 signed unsupported OA quarantine: two workers, replay,
  const app="app-"+unique,oa="oa-"+unique,secret="synthetic-only-secret-00000";
  const now=1791936000000;
  const config={app_id:app,oa_id:oa,oa_secret_key:secret,now:()=>now,
-  resolve_verified_user:sender=>sender==="user-"+unique?
+  resolve_verified_user:userIdByApp=>userIdByApp==="user-"+unique?
    {customer_id:"trusted-customer-"+unique,conversation_id:"trusted-chat-"+unique}:null};
  const receiverA=createOfficialZaloQuarantineReceiver(config,createZaloTransactions(a));
  const receiverB=createOfficialZaloQuarantineReceiver(config,createZaloTransactions(b));
  const signer=raw=>({"x-zevent-signature":"mac="+createHash("sha256")
   .update(app).update(raw).update(String(now)).update(secret).digest("hex")});
- const raw=(event_name,sender="user-"+unique,id="event-1")=>
-  new TextEncoder().encode(JSON.stringify({app_id:app,timestamp:now,event_name,
-   sender:{id:sender},recipient:{id:oa},message:{msg_id:id}}));
+ const raw=(event_name,userIdByApp="user-"+unique,eventId="event-1")=>
+  new TextEncoder().encode(JSON.stringify({app_id:app,timestamp:now,event_id:eventId,
+   user_id_by_app:userIdByApp,event_name,recipient:{id:oa},
+   message:{msg_id:"message-"+eventId}}));
  const count=async()=> (await a.query(
   "SELECT count(*)::int AS n FROM zalo_official_quarantine WHERE oa_id=$1",[oa])).rows[0].n;
  try{
@@ -38,12 +39,21 @@ test("REAL PostgreSQL AI2 signed unsupported OA quarantine: two workers, replay,
   // AI2 migration only. AI0 must add this migration to the app runner BEFORE
   // any route is enabled. Test does not touch AI1/AI0 schema or approval.
   await a.query(await readFile(new URL("../../../backend/integrations/zalo/migrations/004_official_quarantine.sql",import.meta.url),"utf8"));
+  await a.query(await readFile(new URL("../../../backend/integrations/zalo/migrations/005_official_event_idempotency.sql",import.meta.url),"utf8"));
   const images=raw("user_send_image");
   const results=await Promise.all([receiverA.receive(images,signer(images)),
    receiverB.receive(images,signer(images))]);
   assert.deepEqual(results.map(x=>x.status).sort(),["duplicate","held"]);
   assert.equal(results[0].receipt_id,results[1].receipt_id);
   assert.equal(await count(),1,"two PG workers have exactly one durable receipt");
+  const reformatted=new TextEncoder().encode(JSON.stringify(
+   JSON.parse(new TextDecoder().decode(images)),null,2));
+  assert.notEqual(createHash("sha256").update(images).digest("hex"),
+   createHash("sha256").update(reformatted).digest("hex"));
+  const byteDifferentRetry=await receiverB.receive(reformatted,signer(reformatted));
+  assert.equal(byteDifferentRetry.status,"duplicate");
+  assert.equal(byteDifferentRetry.receipt_id,results[0].receipt_id);
+  assert.equal(await count(),1,"same provider event_id dedupes even when serialization differs");
   const fields=(await a.query("SELECT kind,customer_id,conversation_id,status FROM zalo_official_quarantine WHERE oa_id=$1",[oa])).rows[0];
   assert.equal(fields.kind,"image");
   assert.equal(fields.customer_id,"trusted-customer-"+unique);

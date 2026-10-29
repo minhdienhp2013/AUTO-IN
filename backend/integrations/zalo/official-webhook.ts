@@ -2,33 +2,39 @@ import {createHash,timingSafeEqual} from "node:crypto";
 import {ZaloIngress,type EventNormalizer,type InboundEvent,type InboundEventRepository,type WebhookVerifier} from "./protocol.ts";
 
 /** Zalo OA webhook subset implementing the SHA-256 concatenation formula
- * described in public Zalo documentation; NOT verified with an official
- * Zalo-signed golden vector, and NOT an enabled live runtime/sender.
+ * described in public Zalo documentation and clarified by Zalo support; NOT
+ * verified with an official Zalo-signed golden vector, and NOT an enabled
+ * live runtime/sender.
  *
  * Public documentation references (reviewed 2026-10-14):
  * https://developers.zalo.me/docs/official-account/webhook/tin-nhan/su-kien-nguoi-dung-gui-tin-nhan
  * https://developers.zalo.me/docs/official-account/webhook/tong-quan
  * Documented formula: mac=sha256(appId + data + timestamp + OAsecretKey).
- * This implementation ASSUMES data is the exact raw UTF-8 HTTP JSON body.
- * Zalo has NOT confirmed the JSON serialization/raw-byte representation of
- * data or the signed timestamp source with an official signature vector.
+ * The public payload includes user_id_by_app inside data. Zalo support says
+ * that is the stable user identity and each event has event_id + timestamp.
+ * This implementation ASSUMES data is the exact raw UTF-8 HTTP JSON body and
+ * the signed timestamp is the body timestamp. No provider-signed golden
+ * vector confirms raw-byte representation, timestamp source, or retry rules.
  * The app, OA, secret and conversation binding come from trusted SERVER config.
  *
- * ONLY user_send_text is mapped. Images/files/postback require confirmed
- * official event-specific contracts and immutable artifact handling.
+ * ONLY user_send_text is mapped. Signed files/images are handled separately
+ * by the durable quarantine receiver; their URLs are never fetched here.
+ * Buttons in Bot Flow do not create a webhook by themselves; payload delivery
+ * requires its explicit HTTP Request card. This adapter does not infer consent.
  * No interpretation of arbitrary button/payload as CODE-401 consent.
  */
 export interface OfficialZaloWebhookConfig {
   readonly app_id:string;
   readonly oa_id:string;
   readonly oa_secret_key:string;
-  /** Server-authoritative, verified mapping (never based on untrusted JSON). */
-  readonly resolve_verified_user:(user_id:string)=>
+  /** Server-authoritative mapping keyed by the signed user_id_by_app field. */
+  readonly resolve_verified_user:(user_id_by_app:string)=>
     {customer_id:string;conversation_id:string}|null;
   /** Milliseconds since epoch, injected for deterministic tests. */
   readonly now?:()=>number;
 }
-type Wire={app_id?:unknown;event_name?:unknown;timestamp?:unknown;sender?:unknown;
+type Wire={app_id?:unknown;event_id?:unknown;user_id_by_app?:unknown;
+ timestamp?:unknown;event_name?:unknown;sender?:unknown;
  recipient?:unknown;message?:unknown;confirmation_postback?:unknown};
 const isRecord=(v:unknown):v is Record<string,unknown> =>
   !!v&&typeof v==="object"&&!Array.isArray(v);
@@ -93,13 +99,12 @@ export function createOfficialZaloWebhookAdapter(config:OfficialZaloWebhookConfi
       // A passing synthetic check is NOT verification against Zalo-issued bytes.
       if(value.event_name!=="user_send_text")
         throw new Error("INVALID_OFFICIAL_EVENT");
-      if(stringField(value.sender,"id")===undefined ||
-         stringField(value.recipient,"id")!==config.oa_id)
+      if(stringField(value.recipient,"id")!==config.oa_id)
         throw new Error("INVALID_OFFICIAL_EVENT");
-      const userId=stringField(value.sender,"id");
-      const msgId=stringField(value.message,"msg_id");
+      const eventId=value.event_id;
+      const userId=value.user_id_by_app;
       const bodyText=stringField(value.message,"text");
-      if(!exactId(userId,128)||!exactId(msgId,128)||
+      if(!exactId(eventId,128)||!exactId(userId,128)||
         typeof bodyText!=="string"||bodyText.length<1||bodyText.length>4000||
         !bodyText.trim())throw new Error("INVALID_OFFICIAL_EVENT");
       const identity=config.resolve_verified_user(userId);
@@ -108,7 +113,7 @@ export function createOfficialZaloWebhookAdapter(config:OfficialZaloWebhookConfi
         throw new Error("INVALID_OFFICIAL_EVENT");
       // Trust only confirmed server mapper; do not invent customer, chat or order identity.
       const event:InboundEvent={
-        event_id:msgId,oa_id:config.oa_id,customer_id:identity.customer_id,
+        event_id:eventId,oa_id:config.oa_id,customer_id:identity.customer_id,
         conversation_id:identity.conversation_id,occurred_at:new Date(Number(timestamp)).toISOString(),
         kind:"text",text:bodyText
       };

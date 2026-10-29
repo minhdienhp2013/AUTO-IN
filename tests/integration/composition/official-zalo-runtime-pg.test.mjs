@@ -24,19 +24,19 @@ test("AI0 CODE-402 runtime: default OFF, signed synthetic quarantine blocks prop
   let disabled,app,bootstrapped=false,orderId;
   const config={
     app_id:appId,oa_id:oa,oa_secret_key:secret,
-    resolve_verified_user(userId){
-      return userId===sender?{customer_id:customer,conversation_id:conversation}:null;
+    resolve_verified_user(userIdByApp){
+      return userIdByApp===sender?{customer_id:customer,conversation_id:conversation}:null;
     }
   };
+  const signRaw=(raw,timestamp)=>"mac="+createHash("sha256").update(appId,"utf8").update(raw)
+    .update(String(timestamp),"utf8").update(secret,"utf8").digest("hex");
   const signed=(eventName,eventId,text)=>{
     const timestamp=Date.now();
-    const value={app_id:appId,timestamp,event_name:eventName,
-      sender:{id:sender},recipient:{id:oa},
-      message:{msg_id:eventId,...(text===undefined?{}:{text})}};
+    const value={app_id:appId,timestamp,event_id:eventId,event_name:eventName,
+      user_id_by_app:sender,sender:{id:"untrusted-"+sender},recipient:{id:oa},
+      message:{msg_id:"message-"+eventId,...(text===undefined?{}:{text})}};
     const raw=Buffer.from(JSON.stringify(value),"utf8");
-    const signature="mac="+createHash("sha256").update(appId,"utf8").update(raw)
-      .update(String(timestamp),"utf8").update(secret,"utf8").digest("hex");
-    return {raw,signature};
+    return {raw,signature:signRaw(raw,timestamp)};
   };
   const send=(fixture,signature=fixture.signature)=>app.inject({
     method:"POST",url:"/webhooks/zalo",
@@ -60,7 +60,7 @@ test("AI0 CODE-402 runtime: default OFF, signed synthetic quarantine blocks prop
 
     app=buildIntegratedApp({pool:sql,officialZaloSimulation:{shop_id:shop,webhook:config}});
     await app.ready();
-    const initialEvent="msg-"+suffix;
+    const initialEvent="event-"+suffix;
     const initial=signed("user_send_text",initialEvent,"In A4");
     const unregistered=await send(initial);
     assert.equal(unregistered.statusCode,503);
@@ -80,6 +80,15 @@ test("AI0 CODE-402 runtime: default OFF, signed synthetic quarantine blocks prop
       [oa,initialEvent])).rows[0].n,1);
     assert.equal((await pool.query(
       "SELECT count(*)::int AS n FROM zalo_process_queue WHERE oa_id=$1 AND event_id=$2",
+      [oa,initialEvent])).rows[0].n,1);
+    const reformattedInitial=Buffer.from(JSON.stringify(JSON.parse(initial.raw.toString("utf8")),null,2),"utf8");
+    assert.notEqual(createHash("sha256").update(initial.raw).digest("hex"),
+      createHash("sha256").update(reformattedInitial).digest("hex"));
+    assert.equal((await send({raw:reformattedInitial,
+      signature:signRaw(reformattedInitial,JSON.parse(initial.raw.toString("utf8")).timestamp)})).statusCode,200,
+      "the same provider event ID remains idempotent across different raw JSON formatting");
+    assert.equal((await pool.query(
+      "SELECT count(*)::int AS n FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2",
       [oa,initialEvent])).rows[0].n,1);
     assert.equal((await pool.query(
       "SELECT count(*)::int AS n FROM core_inbound_review_items WHERE shop_id=$1",[shop])).rows[0].n,0,
@@ -164,9 +173,9 @@ test("AI0 CODE-402 runtime: default OFF, signed synthetic quarantine blocks prop
 
     const rejected=await app.inject({method:"POST",url:"/webhooks/zalo",
       headers:{"content-type":"application/json","x-zevent-signature":"mac="+"0".repeat(64)},
-      payload:Buffer.from(JSON.stringify({app_id:appId,timestamp:Date.now(),
-        event_name:"user_send_image",sender:{id:sender},recipient:{id:oa},
-        message:{msg_id:"bad-"+suffix}}))});
+      payload:Buffer.from(JSON.stringify({app_id:appId,event_id:"bad-"+suffix,user_id_by_app:sender,
+        timestamp:Date.now(),event_name:"user_send_image",sender:{id:sender},recipient:{id:oa},
+        message:{msg_id:"message-bad-"+suffix}}))});
     assert.equal(rejected.statusCode,403);
     const rejectedSignatureCount=(await pool.query(
       "SELECT count(*)::int AS n FROM zalo_official_quarantine WHERE oa_id=$1",[oa])).rows[0].n;

@@ -16,7 +16,7 @@ export interface OfficialQuarantineReceipt {
   kind:QuarantineKind;
   /** Verified server mapping when possible; null means hold at OA level. */
   mapped:boolean;
-  /** Event identifier asserted by signed provider JSON, NOT validated schema. */
+  /** Compatibility field returned for manual correlation; dedupe uses provider_event_id. */
   provider_claimed_event_id:string|null;
 }
 function record(v:unknown):v is Record<string,unknown>{
@@ -43,7 +43,7 @@ export function createOfficialZaloQuarantineReceiver(
       let payload:unknown;
       try{payload=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(raw))}
       catch{throw new Error("INVALID_OFFICIAL_EVENT")}
-      if(!record(payload)||!id(payload.event_name,100))
+      if(!record(payload)||!id(payload.event_name,100)||!id(payload.event_id,128))
         throw new Error("UNSUPPORTED_OFFICIAL_QUARANTINE_EVENT");
       // A signed payload claiming a DIFFERENT OA must never be attributed
       // to our configured OA. Omitted OA / recipient is OA-level held only.
@@ -53,9 +53,8 @@ export function createOfficialZaloQuarantineReceiver(
       if(recipient?.id!==undefined&&recipient.id!==config.oa_id)
         throw new Error("INVALID_OFFICIAL_EVENT_SCOPE");
       let customer:string|null=null,conversation:string|null=null;
-      const sender=record(payload.sender)?payload.sender:null;
-      if(recipient?.id===config.oa_id&&id(sender?.id)){
-        const trusted=config.resolve_verified_user(sender.id);
+      if(recipient?.id===config.oa_id&&id(payload.user_id_by_app,128)){
+        const trusted=config.resolve_verified_user(payload.user_id_by_app);
         if(trusted&&id(trusted.customer_id)&&id(trusted.conversation_id,256)){
           customer=trusted.customer_id;conversation=trusted.conversation_id;
         }
@@ -71,11 +70,13 @@ export function createOfficialZaloQuarantineReceiver(
       // Keep DB enum unchanged: kind=unknown is the conservative custody
       // category for unbound text. Do not guess an official provider schema.
       const kind=classify(payload.event_name);
-      // No universal provider event ID schema is validated yet. Preserve this
-      // bounded, SIGNED-but-UNVERIFIED claim only for manual correlation, never
-      // as an authority/idempotency key; sha256(raw) remains replay key.
-      const message=record(payload.message)?payload.message:null;
-      const claimed=id(message?.msg_id,128)?message.msg_id:null;
+      // Zalo support confirms event_id is the provider retry/idempotency
+      // identity. Store it in its own column so legacy
+      // provider_claimed_event_id values (which may be message.msg_id) cannot
+      // collide. Keep the compatibility claim field populated for existing
+      // staff/API consumers. Exact raw-hash dedupe remains a legacy fallback.
+      const providerEventId=payload.event_id;
+      const claimed=providerEventId;
       const digest=createHash("sha256").update(raw).digest("hex");
       // No raw payload, arbitrary filename, click data, free text, or OA
       // secret is persisted. DB receipt time is authoritative.
@@ -98,20 +99,31 @@ export function createOfficialZaloQuarantineReceiver(
         const newId=randomUUID();
         const inserted=await tx.query<{id:string;status:string}>(
           "INSERT INTO zalo_official_quarantine "+
-          "(id,oa_id,raw_sha256,kind,customer_id,conversation_id,provider_claimed_event_id,status,received_at) "+
-          "VALUES($1,$2,$3,$4,$5,$6,$7,'NEEDS_HUMAN',clock_timestamp()) "+
-          "ON CONFLICT (oa_id,raw_sha256) DO NOTHING RETURNING id,status",
-          [newId,config.oa_id,digest,kind,customer,conversation,claimed]);
+          "(id,oa_id,raw_sha256,provider_event_id,kind,customer_id,conversation_id,provider_claimed_event_id,status,received_at) "+
+          "VALUES($1,$2,$3,$4,$5,$6,$7,$8,'NEEDS_HUMAN',clock_timestamp()) "+
+          "ON CONFLICT DO NOTHING RETURNING id,status",
+          [newId,config.oa_id,digest,providerEventId,kind,customer,conversation,claimed]);
         if(inserted.rowCount===1){
           return {status:"held",receipt_id:newId,pending:true,kind,mapped:customer!==null,
             provider_claimed_event_id:claimed};
         }
         if(inserted.rowCount!==0)throw new Error("QUARANTINE_INSERT_UNCERTAIN");
-        const existing=await tx.query<{id:string;status:string;kind:QuarantineKind;customer_id:string|null;provider_claimed_event_id:string|null}>(
+        type Existing={id:string;status:string;kind:QuarantineKind;
+          customer_id:string|null;provider_claimed_event_id:string|null};
+        // Prefer the provider identity. The fallback recognizes byte-identical
+        // rows written before migration 005, whose claim field may instead
+        // contain message.msg_id. Never match legacy claims as event IDs.
+        const byEvent=await tx.query<Existing>(
           "SELECT id,status,kind,customer_id,provider_claimed_event_id FROM zalo_official_quarantine "+
-          "WHERE oa_id=$1 AND raw_sha256=$2 FOR UPDATE",[config.oa_id,digest]);
-        const found=existing.rows[0];
-        if(existing.rows.length!==1||!found)throw new Error("QUARANTINE_REPLAY_UNCERTAIN");
+          "WHERE oa_id=$1 AND provider_event_id=$2 FOR UPDATE",
+          [config.oa_id,providerEventId]);
+        if(byEvent.rows.length>1)throw new Error("QUARANTINE_REPLAY_UNCERTAIN");
+        const byBytes=byEvent.rows.length===0?await tx.query<Existing>(
+          "SELECT id,status,kind,customer_id,provider_claimed_event_id FROM zalo_official_quarantine "+
+          "WHERE oa_id=$1 AND raw_sha256=$2 FOR UPDATE",[config.oa_id,digest]):null;
+        const rows=byEvent.rows.length?byEvent.rows:byBytes?.rows??[];
+        const found=rows[0];
+        if(rows.length!==1||!found)throw new Error("QUARANTINE_REPLAY_UNCERTAIN");
         return {status:"duplicate",receipt_id:found.id,
           pending:found.status!=="REVIEWED",kind:found.kind,mapped:found.customer_id!==null,
           provider_claimed_event_id:found.provider_claimed_event_id};
@@ -163,8 +175,7 @@ export function createOfficialZaloVerifiedIngress(
       // conversation processing. A signed text event from an unknown sender
       // MUST remain durably OA-level even though its body is untrusted.
       const recipient=record(input.recipient)?input.recipient:null;
-      const sender=record(input.sender)?input.sender:null;
-      const user=sender?.id;
+      const user=input.user_id_by_app;
       if(recipient?.id===config.oa_id&&id(user)){
         const mapping=config.resolve_verified_user(user);
         if(mapping&&id(mapping.customer_id)&&id(mapping.conversation_id,256))

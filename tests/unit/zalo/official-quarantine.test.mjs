@@ -5,14 +5,14 @@ import {createOfficialZaloQuarantineReceiver,createOfficialZaloVerifiedIngress} 
 import {createOfficialZaloWebhookAdapter} from "../../../backend/integrations/zalo/official-webhook.ts";
 
 // Python hashlib.sha256 independently computed vector, NOT a Zalo-issued vector.
-// EXACT raw JSON: 181 UTF8 bytes, no trailing LF, no BOM, no extra space.
+// EXACT raw JSON: 240 UTF8 bytes, no trailing LF, no BOM, no extra space.
 // EXACT source = UTF8("app-fixture-001") + raw UTF8 + UTF8("1791936000000")
-//                + UTF8("unit-test-secret-000000") = 232 bytes.
-const RAW='{"app_id":"app-fixture-001","timestamp":"1791936000000","event_name":"user_send_image","sender":{"id":"sender-1"},"recipient":{"id":"oa-fixture-001"},"message":{"msg_id":"image-1"}}';
-const VECTOR="a96d60bae80a7f5657a4ced70615f7756ed0490daa6f697168d4b586a81413cb";
+//                + UTF8("unit-test-secret-000000") = 291 bytes.
+const RAW='{"app_id":"app-fixture-001","timestamp":"1791936000000","event_id":"event-image-001","event_name":"user_send_image","user_id_by_app":"app-user-1","sender":{"id":"sender-1"},"recipient":{"id":"oa-fixture-001"},"message":{"msg_id":"image-1"}}';
+const VECTOR="913b90145ee9929119610361f9a981f67916d9a3bb4a038594a96411e7697824";
 const config={app_id:"app-fixture-001",oa_id:"oa-fixture-001",
  oa_secret_key:"unit-test-secret-000000",
- resolve_verified_user:uid=>uid==="sender-1"?
+ resolve_verified_user:uid=>uid==="app-user-1"?
    {customer_id:"trusted-customer",conversation_id:"trusted-chat"}:null,
  now:()=>1791936000000};
 const bytes=new TextEncoder().encode(RAW);
@@ -30,14 +30,19 @@ function sql(){
    if(text.startsWith("SELECT oa_id FROM zalo_official_quarantine_scopes"))
      return {rows:[{oa_id:values[0]}],rowCount:1};
    if(text.startsWith("INSERT INTO zalo_official_quarantine")){
-    const [id,oa,sha,kind,customer,conversation,claimed]=values,unique=oa+":"+sha;
-    if(data.has(unique))return {rows:[],rowCount:0};
-    const row={id,oa_id:oa,raw_sha256:sha,kind,customer_id:customer,
+    const [id,oa,sha,provider_event_id,kind,customer,conversation,claimed]=values;
+    const unique=oa+":"+sha;
+    const duplicate=[...data.values()].some(row=>row.oa_id===oa&&
+      (row.provider_event_id===provider_event_id||row.raw_sha256===sha));
+    if(duplicate)return {rows:[],rowCount:0};
+    const row={id,oa_id:oa,raw_sha256:sha,provider_event_id,kind,customer_id:customer,
      conversation_id:conversation,provider_claimed_event_id:claimed,status:"NEEDS_HUMAN"};
     data.set(unique,row);return {rows:[row],rowCount:1};
    }
    if(text.startsWith("SELECT id,status,kind")){
-    const row=data.get(values[0]+":"+values[1]);
+    const row=text.includes("provider_event_id=$2")
+      ?[...data.values()].find(item=>item.oa_id===values[0]&&item.provider_event_id===values[1])
+      :data.get(values[0]+":"+values[1]);
     return {rows:row?[row]:[],rowCount:row?1:0};
    }
    throw new Error("UNEXPECTED_UNIT_SQL");
@@ -45,10 +50,10 @@ function sql(){
  })};
 }
 test("independent hashlib official-formula fixture fixes exact raw bytes and timestamp",async()=>{
- assert.equal(bytes.length,181);
+ assert.equal(bytes.length,240);
  const data=Buffer.concat([Buffer.from(config.app_id),Buffer.from(bytes),
   Buffer.from("1791936000000"),Buffer.from(config.oa_secret_key)]);
- assert.equal(data.length,232);
+ assert.equal(data.length,291);
  assert.equal(data.toString("utf8"),config.app_id+RAW+"1791936000000"+config.oa_secret_key);
  const verifier=createOfficialZaloWebhookAdapter(config).verifier;
  assert.equal(await verifier.verify(bytes,{"x-zevent-signature":"mac="+VECTOR}),true);
@@ -64,6 +69,7 @@ test("signed unsupported image/file/click/unknown all persist held, bad signatur
  ];
  for(const [event_name,kind] of objects){
   const payload=JSON.parse(RAW);payload.event_name=event_name;
+  payload.event_id=`event-${event_name}`;
   const raw=new TextEncoder().encode(JSON.stringify(payload));
   const response=await receiver.receive(raw,signed(raw));
   assert.equal(response.status,"held");
@@ -78,11 +84,47 @@ test("signed unsupported image/file/click/unknown all persist held, bad signatur
  const before=store.queries();
  await assert.rejects(receiver.receive(bytes,{"x-zevent-signature":"mac="+("0".repeat(64))}),
   /WEBHOOK_SIGNATURE_REJECTED/);
+ const missingEventId=JSON.parse(RAW);delete missingEventId.event_id;
+ const missingEventBytes=new TextEncoder().encode(JSON.stringify(missingEventId));
+ await assert.rejects(receiver.receive(missingEventBytes,signed(missingEventBytes)),
+  /UNSUPPORTED_OFFICIAL_QUARANTINE_EVENT/);
  assert.equal(store.queries(),before);
 });
-test("unknown sender remains OA-level; wrong OA/app or ordinary text cannot mutate quarantine",async()=>{
+test("event_id dedupes byte-different retries without colliding with legacy message-id claims",async()=>{
+ const store=sql();
+ // A pre-005 row may hold a message.msg_id in the legacy claim column. It is
+ // deliberately not backfilled or compared with the new event identity.
+ store.data.set("oa-fixture-001:"+"a".repeat(64),{
+  id:"legacy-receipt",oa_id:"oa-fixture-001",raw_sha256:"a".repeat(64),
+  provider_event_id:null,kind:"file",customer_id:null,conversation_id:null,
+  provider_claimed_event_id:"retry-event-001",status:"NEEDS_HUMAN"
+ });
+ const receiver=createOfficialZaloQuarantineReceiver(config,store);
+ const payload=JSON.parse(RAW);payload.event_name="user_send_file";
+ payload.event_id="retry-event-001";
+ payload.message={msg_id:"retry-event-001",attachments:[
+  {type:"file",payload:{url:"https://media.invalid/private.pdf",name:"private.pdf"}}
+ ]};
+ const firstBytes=new TextEncoder().encode(JSON.stringify(payload));
+ const first=await receiver.receive(firstBytes,signed(firstBytes));
+ assert.equal(first.status,"held");
+ assert.equal(store.data.size,2,"legacy claim does not collide with provider_event_id");
+ const reformatted=new TextEncoder().encode(JSON.stringify(payload,null,2));
+ assert.notEqual(createHash("sha256").update(firstBytes).digest("hex"),
+  createHash("sha256").update(reformatted).digest("hex"));
+ const retry=await receiver.receive(reformatted,signed(reformatted));
+ assert.equal(retry.status,"duplicate");
+ assert.equal(retry.receipt_id,first.receipt_id);
+ assert.equal(store.data.size,2,"same event_id never creates a second receipt");
+ const row=[...store.data.values()].find(value=>value.id===first.receipt_id);
+ assert.equal(row.provider_event_id,"retry-event-001");
+ assert.equal(row.provider_claimed_event_id,"retry-event-001");
+ assert.equal(JSON.stringify(row).includes("media.invalid"),false);
+ assert.equal(JSON.stringify(row).includes("private.pdf"),false);
+});
+test("unknown user_id_by_app remains OA-level; wrong OA/app or ordinary text cannot mutate quarantine",async()=>{
  const store=sql(),receiver=createOfficialZaloQuarantineReceiver(config,store);
- const obj=JSON.parse(RAW);obj.sender.id="unknown-sender";
+ const obj=JSON.parse(RAW);obj.user_id_by_app="unknown-user";
  let raw=new TextEncoder().encode(JSON.stringify(obj));
  const response=await receiver.receive(raw,signed(raw));
  assert.equal(response.mapped,false);
@@ -96,7 +138,7 @@ test("unknown sender remains OA-level; wrong OA/app or ordinary text cannot muta
  raw=new TextEncoder().encode(JSON.stringify(obj));
  await assert.rejects(receiver.receive(raw,signed(raw)),/INVALID_OFFICIAL_EVENT_SCOPE/);
  obj.oa_id=config.oa_id;obj.event_name="user_send_text";
- obj.sender.id="sender-1"; // MAPPED text belongs in ordinary event queue only.
+ obj.user_id_by_app="app-user-1"; // MAPPED text belongs in ordinary event queue only.
  raw=new TextEncoder().encode(JSON.stringify(obj));
  await assert.rejects(receiver.receive(raw,signed(raw)),/UNSUPPORTED_OFFICIAL_QUARANTINE_EVENT/);
  assert.equal(store.data.size,1);
@@ -111,23 +153,25 @@ test("single signed ingress dispatches text and unsupported to distinct durable 
  }};
  const ingress=createOfficialZaloVerifiedIngress(config,repo,store);
  const t=JSON.parse(RAW);
- t.event_name="user_send_text";t.message={msg_id:"text-verified-1",text:"OK",
+ t.event_name="user_send_text";t.event_id="text-event-verified-1";
+ t.message={msg_id:"different-message-id",text:"OK",
    confirmation_postback:{kind:"verified_confirmation_accept",challenge_token:"fake"}};
  const textRaw=new TextEncoder().encode(JSON.stringify(t));
  const first=await ingress.receive(textRaw,signed(textRaw));
- assert.deepEqual(first,{status:"accepted",event_id:"text-verified-1"});
+ assert.deepEqual(first,{status:"accepted",event_id:"text-event-verified-1"});
  assert.deepEqual(await ingress.receive(textRaw,signed(textRaw)),{
-   status:"duplicate",event_id:"text-verified-1"});
+   status:"duplicate",event_id:"text-event-verified-1"});
  assert.equal(events.size,1);
- assert.equal(events.get("text-verified-1").confirmation_postback,undefined);
- assert.equal(events.get("text-verified-1").text,"OK");
+ assert.equal(events.get("text-event-verified-1").confirmation_postback,undefined);
+ assert.equal(events.get("text-event-verified-1").text,"OK");
  assert.equal(store.data.size,0);
  const q=JSON.parse(RAW);q.event_name="user_click_button";
+ q.event_id="button-event-001";
  const qRaw=new TextEncoder().encode(JSON.stringify(q));
  const held=await ingress.receive_webhook(qRaw,signed(qRaw));
  assert.equal(held.status_code,200);
  assert.equal(held.body.status,"held");
- assert.equal(held.body.provider_claimed_event_id,"image-1");
+ assert.equal(held.body.provider_claimed_event_id,"button-event-001");
  assert.equal(store.data.size,1);
  assert.equal(events.size,1,"unknown click must not enter normal conversation processing");
  const replay=await ingress.receive_webhook(qRaw,signed(qRaw));
@@ -159,8 +203,9 @@ test("CODE402 signed unmapped text is durable OA-only, no body; 2 retries and ba
  },store);
  const payload=JSON.parse(RAW);
  payload.event_name="user_send_text";
- payload.sender.id="unmapped-user";
- payload.message={msg_id:"unmapped-text-1",text:"PRIVATE CUSTOMER CONTENT MUST NEVER PERSIST",
+ payload.user_id_by_app="unmapped-user";
+ payload.event_id="unmapped-text-event-1";
+ payload.message={msg_id:"different-message-id",text:"PRIVATE CUSTOMER CONTENT MUST NEVER PERSIST",
    confirmation_postback:{kind:"verified_confirmation_accept",challenge_token:"fake"}};
  const data=new TextEncoder().encode(JSON.stringify(payload));
  const first=await ingress.receive_webhook(data,signed(data));
@@ -169,14 +214,14 @@ test("CODE402 signed unmapped text is durable OA-only, no body; 2 retries and ba
  assert.equal(first.body.mapped,false);
  assert.equal(first.body.kind,"unknown");
  assert.equal(first.body.pending,true);
- assert.equal(first.body.provider_claimed_event_id,"unmapped-text-1");
+ assert.equal(first.body.provider_claimed_event_id,"unmapped-text-event-1");
  assert.equal(store.data.size,1);
  const record=[...store.data.values()][0];
  assert.equal(record.status,"NEEDS_HUMAN");
  assert.equal(record.customer_id,null);
  assert.equal(record.conversation_id,null);
  assert.equal(record.kind,"unknown");
- assert.equal(record.provider_claimed_event_id,"unmapped-text-1");
+ assert.equal(record.provider_claimed_event_id,"unmapped-text-event-1");
  assert.equal(Object.values(record).some(v=>typeof v==="string"&&v.includes("PRIVATE CUSTOMER CONTENT")),false);
  assert.equal(events.length,0,"unmapped TEXT must never reach normal processing");
  const retry=await ingress.receive_webhook(data,signed(data));
@@ -198,7 +243,9 @@ test("media without verified bytes stays staff-only for ambiguous attachments, f
   async insert_once(event){normalEvents.set(event.event_id,event);return "inserted";}
  },store);
  const make=(name,message,changes={})=>{
-  const payload={...JSON.parse(RAW),event_name:name,message,...changes};
+  const payload={...JSON.parse(RAW),
+   event_id:changes.event_id??`event-${name}-${message.msg_id??"no-message-id"}`,
+   event_name:name,message,...changes};
   const raw=new TextEncoder().encode(JSON.stringify(payload));
   return {raw,headers:signed(raw)};
  };
@@ -232,15 +279,23 @@ test("media without verified bytes stays staff-only for ambiguous attachments, f
   assert.equal(row.customer_id,"trusted-customer");
   assert.equal(row.conversation_id,"trusted-chat");
   assert.deepEqual(Object.keys(row).sort(),[
-   "conversation_id","customer_id","id","kind","oa_id","provider_claimed_event_id","raw_sha256","status"
+   "conversation_id","customer_id","id","kind","oa_id","provider_claimed_event_id","provider_event_id","raw_sha256","status"
   ].sort(),"quarantine stores no URL, filename, media bytes, attachment selection, or claimed order");
   assert.equal(JSON.stringify(row).includes("media.invalid"),false);
+  assert.equal(JSON.stringify(row).includes("private.pdf"),false);
   assert.equal(JSON.stringify(row).includes("untrusted-order-claim"),false);
+  assert.equal(row.provider_event_id,
+   JSON.parse(new TextDecoder().decode(fixture.raw)).event_id);
+  assert.equal(row.provider_claimed_event_id,
+   JSON.parse(new TextDecoder().decode(fixture.raw)).event_id);
  }
  assert.equal(store.data.size,2);
- assert.equal(normalEvents.size,1,"attachment event colliding with a prior text msg_id never enters or mutates the normal event repository");
- assert.equal(normalEvents.get("media-ambiguous-1").text,"In A4",
-  "a file event cannot replace/mix with the separate text event that happened to claim the same msg_id");
+ assert.equal(normalEvents.size,1,"file event never enters or mutates the normal event repository");
+ const priorTextEventId=JSON.parse(new TextDecoder().decode(priorText.raw)).event_id;
+ const fileEventId=JSON.parse(new TextDecoder().decode(ambiguous.raw)).event_id;
+ assert.notEqual(priorTextEventId,fileEventId);
+ assert.equal(normalEvents.get(priorTextEventId).text,"In A4",
+  "the message id is distinct from the event id used by normal ingress");
 
  const before=store.queries();
  const wrongOa={...JSON.parse(new TextDecoder().decode(ambiguous.raw)),recipient:{id:"foreign-oa"}};

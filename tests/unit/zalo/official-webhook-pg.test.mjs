@@ -19,18 +19,18 @@ test("Official documented MAC -> durable PostgreSQL ingress: 2 independent pools
  const unique=randomUUID().replaceAll("-","");
  const oa="oa-"+unique, app="app-"+unique,customer="user-"+unique;
  const secret="synthetic-only-oa-secret-not-for-production";
- const id="message-"+unique;
+ const eventId="event-"+unique,messageId="message-"+unique;
  const bytes=new TextEncoder().encode(JSON.stringify({
-   app_id:app,timestamp:Date.now(),event_name:"user_send_text",
-   sender:{id:customer},recipient:{id:oa},
-   message:{msg_id:id,text:"In hai bản A4"}
+   app_id:app,event_id:eventId,user_id_by_app:customer,
+   timestamp:Date.now(),event_name:"user_send_text",recipient:{id:oa},
+   message:{msg_id:messageId,text:"In hai bản A4"}
  }));
  const data=JSON.parse(new TextDecoder().decode(bytes));
  const signature="mac="+createHash("sha256")
    .update(app).update(bytes).update(String(data.timestamp)).update(secret).digest("hex");
  const header={"x-zevent-signature":signature};
  const scope={app_id:app,oa_id:oa,oa_secret_key:secret,
-   resolve_verified_user:(user)=>user===customer?{customer_id:"trusted-"+customer,conversation_id:"verified-conversation-"+unique}:null};
+   resolve_verified_user:(userIdByApp)=>userIdByApp===customer?{customer_id:"trusted-"+customer,conversation_id:"verified-conversation-"+unique}:null};
  const ingressA=createOfficialZaloIngress(scope,
    new PostgresInboundEventRepository(createZaloTransactions(poolA)));
  const ingressB=createOfficialZaloIngress(scope,
@@ -43,7 +43,7 @@ test("Official documented MAC -> durable PostgreSQL ingress: 2 independent pools
      (await poolB.query("SELECT pg_backend_pid() AS p")).rows[0].p);
    const results=await Promise.all([ingressA.receive(bytes,header),ingressB.receive(bytes,header)]);
    assert.deepEqual(results.map(r=>r.status).sort(),["accepted","duplicate"]);
-   const rows=await sql("SELECT payload_json,received_at FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2",[oa,id]);
+   const rows=await sql("SELECT payload_json,received_at FROM zalo_inbound_events WHERE oa_id=$1 AND event_id=$2",[oa,eventId]);
    assert.equal(rows.rowCount,1);
    const payload=rows.rows[0].payload_json;
    assert.equal(payload.oa_id,oa);
@@ -51,7 +51,7 @@ test("Official documented MAC -> durable PostgreSQL ingress: 2 independent pools
    assert.equal(payload.conversation_id,"verified-conversation-"+unique);
    assert.equal(payload.kind,"text");
    assert.equal(payload.confirmation_postback,undefined);
-   const queue=await sql("SELECT status FROM zalo_process_queue WHERE oa_id=$1 AND event_id=$2",[oa,id]);
+   const queue=await sql("SELECT status FROM zalo_process_queue WHERE oa_id=$1 AND event_id=$2",[oa,eventId]);
    assert.equal(queue.rowCount,1);
    assert.equal(queue.rows[0].status,"QUEUED");
    await assert.rejects(ingressA.receive(bytes,{"x-zevent-signature":"mac="+("0".repeat(64))}),

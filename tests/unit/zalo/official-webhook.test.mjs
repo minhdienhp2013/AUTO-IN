@@ -8,7 +8,8 @@ const now=Date.parse("2026-10-14T04:00:00Z");
 const app_id="123456789012345678",oa_id="987654321098765432";
 const secret="unit-test-secret-NOT-real-do-not-deploy";
 const signedObject=(more={})=>({
- app_id,event_name:"user_send_text",timestamp:now,
+ app_id,event_id:"event-001",user_id_by_app:"246845883529697922",
+ event_name:"user_send_text",timestamp:now,
  sender:{id:"246845883529697922"},recipient:{id:oa_id},
  message:{msg_id:"msg-001",text:"In giúp em 2 bản A4"},...more
 });
@@ -24,13 +25,13 @@ const make=(extra={})=>createOfficialZaloWebhookAdapter({
 });
 test("synthetic raw-body SHA-256 formula fixture passes; it is not a Zalo signature vector",async()=>{
  const {verifier,normalizer}=make();
- const bytes=raw(signedObject());
+ const bytes=raw(signedObject({sender:{id:"sender-id-is-not-the-mapping-key"}}));
  assert.equal(await verifier.verify(bytes,sign(bytes)),true);
  const spaced=new TextEncoder().encode(JSON.stringify(signedObject(),null,2));
  assert.equal(await verifier.verify(spaced,sign(bytes)),false);
  assert.equal(await verifier.verify(spaced,sign(spaced)),true);
  assert.deepEqual(normalizer.normalize(bytes),{
-  event_id:"msg-001",oa_id,customer_id:"trusted-customer",
+  event_id:"event-001",oa_id,customer_id:"trusted-customer",
   conversation_id:"trusted-oa-conversation",
   occurred_at:new Date(now).toISOString(),kind:"text",text:"In giúp em 2 bản A4"
  });
@@ -56,13 +57,14 @@ test("signed sender/recipient mismatch, unknown user and event types cannot ente
  const normal=make().normalizer;
  const samples=[
   signedObject({recipient:{id:"OTHER-OA"}}),
-  signedObject({sender:{id:"unknown-customer"}}),
+  signedObject({user_id_by_app:"unknown-customer"}),
   signedObject({sender:{id:"246845883529697922"},event_name:"oa_send_text"}),
   signedObject({event_name:"user_send_image",message:{msg_id:"img",attachments:[]}}),
   signedObject({event_name:"user_send_file",message:{msg_id:"file",attachments:[]}}),
   signedObject({event_name:"user_click_button",message:{msg_id:"button",payload:"approve"}}),
-  signedObject({event_name:"user_send_text",message:{text:"OK"}}),
-  signedObject({event_name:"user_send_text",message:{msg_id:"unsafe id",text:"OK"}})
+  signedObject({event_name:"user_send_text",event_id:undefined}),
+  signedObject({event_name:"user_send_text",event_id:"unsafe id",message:{msg_id:"msg-unsafe",text:"OK"}}),
+  signedObject({event_name:"user_send_text",user_id_by_app:undefined})
  ];
  for(const e of samples)assert.throws(()=>normal.normalize(raw(e)),/INVALID_OFFICIAL_EVENT/);
 });
