@@ -83,6 +83,8 @@ jobs:
           tests/unit/zalo/typecheck-strict.test.mjs
           tests/unit/zalo/v1-file-intake-routing.test.mjs
           tests/unit/zalo/wiring.test.mjs
+      - name: Install locked Python unit-test dependencies
+        run: python -m pip install --disable-pip-version-check -r workers/documents/requirements-test.txt
       - name: Composition isolated unit and fixture tests
         run: >-
           node --import tsx --test --test-concurrency=1
@@ -99,8 +101,6 @@ jobs:
           tests/integration/composition/trusted-print-evidence.test.ts
           tests/integration/composition/word-review-preview.test.ts
           tests/integration/composition/word-review-source-reader.test.ts
-      - name: Install locked Python unit-test dependencies
-        run: python -m pip install --disable-pip-version-check -r workers/documents/requirements-test.txt
       - name: Validate documents and agent Python syntax
         run: python -m compileall -q workers/documents agents/windows tests/unit/documents
       - name: Documents, custody, and fake-agent unit tests
