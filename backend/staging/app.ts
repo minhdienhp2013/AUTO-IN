@@ -1,8 +1,12 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { createZaloRawWebhook, type ZaloWebhookReceiver } from '../composition/zalo-http.js';
+import { STAGING_RESPONSE_BUDGET_MS, withinStagingResponseBudget } from './response-budget.js';
 
 /** Local-only staging surface: health + signed inbound Zalo webhook. */
-export function buildLocalStagingApp(receiver: ZaloWebhookReceiver): FastifyInstance {
+export function buildLocalStagingApp(
+  receiver: ZaloWebhookReceiver,
+  responseBudgetMs = STAGING_RESPONSE_BUDGET_MS
+): FastifyInstance {
   if (!receiver || typeof receiver.receive_webhook !== 'function')
     throw new Error('STAGING_ZALO_RECEIVER_REQUIRED');
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
@@ -25,6 +29,17 @@ export function buildLocalStagingApp(receiver: ZaloWebhookReceiver): FastifyInst
     outbound_enabled: false,
     printing_enabled: false
   }));
-  app.register(createZaloRawWebhook(receiver));
+  app.register(createZaloRawWebhook({
+    async receive_webhook(raw, headers) {
+      const result = await withinStagingResponseBudget(
+        receiver.receive_webhook(raw, headers), responseBudgetMs
+      );
+      if (result.kind === 'deadline')
+        return { status_code: 503, body: {
+          error: { code: 'STAGING_RESPONSE_DEADLINE', retryable: true }
+        } };
+      return result.value;
+    }
+  }));
   return app;
 }

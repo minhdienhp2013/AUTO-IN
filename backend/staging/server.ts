@@ -7,11 +7,12 @@ import { buildLocalStagingApp } from './app.js';
 import { readStagingRuntimeConfig } from './config.js';
 import { assertLocalStagingSchema as assertLocalStagingSchemaSnapshot } from './schema-guard.js';
 import { createStagingZaloReceiver } from './zalo-receiver.js';
+import { createStagingTransactions } from './transaction-budget.js';
 
 const config = readStagingRuntimeConfig();
 const pool = new pg.Pool({
   connectionString: config.database_url,
-  connectionTimeoutMillis: 5000,
+  connectionTimeoutMillis: 350,
   max: 2,
   idleTimeoutMillis: 10000,
   application_name: 'auto-in-local-staging-webhook'
@@ -29,7 +30,7 @@ const postgres: PostgreSqlPool = {
     };
   }
 };
-const transactions = createZaloTransactions(postgres);
+const transactions = createStagingTransactions(createZaloTransactions(postgres));
 const eventTransactions: TransactionRunner = {
   transaction<T>(body: (client: SqlClient) => Promise<T>): Promise<T> {
     return transactions.transaction(tx => body({

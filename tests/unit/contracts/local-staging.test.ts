@@ -11,7 +11,10 @@ import {
 import { buildLocalStagingApp } from '../../../backend/staging/app.js';
 import { createStagingZaloReceiver } from '../../../backend/staging/zalo-receiver.js';
 import { assertLocalStagingSchema } from '../../../backend/staging/schema-guard.js';
+import { withinStagingResponseBudget } from '../../../backend/staging/response-budget.js';
+import { createStagingTransactions } from '../../../backend/staging/transaction-budget.js';
 import type { ZaloWebhookReceiver } from '../../../backend/composition/zalo-http.js';
+import type { PgTransactions, PgTx } from '../../../backend/integrations/zalo/postgres-durable.js';
 
 const testUser = '1234567890123456';
 const baseEnv: Record<string, string> = {
@@ -205,4 +208,60 @@ test('local staging exposes only health and raw inbound webhook; outbound and pr
     headers: { 'content-type': 'application/json' }, payload: raw });
   assert.equal(webhook.statusCode, 202);
   assert.deepEqual(received, raw);
+});
+
+test('staging responds retryably when inbound processing exceeds its response budget', async t => {
+  let finish!: (value: { status_code: number; body: unknown }) => void;
+  const receiver: ZaloWebhookReceiver = {
+    receive_webhook() {
+      return new Promise(resolve => { finish = resolve; });
+    }
+  };
+  const app = buildLocalStagingApp(receiver, 10);
+  t.after(() => app.close());
+  const response = await app.inject({ method: 'POST', url: '/webhooks/zalo',
+    headers: { 'content-type': 'application/json' }, payload: { event_id: 'staging-timeout' } });
+  assert.equal(response.statusCode, 503);
+  assert.deepEqual(response.json(), { error: { code: 'STAGING_RESPONSE_DEADLINE', retryable: true } });
+  finish({ status_code: 200, body: { accepted: true } });
+});
+
+test('staging transaction timeouts are set before work and fail closed if setup fails', async () => {
+  const calls: string[] = [];
+  let runWork = false;
+  const fakeTx: PgTx = {
+    async query(sql) { calls.push(sql); return { rows: [], rowCount: null }; }
+  };
+  const base: PgTransactions = {
+    async transaction<T>(action: (tx: PgTx) => Promise<T>) { return action(fakeTx); }
+  };
+  const bounded = createStagingTransactions(base);
+  const result = await bounded.transaction(async () => { runWork = true; return 'ok'; });
+  assert.equal(result, 'ok');
+  assert.deepEqual(calls, [
+    "SET LOCAL lock_timeout = '300ms'",
+    "SET LOCAL statement_timeout = '900ms'"
+  ]);
+  assert.equal(runWork, true);
+
+  const failing: PgTransactions = {
+    async transaction<T>(action: (tx: PgTx) => Promise<T>) {
+      return action({ async query() { throw new Error('cannot set timeout'); } });
+    }
+  };
+  runWork = false;
+  await assert.rejects(createStagingTransactions(failing).transaction(async () => {
+    runWork = true;
+  }), /cannot set timeout/);
+  assert.equal(runWork, false);
+});
+
+test('staging response budget rejects unsafe values and resolves completed work', async () => {
+  assert.deepEqual(await withinStagingResponseBudget(Promise.resolve('done'), 10), {
+    kind: 'completed', value: 'done'
+  });
+  await assert.rejects(withinStagingResponseBudget(Promise.resolve('done'), 0),
+    /INVALID_STAGING_RESPONSE_BUDGET/);
+  await assert.rejects(withinStagingResponseBudget(Promise.resolve('done'), 1501),
+    /INVALID_STAGING_RESPONSE_BUDGET/);
 });

@@ -6,18 +6,31 @@ It does not run a worker, expose staff/Core APIs, send outbound messages, or pri
 
 The signature adapter implements Zalo support's stated MAC-SHA256 formula but still lacks an official signed golden vector confirming the exact body bytes/timestamp representation. The staging process therefore requires an explicit local acknowledgement of that limitation. This is suitable only for a controlled test after the owner chooses to proceed; it is not a live-production approval.
 
+The local staging listener reserves a 1.5-second response budget, uses a 350 ms PostgreSQL connection timeout, and applies 300 ms lock and 900 ms statement limits inside each transaction. It returns HTTP 200 only after the durable write commits. If the response budget expires or storage fails, it returns retryable HTTP 503; it never sends a success acknowledgement early. The HTTP timeout cannot cancel a database operation already in progress, so a write might finish after a 503; `(oa_id,event_id)` idempotency makes a Zalo retry safe. These are local safeguards, not a measurement of the full Zalo-to-Windows round trip.
+
+## What Zalo has confirmed
+
+The owner supplied a Zalo OA Support reply dated 2026-10-26. Zalo says Bot Flow actions such as “Go to scenario”, “Choice”, and “Confirm” are handled inside the flow and do not emit an independent webhook. To send that step's selected data to an external system, configure an **HTTP Request** card in that Bot Flow step. This is a request from the Bot Flow to an external endpoint; it does not change how the inbound OA webhook is configured.
+
+Zalo Support confirms `user_id_by_app` is the stable user identity and each event includes `event_id` and `timestamp`. The integration uses `(oa_id,event_id)` for idempotency; `num_retry` is diagnostic only and must not be used as the event key. The [official webhook overview](https://developers.zalo.me/docs/official-account/webhook/tong-quan) says configure webhook delivery in the app, grant the linked OA the required access, respond with HTTP 200 within 2 seconds, and expect retries after 30 seconds, 5 minutes, 15 minutes, 30 minutes, and 1 hour when the connection fails. Retries add `num_retry`.
+
+The [official message-event page](https://developers.zalo.me/docs/official-account/webhook/tin-nhan/su-kien-nguoi-dung-gui-tin-nhan) and the supplied Support screenshot state `X-ZEvent-Signature: mac=sha256(appId + data + timeStamp + OAsecretKey)`, with `data` being the JSON event string. The support email also describes the MAC as using the raw body together with app ID, timestamp, and user ID. These descriptions do not include a signed sample that shows the exact bytes and whether `user_id_by_app` is already covered only inside `data` or added separately. The page labels `timestamp` as milliseconds, but its example value is `154390853474`; the format and canonical bytes still need confirmation against a Zalo-signed vector. The current adapter assumes the exact raw HTTP body bytes plus the body timestamp. Do not relax its checks or call this production-verified until a signed vector or controlled OA delivery passes.
+
+For `user_send_file`, Zalo says the attachment contains `size`, `name`, `checksum` (MD5), `type`, and a Zalo download `url`. This identifies the fields but does not establish URL host/authentication, redirect policy, expiry, download limits, retry behavior, or a trusted binding between downloaded bytes and the event. Staging still quarantines the event and does not fetch the URL; any future downloader must validate these properties and calculate its own SHA-256 over the bytes before custody.
+
 ## Windows PowerShell setup
 
-Start with a **new folder** so an older checkout or local changes are left untouched. Run these commands in an ordinary PowerShell window. They check out the exact reviewed GitHub candidate; stop if the SHA differs. The project requires Node.js 24.19.0 or newer within major version 24; use the npm version bundled with Node.js. The commands below require Docker Desktop installed and running; they start only the repository's PostgreSQL service, bound to loopback. If Docker is unavailable, stop here rather than installing software; we can adapt the steps to an existing local PostgreSQL service.
+Start with a **new folder** so an older checkout or local changes are left untouched. Run these commands in an ordinary PowerShell window. Enter the full candidate SHA supplied with this runbook; stop if it differs. The project requires Node.js 24.19.0 or newer within major version 24; use the npm version bundled with Node.js. The commands below require Docker Desktop installed and running; they start only the repository's PostgreSQL service, bound to loopback. If Docker is unavailable, stop here rather than installing software; we can adapt the steps to an existing local PostgreSQL service.
 
 ```powershell
 Set-Location $HOME\Documents
 git clone --branch ai0/v1-color-intake-nodb-ci-20261025 https://github.com/minhdienhp2013/AUTO-IN.git AUTO-IN-V1
 if ($LASTEXITCODE -ne 0) { throw 'Could not clone the reviewed V1 candidate' }
-git -C .\AUTO-IN-V1 checkout --detach 42e66de190a521daf6da44765ddef119cec7bbe1
+$expectedCandidate = Read-Host 'Enter the full candidate SHA supplied with this runbook'
+if ($expectedCandidate -notmatch '^[0-9a-f]{40}$') { throw 'A full 40-character candidate SHA is required' }
+git -C .\AUTO-IN-V1 checkout --detach $expectedCandidate
 if ($LASTEXITCODE -ne 0) { throw 'Could not check out the reviewed V1 candidate' }
 Set-Location .\AUTO-IN-V1
-$expectedCandidate = '42e66de190a521daf6da44765ddef119cec7bbe1'
 $actualCandidate = (git rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $actualCandidate -ne $expectedCandidate) {
   throw "Wrong candidate SHA: $actualCandidate"
@@ -112,7 +125,7 @@ The dedicated `staging:db:migrate` guard accepts only `autoin_test_staging` on n
 
 ## Optional manual webhook ingress
 
-Local checks can use `http://127.0.0.1:3001/health`; no public route is needed for unit/synthetic checks. If the owner later decides to test delivery from Zalo, Cloudflare Tunnel can provide a temporary ingress to the loopback listener. This task does not launch it, create an account, or configure Zalo. A tunnel makes the webhook reachable from the public internet; use only the intended test OA/test user and stop the process immediately after the controlled test.
+Local checks can use `http://127.0.0.1:3001/health`; no public route is needed for unit/synthetic checks. If the owner later decides to test delivery from Zalo, Cloudflare Tunnel can provide a temporary ingress to the loopback listener. This task does not launch it, create an account, or configure Zalo. Zalo recommends an HTTPS domain rather than a raw host/port; a temporary tunnel hostname has that shape only while the tunnel runs. In the OA app, configure `https://<temporary-host>/webhooks/zalo`, enable only the required message events, and ensure the test OA is authorized for the linked app. In Bot Flow, add an HTTP Request card only for button/choice data that must be sent out of the flow. A tunnel makes the webhook reachable from the public internet; use only the intended test OA/test user and stop the process immediately after the controlled test.
 
 After independently reviewing the running local server and deciding to expose this test route, the owner may run the installed `cloudflared` command in a separate PowerShell window:
 
@@ -126,5 +139,5 @@ The printed temporary hostname would need the `/webhooks/zalo` path in the OA's 
 
 - Run the three UI states in a real browser and verify the client against a synthetic/mock API; that does not prove backend hydration or live Core integration.
 - On the Windows PC, verify the installed Word version, open a public synthetic DOCX through the native Word review path, and inspect page count/layout without printing. Real paper output needs a separate explicit approval for one named test job.
-- A tunnel/OA delivery test still depends on authorized test OA credentials and the raw-byte signature assumption should be checked against a Zalo-signed vector. File/media download remains disabled/unimplemented here.
+- A tunnel/OA delivery test still depends on authorized test OA credentials and the raw-byte signature/timestamp assumptions should be checked against a Zalo-signed vector. The live endpoint must meet Zalo's 2-second/HTTP-200 delivery requirement; the current local listener has not been measured against a real OA. File/media download remains disabled/unimplemented here.
 - No Windows, Word, Ricoh, real Zalo, or paper test was run while preparing this guide. Do not mark V1 operational from local listener health or successful migration alone.
