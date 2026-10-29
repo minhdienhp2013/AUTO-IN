@@ -8,7 +8,7 @@ The signature adapter implements Zalo support's stated MAC-SHA256 formula but st
 
 ## Windows PowerShell setup
 
-Start with a **new folder** so an older checkout or local changes are left untouched. Run these commands in an ordinary PowerShell window. They check out the exact reviewed GitHub candidate; stop if the SHA differs. Use Node.js 24.19.x and npm 11.9.x as specified by `package.json` / `package-lock.json`. Docker Desktop is needed only if using the repository's local PostgreSQL Compose service.
+Start with a **new folder** so an older checkout or local changes are left untouched. Run these commands in an ordinary PowerShell window. They check out the exact reviewed GitHub candidate; stop if the SHA differs. The project requires Node.js 24.19.0 or newer within major version 24; use the npm version bundled with Node.js. The commands below require Docker Desktop installed and running; they start only the repository's PostgreSQL service, bound to loopback. If Docker is unavailable, stop here rather than installing software; we can adapt the steps to an existing local PostgreSQL service.
 
 ```powershell
 Set-Location $HOME\Documents
@@ -22,19 +22,37 @@ $actualCandidate = (git rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $actualCandidate -ne $expectedCandidate) {
   throw "Wrong candidate SHA: $actualCandidate"
 }
+$nodeVersionText = (node -p 'process.versions.node').Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Could not read Node.js version' }
+$nodeVersion = [version]$nodeVersionText
+if ($nodeVersion -lt [version]'24.19.0' -or $nodeVersion -ge [version]'25.0.0') {
+  throw "Use Node.js >=24.19.0 and <25.0.0; found $nodeVersionText"
+}
 node --version
 npm --version
+foreach ($name in @('DOCKER_HOST','DOCKER_CONTEXT','DOCKER_TLS_VERIFY','DOCKER_CERT_PATH',
+  'COMPOSE_FILE','COMPOSE_ENV_FILES','COMPOSE_PROJECT_NAME','COMPOSE_PROFILES')) {
+  if (Test-Path "Env:$name") { throw "Unset inherited $name before continuing" }
+}
+$dockerHost = (docker context inspect --format '{{.Endpoints.docker.Host}}').Trim()
+if ($LASTEXITCODE -ne 0 -or $dockerHost -notlike 'npipe://*') {
+  throw 'Select a local Windows Docker Desktop context; remote Docker contexts are not allowed'
+}
+docker info --format '{{.ServerVersion}}'
+if ($LASTEXITCODE -ne 0) { throw 'Start Docker Desktop before continuing' }
+docker compose version
+if ($LASTEXITCODE -ne 0) { throw 'Docker Desktop is required by this setup; stop without installing it' }
 npm ci
-docker compose up -d postgres
+docker compose -f .\compose.yaml up -d postgres
 ```
 
 Create a separate empty database in that local Compose PostgreSQL. The command is safe to repeat and does not use the sample `auto_in` database:
 
 ```powershell
-$dbExists = docker compose exec -T postgres psql -U auto_in -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'autoin_test_staging'"
+$dbExists = docker compose -f .\compose.yaml exec -T postgres psql -U auto_in -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'autoin_test_staging'"
 if ($LASTEXITCODE -ne 0) { throw 'Could not query local Compose PostgreSQL' }
 if ($dbExists.Trim() -ne '1') {
-  docker compose exec -T postgres createdb -U auto_in -O auto_in autoin_test_staging
+  docker compose -f .\compose.yaml exec -T postgres createdb -U auto_in -O auto_in autoin_test_staging
   if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated staging database' }
 }
 ```
