@@ -49,7 +49,7 @@ export function assertStagingOptIn(env: StagingEnvironment): void {
 export function assertNoPostgresEnvironmentOverrides(env: StagingEnvironment): void {
   // pg's connectionString path can consult these process-level settings.
   // Require one explicit URL to be the sole database target.
-  for (const name of ['PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD',
+  for (const name of ['PGHOST', 'PGHOSTADDR', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD',
     'PGSSLMODE', 'PGSSLCERT', 'PGSSLKEY', 'PGSSLROOTCERT', 'PGSERVICE',
     'PGSERVICEFILE', 'PGOPTIONS', 'PGAPPNAME', 'PGCHANNELBINDING', 'PGCONNECT_TIMEOUT']) {
     if (env[name] !== undefined && env[name] !== '')

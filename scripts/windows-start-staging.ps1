@@ -6,7 +6,9 @@ param(
 
   [switch]$Start,
 
-  [switch]$DiscoverTestUser
+  [switch]$DiscoverTestUser,
+
+  [switch]$UseExistingPostgres
 )
 
 Set-StrictMode -Version Latest
@@ -17,10 +19,17 @@ function Invoke-Checked {
     [Parameter(Mandatory = $true)][string]$Program,
     [Parameter(Mandatory = $true)][string[]]$Arguments
   )
+  $command = Get-Command -Name $Program -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if (-not $command -or [string]::IsNullOrWhiteSpace($command.Source) -or
+      -not (Test-Path -LiteralPath $command.Source -PathType Leaf)) {
+    throw "Required executable '$Program' was not found on PATH."
+  }
+  $resolvedProgram = $command.Source
   $previousPreference = $ErrorActionPreference
   try {
     $ErrorActionPreference = 'Continue'
-    & $Program @Arguments 2>&1
+    & $resolvedProgram @Arguments 2>&1
     $nativeExitCode = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousPreference
@@ -49,7 +58,7 @@ if ($nodeVersion -lt [version]'24.19.0' -or $nodeVersion -ge [version]'25.0.0') 
 $blockedEnvironment = @(
   'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH',
   'COMPOSE_FILE', 'COMPOSE_ENV_FILES', 'COMPOSE_PROJECT_NAME', 'COMPOSE_PROFILES',
-  'PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'PGSSLMODE',
+  'PGHOST', 'PGHOSTADDR', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'PGSSLMODE',
   'PGSSLCERT', 'PGSSLKEY', 'PGSSLROOTCERT', 'PGSERVICE', 'PGSERVICEFILE',
   'PGOPTIONS', 'PGAPPNAME', 'PGCHANNELBINDING', 'PGCONNECT_TIMEOUT'
 )
@@ -57,10 +66,25 @@ foreach ($name in $blockedEnvironment) {
   if (Test-Path "Env:$name") { throw "Unset inherited $name and run again; remote or overridden services are not allowed." }
 }
 
-$dockerHost = (Invoke-Checked -Program 'docker' -Arguments @('context', 'inspect', '--format', '{{.Endpoints.docker.Host}}') | Select-Object -Last 1).Trim()
-if ($dockerHost -notlike 'npipe://*') { throw 'Select a local Windows Docker Desktop context; remote Docker contexts are not allowed.' }
-Invoke-Checked -Program 'docker' -Arguments @('info', '--format', '{{.ServerVersion}}') | Out-Host
-Invoke-Checked -Program 'docker' -Arguments @('compose', 'version') | Out-Host
+$dockerCommand = Get-Command 'docker' -ErrorAction SilentlyContinue
+$psqlCommand = Get-Command 'psql' -ErrorAction SilentlyContinue
+$createdbCommand = Get-Command 'createdb' -ErrorAction SilentlyContinue
+if ($UseExistingPostgres) {
+  if (-not $psqlCommand -or -not $createdbCommand) {
+    throw 'The psql/createdb commands are unavailable. Use this mode only with an installed local PostgreSQL server and client, or use local Docker Desktop.'
+  }
+  if (-not (Test-NetConnection -ComputerName '127.0.0.1' -Port 5432 -InformationLevel Quiet -WarningAction SilentlyContinue)) {
+    throw 'No PostgreSQL server is listening on 127.0.0.1:5432. Start the local PostgreSQL service and retry.'
+  }
+} else {
+  if (-not $dockerCommand) {
+    throw 'Docker is not installed or not on PATH. If local PostgreSQL and psql are already installed on 127.0.0.1:5432, rerun with -UseExistingPostgres.'
+  }
+  $dockerHost = (Invoke-Checked -Program 'docker' -Arguments @('context', 'inspect', '--format', '{{.Endpoints.docker.Host}}') | Select-Object -Last 1).Trim()
+  if ($dockerHost -notlike 'npipe://*') { throw 'Select a local Windows Docker Desktop context; remote Docker contexts are not allowed.' }
+  Invoke-Checked -Program 'docker' -Arguments @('info', '--format', '{{.ServerVersion}}') | Out-Host
+  Invoke-Checked -Program 'docker' -Arguments @('compose', 'version') | Out-Host
+}
 
 $environmentNames = @(
   'DATABASE_URL', 'AUTO_IN_MODE', 'AUTOIN_STAGING_ENABLED', 'AUTOIN_STAGING_ACK',
@@ -68,7 +92,7 @@ $environmentNames = @(
   'AUTOIN_STAGING_APP_ID', 'AUTOIN_STAGING_OA_ID', 'AUTOIN_STAGING_TEST_OA_ID',
   'AUTOIN_STAGING_OA_SECRET_KEY', 'AUTOIN_STAGING_TEST_USERS_JSON',
   'AUTOIN_STAGING_DISCOVER_USER_ONCE', 'AUTOIN_STAGING_DISCOVERY_ACK',
-  'AUTOIN_STAGING_DISCOVERY_CHALLENGE'
+  'AUTOIN_STAGING_DISCOVERY_CHALLENGE', 'PGPASSWORD'
 )
 $previousEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -77,7 +101,6 @@ foreach ($name in $environmentNames) {
 
 Push-Location $repoRoot
 try {
-  $env:DATABASE_URL = 'postgresql://auto_in:development_only@127.0.0.1:5432/autoin_test_staging'
   $env:AUTO_IN_MODE = 'staging_local'
   $env:AUTOIN_STAGING_ENABLED = '1'
   $env:AUTOIN_STAGING_ACK = 'OWNER_APPROVED_LOCAL_TEST_ONLY'
@@ -128,25 +151,98 @@ try {
   }
 
   Invoke-Checked -Program 'npm.cmd' -Arguments @('ci')
-  Invoke-Checked -Program 'docker' -Arguments @('compose', '-f', '.\compose.yaml', 'up', '-d', 'postgres')
+  if ($UseExistingPostgres) {
+    $databaseUser = Read-Host 'Local PostgreSQL role with permission to create a database'
+    if ($databaseUser -notmatch '^[A-Za-z0-9_]{1,63}$') { throw 'Invalid PostgreSQL role name.' }
+    $secureDatabasePassword = Read-Host 'Password for the local PostgreSQL role (input is hidden)' -AsSecureString
+    $databasePasswordPointer = [IntPtr]::Zero
+    try {
+      $databasePasswordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureDatabasePassword)
+      $databasePassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($databasePasswordPointer)
+    } finally {
+      if ($databasePasswordPointer -ne [IntPtr]::Zero) {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($databasePasswordPointer)
+      }
+      $secureDatabasePassword.Dispose()
+    }
 
-  $postgresReady = $false
-  for ($attempt = 0; $attempt -lt 30; $attempt++) {
-    & docker compose -f .\compose.yaml exec -T postgres pg_isready -U auto_in -d auto_in 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { $postgresReady = $true; break }
-    Start-Sleep -Seconds 1
-  }
-  if (-not $postgresReady) { throw 'Local PostgreSQL did not become ready within 30 seconds.' }
+    $env:PGPASSWORD = $databasePassword
+    try {
+      $probe = (Invoke-Checked -Program 'psql' -Arguments @(
+        '-w', '-h', '127.0.0.1', '-p', '5432', '-U', $databaseUser,
+        '-d', 'postgres', '-tAc', 'SELECT 1'
+      ) | Select-Object -Last 1).Trim()
+      if ($probe -ne '1') { throw 'Could not verify local PostgreSQL credentials.' }
 
-  $dbExists = (Invoke-Checked -Program 'docker' -Arguments @(
-    'compose', '-f', '.\compose.yaml', 'exec', '-T', 'postgres', 'psql', '-U', 'auto_in',
-    '-d', 'postgres', '-tAc', "SELECT 1 FROM pg_database WHERE datname = 'autoin_test_staging'"
-  ) | Select-Object -Last 1).Trim()
-  if ($dbExists -ne '1') {
-    Invoke-Checked -Program 'docker' -Arguments @(
-      'compose', '-f', '.\compose.yaml', 'exec', '-T', 'postgres', 'createdb', '-U', 'auto_in',
-      '-O', 'auto_in', 'autoin_test_staging'
-    )
+      $listenAddresses = (Invoke-Checked -Program 'psql' -Arguments @(
+        '-w', '-h', '127.0.0.1', '-p', '5432', '-U', $databaseUser,
+        '-d', 'postgres', '-tAc', 'SHOW listen_addresses'
+      ) | Select-Object -Last 1).Trim()
+      $serverPort = (Invoke-Checked -Program 'psql' -Arguments @(
+        '-w', '-h', '127.0.0.1', '-p', '5432', '-U', $databaseUser,
+        '-d', 'postgres', '-tAc', 'SHOW port'
+      ) | Select-Object -Last 1).Trim()
+      if ($listenAddresses -cne '127.0.0.1' -or $serverPort -cne '5432') {
+        throw "Existing PostgreSQL must report listen_addresses=127.0.0.1 and port=5432 (found listen_addresses='$listenAddresses', port='$serverPort'). Use the local Docker mode instead; this script will not change service settings."
+      }
+
+      $databaseOwner = (Invoke-Checked -Program 'psql' -Arguments @(
+        '-w', '-h', '127.0.0.1', '-p', '5432', '-U', $databaseUser,
+        '-d', 'postgres', '-tAc', "SELECT COALESCE((SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'autoin_test_staging'), '__MISSING__')"
+      ) | Select-Object -Last 1).Trim()
+      if ($databaseOwner -eq '__MISSING__') {
+        Invoke-Checked -Program 'createdb' -Arguments @(
+          '-w', '-h', '127.0.0.1', '-p', '5432', '-U', $databaseUser, 'autoin_test_staging'
+        )
+        Invoke-Checked -Program 'psql' -Arguments @(
+          '-w', '-h', '127.0.0.1', '-p', '5432', '-U', $databaseUser,
+          '-d', 'postgres', '-c', "COMMENT ON DATABASE autoin_test_staging IS 'AUTO-IN-WINDOWS-LOCAL-STAGING-V1'"
+        )
+        $databaseOwner = (Invoke-Checked -Program 'psql' -Arguments @(
+          '-w', '-h', '127.0.0.1', '-p', '5432', '-U', $databaseUser,
+          '-d', 'postgres', '-tAc', "SELECT COALESCE((SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'autoin_test_staging'), '__MISSING__')"
+        ) | Select-Object -Last 1).Trim()
+      }
+      if ($databaseOwner -cne $databaseUser) {
+        throw 'autoin_test_staging already exists with a different owner; use a PostgreSQL role that owns this database or ask an administrator to create it for that role.'
+      }
+      $databaseMarker = (Invoke-Checked -Program 'psql' -Arguments @(
+        '-w', '-h', '127.0.0.1', '-p', '5432', '-U', $databaseUser,
+        '-d', 'postgres', '-tAc', "SELECT COALESCE((SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = 'autoin_test_staging'), '__UNMARKED__')"
+      ) | Select-Object -Last 1).Trim()
+      if ($databaseMarker -cne 'AUTO-IN-WINDOWS-LOCAL-STAGING-V1') {
+        throw 'autoin_test_staging exists without the AUTO-IN staging marker; do not reuse it unless its owner has verified it is dedicated to this test.'
+      }
+    } finally {
+      Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+    }
+
+    $encodedDatabaseUser = [Uri]::EscapeDataString($databaseUser)
+    $encodedDatabasePassword = [Uri]::EscapeDataString($databasePassword)
+    $env:DATABASE_URL = "postgresql://${encodedDatabaseUser}:${encodedDatabasePassword}@127.0.0.1:5432/autoin_test_staging"
+    $databasePassword = $null
+  } else {
+    $env:DATABASE_URL = 'postgresql://auto_in:development_only@127.0.0.1:5432/autoin_test_staging'
+    Invoke-Checked -Program 'docker' -Arguments @('compose', '-f', '.\compose.yaml', 'up', '-d', 'postgres')
+
+    $postgresReady = $false
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+      & docker compose -f .\compose.yaml exec -T postgres pg_isready -U auto_in -d auto_in 2>$null | Out-Null
+      if ($LASTEXITCODE -eq 0) { $postgresReady = $true; break }
+      Start-Sleep -Seconds 1
+    }
+    if (-not $postgresReady) { throw 'Local PostgreSQL did not become ready within 30 seconds.' }
+
+    $dbExists = (Invoke-Checked -Program 'docker' -Arguments @(
+      'compose', '-f', '.\compose.yaml', 'exec', '-T', 'postgres', 'psql', '-U', 'auto_in',
+      '-d', 'postgres', '-tAc', "SELECT 1 FROM pg_database WHERE datname = 'autoin_test_staging'"
+    ) | Select-Object -Last 1).Trim()
+    if ($dbExists -ne '1') {
+      Invoke-Checked -Program 'docker' -Arguments @(
+        'compose', '-f', '.\compose.yaml', 'exec', '-T', 'postgres', 'createdb', '-U', 'auto_in',
+        '-O', 'auto_in', 'autoin_test_staging'
+      )
+    }
   }
 
   Invoke-Checked -Program 'npm.cmd' -Arguments @('run', 'staging:db:migrate')

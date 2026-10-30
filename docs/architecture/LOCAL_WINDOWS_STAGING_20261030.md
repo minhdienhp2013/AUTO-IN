@@ -22,7 +22,7 @@ For `user_send_file`, Zalo says the attachment contains `size`, `name`, `checksu
 
 ## Windows PowerShell setup
 
-Start with a **new folder** so an older checkout or local changes are left untouched. Run these commands in an ordinary PowerShell window. Use only the full candidate SHA supplied in the release handoff alongside this runbook; do not substitute the branch tip or another commit. Stop if the checked-out SHA differs. The project requires Node.js 24.19.0 or newer within major version 24; use the npm version bundled with Node.js. The commands below require Docker Desktop installed and running; they start only the repository's PostgreSQL service, bound to loopback. If Docker is unavailable, stop here rather than installing software; we can adapt the steps to an existing local PostgreSQL service.
+Start with a **new folder** so an older checkout or local changes are left untouched. Run these commands in an ordinary PowerShell window. Use only the full candidate SHA supplied in the release handoff alongside this runbook; do not substitute the branch tip or another commit. Stop if the checked-out SHA differs. The project requires Node.js 24.19.0 or newer within major version 24; use the npm version bundled with Node.js. By default, the script uses Docker Desktop and the repository's PostgreSQL service bound to loopback. If Docker is not installed, use `-UseExistingPostgres` only when a local PostgreSQL service is already listening on `127.0.0.1:5432` and both `psql` and `createdb` are on `PATH`; that mode prompts for a database role with `CREATEDB` permission and a hidden password, then creates or reuses only `autoin_test_staging`.
 
 ```powershell
 Set-Location $HOME\Documents
@@ -40,9 +40,11 @@ if ($LASTEXITCODE -ne 0 -or $actualCandidate -ne $expectedCandidate) {
 .\scripts\windows-start-staging.ps1 -ExpectedCommit $expectedCandidate -Start
 ```
 
-The script verifies the clean checkout, Node version, and local Docker context; creates or reuses only the separate `autoin_test_staging` database; runs its migrations, checks, and build; prompts for test OA values (the secret prompt is hidden); then starts the listener on loopback. It does **not** open a tunnel, configure Zalo, download attachments, send messages, or print. Keep this PowerShell window open while testing and press Ctrl+C to stop the listener.
+The script verifies the clean checkout, Node version, and selected local database; creates or reuses only the separate `autoin_test_staging` database; runs its migrations, checks, and build; prompts for test OA values (the secret prompt is hidden); then starts the listener on loopback. It does **not** open a tunnel, configure Zalo, download attachments, send messages, or print. Keep this PowerShell window open while testing and press Ctrl+C to stop the listener.
 
-After the test, stop the local PostgreSQL container from the checkout folder if it is no longer needed. This keeps the named volume and isolated test data; do not add `-v`:
+When the PC has local PostgreSQL but no Docker, add `-UseExistingPostgres` to the start command. The local PostgreSQL service must already be running on port 5432, and `psql` plus `createdb` must be available on `PATH`. The script asks for a local role with permission to create a database and its password using a hidden prompt; before creating or reusing the isolated staging database, it verifies the authenticated server reports exactly `listen_addresses=127.0.0.1` and `port=5432`. If either value cannot be read or differs, startup stops; the script never changes the PostgreSQL service configuration. It then verifies the role owns the isolated staging database before running migrations. If that database already existed, it must also have the exact `AUTO-IN-WINDOWS-LOCAL-STAGING-V1` marker; otherwise startup stops without migrating it. This mode does not create, alter, or stop a PostgreSQL service. If neither Docker nor a local PostgreSQL server is available, stop and install neither as part of this run; the owner must choose and authorize a database setup first.
+
+Only when the Docker mode was selected, stop the local PostgreSQL container from the checkout folder if it is no longer needed. This keeps the named volume and isolated test data; do not add `-v`. Do not run this command in `-UseExistingPostgres` mode, because that mode uses a separately installed local service:
 
 ```powershell
 docker compose -f .\compose.yaml down
@@ -52,6 +54,12 @@ If the test account's `user_id_by_app` is not known yet, first start discovery m
 
 ```powershell
 .\scripts\windows-start-staging.ps1 -ExpectedCommit $expectedCandidate -Start -DiscoverTestUser
+```
+
+With an existing local PostgreSQL service, include both switches:
+
+```powershell
+.\scripts\windows-start-staging.ps1 -ExpectedCommit $expectedCandidate -Start -DiscoverTestUser -UseExistingPostgres
 ```
 
 The script prints a fresh, random challenge such as `AUTO-IN-TEST-USER-...`. After independently opening a temporary tunnel and configuring only the dedicated test OA, send exactly that one-time text from the designated test account. The receiver captures the ID only from a correctly signed `user_send_text` for the exact challenge, prints only `user_id_by_app` locally, returns HTTP 200, and deliberately discards that challenge event without writing it to the database. If Zalo receives the 200 response, it should not retry the discarded event after the server restarts. Press Ctrl+C, start the script again without `-DiscoverTestUser`, enter that ID when prompted, restart/configure the tunnel if its temporary URL changed, and send a different test message. Discovery is one-shot per process and does not create an order or contact a customer. Do not send any ordinary messages to the test OA while discovery mode is open.

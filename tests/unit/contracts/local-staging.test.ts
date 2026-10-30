@@ -95,6 +95,7 @@ test('local staging accepts only loopback isolated test PostgreSQL and bind addr
 
   assert.throws(() => readStagingRuntimeConfig({ ...baseEnv, HOST: '0.0.0.0' }), /STAGING_BIND_MUST_BE_LOOPBACK/);
   assert.throws(() => readStagingRuntimeConfig({ ...baseEnv, PGHOST: 'db.example' }), /STAGING_DATABASE_OVERRIDE_FORBIDDEN:PGHOST/);
+  assert.throws(() => readStagingRuntimeConfig({ ...baseEnv, PGHOSTADDR: '203.0.113.8' }), /STAGING_DATABASE_OVERRIDE_FORBIDDEN:PGHOSTADDR/);
 });
 
 test('staging migration guard accepts only the named numeric-loopback DB with no PG overrides', () => {
@@ -111,6 +112,7 @@ test('staging migration guard accepts only the named numeric-loopback DB with no
     'postgresql://auto_in:local-only@127.0.0.1:5432/autoin_test_staging?sslmode=require'
   ]) assert.throws(() => assertStagingDatabaseTarget(url, baseEnv));
   assert.throws(() => assertStagingDatabaseTarget(validUrl, { ...baseEnv, PGHOST: 'db.example' }));
+  assert.throws(() => assertStagingDatabaseTarget(validUrl, { ...baseEnv, PGHOSTADDR: '203.0.113.8' }));
   assert.throws(() => assertStagingDatabaseTarget(validUrl, {
     ...baseEnv, AUTOIN_STAGING_DB_ACK: 'wrong-ack'
   }));
