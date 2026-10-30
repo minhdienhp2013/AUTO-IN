@@ -35,7 +35,10 @@ for (const [name, data] of Object.entries(files)) {
   const path = dir + name;
   const content = JSON.stringify(data) + '\n';
   if (process.argv.includes('--check')) {
-    if (await readFile(path, 'utf8') !== content) throw new Error(`Stale generated contract: ${name}`);
+    // Git may check out generated JSON with CRLF on Windows. Compare logical
+    // text so line-ending conversion alone does not make a valid artifact stale.
+    const existing = (await readFile(path, 'utf8')).replace(/\r\n/g, '\n');
+    if (existing !== content) throw new Error(`Stale generated contract: ${name}`);
   } else await writeFile(path, content);
 }
 console.info(process.argv.includes('--check') ? 'Contracts up to date' : 'Contracts exported');

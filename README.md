@@ -29,6 +29,10 @@ Compose là cấu hình phát triển (mật khẩu mẫu, bind localhost), chư
 
 Để thử nhận webhook inbound bằng OA/user thử nghiệm trên máy Windows, xem [hướng dẫn PowerShell staging cục bộ](docs/architecture/LOCAL_WINDOWS_STAGING_20261030.md). Chế độ này chỉ nhận webhook được ký và allow-list, dùng database PostgreSQL test riêng trên loopback, không mở API nhân viên, không gửi tin, không tải file và không in. Mặc định không chạy; cần bật đủ biến opt-in trong phiên PowerShell hiện tại. Tunnel công khai chỉ là bước thủ công riêng và không được khởi động bởi ứng dụng.
 
+## Máy chủ VPS mô phỏng
+
+Hồ sơ chuẩn bị backend simulation trên VPS và cho Windows agent kết nối HTTPS ở [hướng dẫn VPS simulation](docs/architecture/VPS_SIMULATION_HOSTING_20261030.md). Cấu hình này giữ PostgreSQL và backend trên VPS, chỉ mở route agent cần thiết qua Caddy, và không nối OA thật hoặc cho phép in giấy. Đây chưa phải quy trình production hay cấu hình đã triển khai.
+
 ## Hợp đồng và điểm nối
 
 - `contracts/schemas.ts`: nguồn schema và types; `generated/schema.json` cho Python, `generated/openapi.json` cho API.

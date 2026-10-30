@@ -1,0 +1,36 @@
+simulation.example.com {
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Cache-Control no-store
+	}
+
+	@health {
+		method GET
+		path /health
+	}
+	handle @health {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	@agentClaim {
+		method POST
+		path /internal/v1/print-jobs/claim
+	}
+	handle @agentClaim {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	@agentJob {
+		method POST
+		path_regexp agentJob ^/internal/v1/print-jobs/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/(preflight|mark-sending|reports)$
+	}
+	handle @agentJob {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "token": "REPLACE_WITH_A_RANDOM_SECRET_OF_AT_LEAST_32_CHARACTERS",
+    "principal": {
+      "id": "synthetic-print-agent",
+      "role": "print_agent",
+      "shop_id": "simulation-shop",
+      "verified": true,
+      "printer_ids": ["RMP7000"]
+    }
+  }
+]

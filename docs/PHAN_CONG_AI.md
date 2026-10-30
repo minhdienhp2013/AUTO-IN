@@ -82,6 +82,10 @@ AI0 sở hữu thêm backend/composition/**, scripts/** và tests/integration/co
 AI0 owns `backend/staging/**`, `tests/unit/contracts/local-staging.test.ts`, `README.md`, root package scripts, `scripts/database.ts`, and `docs/architecture/LOCAL_WINDOWS_STAGING_20261030.md` for the opt-in local Windows test listener. This is inbound-only: loopback bind, isolated local test PostgreSQL, signed event plus explicit test OA/user allow-list. Do not add staff/Core routes, media fetching, outbound messages, workers, real printing, tunnel startup, or remote DB deployment here. AI2 still owns `backend/integrations/zalo/**`; only its existing adapter/ports may be consumed. The raw-body signature formula still lacks an official signed golden-vector check.
 
 
+### VPS simulation hosting profile (2026-10-30)
+
+AI0 owns `deploy/vps-simulation/**`, `docs/architecture/VPS_SIMULATION_HOSTING_20261030.md`, `README.md`, and `tests/unit/contracts/vps-simulation-profile.test.ts`. This profile documents only the existing simulation runtime behind a loopback-bound backend/database and an HTTPS proxy allowlist. It must not enable production mode, public staff/pilot/source routes, Zalo webhook delivery, outbound work, or real printing. AI3 retains ownership of Windows agent transport/security and must separately review any remote HTTPS simulation opt-in before that client can connect to a non-loopback origin.
+
 ## Đợt 4 — CODE-401–405 + AI0 CODE-007 (giao 12/10/2026)
 
 [Chi tiết nhiệm vụ/điều kiện an toàn](architecture/CODE007_PHAN_CONG_20261012.md). Nền tham chiếu tích hợp đã có 6/6 CI SUCCESS: `3f0380abed2294fc18d09294cd6a8c9562108710` trên PR #31. Nhánh AI cá nhân không được tự ghi đè code tích hợp; báo AI0 khi cần đồng bộ hợp đồng.

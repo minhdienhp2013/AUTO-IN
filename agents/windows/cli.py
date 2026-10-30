@@ -1,8 +1,10 @@
 """SAFE mode CLI: all paths use DryRunDriver, never a physical printer.
 
 Synthetic: python -m agents.windows.cli fixture.json --journal /secure/journal.sqlite
-Internal API simulation: AUTO_IN_AGENT_TOKEN=... python -m agents.windows.cli \
-  --api-base-url https://private-backend.example --journal /secure/journal.sqlite
+Internal API simulation (localhost by default): AUTO_IN_AGENT_TOKEN=... python -m agents.windows.cli \
+  --api-base-url https://127.0.0.1:3443 --journal /secure/journal.sqlite
+Remote HTTPS simulation requires --allow-remote-simulation and an exact origin in
+AUTO_IN_AGENT_ALLOWED_ORIGINS (comma-separated if multiple origins are needed).
 """
 import argparse
 import json
@@ -14,10 +16,62 @@ from .agent import DryRunDriver, FakeBackend, Journal, PrintAgent
 from .backend_http import HttpBackendClient
 
 
+_LOCALHOST_NAMES = ('localhost', '127.0.0.1', '::1')
+_ALLOWED_ORIGINS_ENV = 'AUTO_IN_AGENT_ALLOWED_ORIGINS'
+
+
+def _https_origin_key(value: str) -> tuple[str, int]:
+    """Parse one HTTPS origin, rejecting paths and URL features that broaden it."""
+    if (not isinstance(value, str) or not value or value != value.strip() or
+            any(ord(character) < 32 or character.isspace() for character in value) or
+            '\\' in value):
+        raise ValueError('Invalid HTTPS origin')
+    parsed = urlsplit(value)
+    if (parsed.scheme != 'https' or not parsed.hostname or
+            parsed.username is not None or parsed.password is not None or
+            '@' in parsed.netloc or parsed.query or parsed.fragment or
+            parsed.path not in ('', '/') or '?' in value or '#' in value):
+        raise ValueError('Expected an HTTPS origin without credentials, path, query, or fragment')
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError('Invalid HTTPS origin port') from error
+    if port == 0:
+        raise ValueError('HTTPS origin port must be between 1 and 65535')
+    # An omitted port is HTTPS's standard 443. Comparing effective ports makes
+    # :443 equivalent to the canonical no-port form while rejecting other ports.
+    return parsed.hostname.lower(), 443 if port is None else port
+
+
+def _validate_api_base_url(base_url: str, *, allow_remote_simulation: bool,
+                           allowed_origins: str) -> None:
+    """Keep the CLI local-only unless the operator opts into an exact HTTPS origin."""
+    key = _https_origin_key(base_url)
+    hostname, _port = key
+    if hostname in _LOCALHOST_NAMES:
+        # Preserve CODE-303's explicit-port localhost rule.
+        if not urlsplit(base_url).port:
+            raise ValueError('Local simulation agent API requires an explicit HTTPS port')
+        return
+    if not allow_remote_simulation:
+        raise ValueError('Remote simulation requires --allow-remote-simulation')
+    if not allowed_origins:
+        raise ValueError(f'Remote simulation requires {_ALLOWED_ORIGINS_ENV}')
+    try:
+        origins = {_https_origin_key(item) for item in allowed_origins.split(',')}
+    except ValueError as error:
+        raise ValueError(f'Invalid {_ALLOWED_ORIGINS_ENV} entry') from error
+    if key not in origins:
+        raise ValueError('Remote simulation origin is not exactly allowlisted')
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='AUTO-IN DRY RUN ONLY - NO PHYSICAL PRINT')
     parser.add_argument('job_json', nargs='?', help='Synthetic JSON fixture; never a real job')
     parser.add_argument('--api-base-url', help='HTTPS internal API for simulation only')
+    parser.add_argument('--allow-remote-simulation', action='store_true',
+                        help='Allow a remote HTTPS API only when its exact origin is in ' +
+                             _ALLOWED_ORIGINS_ENV)
     parser.add_argument('--journal', required=True, help='Persistent local SQLite path, not a temp file')
     parser.add_argument('--http-timeout-seconds', type=int, default=10,
                         help='HTTPS request deadline (1..30 seconds)')
@@ -31,15 +85,13 @@ def main() -> int:
     result = {'status': 'UNKNOWN', 'reason_code': 'AGENT_UNVERIFIED_FAILURE'}
     try:
         if args.api_base_url:
-            # CODE-303 is localhost-only simulation; prevent an accidentally
-            # copied production address from receiving a scoped agent token.
-            origin = urlsplit(args.api_base_url)
-            if (origin.scheme != 'https' or
-                    origin.hostname not in ('localhost', '127.0.0.1', '::1') or
-                    origin.username or origin.password or origin.query or
-                    origin.fragment or origin.path not in ('', '/') or
-                    not origin.port):
-                raise ValueError('Simulation agent API requires HTTPS localhost with explicit port')
+            # Localhost remains the default. Remote credentials are sent only
+            # after both the explicit simulation opt-in and exact origin match.
+            _validate_api_base_url(
+                args.api_base_url,
+                allow_remote_simulation=args.allow_remote_simulation,
+                allowed_origins=os.environ.get(_ALLOWED_ORIGINS_ENV, ''),
+            )
             # Never accept the scoped credential in argv or weaken HTTPS/TLS.
             backend = HttpBackendClient(args.api_base_url,
                                         os.environ.get('AUTO_IN_AGENT_TOKEN', ''),
