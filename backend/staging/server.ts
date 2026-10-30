@@ -53,7 +53,12 @@ const ingress = createOfficialZaloVerifiedIngress(
 const { verifier } = createOfficialZaloWebhookAdapter(webhookConfig);
 const receiver = createStagingZaloReceiver({
   ...webhookConfig,
-  test_user_ids: new Set(identities.keys())
+  test_user_ids: new Set(identities.keys()),
+  discover_test_user_once: config.ingress.discover_test_user_once,
+  discovery_challenge: config.ingress.discovery_challenge,
+  on_discovered_test_user(userIdByApp) {
+    console.info(`STAGING_TEST_USER_ID_CAPTURED=${userIdByApp}; challenge event acknowledged and discarded; restart with this ID allow-listed`);
+  }
 }, ingress, verifier);
 const app = buildLocalStagingApp(receiver);
 

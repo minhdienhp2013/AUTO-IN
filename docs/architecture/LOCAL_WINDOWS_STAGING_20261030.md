@@ -2,11 +2,13 @@
 
 This entry point is for an **owner-operated local test on the Windows PC** that has Word and the Ricoh queue. It is separate from the normal simulation server. It accepts only a Zalo-signed inbound event whose OA and `user_id_by_app` are explicitly allow-listed, and writes through AI2's existing durable queue/quarantine ports.
 
+**Machine split:** develop and review code on the Mac, publish the reviewed candidate branch to GitHub, then clone that branch onto the Windows PC and run this staging backend there. The webhook listener and its isolated PostgreSQL database stay on Windows; they do not run on the Mac or in cloud hosting. Windows must remain on while the local test is running. Updating code later means publishing a new candidate from the Mac and checking out its exact SHA on Windows.
+
 It does not run a worker, expose staff/Core APIs, send outbound messages, or print. Health reports all those operations disabled. It does not fetch inbound media URLs. Unknown test users are rejected before the database write. Use a dedicated local test OA and test account; the allow-list identities must be synthetic. A real OA event must not be treated as a production order.
 
 The signature adapter implements Zalo support's stated MAC-SHA256 formula but still lacks an official signed golden vector confirming the exact body bytes/timestamp representation. The staging process therefore requires an explicit local acknowledgement of that limitation. This is suitable only for a controlled test after the owner chooses to proceed; it is not a live-production approval.
 
-The local staging listener reserves a 1.5-second response budget, uses a 350 ms PostgreSQL connection timeout, and applies 300 ms lock and 900 ms statement limits inside each transaction. It returns HTTP 200 only after the durable write commits. If the response budget expires or storage fails, it returns retryable HTTP 503; it never sends a success acknowledgement early. The HTTP timeout cannot cancel a database operation already in progress, so a write might finish after a 503; `(oa_id,event_id)` idempotency makes a Zalo retry safe. These are local safeguards, not a measurement of the full Zalo-to-Windows round trip.
+The local staging listener reserves a 1.5-second response budget, uses a 350 ms PostgreSQL connection timeout, and applies 300 ms lock and 900 ms statement limits inside each transaction. During normal inbound processing it returns HTTP 200 only after the durable write commits. If the response budget expires or storage fails, it returns retryable HTTP 503; it never sends a success acknowledgement early. The one-shot discovery path is the exception: after the exact signed challenge is received, it returns HTTP 200 to intentionally discard that message without writing it. The HTTP timeout cannot cancel a database operation already in progress, so a write might finish after a 503; `(oa_id,event_id)` idempotency makes a Zalo retry safe. These are local safeguards, not a measurement of the full Zalo-to-Windows round trip.
 
 ## What Zalo has confirmed
 
@@ -20,7 +22,7 @@ For `user_send_file`, Zalo says the attachment contains `size`, `name`, `checksu
 
 ## Windows PowerShell setup
 
-Start with a **new folder** so an older checkout or local changes are left untouched. Run these commands in an ordinary PowerShell window. Enter the full candidate SHA supplied with this runbook; stop if it differs. The project requires Node.js 24.19.0 or newer within major version 24; use the npm version bundled with Node.js. The commands below require Docker Desktop installed and running; they start only the repository's PostgreSQL service, bound to loopback. If Docker is unavailable, stop here rather than installing software; we can adapt the steps to an existing local PostgreSQL service.
+Start with a **new folder** so an older checkout or local changes are left untouched. Run these commands in an ordinary PowerShell window. Use only the full candidate SHA supplied in the release handoff alongside this runbook; do not substitute the branch tip or another commit. Stop if the checked-out SHA differs. The project requires Node.js 24.19.0 or newer within major version 24; use the npm version bundled with Node.js. The commands below require Docker Desktop installed and running; they start only the repository's PostgreSQL service, bound to loopback. If Docker is unavailable, stop here rather than installing software; we can adapt the steps to an existing local PostgreSQL service.
 
 ```powershell
 Set-Location $HOME\Documents
@@ -35,6 +37,28 @@ $actualCandidate = (git rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $actualCandidate -ne $expectedCandidate) {
   throw "Wrong candidate SHA: $actualCandidate"
 }
+.\scripts\windows-start-staging.ps1 -ExpectedCommit $expectedCandidate -Start
+```
+
+The script verifies the clean checkout, Node version, and local Docker context; creates or reuses only the separate `autoin_test_staging` database; runs its migrations, checks, and build; prompts for test OA values (the secret prompt is hidden); then starts the listener on loopback. It does **not** open a tunnel, configure Zalo, download attachments, send messages, or print. Keep this PowerShell window open while testing and press Ctrl+C to stop the listener.
+
+After the test, stop the local PostgreSQL container from the checkout folder if it is no longer needed. This keeps the named volume and isolated test data; do not add `-v`:
+
+```powershell
+docker compose -f .\compose.yaml down
+```
+
+If the test account's `user_id_by_app` is not known yet, first start discovery mode:
+
+```powershell
+.\scripts\windows-start-staging.ps1 -ExpectedCommit $expectedCandidate -Start -DiscoverTestUser
+```
+
+The script prints a fresh, random challenge such as `AUTO-IN-TEST-USER-...`. After independently opening a temporary tunnel and configuring only the dedicated test OA, send exactly that one-time text from the designated test account. The receiver captures the ID only from a correctly signed `user_send_text` for the exact challenge, prints only `user_id_by_app` locally, returns HTTP 200, and deliberately discards that challenge event without writing it to the database. If Zalo receives the 200 response, it should not retry the discarded event after the server restarts. Press Ctrl+C, start the script again without `-DiscoverTestUser`, enter that ID when prompted, restart/configure the tunnel if its temporary URL changed, and send a different test message. Discovery is one-shot per process and does not create an order or contact a customer. Do not send any ordinary messages to the test OA while discovery mode is open.
+
+The remaining commands below are a manual equivalent/reference if you need to run the steps separately.
+
+```powershell
 $nodeVersionText = (node -p 'process.versions.node').Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Could not read Node.js version' }
 $nodeVersion = [version]$nodeVersionText
@@ -119,7 +143,8 @@ The dedicated `staging:db:migrate` guard accepts only `autoin_test_staging` on n
 'AUTOIN_STAGING_APP_ID','AUTOIN_STAGING_OA_ID','AUTOIN_STAGING_TEST_OA_ID',
 'AUTOIN_STAGING_OA_SECRET_KEY','AUTOIN_STAGING_TEST_USERS_JSON',
 'AUTOIN_STAGING_ENABLED','AUTOIN_STAGING_ACK','AUTOIN_STAGING_DB_ACK',
-'AUTOIN_STAGING_SIGNATURE_ACK','DATABASE_URL' |
+'AUTOIN_STAGING_SIGNATURE_ACK','AUTOIN_STAGING_DISCOVER_USER_ONCE',
+'AUTOIN_STAGING_DISCOVERY_ACK','AUTOIN_STAGING_DISCOVERY_CHALLENGE','DATABASE_URL' |
   ForEach-Object { Remove-Item "Env:$_" -ErrorAction SilentlyContinue }
 ```
 

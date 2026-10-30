@@ -6,6 +6,7 @@ import {
   readStagingRuntimeConfig,
   STAGING_ACK,
   STAGING_DATABASE_ACK,
+  STAGING_DISCOVERY_ACK,
   STAGING_SIGNATURE_ACK
 } from '../../../backend/staging/config.js';
 import { buildLocalStagingApp } from '../../../backend/staging/app.js';
@@ -50,6 +51,31 @@ test('local staging refuses startup without each explicit opt-in', () => {
     assert.throws(() => readStagingRuntimeConfig(env));
   }
   assert.throws(() => assertStagingOptIn({}), /STAGING_EXPLICIT_OPT_IN_REQUIRED/);
+});
+
+test('one-shot local user discovery requires its own acknowledgement and has no identity mapping', () => {
+  const env = {
+    ...baseEnv,
+    AUTOIN_STAGING_DISCOVER_USER_ONCE: '1',
+    AUTOIN_STAGING_DISCOVERY_ACK: STAGING_DISCOVERY_ACK,
+    AUTOIN_STAGING_DISCOVERY_CHALLENGE: 'AUTO-IN-TEST-USER-0123456789abcdef0123456789abcdef',
+    AUTOIN_STAGING_TEST_USERS_JSON: '{}'
+  };
+  const config = readStagingRuntimeConfig(env);
+  assert.equal(config.ingress.discover_test_user_once, true);
+  assert.equal(config.ingress.test_users.size, 0);
+  assert.throws(() => readStagingRuntimeConfig({
+    ...env, AUTOIN_STAGING_DISCOVERY_ACK: undefined
+  }), /STAGING_DISCOVERY_ACK_REQUIRED/);
+  assert.throws(() => readStagingRuntimeConfig({
+    ...env, AUTOIN_STAGING_DISCOVER_USER_ONCE: '0'
+  }), /STAGING_DISCOVERY_MODE_INVALID/);
+  assert.throws(() => readStagingRuntimeConfig({
+    ...env, AUTOIN_STAGING_DISCOVERY_CHALLENGE: 'not-a-random-test-challenge'
+  }), /STAGING_DISCOVERY_CHALLENGE_INVALID/);
+  assert.throws(() => readStagingRuntimeConfig({
+    ...env, AUTOIN_STAGING_TEST_USERS_JSON: baseEnv.AUTOIN_STAGING_TEST_USERS_JSON
+  }), /STAGING_TEST_USER_MAPPING_INVALID/);
 });
 
 test('local staging accepts only loopback isolated test PostgreSQL and bind address', () => {
@@ -141,15 +167,20 @@ const scope = {
   test_user_ids: new Set([testUser])
 };
 
-function makeSignedPayload(userId = testUser, oaId = 'oa-test-01'): Buffer {
+function makeSignedPayload(
+  userId = testUser,
+  oaId = 'oa-test-01',
+  messageText = 'synthetic staging fixture',
+  eventName = 'user_send_text'
+): Buffer {
   return Buffer.from(JSON.stringify({
     app_id: 'app-test-01',
     event_id: 'evt-local-1',
-    event_name: 'user_send_text',
+    event_name: eventName,
     user_id_by_app: userId,
     timestamp: String(Date.now()),
     recipient: { id: oaId },
-    message: { text: 'synthetic staging fixture' }
+    message: { text: messageText }
   }));
 }
 
@@ -176,6 +207,42 @@ test('staging fence verifies signature and rejects unknown users or OA before pe
   assert.equal(calls, 0);
   assert.equal((await fenced.receive_webhook(payload, {})).status_code, 202);
   assert.equal(calls, 1);
+});
+
+test('one-shot discovery captures only the exact signed challenge, acknowledges it once, and discards it', async () => {
+  let calls = 0;
+  const captured: string[] = [];
+  const receiver: ZaloWebhookReceiver = {
+    async receive_webhook() { calls++; return { status_code: 200, body: { accepted: true } }; }
+  };
+  const verifier = { async verify() { return true; } };
+  const challenge = 'AUTO-IN-TEST-USER-0123456789abcdef0123456789abcdef';
+  const discover = createStagingZaloReceiver({
+    ...scope,
+    test_user_ids: new Set<string>(),
+    discover_test_user_once: true,
+    discovery_challenge: challenge,
+    on_discovered_test_user(userId) { captured.push(userId); }
+  }, receiver, verifier);
+  assert.equal((await discover.receive_webhook(makeSignedPayload(), {})).status_code, 403);
+  assert.deepEqual(captured, []);
+  assert.equal((await discover.receive_webhook(makeSignedPayload(testUser, 'oa-test-01', challenge, 'user_send_file'), {})).status_code, 403);
+  assert.deepEqual(captured, []);
+  const request = makeSignedPayload(testUser, 'oa-test-01', challenge);
+  const first = await discover.receive_webhook(request, {});
+  assert.equal(first.status_code, 200);
+  assert.deepEqual(first.body, { status: 'TEST_USER_ID_CAPTURED_EVENT_DISCARDED' });
+  assert.deepEqual(captured, [testUser]);
+  assert.equal(calls, 0);
+  const second = await discover.receive_webhook(request, {});
+  assert.equal(second.status_code, 403);
+  assert.deepEqual(captured, [testUser]);
+  assert.equal(calls, 0);
+  assert.throws(() => createStagingZaloReceiver({
+    ...scope,
+    test_user_ids: new Set<string>(),
+    discover_test_user_once: true
+  }, receiver, verifier), /STAGING_ZALO_SCOPE_REQUIRED/);
 });
 
 test('local staging exposes only health and raw inbound webhook; outbound and print routes are absent', async t => {

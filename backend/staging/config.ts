@@ -3,6 +3,8 @@ import { assertIsolatedSimulationDatabase } from '../composition/postgres.js';
 export const STAGING_ACK = 'OWNER_APPROVED_LOCAL_TEST_ONLY';
 export const STAGING_DATABASE_ACK = 'OWNER_APPROVED_LOCAL_ISOLATED_TEST_DB';
 export const STAGING_SIGNATURE_ACK = 'OWNER_ACCEPTS_SUPPORT_FORMULA_PENDING_SIGNED_VECTOR';
+export const STAGING_DISCOVERY_ACK = 'OWNER_APPROVED_ONE_LOCAL_TEST_ID_DISCOVERY';
+const STAGING_DISCOVERY_CHALLENGE_PATTERN = /^AUTO-IN-TEST-USER-[a-f0-9]{32}$/;
 
 export interface StagingIdentity {
   readonly customer_id: string;
@@ -14,6 +16,8 @@ export interface StagingIngressConfig {
   readonly oa_id: string;
   readonly oa_secret_key: string;
   readonly test_users: ReadonlyMap<string, StagingIdentity>;
+  readonly discover_test_user_once: boolean;
+  readonly discovery_challenge: string | null;
 }
 
 export interface StagingRuntimeConfig {
@@ -53,7 +57,7 @@ export function assertNoPostgresEnvironmentOverrides(env: StagingEnvironment): v
   }
 }
 
-function readIngressConfig(env: StagingEnvironment): StagingIngressConfig {
+function readIngressConfig(env: StagingEnvironment, discoverTestUserOnce: boolean): StagingIngressConfig {
   if (required(env, 'AUTOIN_STAGING_SIGNATURE_ACK') !== STAGING_SIGNATURE_ACK)
     throw new Error('STAGING_SIGNATURE_ACK_REQUIRED');
 
@@ -67,12 +71,17 @@ function readIngressConfig(env: StagingEnvironment): StagingIngressConfig {
     throw new Error('STAGING_TEST_OA_CONFIG_INVALID');
 
   let decoded: unknown;
-  try { decoded = JSON.parse(required(env, 'AUTOIN_STAGING_TEST_USERS_JSON')); }
+  try {
+    const rawMapping = discoverTestUserOnce
+      ? (env.AUTOIN_STAGING_TEST_USERS_JSON ?? '{}')
+      : required(env, 'AUTOIN_STAGING_TEST_USERS_JSON');
+    decoded = JSON.parse(rawMapping);
+  }
   catch { throw new Error('STAGING_TEST_USER_MAPPING_INVALID'); }
   if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded))
     throw new Error('STAGING_TEST_USER_MAPPING_INVALID');
   const entries = Object.entries(decoded as Record<string, unknown>);
-  if (entries.length < 1 || entries.length > 10)
+  if ((discoverTestUserOnce ? entries.length !== 0 : entries.length < 1) || entries.length > 10)
     throw new Error('STAGING_TEST_USER_MAPPING_INVALID');
 
   const testUsers = new Map<string, StagingIdentity>();
@@ -90,7 +99,20 @@ function readIngressConfig(env: StagingEnvironment): StagingIngressConfig {
       throw new Error('STAGING_TEST_USER_MAPPING_INVALID');
     testUsers.set(userId, { customer_id: customerId, conversation_id: conversationId });
   }
-  return { app_id: appId, oa_id: oaId, oa_secret_key: secret, test_users: testUsers };
+  const discoveryChallenge = discoverTestUserOnce
+    ? required(env, 'AUTOIN_STAGING_DISCOVERY_CHALLENGE')
+    : null;
+  if (discoveryChallenge !== null && !STAGING_DISCOVERY_CHALLENGE_PATTERN.test(discoveryChallenge))
+    throw new Error('STAGING_DISCOVERY_CHALLENGE_INVALID');
+
+  return {
+    app_id: appId,
+    oa_id: oaId,
+    oa_secret_key: secret,
+    test_users: testUsers,
+    discover_test_user_once: discoverTestUserOnce,
+    discovery_challenge: discoveryChallenge
+  };
 }
 
 /**
@@ -119,6 +141,13 @@ export function readStagingRuntimeConfig(env: StagingEnvironment = process.env):
   assertStagingOptIn(env);
   const databaseUrl = required(env, 'DATABASE_URL');
   assertStagingDatabaseTarget(databaseUrl, env);
+  const discoverTestUserOnce = env.AUTOIN_STAGING_DISCOVER_USER_ONCE === '1';
+  if (discoverTestUserOnce) {
+    if (env.AUTOIN_STAGING_DISCOVERY_ACK !== STAGING_DISCOVERY_ACK)
+      throw new Error('STAGING_DISCOVERY_ACK_REQUIRED');
+  } else if (env.AUTOIN_STAGING_DISCOVERY_ACK !== undefined) {
+    throw new Error('STAGING_DISCOVERY_MODE_INVALID');
+  }
 
   const rawPort = env.PORT ?? '3001';
   const port = Number(rawPort);
@@ -127,5 +156,10 @@ export function readStagingRuntimeConfig(env: StagingEnvironment = process.env):
   const host = env.HOST ?? '127.0.0.1';
   if (host !== '127.0.0.1') throw new Error('STAGING_BIND_MUST_BE_LOOPBACK');
 
-  return { database_url: databaseUrl, host: '127.0.0.1', port, ingress: readIngressConfig(env) };
+  return {
+    database_url: databaseUrl,
+    host: '127.0.0.1',
+    port,
+    ingress: readIngressConfig(env, discoverTestUserOnce)
+  };
 }
